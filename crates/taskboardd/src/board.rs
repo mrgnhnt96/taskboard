@@ -887,9 +887,14 @@ pub fn attachment_title(title: &str, url: &str) -> String {
     url.trim_end_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(url).to_string()
 }
 
+/// An attachment's summary as stored: one line, clipped; None when it's blank.
+pub fn attachment_summary(summary: &str) -> Option<String> {
+    Some(one_line(summary, 500)).filter(|s| !s.is_empty())
+}
+
 pub fn attachment_dict(a: &Row) -> Value {
     json!({"id": a.id(), "kind": a.v("kind"), "title": attachment_title(&a.st("title"), &a.st("url")),
-           "url": a.v("url"), "added_by": a.v("added_by"), "at": a.v("at"),
+           "summary": a.v("summary"), "url": a.v("url"), "added_by": a.v("added_by"), "at": a.v("at"),
            "task": rf_opt("task", a.i("task_id")), "goal": rf_opt("goal", a.i("goal_id"))})
 }
 
@@ -915,6 +920,7 @@ pub fn add_attachment(
     url: &str,
     title: &str,
     kind: &str,
+    summary: &str,
     task_id: Option<i64>,
     goal_id: Option<i64>,
 ) -> Result<Value> {
@@ -927,19 +933,24 @@ pub fn add_attachment(
     }
     let kind = if ATTACH_KINDS.contains(&kind) { kind } else { "other" };
     let title = attachment_title(title, url);
+    let summary = attachment_summary(summary);
     let (col, val) = if let Some(t) = task_id { ("task_id", t) } else { ("goal_id", goal_id.unwrap_or(-1)) };
     let cur = app.db.q1(
         &format!("SELECT * FROM attachments WHERE {col} = ? AND url = ? AND removed_at IS NULL"),
         p![val, url],
     )?;
     let aid = if let Some(cur) = cur {
-        app.db.x("UPDATE attachments SET title = ?, kind = ? WHERE id = ?", p![title, kind, cur.id()])?;
+        // Attaching it again without a summary keeps the one it has.
+        app.db.x(
+            "UPDATE attachments SET title = ?, kind = ?, summary = COALESCE(?, summary) WHERE id = ?",
+            p![title, kind, summary, cur.id()],
+        )?;
         cur.id()
     } else {
         app.db.insert(
             "attachments",
             fields!["task_id" => task_id, "goal_id" => goal_id, "kind" => kind, "title" => title,
-                    "url" => url, "added_by" => who, "at" => now_iso()],
+                    "summary" => summary, "url" => url, "added_by" => who, "at" => now_iso()],
         )?
     };
     let label = match kind {

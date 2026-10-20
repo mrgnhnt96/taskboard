@@ -995,7 +995,8 @@ fn attachments_el(t: &Theme, g: &Value) -> Option<Div> {
         } else {
             div().id(SharedString::from(format!("goal-att-{ix}"))).truncate().child(title).tooltip(kit::tip(url))
         };
-        out = out.child(row);
+        let summary = fmt::opt_s(a, "summary").map(|x| div().text_size(px(12.)).text_color(t.muted).truncate().child(x.to_string()));
+        out = out.child(div().flex().flex_col().min_w_0().child(row).children(summary));
     }
     Some(side(t, "Attached", Some(list.len().to_string()), out))
 }

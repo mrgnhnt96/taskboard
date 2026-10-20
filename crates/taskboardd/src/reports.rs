@@ -2868,16 +2868,16 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
 
 fn on_attach(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
-    let (url, title, kind) = (r.b("url"), r.b("title"), r.b("kind"));
+    let (url, title, kind, summary) = (r.b("url"), r.b("title"), r.b("kind"), r.b("summary"));
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
-        let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, None, Some(g.id()))?;
+        let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, &summary, None, Some(g.id()))?;
         return Ok(with(ok(None, None), json!({"attachment": a, "goal": rf("goal", g.id())})));
     }
     let Some(t) = r.task()? else {
         return err(400, "No task on this terminal. Name one with --task T<n>, or a goal with --goal G<n>.");
     };
-    let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, Some(t.id()), None)?;
+    let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, &summary, Some(t.id()), None)?;
     Ok(with(ok(Some(&t), None), json!({"attachment": a})))
 }
 

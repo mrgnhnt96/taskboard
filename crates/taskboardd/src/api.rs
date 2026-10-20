@@ -248,7 +248,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let t = tid(id)?;
             app.db.tx(|| {
                 board::get_task(app, t)?;
-                board::add_attachment(app, OWNER, &body_str(body, "url"), &body_str(body, "title"), &body_str(body, "kind"), Some(t), None)
+                board::add_attachment(app, OWNER, &body_str(body, "url"), &body_str(body, "title"), &body_str(body, "kind"), &body_str(body, "summary"), Some(t), None)
             })
         }
         ("POST", ["tasks", id, "delete"]) => delete_task(app, tid(id)?),
@@ -303,7 +303,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let g = gid(id)?;
             app.db.tx(|| {
                 board::get_goal(app, g)?;
-                board::add_attachment(app, OWNER, &body_str(body, "url"), &body_str(body, "title"), &body_str(body, "kind"), None, Some(g))
+                board::add_attachment(app, OWNER, &body_str(body, "url"), &body_str(body, "title"), &body_str(body, "kind"), &body_str(body, "summary"), None, Some(g))
             })
         }
         ("POST", ["goals", id, "delete"]) => delete_goal(app, gid(id)?, body),
@@ -2410,6 +2410,9 @@ fn edit_attachment(app: &App, id: &str, body: &Value) -> Result<Value> {
         if body.get("kind").is_some() {
             let k = body_str(body, "kind");
             f.push(("kind", json!(if board::ATTACH_KINDS.contains(&k.as_str()) { k } else { "other".into() })));
+        }
+        if body.get("summary").is_some() {
+            f.push(("summary", json!(board::attachment_summary(&body_str(body, "summary")))));
         }
         if !f.is_empty() {
             app.db.update("attachments", &json!(aid), f)?;

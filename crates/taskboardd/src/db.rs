@@ -287,6 +287,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Where the task or goal works (`worklane.rs`): shared, slot, alone or auto; null is auto.
     ("tasks", "lane", "TEXT"),
     ("goals", "lane", "TEXT"),
+    // A line on what an attachment is (`tb attach --summary`); null when none was given.
+    ("attachments", "summary", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

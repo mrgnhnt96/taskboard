@@ -1213,7 +1213,7 @@ impl Draw<'_> {
     }
 
     /// `.att-drop .item`: the kind's tile (drawn as the file's type), the title over kind · ref ·
-    /// age; the whole row opens it, and hovering shows where it lives and who added it.
+    /// age; the whole row opens it, and hovering shows its summary, where it lives and who added it.
     #[inline(never)]
     fn c_drop_item(&mut self, m: &MainWindow, n: &Node, kind: &'static str, icon: &'static str, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
@@ -1240,6 +1240,10 @@ impl Draw<'_> {
                 .collect(),
             _ => Vec::new(),
         };
+        let summary = match kids.get(3) {
+            Some(Node::Text { s, .. }) => Some(s.clone()),
+            _ => None,
+        };
         let (fg, bg) = att_tint(t, kind);
         let tint = t.tint;
         let row = div()
@@ -1250,7 +1254,7 @@ impl Draw<'_> {
             .p(px(6.))
             .rounded(px(7.))
             .hover(move |d| d.bg(tint))
-            .tooltip(kit::card_tip(title.clone(), rows))
+            .tooltip(kit::card_tip(title.clone(), summary, rows))
             .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(icon, fg)))
             .child(
                 div()
