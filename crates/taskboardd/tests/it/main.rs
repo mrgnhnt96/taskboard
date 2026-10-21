@@ -25,6 +25,7 @@ mod duplicate_visits;
 mod feed;
 mod flow;
 mod goal_last_update;
+mod goal_play;
 mod home;
 mod hooks;
 mod human_tasks;

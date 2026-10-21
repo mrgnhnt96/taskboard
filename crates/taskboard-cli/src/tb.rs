@@ -2578,6 +2578,17 @@ fn goal_run_needs_terminal(cmd: &str, g: &str) -> String {
     format!("{cmd} only works in a Midna terminal, on a human's word there. Outside one, a human can press Run on {g} on the board.")
 }
 
+/// After a goal runs: the parked tasks it resumed, and why the rest of its current wave still waits.
+fn out_play_waits(v: &Value) {
+    let r = v["resumed_now"].as_i64().unwrap_or(0);
+    if r > 0 {
+        out(&format!("Resumed {r} parked task{}.", if r == 1 { "" } else { "s" }));
+    }
+    for line in v["hours_wait"].as_str().into_iter().chain(v["waiting"].as_array().into_iter().flatten().filter_map(|w| w.as_str())) {
+        out(&format!("{line}."));
+    }
+}
+
 /// After `tb submit` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
 /// What `tb start T<n>` did, from the task the board sends back: a `task.starting` hook may have
 /// skipped it, so it's only "opening" when the board says it's starting.
@@ -5193,6 +5204,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let n = v["queued_now"].as_i64().unwrap_or(0);
                 let until = v["hours_until"].as_str().filter(|_| now).map(|at| format!(" It runs outside work hours until they open ({}).", taskboardd::hours::say_when(at))).unwrap_or_default();
                 out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.{until}", if n == 1 { "" } else { "s" }));
+                out_play_waits(&v);
                 return Ok(0);
             }
             if now {
@@ -5522,6 +5534,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
                     let n = v["queued_now"].as_i64().unwrap_or(0);
                     out(&format!("{g} runs: queued {n} planned task{}.", if n == 1 { "" } else { "s" }));
+                    out_play_waits(&v);
                 }
                 Ok(0)
             }

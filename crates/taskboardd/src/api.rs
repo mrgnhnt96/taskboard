@@ -2375,18 +2375,86 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             app.db.update("goals", &json!(id), fields!["hours_until" => until])?;
         }
         let n = crate::chain::queue_planned(app, id, &who, "Queued with the rest of the goal", "Queued again with the rest of the goal")?;
+        let r = resume_parked(app, id, &who)?;
         if g.b("paused") || g.b("deprioritized") {
             board::update_goal(app, id, fields!["paused" => 0, "deprioritized" => 0, "updated_at" => now_iso()])?;
         }
-        Ok(n)
+        Ok((n, r))
     })?;
     if spend {
         crate::startword::note_ran_goal(app, &via, id)?;
     }
     alerts::drop_start_ask(app, &rf("goal", id))?;
+    let (n, resumed) = n;
+    let (waiting, hours_wait) = play_waits(app, id)?;
     let mut d = goal_detail(app, id)?;
     d["queued_now"] = json!(n);
+    d["resumed_now"] = json!(resumed);
+    d["waiting"] = json!(waiting);
+    d["hours_wait"] = json!(hours_wait);
     Ok(d)
+}
+
+/// Play on a goal resumes its tasks parked for Start: those whose terminal closed (back in the queue for
+/// Start, or lost) and those that wait for Start. Returns how many.
+fn resume_parked(app: &App, id: i64, who: &str) -> Result<i64> {
+    let mut n = 0;
+    for t in board::goal_tasks(app, id)? {
+        let lost = t.s("status") == Some("needs") && (t.b("lost") || t.s("needs_reason") == Some("lost"));
+        let manual = t.s("status") == Some("queued") && t.s("pickup") == Some("manual") && t.s("line_session").is_none();
+        if !lost && !manual {
+            continue;
+        }
+        let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
+        let mut f = fields!["pickup" => pickup, "pickup_session" => null, "retry_at" => null];
+        if lost {
+            f.extend(fields!["status" => "queued", "lost" => 0, "needs_reason" => null, "question" => null, "session_id" => null,
+                             "start_job" => null, "latest" => "Its terminal closed; Play on its goal starts it again from its handoff."]);
+        }
+        board::update_task(app, t.id(), f)?;
+        board::log_event(app, t.id(), who, "status", "Resumed with the rest of the goal")?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// After Play on a goal: why each queued task of its current wave still can't start ("T192 waits for you to
+/// do H197"), and the goal's own wait for the work hours. Tasks held only by their wave or turn aren't listed.
+fn play_waits(app: &App, id: i64) -> Result<(Vec<String>, Option<String>)> {
+    let g = board::get_goal(app, id)?;
+    let hours_wait = (!hours::goal_open(app, Some(&g))).then(|| hours::blocker(app)).flatten();
+    let chained = crate::chain::blocker(app, &g)?.is_some();
+    let mut out = vec![];
+    for t in board::goal_tasks(app, id)? {
+        if t.s("status") != Some("queued") || has(t.s("line_session")) {
+            continue;
+        }
+        // A task held only by the goal's order or waves starts in its turn; what it waits on itself is said.
+        let why = match crate::waitsfor::blocker(app, &t)? {
+            Some(b) => Some(b),
+            None if !chained && crate::runner::goal_order_blocker(app, &t, &g)?.is_some() => continue,
+            None => match crate::jira::ticket_wait(app, &t)? {
+                Some(b) => Some(b),
+                None => crate::waitsfor::waiting_line(app, &t)?.as_str().map(str::to_string),
+            },
+        };
+        // The work hours hold the whole goal: said once, not for every task.
+        let Some(why) = why.filter(|w| Some(w) != hours_wait.as_ref()) else { continue };
+        let own = format!(" ({})", rf("goal", id));
+        out.push(waits_line(&crate::human::task_ref(&t), &why.replace(&own, "")));
+    }
+    Ok((out, hours_wait.map(|w| waits_line(&rf("goal", id), &w))))
+}
+
+/// "Waits for you to do H197" said of T192: "T192 waits for you to do H197".
+fn waits_line(who: &str, why: &str) -> String {
+    if let Some(rest) = why.strip_prefix("Waits ") {
+        format!("{who} waits {rest}")
+    } else if let Some(rest) = why.strip_prefix("Blocked ") {
+        format!("{who} is blocked {rest}")
+    } else {
+        format!("{who}: {why}")
+    }
 }
 
 fn edit_attachment(app: &App, id: &str, body: &Value) -> Result<Value> {
