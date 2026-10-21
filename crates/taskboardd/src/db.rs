@@ -379,6 +379,7 @@ impl Db {
         conn.execute_batch(crate::bits::SCHEMA)?;
         conn.execute_batch(crate::lessons::SCHEMA)?;
         conn.execute_batch(crate::ideas::SCHEMA)?;
+        add_columns(&conn, crate::ideas::ADDED)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         add_columns(&conn, crate::releases::ADDED)?;
         conn.execute_batch(crate::releases::INDEXES)?;

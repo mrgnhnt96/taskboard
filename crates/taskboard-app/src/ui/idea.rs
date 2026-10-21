@@ -7,7 +7,9 @@
 //! shows the dig's progress and links to the goal once planned. Closing offers Undo, which reopens
 //! it. Talk it over (`POST /ideas/:id/talk`, in the header and on each question) opens a Claude
 //! terminal in the project's checkout to talk it over in; what's settled there comes back as notes.
-//! Nothing else here edits the idea: `tb idea` does.
+//! A report's open question is answered by tapping one of its choices (`POST /ideas/:id/answer`),
+//! kept as a note the next dig and the planner read. Nothing else here edits the idea: `tb idea`
+//! does.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
@@ -27,13 +29,15 @@ const CLOSE_MENU: &str = "idea-close";
 
 #[derive(Default)]
 pub struct State {
-    /// The requests running, by `dig::I3` / `plan::I3` / `close::I3` / `talk::I3`, and
-    /// `talk::I3::<question>` for a question's Talk it over.
+    /// The requests running, by `dig::I3` / `plan::I3` / `close::I3` / `talk::I3`,
+    /// `talk::I3::<question>` for a question's Talk it over, and `answer::I3::<round id>::<question id>`.
     busy: HashSet<String>,
     /// Rounds opened or closed by hand, by `I3::<round id>`; the rest follow [`starts_open`].
     open: HashMap<String, bool>,
     /// Points showing their detail, by `I3::<round id>::<block>::<item>`.
     more: HashSet<String>,
+    /// Answered questions showing their choices again after Change, by `I3::<round id>::<question>`.
+    changing: HashSet<String>,
 }
 
 /// The newest round starts open, the older ones collapsed.
@@ -184,7 +188,8 @@ pub enum Block {
     /// (what, its files): "Builds on".
     Code(Vec<(String, Vec<String>)>),
     Points { title: String, items: Vec<Point> },
-    Question { text: String, choices: Vec<String> },
+    /// `id` names it in `POST /ideas/:id/answer`; `answer` is the choice picked, if one was.
+    Question { id: String, text: String, choices: Vec<String>, answer: Option<String> },
     Compare { lean: String, options: Vec<Opt> },
     Related(Vec<String>),
 }
@@ -208,6 +213,8 @@ pub struct RoundView {
     /// It read the web too.
     pub web: bool,
     pub blocks: Vec<Block>,
+    /// Its questions can be answered: the idea isn't planned, or being planned.
+    pub answerable: bool,
 }
 
 impl RoundView {
@@ -271,7 +278,7 @@ fn block(v: &Value) -> Option<Block> {
                 .map(|x| Point { short: s(x, "short").to_string(), detail: s(x, "detail").trim().to_string(), tag: fmt::opt_s(x, "tag").map(str::to_string) })
                 .collect(),
         },
-        "question" => Block::Question { text: s(v, "text").trim().to_string(), choices: strings(&v["choices"]) },
+        "question" => Block::Question { id: s(v, "id").to_string(), text: s(v, "text").trim().to_string(), choices: strings(&v["choices"]), answer: None },
         "compare" => Block::Compare {
             lean: s(v, "lean").to_string(),
             options: named(arr(v, "options"), "name").iter().map(|x| Opt { name: s(x, "name").to_string(), pros: strings(&x["pros"]), cons: strings(&x["cons"]) }).collect(),
@@ -307,7 +314,7 @@ fn old_blocks(rep: &Value) -> Vec<Block> {
     watch.extend(strings(&rep["pitfalls"]).into_iter().map(short));
     out.extend(points("Watch out", watch));
     out.extend(points("Could grow into", strings(&rep["ways_to_extend"]).into_iter().map(short).collect()));
-    out.extend(strings(&rep["open_questions"]).into_iter().map(|text| Block::Question { text, choices: vec![] }));
+    out.extend(strings(&rep["open_questions"]).into_iter().map(|text| Block::Question { id: String::new(), text, choices: vec![], answer: None }));
     let related = strings(&rep["related"]);
     if !related.is_empty() {
         out.push(Block::Related(related));
@@ -330,6 +337,11 @@ fn report_blocks(rep: &Value) -> Vec<Block> {
     out
 }
 
+/// Whether its reports' questions can still be answered: not once it's a goal, or while it's being made one.
+pub fn can_answer(i: &Value) -> bool {
+    s(i, "state") != "planned" && !b(i, "planning")
+}
+
 pub fn rounds(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
     let all = arr(i, "rounds");
     let open = open_round(i).map(|r| r["id"].clone());
@@ -338,7 +350,12 @@ pub fn rounds(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
         .map(|(n, r)| {
             let rep = &r["report"];
             let at = fmt::opt_s(r, "finished_at").or(fmt::opt_s(r, "started_at")).unwrap_or("");
-            let blocks = if rep.is_object() { report_blocks(rep) } else { vec![] };
+            let mut blocks = if rep.is_object() { report_blocks(rep) } else { vec![] };
+            for x in &mut blocks {
+                if let Block::Question { id, answer, .. } = x {
+                    *answer = fmt::opt_s(&r["answers"], id).map(str::to_string);
+                }
+            }
             let gist = blocks.iter().find_map(|x| if let Block::Gist(g) = x { Some(g.clone()) } else { None }).unwrap_or_default();
             RoundView {
                 id: r["id"].to_string(),
@@ -352,6 +369,7 @@ pub fn rounds(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
                 error: fmt::opt_s(r, "error").filter(|e| !e.is_empty()).map(str::to_string),
                 web: b(r, "web"),
                 blocks,
+                answerable: can_answer(i),
             }
         })
         .collect()
@@ -440,6 +458,36 @@ pub(crate) fn talk(m: &mut MainWindow, r: &str, question: Option<&str>, cx: &mut
         cx,
         move |m, _, _| {
             m.idea.busy.remove(&key);
+        },
+        move |m, e, cx| {
+            m.idea.busy.remove(&k2);
+            m.toast(e.message, true, cx);
+        },
+    );
+    cx.notify();
+}
+
+/// Answer a round's question with one of its choices, once at a time. The page takes the idea it
+/// sends back, so the answered chip shows at once.
+pub(crate) fn answer(m: &mut MainWindow, r: &str, round: &str, question: &str, choice: &str, cx: &mut Context<MainWindow>) {
+    let q = format!("{r}::{round}::{question}");
+    let key = format!("answer::{q}");
+    if !m.idea.busy.insert(key.clone()) {
+        return;
+    }
+    let k2 = key.clone();
+    let r = r.to_string();
+    let round = round.parse::<i64>().map(Value::from).unwrap_or_else(|_| json!(round));
+    m.post_or(
+        format!("ideas/{r}/answer"),
+        json!({"round": round, "question": question, "answer": choice}),
+        cx,
+        move |m, v, _| {
+            m.idea.busy.remove(&key);
+            m.idea.changing.remove(&q);
+            if m.data.idea.as_ref().and_then(|i| i["ref"].as_str()) == Some(r.as_str()) && v["ref"] == r.as_str() {
+                m.data.idea = Some(v);
+            }
         },
         move |m, e, cx| {
             m.idea.busy.remove(&k2);
@@ -724,17 +772,64 @@ fn points_el(m: &MainWindow, t: &Theme, key: &str, title: &str, items: &[Point],
     col
 }
 
-/// "To decide": each question with its choices, and Talk it over on each while `talk` is the idea.
-/// Answering them is still `tb idea`'s.
-fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, qs: &[(&String, &Vec<String>)], cx: &mut Context<MainWindow>) -> Div {
-    let cards = qs.iter().enumerate().map(|(n, (text, choices))| {
+/// A question to decide: its id, text, choices and the answer picked.
+type Ask<'a> = (&'a String, &'a String, &'a Vec<String>, &'a Option<String>);
+
+/// "To decide": each question with its choices as chips, and Talk it over on each while `talk` is
+/// the idea. Where `ask` names the idea and round, a tap answers it; an answered one shows its
+/// answer with Change, which brings the chips back.
+fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Option<(&str, &str)>, qs: &[Ask], cx: &mut Context<MainWindow>) -> Div {
+    let cards = qs.iter().enumerate().map(|(n, &(id, text, choices, picked))| {
         let talk_el = talk.map(|r| {
             let busy = m.idea.busy.contains(&format!("talk::{r}::{text}"));
-            let (r, q) = (r.to_string(), (*text).clone());
+            let (r, q) = (r.to_string(), text.clone());
             let el = kit::btn_small(t, SharedString::from(format!("idea-talk-{key}::{n}")), if busy { "Sending…" } else { "Talk it over" })
                 .tooltip(kit::tip("Talk this one over with Claude in a terminal"));
             if busy { kit::disabled(el) } else { el.on_click(cx.listener(move |m, _, _, cx| self::talk(m, &r, Some(&q), cx))) }
         });
+        let tap = ask.filter(|_| !id.is_empty());
+        let q = tap.map(|(r, round)| format!("{r}::{round}::{id}")).unwrap_or_default();
+        let busy = tap.is_some() && m.idea.busy.contains(&format!("answer::{q}"));
+        let answered = picked.as_ref().filter(|_| !m.idea.changing.contains(&q));
+        let body = match answered {
+            Some(a) => {
+                let (fg, bg) = kit::tone(t, "up");
+                let pill = div().flex().items_center().gap(px(6.)).min_h(px(32.)).px(px(12.)).rounded(px(16.)).bg(bg).text_color(fg).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("✓").child(a.clone());
+                let change = tap.map(|_| {
+                    let q = q.clone();
+                    kit::link(t, SharedString::from(format!("idea-change-{q}")), "Change").text_size(px(12.5)).on_click(cx.listener(move |m, _, _, cx| {
+                        m.idea.changing.insert(q.clone());
+                        cx.notify();
+                    }))
+                });
+                div().flex().flex_wrap().items_center().gap(px(10.)).child(pill).children(change)
+            }
+            None => div().flex().flex_wrap().gap(px(6.)).children(choices.iter().map(|c| {
+                let (border, accent) = (t.border_2, t.accent);
+                let chip = div()
+                    .id(SharedString::from(format!("idea-choice-{q}::{c}")))
+                    .flex()
+                    .items_center()
+                    .min_h(px(32.))
+                    .px(px(12.))
+                    .rounded(px(16.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(t.card)
+                    .text_size(px(13.))
+                    .child(c.clone());
+                match tap {
+                    Some((r, round)) if !busy => {
+                        let (r, round, id, c) = (r.to_string(), round.to_string(), id.clone(), c.clone());
+                        chip.cursor_pointer()
+                            .hover(move |s| s.border_color(accent).text_color(accent))
+                            .on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &round, &id, &c, cx)))
+                    }
+                    Some(_) => kit::disabled(chip),
+                    None => chip,
+                }
+            })),
+        };
         div()
             .flex()
             .flex_col()
@@ -745,12 +840,8 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, qs: &[
             .border_1()
             .border_color(t.border)
             .bg(t.panel_2)
-            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child((*text).clone()))
-            .when(!choices.is_empty(), |d| {
-                d.child(div().flex().flex_wrap().gap(px(6.)).children(choices.iter().map(|c| {
-                    div().flex().items_center().min_h(px(32.)).px(px(12.)).rounded(px(16.)).border_1().border_color(t.border_2).bg(t.card).text_size(px(13.)).child(c.clone())
-                })))
-            })
+            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(text.clone()))
+            .when(answered.is_some() || !choices.is_empty(), |d| d.child(body))
             .children(talk_el.map(|b| div().flex().child(b)))
     });
     div().flex().flex_col().gap(px(8.)).child(label(t, "To decide")).children(cards)
@@ -789,8 +880,9 @@ fn related_el(t: &Theme, key: &str, refs: &[String], cx: &mut Context<MainWindow
 }
 
 /// A round's blocks in order: points lists side by side in twos, questions under one heading (with
-/// Talk it over while `talk` is the idea).
-fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, blocks: &[Block], cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
+/// Talk it over while `talk` is the idea). `ask` is the idea and round its questions answer to,
+/// when they can be.
+fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Option<(&str, &str)>, blocks: &[Block], cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let mut out = vec![];
     let mut k = 0;
     while k < blocks.len() {
@@ -812,12 +904,12 @@ fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, blocks: &
             }
             Block::Question { .. } => {
                 let mut qs = vec![];
-                while let Some(Block::Question { text, choices }) = blocks.get(k) {
-                    qs.push((text, choices));
+                while let Some(Block::Question { id, text, choices, answer }) = blocks.get(k) {
+                    qs.push((id, text, choices, answer));
                     k += 1;
                 }
                 k -= 1;
-                out.push(questions_el(m, t, &bkey, talk, &qs, cx).into_any_element());
+                out.push(questions_el(m, t, &bkey, talk, ask, &qs, cx).into_any_element());
             }
             Block::Compare { lean, options } => out.push(compare_el(t, lean, options).into_any_element()),
             Block::Related(refs) => out.push(related_el(t, &bkey, refs, cx).into_any_element()),
@@ -868,7 +960,7 @@ fn round_card(m: &MainWindow, t: &Theme, idea: &str, talk: bool, n: usize, rv: &
                 .pb(px(18.))
                 .pl(px(40.))
                 .children(rv.error.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e)))
-                .children(blocks_el(m, t, &key, talk.then_some(idea), &rv.blocks, cx)),
+                .children(blocks_el(m, t, &key, talk.then_some(idea), rv.answerable.then_some((idea, rv.id.as_str())), &rv.blocks, cx)),
         );
     }
     card
@@ -1005,6 +1097,7 @@ mod tests {
                 error: None,
                 web: true,
                 blocks: vec![Block::Gist("A queue makes it work offline.".into())],
+                answerable: true,
             }
         );
         assert_eq!(v[1].line(true), "offline sync");
@@ -1035,7 +1128,7 @@ mod tests {
                 Block::Flow(vec![("Dig".into(), false), ("Queue".into(), true)]),
                 Block::Code(vec![("The lens thread".into(), vec!["src/lens.rs:40".into()])]),
                 Block::Points { title: "Risks".into(), items: vec![Point { short: "Tokens on disk".into(), detail: "They sit in plain text.".into(), tag: Some("security".into()) }] },
-                Block::Question { text: "Which store?".into(), choices: vec!["SQLite".into(), "Files".into()] },
+                Block::Question { id: "q1".into(), text: "Which store?".into(), choices: vec!["SQLite".into(), "Files".into()], answer: None },
                 Block::Compare { lean: "SQLite".into(), options: vec![Opt { name: "SQLite".into(), pros: vec!["Fast".into()], cons: vec![] }] },
                 Block::Related(vec!["G2".into(), "T9".into()]),
             ]
@@ -1056,10 +1149,34 @@ mod tests {
                 Block::Code(vec![("The lens thread".into(), vec!["src/lens.rs:40".into()])]),
                 Block::Points { title: "Watch out".into(), items: vec![Point { tag: Some("security".into()), ..short("Tokens on disk") }, short("Clock skew")] },
                 Block::Points { title: "Could grow into".into(), items: vec![short("Sync settings")] },
-                Block::Question { text: "Which store?".into(), choices: vec![] },
+                Block::Question { id: String::new(), text: "Which store?".into(), choices: vec![], answer: None },
                 Block::Related(vec!["G2".into(), "T9".into()]),
             ]
         );
+    }
+
+    #[test]
+    fn a_rounds_questions_carry_their_answers_until_its_a_goal() {
+        let now = at(2026, 10, 15, 16);
+        let rep = json!({"verdict": "fits", "why": "Ok.", "blocks": [
+            {"type": "question", "id": "store", "text": "Which store?", "choices": ["SQLite", "Files"]},
+            {"type": "question", "id": "sync", "text": "Sync how?", "choices": ["Push", "Poll"]},
+        ]});
+        let one = json!([{"id": 4, "finished_at": now.to_rfc3339(), "report": rep, "answers": {"store": "Files"}}]);
+        let answers = |i: &Value| {
+            rounds_of(i, now)[0].blocks.iter().filter_map(|b| match b {
+                Block::Question { id, answer, .. } => Some((id.clone(), answer.clone())),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let i = idea("reported", one.clone());
+        assert_eq!(answers(&i), [("store".to_string(), Some("Files".to_string())), ("sync".to_string(), None)]);
+        assert!(rounds_of(&i, now)[0].answerable);
+
+        let mut planning = idea("reported", one.clone());
+        planning["planning"] = json!(true);
+        assert!(!rounds_of(&planning, now)[0].answerable, "the planner is reading them");
+        assert!(!rounds_of(&idea("planned", one), now)[0].answerable);
     }
 
     fn rounds_of(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
@@ -1164,6 +1281,29 @@ mod tests {
         assert_eq!(rec.last(&format!("ideas/{r}/reopen")), Some(json!({})));
         let state = rec.board().get(&format!("ideas/{r}"), &[]).unwrap();
         assert_eq!(s(&state, "state"), "reported", "back to its report");
+    }
+
+    #[gpui_kit::test]
+    fn a_tap_answers_once_and_a_refusal_frees_the_chips(cx: &mut gpui_kit::TestAppContext) {
+        use crate::parity::{settle, window};
+        let (w, rec) = window(cx);
+        w.update(cx, |m, _, cx| {
+            m.idea.changing.insert("I5::7::store".into());
+            answer(m, "I5", "7", "store", "Files", cx);
+            assert!(m.idea.busy.contains("answer::I5::7::store"), "sending");
+            answer(m, "I5", "7", "store", "SQLite", cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.posts().iter().filter(|(p, _)| p == "ideas/I5/answer").count(), 1, "once at a time");
+        assert_eq!(rec.last("ideas/I5/answer"), Some(json!({"round": 7, "question": "store", "answer": "Files"})));
+        w.update(cx, |m, _, _| {
+            assert!(m.idea.busy.is_empty(), "a refused answer doesn't hold the chips");
+            assert!(m.idea.changing.contains("I5::7::store"), "its choices stay up to pick again");
+            assert_eq!(m.toasts.len(), 1);
+            assert!(m.toasts[0].err);
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

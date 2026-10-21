@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS idea_rounds(
 CREATE INDEX IF NOT EXISTS idea_rounds_idea ON idea_rounds(idea_id);
 "#;
 
+/// An answer to a report's open question is a note that says which round and question it answers.
+pub const ADDED: &[(&str, &str, &str)] =
+    &[("idea_notes", "round_id", "INT"), ("idea_notes", "question", "TEXT"), ("idea_notes", "answer", "TEXT")];
+
 pub const STATES: [&str; 6] = ["new", "digging", "reported", "planned", "shelved", "dropped"];
 /// States an idea is still being thought about in; `list` shows these unless asked for others.
 pub const OPEN: [&str; 3] = ["new", "digging", "reported"];
@@ -76,17 +80,27 @@ pub fn dict(app: &App, i: &Row) -> Result<Value> {
 }
 
 /// The idea with its notes (oldest first) and report rounds (newest first), each round with how far
-/// the checkout has moved since (`behind`, `stale`).
+/// the checkout has moved since (`behind`, `stale`) and its `answers`: question id to the answer.
 pub fn show(app: &App, i: &Row) -> Result<Value> {
     let mut v = dict(app, i)?;
-    let notes: Vec<Value> = app
+    let rows = app.db.q("SELECT * FROM idea_notes WHERE idea_id = ? ORDER BY id", p![i.id()])?;
+    let notes: Vec<Value> =
+        rows.iter().map(|n| json!({"id": n.id(), "text": n.v("text"), "source": n.v("source"), "at": n.v("at")})).collect();
+    let mut rounds: Vec<Value> = app
         .db
-        .q("SELECT * FROM idea_notes WHERE idea_id = ? ORDER BY id", p![i.id()])?
+        .q("SELECT * FROM idea_rounds WHERE idea_id = ? ORDER BY id DESC", p![i.id()])?
         .iter()
-        .map(|n| json!({"id": n.id(), "text": n.v("text"), "source": n.v("source"), "at": n.v("at")}))
+        .map(|r| {
+            let mut d = round_dict(r);
+            let answers: serde_json::Map<String, Value> = rows
+                .iter()
+                .filter(|n| n.i("round_id") == Some(r.id()))
+                .filter_map(|n| Some((n.s("question")?.to_string(), n.v("answer"))))
+                .collect();
+            d["answers"] = Value::Object(answers);
+            d
+        })
         .collect();
-    let mut rounds: Vec<Value> =
-        app.db.q("SELECT * FROM idea_rounds WHERE idea_id = ? ORDER BY id DESC", p![i.id()])?.iter().map(round_dict).collect();
     crate::dig::mark_drift(app, &i.st("project"), &mut rounds)?;
     v["notes"] = json!(notes);
     v["rounds"] = json!(rounds);
@@ -167,6 +181,49 @@ fn note(app: &App, r: &str, body: &Value) -> Result<Value> {
         return err(400, "Say what the note is.");
     }
     add_note(app, &i, &text, body)?;
+    show(app, &get(app, r)?)
+}
+
+/// Answer one of a round's open questions with one of its choices. The answer is a note the next
+/// dig and the planner read; answering the same question again changes that note.
+fn answer(app: &App, r: &str, body: &Value) -> Result<Value> {
+    let i = get(app, r)?;
+    let me = rf("idea", i.id());
+    if i.st("state") == "planned" {
+        return err(409, format!("{me} became a goal already; its questions are settled."));
+    }
+    if app.shared.lock().idea_planning.contains(&i.id()) {
+        return err(409, format!("{me} is being planned into a goal; wait for it."));
+    }
+    let Some(round) = body["round"].as_i64().or_else(|| body["round"].as_str().and_then(|s| s.parse().ok())) else {
+        return err(400, "Say which round the question is in.");
+    };
+    let report = app
+        .db
+        .q1("SELECT report FROM idea_rounds WHERE id = ? AND idea_id = ?", p![round, i.id()])?
+        .and_then(|row| row.s("report").and_then(|s| serde_json::from_str::<Value>(s).ok()))
+        .ok_or_else(|| ApiError::new(404, format!("{me} has no report round {round}.")))?;
+    let qid = body_str(body, "question");
+    let Some(q) = report["blocks"].as_array().into_iter().flatten().find(|b| b["type"] == "question" && b["id"] == qid.as_str()) else {
+        return err(404, format!("That report has no question “{qid}”."));
+    };
+    let ans = body_str(body, "answer");
+    if !q["choices"].as_array().into_iter().flatten().any(|c| c == ans.as_str()) {
+        return err(400, "Pick one of the question's choices.");
+    }
+    let text = format!("Answered “{}”: {ans}", q["text"].as_str().unwrap_or(""));
+    let now = now_iso();
+    let had = app.db.q1("SELECT id FROM idea_notes WHERE idea_id = ? AND round_id = ? AND question = ?", p![i.id(), round, qid])?;
+    let f = fields!["text" => text, "answer" => ans, "source" => board::caller(app, body, board::OWNER), "at" => now];
+    match had {
+        Some(n) => app.db.update("idea_notes", &json!(n.id()), f)?,
+        None => {
+            let mut f = f;
+            f.extend(fields!["idea_id" => i.id(), "round_id" => round, "question" => qid]);
+            app.db.insert("idea_notes", f)?;
+        }
+    }
+    app.db.update("ideas", &json!(i.id()), fields!["updated_at" => now])?;
     show(app, &get(app, r)?)
 }
 
@@ -299,6 +356,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("GET", [r]) => show(app, &get(app, r)?),
         ("POST", [r]) => app.db.tx(|| set(app, r, body)),
         ("POST", [r, "note"]) => app.db.tx(|| note(app, r, body)),
+        ("POST", [r, "answer"]) => app.db.tx(|| answer(app, r, body)),
         ("POST", [r, "shelve"]) => app.db.tx(|| move_to(app, r, "shelved", body)),
         ("POST", [r, "drop"]) => app.db.tx(|| move_to(app, r, "dropped", body)),
         ("POST", [r, "reopen"]) => app.db.tx(|| move_to(app, r, "reopen", body)),
