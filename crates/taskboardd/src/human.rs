@@ -29,17 +29,6 @@ pub fn task_ref(t: &Row) -> String {
     }
 }
 
-/// `kind` from a new task's body: `human`, or none for an agent's task.
-pub fn clean_kind(body: &Value) -> Result<Option<&'static str>> {
-    match body.get("kind") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(b)) => Ok(b.then_some(KIND)),
-        Some(Value::String(s)) if s.trim().is_empty() || s.trim() == "agent" => Ok(None),
-        Some(Value::String(s)) if s.trim() == KIND => Ok(Some(KIND)),
-        _ => err(400, "A task's kind is human, or none for an agent's task."),
-    }
-}
-
 /// What a new human task must have: the steps to follow, since nobody else can do them.
 pub fn refuse_bare(body: &Value) -> Result<()> {
     if body_str(body, "detail").trim().is_empty() {

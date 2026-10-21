@@ -30,6 +30,7 @@ pub struct Gate {
 pub struct WRow {
     pub r: String,
     pub title: String,
+    pub design: bool,
     pub row: status::Row,
     pub pr: String,
     pub pr_url: Option<String>,
@@ -132,6 +133,7 @@ pub fn wrow(t: &Value) -> WRow {
     WRow {
         r: fmt::ref_of(t, "T"),
         title: s(t, "title").to_string(),
+        design: kit::is_design(t),
         row: status::row(t),
         pr: pr_cell(t),
         pr_url: t["pr"]["url"].as_str().filter(|u| !u.is_empty()).map(str::to_string),
@@ -264,7 +266,10 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
                     .font_weight(FontWeight::MEDIUM)
                     .hover(move |s| s.text_color(link).underline())
                     .child(x.title),
-            ),
+            )
+            .items_center()
+            .gap(px(8.))
+            .when(x.design, |d| d.child(kit::design_pill(t))),
             1.,
         ))
         .child(cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(x.row.line), 1.1))
@@ -326,6 +331,13 @@ mod tests {
         let stopped = json!({"wave": 1, "state": "stopped"});
         assert_eq!(gate(&stopped, Some(&w2)).unwrap().button, "Continue to wave 2");
         assert_eq!(gate(&w1, Some(&w2)), None);
+    }
+
+    #[test]
+    fn a_design_task_row_carries_the_design_pill() {
+        assert!(wrow(&json!({"ref": "T1", "title": "Concepts", "kind": "design"})).design);
+        assert!(!wrow(&json!({"ref": "T2", "title": "Build it", "kind": "agent"})).design);
+        assert!(kit::is_design(&json!({"kind": "design"})) && !kit::is_design(&json!({"kind": "human"})));
     }
 
     #[test]

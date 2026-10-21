@@ -53,6 +53,39 @@ pub enum Show {
     Done,
 }
 
+/// The kind filter: every task, or one kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    All,
+    Design,
+    Build,
+    Human,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 4] = [Kind::All, Kind::Design, Kind::Build, Kind::Human];
+
+    fn label(self) -> &'static str {
+        match self {
+            Kind::All => "All kinds",
+            Kind::Design => "Design",
+            Kind::Build => "Build",
+            Kind::Human => "Human",
+        }
+    }
+
+    /// The task card's `kind` this one picks.
+    fn card_kind(self) -> Option<&'static str> {
+        match self {
+            Kind::All => None,
+            Kind::Design => Some("design"),
+            Kind::Build => Some("agent"),
+            Kind::Human => Some("human"),
+        }
+    }
+}
+
 const SHOW: [Show; 6] = [Show::Open, Show::Only(St::Needs), Show::Only(St::Working), Show::Only(St::Queued), Show::Only(St::Review), Show::Done];
 
 #[derive(Default)]
@@ -60,6 +93,7 @@ pub struct State {
     /// The project picked; None shows every project.
     pub project: Option<String>,
     pub show: Show,
+    pub kind: Kind,
     pub group: GroupBy,
     /// The groups opened or closed against how they start, by key.
     pub toggled: HashSet<String>,
@@ -77,6 +111,7 @@ struct Key {
     version: u64,
     project: Option<String>,
     show: Show,
+    kind: Kind,
     words: String,
     group: GroupBy,
     goals: Vec<Value>,
@@ -116,6 +151,8 @@ pub struct Item {
     pub r: String,
     pub title: String,
     pub project: String,
+    /// "agent", "design" or "human".
+    pub kind: String,
     /// (ref, name, id) of its goal.
     pub goal: Option<(String, String, i64)>,
     pub wave: Option<i64>,
@@ -141,6 +178,7 @@ fn items_of(rows: &[Value]) -> Vec<Item> {
                 r: fmt::ref_of(c, "T"),
                 title: s(c, "title").to_string(),
                 project: s(c, "project").to_string(),
+                kind: opt_s(c, "kind").unwrap_or("agent").to_string(),
                 goal: g.is_object().then(|| (fmt::ref_of(g, "G"), s(g, "name").to_string(), i(g, "id"))),
                 wave: c["wave"].as_i64(),
                 open,
@@ -154,6 +192,7 @@ fn items_of(rows: &[Value]) -> Vec<Item> {
 pub struct Filter<'a> {
     pub project: Option<&'a str>,
     pub show: Show,
+    pub kind: Kind,
     pub words: &'a str,
 }
 
@@ -175,8 +214,12 @@ impl Filter<'_> {
         }
     }
 
+    fn kind(&self, it: &Item) -> bool {
+        self.kind.card_kind().is_none_or(|k| it.kind == k)
+    }
+
     pub fn matches(&self, it: &Item) -> bool {
-        self.project(it) && self.words(it) && self.show(it)
+        self.project(it) && self.words(it) && self.show(it) && self.kind(it)
     }
 }
 
@@ -189,6 +232,8 @@ pub struct Head {
     pub projects: Vec<(String, usize)>,
     /// The open tasks in each status, in the picked project.
     pub counts: Vec<(St, usize)>,
+    /// Some task isn't a plain build task, so the kind filter has something to pick.
+    pub kinds: bool,
 }
 
 /// Midnight starting this Monday, in the reader's zone.
@@ -215,6 +260,7 @@ pub fn head(items: &[Item], project: Option<&str>, since: DateTime<Utc>) -> Head
         done_week: scope.iter().filter(|it| it.row.st == St::Done && it.finished.is_some_and(|f| f >= since)).count(),
         projects,
         counts,
+        kinds: items.iter().any(|it| it.kind != "agent"),
     }
 }
 
@@ -357,7 +403,16 @@ fn task_row(t: &Theme, it: &Item, col: String, cx: &mut Context<MainWindow>) -> 
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)))
         .child(div().flex_none().w(px(86.)).child(status::chip(t, it.row.st)))
         .child(div().flex_none().w(px(36.)).font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.faint).child(it.r.clone()))
-        .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(it.title.clone()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(it.title.clone()))
+                .when(it.kind == "design", |d| d.child(kit::design_pill(t))),
+        )
         .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(if it.row.loud { fg } else { t.muted }).child(it.row.line.clone()))
         .child(div().flex_none().w(px(60.)).truncate().text_size(px(12.)).text_color(t.muted).child(col))
         .child(div().flex_none().w(px(96.)).whitespace_nowrap().text_right().text_size(px(12.)).text_color(t.muted).child(it.row.age.clone()))
@@ -422,6 +477,7 @@ fn sync(m: &mut MainWindow, words: &str) {
         version: s.held.version,
         project: s.project.clone(),
         show: s.show,
+        kind: s.kind,
         words: words.to_string(),
         group: s.group,
         goals: m.data.goals.clone(),
@@ -429,7 +485,7 @@ fn sync(m: &mut MainWindow, words: &str) {
     };
     let more = s.held.next.is_some();
     let old = s.view.take();
-    let filters_same = old.as_ref().is_some_and(|v| (&v.key.project, v.key.show, &v.key.words, v.key.group) == (&key.project, key.show, &key.words, key.group));
+    let filters_same = old.as_ref().is_some_and(|v| (&v.key.project, v.key.show, v.key.kind, &v.key.words, v.key.group) == (&key.project, key.show, key.kind, &key.words, key.group));
     let mut v = match old {
         Some(v) if v.key == key => v,
         _ => {
@@ -438,7 +494,7 @@ fn sync(m: &mut MainWindow, words: &str) {
             // A picked project with no tasks left falls back to every project.
             let picked = key.project.clone().filter(|p| all.projects.iter().any(|(n, _)| n == p));
             let hd = head(&items, picked.as_deref(), key.since);
-            let f = Filter { project: picked.as_deref(), show: key.show, words };
+            let f = Filter { project: picked.as_deref(), show: key.show, kind: key.kind, words };
             let groups = groups(&items, &m.data.goals, key.group, &f);
             View { key, all, hd, picked, groups, toggled: HashSet::new(), more, lines: vec![] }
         }
@@ -544,7 +600,18 @@ fn top(m: &MainWindow, t: &Theme, v: &View, window: &mut Window, cx: &mut Contex
             cx.notify();
         }))
     });
-    let filters = div().flex().flex_wrap().items_center().gap(px(10.)).child(projects).child(shows).child(div().ml_auto().child(group_by));
+    // Only once there's a kind to pick, or one is picked.
+    let kinds = (v.all.kinds || m.tasks.kind != Kind::All).then(|| {
+        let refs: Vec<&str> = Kind::ALL.iter().map(|k| k.label()).collect();
+        let on = Kind::ALL.iter().position(|k| *k == m.tasks.kind).unwrap_or(0);
+        kit::seg(t, "tasks-kind", &refs, on, |i, item| {
+            item.on_click(cx.listener(move |m, _, _, cx| {
+                m.tasks.kind = Kind::ALL[i];
+                cx.notify();
+            }))
+        })
+    });
+    let filters = div().flex().flex_wrap().items_center().gap(px(10.)).child(projects).child(shows).children(kinds).child(div().ml_auto().child(group_by));
     div().flex().flex_col().gap(px(16.)).pt(px(22.)).pb(px(16.)).child(head_row).child(filters)
 }
 
@@ -612,6 +679,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 pub fn open_for(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>) {
     m.tasks.project = Some(project.to_string());
     m.tasks.show = Show::Open;
+    m.tasks.kind = Kind::All;
     m.tasks.toggled.clear();
     m.go(Page::Tasks, cx);
 }
@@ -663,7 +731,7 @@ mod tests {
     fn grouped_by_goal_most_urgent_first_outside_goals_last() {
         let it = board();
         let goals = [json!({"ref": "G3", "paused": true})];
-        let f = Filter { project: None, show: Show::Open, words: "" };
+        let f = Filter { project: None, show: Show::Open, kind: Kind::All, words: "" };
         let gs = groups(&it, &goals, GroupBy::Goal, &f);
         let got: Vec<(&str, &str, Option<&str>)> = gs.iter().map(|g| (g.r.as_str(), g.name.as_str(), g.state.as_ref().map(|s| s.0.as_str()))).collect();
         assert_eq!(got, [("G1", "Goal 1", Some("1 needs you")), ("G2", "Goal 2", Some("1 working")), ("G3", "Goal 3", Some("Paused")), ("", "Not in a goal", Some("1 queued"))]);
@@ -677,16 +745,16 @@ mod tests {
     #[test]
     fn filters_narrow_by_project_status_and_words() {
         let it = board();
-        let gs = groups(&it, &[], GroupBy::Status, &Filter { project: Some("api"), show: Show::Open, words: "" });
+        let gs = groups(&it, &[], GroupBy::Status, &Filter { project: Some("api"), show: Show::Open, kind: Kind::All, words: "" });
         assert_eq!(gs.iter().map(|g| (g.name.as_str(), refs(g))).collect::<Vec<_>>(), [("Working", vec!["T4"]), ("Queued", vec!["T5"])]);
-        let done = groups(&it, &[], GroupBy::Status, &Filter { project: None, show: Show::Done, words: "" });
+        let done = groups(&it, &[], GroupBy::Status, &Filter { project: None, show: Show::Done, kind: Kind::All, words: "" });
         assert_eq!(done.iter().map(|g| (g.name.as_str(), refs(g))).collect::<Vec<_>>(), [("Failed", vec!["T6"]), ("Done", vec!["T1"])]);
-        let queued = groups(&it, &[], GroupBy::Project, &Filter { project: None, show: Show::Only(St::Queued), words: "" });
+        let queued = groups(&it, &[], GroupBy::Project, &Filter { project: None, show: Show::Only(St::Queued), kind: Kind::All, words: "" });
         assert_eq!(queued.iter().map(|g| (g.name.as_str(), refs(g))).collect::<Vec<_>>(), [("web", vec!["T3", "T7"]), ("api", vec!["T5"])]);
         // Words match the title or the start of the ref, and open every group.
-        let found = groups(&it, &[], GroupBy::Goal, &Filter { project: None, show: Show::Open, words: "t7" });
+        let found = groups(&it, &[], GroupBy::Goal, &Filter { project: None, show: Show::Open, kind: Kind::All, words: "t7" });
         assert_eq!((found.len(), refs(&found[0]), found[0].open), (1, vec!["T7"], true));
-        assert_eq!(groups(&it, &[], GroupBy::Goal, &Filter { project: None, show: Show::Open, words: "task 4" })[0].r, "G2");
+        assert_eq!(groups(&it, &[], GroupBy::Goal, &Filter { project: None, show: Show::Open, kind: Kind::All, words: "task 4" })[0].r, "G2");
     }
 
     #[test]
@@ -702,10 +770,30 @@ mod tests {
     }
 
     #[test]
+    fn the_kind_filter_narrows_and_shows_only_once_a_task_has_a_kind() {
+        let since = fmt::parse("2026-10-12T00:00:00Z").unwrap();
+        assert!(!head(&board(), None, since).kinds, "all agent tasks: no kind filter");
+        let it = items(&json!({"tasks": [
+            task(1, "web", "queued", Some(1), json!({"kind": "design"})),
+            task(2, "web", "queued", Some(1), json!({"kind": "agent"})),
+            task(3, "web", "needs", None, json!({"kind": "human"})),
+            task(4, "web", "queued", None, json!({})),
+        ]}));
+        assert!(head(&it, None, since).kinds);
+        let only = |k: Kind| -> Vec<String> {
+            groups(&it, &[], GroupBy::Project, &Filter { project: None, show: Show::Open, kind: k, words: "" }).iter().flat_map(|g| refs(g).into_iter().map(String::from).collect::<Vec<_>>()).collect()
+        };
+        assert_eq!(only(Kind::Design), ["T1"]);
+        assert_eq!(only(Kind::Build), ["T4", "T2"]);
+        assert_eq!(only(Kind::Human), ["T3"]);
+        assert_eq!(only(Kind::All).len(), 4);
+    }
+
+    #[test]
     fn a_goal_after_another_or_stopped_says_so() {
         let it = items(&json!({"tasks": [task(1, "web", "queued", Some(4), json!({})), task(2, "web", "queued", Some(5), json!({}))]}));
         let goals = [json!({"ref": "G4", "after": ["G9"], "after_blocker": "G9 isn't done"}), json!({"ref": "G5", "stopped": "Wave 1 stopped for review"})];
-        let gs = groups(&it, &goals, GroupBy::Goal, &Filter { project: None, show: Show::Open, words: "" });
+        let gs = groups(&it, &goals, GroupBy::Goal, &Filter { project: None, show: Show::Open, kind: Kind::All, words: "" });
         let got: Vec<(&str, Option<&(String, Option<St>)>)> = gs.iter().map(|g| (g.r.as_str(), g.state.as_ref())).collect();
         assert_eq!(got, [("G5", Some(&("Stopped for your review".to_string(), Some(St::Needs)))), ("G4", Some(&("After G9".to_string(), None)))]);
     }

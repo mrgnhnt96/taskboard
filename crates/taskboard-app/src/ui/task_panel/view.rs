@@ -29,6 +29,7 @@ pub enum Tone {
     Gone,
     Closed,
     Jira,
+    Design,
 }
 
 /// Button looks (`.btn` classes).
@@ -638,6 +639,9 @@ fn head_chips(c: &Ctx, t: &Value) -> Option<Node> {
     let mut chips = Vec::new();
     if s(t, "kind") == "human" {
         chips.push(Node::Pill { s: "Human task".into(), tone: Tone::Needs, tip: Some("Only you can do it; no agent works on it".into()) });
+    }
+    if s(t, "kind") == "design" {
+        chips.push(Node::Pill { s: "Design".into(), tone: Tone::Design, tip: Some("Ends with its design attached, not a PR".into()) });
     }
     let project = or_empty(&t["project"]);
     if !project.is_empty() {

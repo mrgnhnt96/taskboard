@@ -1169,6 +1169,14 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push(("waits_for", json!(wf)));
                 bump = true;
             }
+        } else if let Some(Some(g)) = new_goal_id {
+            // Moved into a goal, a build task waits for the goal's design first, as a new one does.
+            let wf = crate::design::waits_with_goal(app, &t, g)?;
+            if wf.as_deref() != t.s("waits_for") {
+                waits_changed = Some(wf.clone());
+                f.push(("waits_for", json!(wf)));
+                bump = true;
+            }
         }
         let mut locks_changed = None;
         if has_key("locks") {
@@ -1274,6 +1282,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if has_key("stack_merge") {
             planned |= crate::stack::set_merge(app, &board::get_task(app, id)?, &body["stack_merge"], &who)?;
+        }
+        if has_key("kind") {
+            planned |= crate::design::set(app, &board::get_task(app, id)?, &body["kind"], &who)?;
         }
         if has_key("ships_pr") {
             planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], &who)?;

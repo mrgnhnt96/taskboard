@@ -237,7 +237,7 @@ fn a_turn_that_changed_code_with_no_task_is_asked_to_track_it() {
     let block = out["block"].as_str().expect("the stop is blocked");
     assert!(block.contains("header.rs") && !block.contains("scratch"), "{block}");
     assert!(block.contains("--here"), "{block}");
-    assert!(block.contains("If the work is a design") && block.contains("goal new") && block.contains("--goal G<n> --here"), "{block}");
+    assert!(block.contains("If the work is a design") && block.contains("goal new") && block.contains("--kind design --goal G<n> --here"), "{block}");
 
     let again = b.report("hook.stop", "s1", json!({"last_message": "Done.", "stop_hook_active": true}));
     assert!(again.get("block").is_none(), "it asks once per turn");

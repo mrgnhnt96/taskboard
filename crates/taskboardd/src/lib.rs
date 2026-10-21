@@ -20,6 +20,7 @@ pub mod clock;
 pub mod comments;
 pub mod config;
 pub mod days;
+pub mod design;
 pub mod db;
 pub mod deliver;
 pub mod devfocus;

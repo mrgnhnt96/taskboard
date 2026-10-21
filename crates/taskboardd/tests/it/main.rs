@@ -19,6 +19,7 @@ mod chain;
 mod compact_resume;
 mod cross_project_waits;
 mod days;
+mod design_tasks;
 mod device_fields;
 mod done_leftovers;
 mod duplicate_visits;
