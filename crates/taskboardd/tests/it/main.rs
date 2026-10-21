@@ -90,4 +90,5 @@ mod tab_status;
 mod visit_prompt;
 mod wait_merged;
 mod waves;
+mod worktree_projects;
 mod zz_probe;
