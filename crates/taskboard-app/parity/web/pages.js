@@ -761,8 +761,23 @@ function startLater(g, more) {
   return `<span class="split att-acts">${btn(more ? `${later}: ${more}` : later, 'goal-run', { id: gr, cls: 'primary md run', icon: PLAY, busyLabel: 'Queuing…',
       title: `Queue the planned tasks now; they start when work hours open${at ? ' (' + day + ' at ' + at + ')' : ''}` })}<button type="button" class="btn primary md split-caret" data-act="start-menu" data-id="${esc(gr)}" aria-haspopup="menu" aria-expanded="${open}" aria-label="More ways to start" title="Start now instead">${ICON.chev}</button>${menu}</span>`;
 }
+// Outside work hours with tasks queued, and the goal not started now: Pause gives way to a button that says it's
+// waiting for the hours, and its menu starts it now (outside the hours until they open) or pauses it.
+const ranNow = g => !!(g.hours_until && S.state.work_hours.next_open && g.hours_until >= S.state.work_hours.next_open);
+function waitingFor(g) {
+  const gr = ref(g, 'G');
+  const [day, at] = opensAt();
+  const open = S.waitMenu === gr;
+  const menu = open ? `<div class="ctxmenu att-menu wait-menu" role="menu" aria-label="While it waits">
+      <button type="button" role="menuitem" data-act="goal-run-now" data-id="${esc(gr)}"><b>Start now</b><span>Runs outside work hours until they open</span></button>
+      <button type="button" role="menuitem" data-act="goal-pause" data-id="${esc(gr)}" data-arg="on"><b>Pause</b><span>Nothing new starts; running tasks carry on</span></button></div>` : '';
+  return `<span class="split att-acts">${btn(at ? `Waiting until ${day} ${at}` : 'Waiting for work hours', 'wait-menu', { id: gr, cls: 'md run', icon: PAUSE,
+      title: `The queued tasks start when work hours open${at ? ' (' + day + ' at ' + at + ')' : ''}` })}${menu}</span>`;
+}
 document.addEventListener('mousedown', e => { if (S.startMenu && !e.target.closest('.start-menu, [data-act="start-menu"]')) { S.startMenu = null; renderAll(); } }, true);
+document.addEventListener('mousedown', e => { if (S.waitMenu && !e.target.closest('.wait-menu, [data-act="wait-menu"]')) { S.waitMenu = null; renderAll(); } }, true);
 document.addEventListener('keydown', e => { if (S.startMenu && e.key === 'Escape') { S.startMenu = null; renderAll(); } });
+document.addEventListener('keydown', e => { if (S.waitMenu && e.key === 'Escape') { S.waitMenu = null; renderAll(); } });
 
 function goalRunButtons(g) {
   const gr = ref(g, 'G');
@@ -777,7 +792,9 @@ function goalRunButtons(g) {
     out.push(btn(label, 'goal-run', { id: gr, cls: 'primary md run', icon: PLAY, busyLabel: 'Starting…',
       title: planned ? `Queue the ${plural(planned, 'planned task')}; the goal’s rules decide what runs when` : unstarted ? 'Queue the tasks that couldn’t start again' : 'Let new tasks start again' }));
   }
-  if (going && !g.paused && !g.deprioritized && !unstarted) out.push(btn('Pause', 'goal-pause', { id: gr, arg: 'on', cls: 'md run', icon: PAUSE, title: 'Nothing new starts; running tasks carry on' }));
+  const waiting = tasks.some(t => t.status === 'queued') && afterHours() && !ranNow(g);
+  if (going && !g.paused && !g.deprioritized && !unstarted) out.push(waiting ? waitingFor(g)
+    : btn('Pause', 'goal-pause', { id: gr, arg: 'on', cls: 'md run', icon: PAUSE, title: 'Nothing new starts; running tasks carry on' }));
   const done = tasks.length && tasks.every(t => t.status === 'done');
   out.push(btn('Plan in Claude', 'goal-plan-edit', { id: gr, cls: 'md run', icon: CHAT, busyLabel: 'Opening…',
     title: 'Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through' }));
@@ -804,7 +821,8 @@ const gpost = (gr, suffix, body) => post(`/goals/${encodeURIComponent(gr)}${suff
 Object.assign(ACTIONS, {
   'goal-run': el => { S.startMenu = null; run(el, () => gpost(el.dataset.id, '/run'), { toast: true, ok: r => !(r && r.queued_now) ? 'Going again'
     : afterHours() ? `${plural(r.queued_now, 'task')} queued. They start ${opensAt().filter(Boolean).join(' at ')}.` : `Started: ${plural(r.queued_now, 'task')} queued` }); },
-  'goal-run-now': el => { S.startMenu = null; run(el, () => gpost(el.dataset.id, '/run', { now: true }), { toast: true, ok: r => `Started now: ${plural((r && r.queued_now) || 0, 'task')} queued. The goal runs until work hours open.` }); },
+  'goal-run-now': el => { S.startMenu = null; S.waitMenu = null; run(el, () => gpost(el.dataset.id, '/run', { now: true }), { toast: true, ok: r => `Started now: ${plural((r && r.queued_now) || 0, 'task')} queued. The goal runs until work hours open.` }); },
+  'wait-menu': el => { S.waitMenu = S.waitMenu === el.dataset.id ? null : el.dataset.id; renderAll(); },
   'start-menu': el => { S.startMenu = S.startMenu === el.dataset.id ? null : el.dataset.id; renderAll(); },
   'goal-plan-edit': el => run(el, () => gpost(el.dataset.id, '/plan', { mode: 'edit' }), { toast: true, ok: 'Opening a Claude terminal in Midna. It starts in about half a minute.' }),
   'goal-deprio-ask': el => {
@@ -815,7 +833,7 @@ Object.assign(ACTIONS, {
   'goal-deprio-yes': el => run(el, () => gpost(el.dataset.id, '', { deprioritized: true }),
     { toast: true, ok: () => { closeModal(); return 'Deprioritized. Running tasks carry on.'; } }),
   'goal-deprio': el => run(el, () => gpost(el.dataset.id, '', { deprioritized: el.dataset.arg === 'on' }), { toast: true, ok: el.dataset.arg === 'on' ? 'Deprioritized. Running tasks carry on.' : 'Back on the board' }),
-  'goal-pause': el => run(el, () => gpost(el.dataset.id, '', { paused: el.dataset.arg === 'on' }), { toast: true, ok: el.dataset.arg === 'on' ? 'Paused. Running tasks carry on.' : 'Going again' }),
+  'goal-pause': el => (S.waitMenu = null, run(el, () => gpost(el.dataset.id, '', { paused: el.dataset.arg === 'on' }), { toast: true, ok: el.dataset.arg === 'on' ? 'Paused. Running tasks carry on.' : 'Going again' })),
   'goal-edit': el => { const g = currentGoal(); if (g && sameRef(g, el.dataset.id, 'G')) openGoalForm(g); },
   'add-task': el => openTaskForm({ goal: el.dataset.id, planned: true }),
 });
