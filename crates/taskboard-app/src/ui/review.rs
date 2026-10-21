@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 const MENU_WEEK: &str = "review-week";
+/// Weeks the All weeks menu shows before it scrolls.
+const WEEKS_SHOWN: usize = 12;
 
 #[derive(Default)]
 pub struct State {
@@ -645,12 +647,23 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
 
     let mut menus: Vec<AnyElement> = vec![];
     if let Some(at) = m.menu_open(MENU_WEEK) {
-        let mut menu = kit::menu_box(&t, 220.).id("review-week-menu");
-        for x in &list {
-            let Some(id) = x["id"].as_i64() else { continue };
-            let label = format!("{} · {}", period(x), took(secs(&x["seconds"])));
-            menu = menu.child(kit::menu_item(&t, SharedString::from(format!("review-week-{id}")), label, id == v.id).on_click(cx.listener(move |m, _, _, cx| pick(m, id, cx))));
-        }
+        let weeks: Vec<(i64, String)> = list.iter().filter_map(|x| Some((x["id"].as_i64()?, format!("{} · {}", period(x), took(secs(&x["seconds"])))))).collect();
+        let (n, shown, tt) = (weeks.len(), v.id, t.clone());
+        // Only the weeks in view are drawn; past a dozen the menu scrolls.
+        let items = uniform_list(
+            "review-week-list",
+            n,
+            cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
+                range
+                    .map(|k| {
+                        let (id, label) = (weeks[k].0, weeks[k].1.clone());
+                        kit::menu_item(&tt, SharedString::from(format!("review-week-{id}")), label, id == shown).on_click(cx.listener(move |m, _, _, cx| pick(m, id, cx)))
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .h(px(n.min(WEEKS_SHOWN) as f32 * 30.));
+        let menu = kit::menu_box(&t, 220.).id("review-week-menu").child(items);
         menus.push(kit::popover(at, menu.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
     }
 

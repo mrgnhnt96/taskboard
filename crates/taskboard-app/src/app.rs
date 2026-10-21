@@ -90,9 +90,8 @@ pub struct Data {
     /// `GET /home` and today's `GET /days` for the home page.
     pub home: Option<Value>,
     pub today: Option<Value>,
-    /// `GET /tasks` for the Tasks page.
+    /// The ⌘K palette's best tasks and backlog issues for what's typed (`GET /search?palette=1`).
     pub tasks: Option<Value>,
-    /// Every backlog issue (`GET /backlog?state=all`) for the ⌘K palette.
     pub backlog: Option<Value>,
     /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
     pub reviews: Option<Value>,
@@ -786,7 +785,7 @@ impl MainWindow {
         self.generation += 1;
         let generation = self.generation;
         let backend = self.backend.clone();
-        let want = Wants::of(self);
+        let want = Wants::of(self, cx);
         cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
             let _ = this.update(cx, |m, cx| {
@@ -794,7 +793,7 @@ impl MainWindow {
                 if m.generation == generation {
                     let asked: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
                     let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
-                    got.apply(m);
+                    got.apply(m, cx);
                     cx.notify();
                     // A linked release whose project the page didn't know: its answer says which.
                     if let Some(p) = ui::releases::focus_moves(&m.releases, &m.page) {
@@ -894,12 +893,10 @@ struct Wants {
     days_q: Option<Vec<(&'static str, String)>>,
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
-    /// The ⌘K palette, for every task (`GET /tasks`).
-    tasks: bool,
+    /// The ⌘K palette's query, for its tasks and backlog issues (`GET /search?palette=1`).
+    palette: Option<String>,
     /// The Tasks page: its first page of `GET /tasks`, and the held tasks to ask for again.
     task_page: Option<Vec<i64>>,
-    /// The ⌘K palette, for `GET /backlog`.
-    backlog: bool,
     /// The Review page: the list, and the picked review (`None`: the newest).
     review: Option<Option<i64>>,
     /// A Releases page: the projects it lists (with how many releases of each), and its rows in full.
@@ -928,9 +925,8 @@ struct Got {
     days: Option<Answer>,
     home: Option<Value>,
     today: Option<Value>,
-    tasks: Option<Value>,
+    palette: Option<(String, Value)>,
     task_page: Option<Result<ui::paged::Fresh, String>>,
-    backlog: Option<Value>,
     reviews: Option<Answer>,
     review: Option<(i64, Answer)>,
     releases: Vec<(String, Answer)>,
@@ -940,7 +936,7 @@ struct Got {
 }
 
 impl Wants {
-    fn of(m: &MainWindow) -> Wants {
+    fn of(m: &MainWindow, cx: &App) -> Wants {
         let state_q = crate::ui::board::state_query(&m.filters, &m.board.keep);
         Wants {
             state_q,
@@ -962,14 +958,13 @@ impl Wants {
                 Page::Projects => ui::projects::wanted(&m.projects, m.state(), &m.data.goals),
                 _ => vec![],
             },
-            // The ⌘K palette searches the task, terminal and backlog lists too.
+            // The ⌘K palette searches the terminal list too.
             sessions: m.page == Page::Sessions || ui::search::is_open(m),
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
-            tasks: ui::search::is_open(m),
+            palette: ui::search::query(m, cx),
             task_page: (m.page == Page::Tasks).then(|| m.tasks.held.recheck(|v| v["status"] != "done")),
-            backlog: ui::search::is_open(m),
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
             release_rows: ui::releases::open_rows(&m.releases, &m.page),
@@ -1000,9 +995,8 @@ impl Wants {
             let days = self.days_q.as_ref().map(|q| s.spawn(move || get("days", q)));
             let today = self.home.is_some().then(|| s.spawn(move || get("days", &[])));
             let home = self.home.as_ref().map(|p| s.spawn(move || get("home", &[("project", p.clone())])));
-            let tasks = self.tasks.then(|| s.spawn(move || get("tasks", &[])));
+            let palette = self.palette.as_ref().map(|q| s.spawn(move || ui::search::ask(be, q).ok().map(|v| (q.clone(), v))));
             let task_page = self.task_page.map(|ids| s.spawn(move || ui::paged::Paged::fetch(be, "tasks", "tasks", &[], ui::tasks::PAGE, ids)));
-            let backlog = self.backlog.then(|| s.spawn(move || get("backlog", &[("state", "all".into())])));
             let reviews = self.review.map(|id| {
                 s.spawn(move || {
                     let mut list = get("reviews", &[]);
@@ -1042,9 +1036,8 @@ impl Wants {
                 days: days.map(join),
                 today: today.map(join).and_then(Result::ok),
                 home: home.map(join).and_then(Result::ok),
-                tasks: tasks.map(join).and_then(Result::ok),
+                palette: palette.and_then(join),
                 task_page: task_page.map(join),
-                backlog: backlog.map(join).and_then(Result::ok),
                 reviews,
                 review,
                 releases: releases.into_iter().map(join).collect(),
@@ -1070,7 +1063,7 @@ fn land(slot: &mut Option<Value>, err: &mut Option<String>, answer: Answer, map:
 }
 
 impl Got {
-    fn apply(self, m: &mut MainWindow) {
+    fn apply(self, m: &mut MainWindow, cx: &App) {
         match self.state {
             Some(Ok(v)) => {
                 fmt::set_server_now(s(&v, "now"));
@@ -1106,7 +1099,9 @@ impl Got {
             }
         }
         // Only keep answers for what is still open.
-        let searching = ui::search::is_open(m);
+        if let Some((q, v)) = self.palette {
+            ui::search::land(m, &q, v, cx);
+        }
         let d = &mut m.data;
         if let Some((r, v)) = self.task {
             if matches!(&m.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
@@ -1178,14 +1173,8 @@ impl Got {
                 }
             }
         }
-        if self.tasks.is_some() && searching {
-            d.tasks = self.tasks;
-        }
         if let Some(Ok(f)) = self.task_page.filter(|_| m.page == Page::Tasks) {
             m.tasks.held.land("tasks", f);
-        }
-        if self.backlog.is_some() && searching {
-            d.backlog = self.backlog;
         }
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
