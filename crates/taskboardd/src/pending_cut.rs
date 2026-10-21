@@ -142,6 +142,19 @@ fn clean_after(app: &App, project: &str, body: &Value) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// What the app shows of a named ref beside its standing: a task's title, status and PR stage, or a
+/// goal's name and how many of its tasks are done.
+fn brief(app: &App, r: &str) -> Result<Value> {
+    if is_goal(r) {
+        let Some(g) = parse_ref_str(r, "goal")?.map(|id| board::find_goal(app, Some(id))).transpose()?.flatten() else { return Ok(json!({})) };
+        let tasks = crate::shared::counted_tasks(app, g.id())?;
+        let done = tasks.iter().filter(|t| t.s("status") == Some("done") && !t.b("failed")).count();
+        return Ok(json!({"title": g.v("name"), "done": done, "total": tasks.len()}));
+    }
+    let Some(t) = parse_ref_str(r, "task")?.map(|id| board::find_task(app, Some(id))).transpose()?.flatten() else { return Ok(json!({})) };
+    Ok(json!({"title": t.v("title"), "status": t.v("status"), "pr_phase": t.v("pr_phase")}))
+}
+
 pub fn dict(app: &App, r: &Row) -> Result<Value> {
     let after = after(r)
         .into_iter()
@@ -151,7 +164,11 @@ pub fn dict(app: &App, r: &Row) -> Result<Value> {
                 Standing::Met => ("met", Value::Null),
                 Standing::Dead(w) => ("dead", json!(w)),
             };
-            Ok(json!({"ref": a, "state": state, "why": why}))
+            let mut v = brief(app, &a)?;
+            v["ref"] = json!(a);
+            v["state"] = json!(state);
+            v["why"] = why;
+            Ok(v)
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({

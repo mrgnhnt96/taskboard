@@ -38,6 +38,8 @@ pub enum Page {
     Review,
     /// Each project's releases, for the projects with releases on (`ui::releases`).
     Releases,
+    /// One project's releases, by project name (`ui::releases`).
+    ReleasesOf(String),
     /// Each project's ideas (`ui::ideas`).
     Ideas,
     /// An idea ref, `I3` (`ui::idea`).
@@ -283,6 +285,7 @@ impl MainWindow {
                 "goals" => Page::Goals,
                 "projects" => Page::Projects,
                 "releases" => Page::Releases,
+                r if r.starts_with("releases:") => Page::ReleasesOf(r["releases:".len()..].into()),
                 "ideas" => Page::Ideas,
                 g if g.starts_with('G') => Page::Goal(g.into()),
                 i if i.starts_with('I') => Page::Idea(i.into()),
@@ -793,6 +796,10 @@ impl MainWindow {
                     let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
                     got.apply(m);
                     cx.notify();
+                    // A linked release whose project the page didn't know: its answer says which.
+                    if let Some(p) = ui::releases::focus_moves(&m.releases, &m.page) {
+                        m.go(Page::ReleasesOf(p), cx);
+                    }
                     // The Goals page learns which goals are in progress from this answer; fetch the
                     // ones it didn't ask for now rather than on the next poll.
                     if m.page == Page::Goals && ui::goals_page::in_progress(&m.data.goals, m.goals.project()).iter().any(|r| !asked.contains(r)) {
@@ -803,7 +810,7 @@ impl MainWindow {
                         m.refresh(cx);
                     }
                     // Likewise the Releases page learns which projects have releases from the state.
-                    if m.page == Page::Releases && releases_wanted(m).iter().any(|k| !asked_releases.contains(k)) {
+                    if is_releases(&m.page) && releases_wanted(m).iter().any(|k| !asked_releases.contains(k)) {
                         m.refresh(cx);
                     }
                 }
@@ -837,16 +844,20 @@ impl MainWindow {
 
 // ------------------------------------------------------------------ fetching
 
-/// The projects the Releases page lists (none on another page).
-fn releases_shown(m: &MainWindow) -> Vec<String> {
-    if m.page == Page::Releases { ui::releases::shown(m.state(), m.releases.project()) } else { vec![] }
+fn is_releases(page: &Page) -> bool {
+    matches!(page, Page::Releases | Page::ReleasesOf(_))
 }
 
-/// What the Releases page fetches: its projects' lists and its open rows.
+/// The projects a Releases page lists, and how many releases of each (none on another page).
+fn releases_shown(m: &MainWindow) -> Vec<(String, usize)> {
+    let limit = ui::releases::list_limit(&m.releases, &m.page);
+    ui::releases::shown(m.state(), &m.page).into_iter().map(|p| (p, limit)).collect()
+}
+
+/// What a Releases page fetches: its projects' lists and its rows in full.
 fn releases_wanted(m: &MainWindow) -> Vec<String> {
-    let shown = releases_shown(m);
-    let rows = ui::releases::open_rows(&m.releases, &shown);
-    shown.into_iter().chain(rows).collect()
+    let rows = ui::releases::open_rows(&m.releases, &m.page);
+    releases_shown(m).into_iter().map(|(p, _)| p).chain(rows).collect()
 }
 
 /// Task `r`'s row in the lists already loaded (the board's columns, the Tasks page, home, a goal
@@ -891,8 +902,8 @@ struct Wants {
     backlog: bool,
     /// The Review page: the list, and the picked review (`None`: the newest).
     review: Option<Option<i64>>,
-    /// The Releases page: the projects it lists, and its open rows.
-    releases: Vec<String>,
+    /// A Releases page: the projects it lists (with how many releases of each), and its rows in full.
+    releases: Vec<(String, usize)>,
     release_rows: Vec<String>,
     /// The Ideas page: its first page of `GET /ideas`, and the held ideas to ask for again.
     ideas: Option<Vec<i64>>,
@@ -961,7 +972,7 @@ impl Wants {
             backlog: ui::search::is_open(m),
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
-            release_rows: ui::releases::open_rows(&m.releases, &releases_shown(m)),
+            release_rows: ui::releases::open_rows(&m.releases, &m.page),
             ideas: (m.page == Page::Ideas).then(|| m.ideas.held.recheck(ui::ideas::is_open)),
             idea: match &m.page {
                 Page::Idea(r) => Some(r.clone()),
@@ -1004,7 +1015,7 @@ impl Wants {
                     (list, one)
                 })
             });
-            let releases: Vec<_> = self.releases.iter().map(|p| s.spawn(move || (p.clone(), get("releases", &[("project", p.clone()), ("limit", ui::releases::PAGE.to_string())])))).collect();
+            let releases: Vec<_> = self.releases.iter().map(|(p, n)| s.spawn(move || (p.clone(), get("releases", &[("project", p.clone()), ("limit", n.to_string())])))).collect();
             let release_rows: Vec<_> = self
                 .release_rows
                 .iter()
@@ -1076,13 +1087,15 @@ impl Got {
             m.data.goals = if g.is_array() { g.as_array().cloned().unwrap_or_default() } else { arr(&g, "goals").to_vec() };
             m.goals_loaded = true;
         }
-        if m.page == Page::Releases {
+        if is_releases(&m.page) {
             if m.data.state.is_some() && ui::releases::projects_on(m.state()).is_empty() {
                 m.page = Page::Board;
+            } else if m.data.state.is_some() && ui::releases::shown(m.state(), &m.page).is_empty() {
+                // That project's releases were turned off.
+                m.page = Page::Releases;
             }
             for (p, v) in self.releases {
                 if let Ok(v) = v {
-                    let v = ui::releases::merge_page(m.releases.lists.get(&p), v);
                     m.releases.lists.insert(p, v);
                 }
             }
@@ -1246,7 +1259,7 @@ impl Render for MainWindow {
             Page::Sessions => ui::sessions::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),
-            Page::Releases => ui::releases::render(self, window, cx),
+            Page::Releases | Page::ReleasesOf(_) => ui::releases::render(self, window, cx),
             Page::Ideas => ui::ideas::render(self, window, cx),
             Page::Idea(_) => ui::idea::render(self, cx),
         };
@@ -1334,7 +1347,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Sessions => "Sessions",
         Page::Days => "Days",
         Page::Review => "Review",
-        Page::Releases => "Releases",
+        Page::Releases | Page::ReleasesOf(_) => "Releases",
         Page::Ideas | Page::Idea(_) => "Ideas",
         Page::Tasks => "Tasks",
         Page::Board => "Task board",
@@ -2271,20 +2284,25 @@ mod tests {
         rec.board().post("releases", json!({"project": "webapp", "name": "v1.0"})).unwrap();
         w.update(cx, |m: &mut MainWindow, _, cx| m.refresh(cx)).unwrap();
         settle(cx);
-        w.update(cx, |m: &mut MainWindow, _, cx| {
-            m.releases.open.insert("R1".into());
-            m.open_link("releases", cx);
-        })
-        .unwrap();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link("releases", cx)).unwrap();
         settle(cx);
         w.update(cx, |m: &mut MainWindow, _, _| {
             assert_eq!(m.page, Page::Releases);
-            let rows = ui::releases::rows("webapp", &m.releases.lists["webapp"], crate::fmt::now());
+            let card = ui::releases::card(&m.releases.lists["webapp"], crate::fmt::now());
+            assert_eq!(card.latest.map(|r| r.name), Some("v1.0".to_string()));
+            assert!(m.releases.details.is_empty(), "the overview fetches no releases in full");
+        })
+        .unwrap();
+        // A release link opens its project's page, its newest release in full.
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link("release/R1", cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert_eq!(m.page, Page::ReleasesOf("webapp".into()));
             let groups = arr(&m.releases.details["R1"], "groups");
             let refs: Vec<&str> = groups.iter().flat_map(|g| arr(g, "tasks")).filter_map(|t| t["ref"].as_str()).collect();
             assert!(refs.contains(&"T1"));
-            let released = format!("{} tasks", refs.len());
-            assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.count.as_str())).collect::<Vec<_>>(), [("Unreleased", "0 tasks"), ("v1.0", released.as_str())]);
+            assert_eq!(m.releases.lists["webapp"]["counts"]["total"], 1);
+            assert!(m.releases.details.contains_key("unreleased:webapp"));
             assert!(rec.posts().is_empty());
         })
         .unwrap();

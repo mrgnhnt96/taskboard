@@ -319,40 +319,45 @@ fn show(app: &App, r: &str, query: &crate::api::Query) -> Result<Value> {
     Ok(v)
 }
 
+/// How many releases one page of `GET /releases` holds at most.
+const PAGE_MAX: i64 = 500;
+
 /// `GET /releases`: the project's releases, newest first, and how many done tasks wait in Unreleased.
-/// `before` (a release ref or id) starts after that release and `limit` caps the page, with `more`
-/// saying whether older ones are left; `total` counts them all.
+/// `limit` caps the page and `before` (a release id) starts after that release, with `more` saying
+/// whether older ones are left. `counts` is the whole project's: every release, those cut in the last
+/// 30 days, and those marked failed.
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let project = query_project(app, query)?;
     if !on(app, &project) {
-        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "total": 0, "more": false, "pending": null}));
+        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "total": 0, "pending": null, "more": false}));
     }
-    let q = |k: &str| query.get(k).map(|s| s.trim()).unwrap_or("");
-    let before = q("before").trim_start_matches(['R', 'r']).parse::<i64>().ok();
-    let limit = q("limit").parse::<i64>().ok().map(|n| n.clamp(1, 500));
-    let mut sql = "SELECT * FROM releases WHERE project = ?".to_string();
-    let mut args = p![project];
-    if let Some(b) = before {
-        sql += " AND id < ?";
-        args.push(json!(b));
+    let num = |k: &str| query.get(k).and_then(|s| s.parse::<i64>().ok());
+    let limit = num("limit").map(|n| n.clamp(1, PAGE_MAX));
+    let before = query.get("before").and_then(|s| s.trim().trim_start_matches(['R', 'r']).parse::<i64>().ok()).unwrap_or(i64::MAX);
+    let mut rows = app.db.q("SELECT * FROM releases WHERE project = ? AND id < ? ORDER BY id DESC LIMIT ?", p![project, before, limit.map_or(-1, |n| n + 1)])?;
+    let more = limit.is_some_and(|n| rows.len() as i64 > n);
+    if let Some(n) = limit {
+        rows.truncate(n as usize);
     }
-    sql += " ORDER BY id DESC";
-    if let Some(l) = limit {
-        sql += " LIMIT ?";
-        args.push(json!(l + 1));
-    }
-    let mut rows = app.db.q(&sql, args)?;
-    let more = limit.is_some_and(|l| rows.len() as i64 > l);
-    if let Some(l) = limit {
-        rows.truncate(l as usize);
-    }
-    let total = app.db.count("SELECT COUNT(*) FROM releases WHERE project = ?", p![project])?;
     let releases = rows.iter().map(|r| dict(app, r)).collect::<Result<Vec<_>>>()?;
     let pending = match crate::pending_cut::for_project(app, &project)? {
         Some(r) => crate::pending_cut::dict(app, &r)?,
         None => Value::Null,
     };
-    Ok(json!({"project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases, "total": total, "more": more, "pending": pending}))
+    let month_ago = iso(now_ts() - 30.0 * 86400.0);
+    let count = |sql: &str, extra: Option<&str>| match extra {
+        Some(x) => app.db.count(&format!("SELECT COUNT(*) FROM releases WHERE project = ? {sql}"), p![project, x]),
+        None => app.db.count(&format!("SELECT COUNT(*) FROM releases WHERE project = ? {sql}"), p![project]),
+    };
+    let counts = json!({
+        "total": count("", None)?,
+        "recent": count("AND cut_at >= ?", Some(&month_ago))?,
+        "failed": count("AND failed_at IS NOT NULL", None)?,
+    });
+    Ok(json!({
+        "project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases,
+        "total": counts["total"], "pending": pending, "more": more, "counts": counts,
+    }))
 }
 
 /// `POST /releases`: cut a release holding every task in Unreleased. With `check`, only says whether

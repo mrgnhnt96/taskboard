@@ -292,6 +292,39 @@ fn the_state_carries_each_projects_release_waits_and_backlog() {
     assert_eq!(api["unreleased"], Value::Null, "api's releases are still off");
 }
 
+#[test]
+fn the_release_list_pages_and_counts_the_whole_project() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    for n in 0..5 {
+        let t = task(&app, "webapp", &format!("Work {n}"), None);
+        done(&app, t, None);
+        call(&app, "POST", "/releases", json!({"name": format!("v1.{n}"), "project": "webapp"}));
+    }
+    call(&app, "POST", "/releases/R4/fail", json!({}));
+    let page = |q: &[(&str, &str)]| {
+        let mut q = q.to_vec();
+        q.push(("project", "webapp"));
+        let v = try_call(&app, "GET", "/releases", &q, json!({})).unwrap();
+        let names: Vec<String> = v["releases"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect();
+        (names, v["more"].as_bool().unwrap(), v["counts"].clone())
+    };
+    let (names, more, counts) = page(&[("limit", "2")]);
+    assert_eq!((names, more), (vec!["v1.4".to_string(), "v1.3".to_string()], true));
+    assert_eq!(counts, json!({"total": 5, "recent": 5, "failed": 1}), "counts are the whole project's");
+    let (names, more, _) = page(&[("limit", "2"), ("before", "4")]);
+    assert_eq!((names, more), (vec!["v1.2".to_string(), "v1.1".to_string()], true));
+    let (names, more, _) = page(&[("limit", "2"), ("before", "2")]);
+    assert_eq!((names, more), (vec!["v1.0".to_string()], false));
+    let (names, more, _) = page(&[]);
+    assert_eq!((names.len(), more), (5, false), "without a limit, every release");
+
+    // A release cut over 30 days ago isn't recent.
+    app.db.update("releases", &json!(1), vec![("cut_at", json!("2020-01-01T00:00:00Z"))]).unwrap();
+    let (_, _, counts) = page(&[("limit", "1")]);
+    assert_eq!(counts, json!({"total": 5, "recent": 4, "failed": 1}));
+}
+
 fn goal(app: &App, project: &str) -> i64 {
     call(app, "POST", "/goals", json!({"name": "Ship login", "project": project}))["id"].as_i64().unwrap()
 }
@@ -319,6 +352,8 @@ fn a_pending_cut_waits_for_its_tasks_and_goals_then_cuts_itself() {
     let after: Vec<&str> = v["after"].as_array().unwrap().iter().map(|a| a["ref"].as_str().unwrap()).collect();
     assert_eq!(after, vec![format!("T{t}"), format!("G{g}")]);
     assert_eq!(v["after"][0]["state"], "waiting");
+    assert_eq!((v["after"][0]["title"].as_str(), v["after"][0]["status"].as_str()), (Some("Login form"), Some("queued")));
+    assert_eq!((v["after"][1]["title"].as_str(), v["after"][1]["done"].as_i64(), v["after"][1]["total"].as_i64()), (Some("Ship login"), Some(0), Some(1)));
     assert_eq!(pending(&app, "webapp")["name"], "v1.5");
     assert_eq!(pending(&app, "api"), Value::Null);
 
@@ -326,7 +361,10 @@ fn a_pending_cut_waits_for_its_tasks_and_goals_then_cuts_itself() {
     assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
     done(&app, t, Some((7, "review")));
     done(&app, gt, None);
-    assert_eq!(pending(&app, "webapp")["after"][1]["state"], "met");
+    let p = pending(&app, "webapp");
+    assert_eq!(p["after"][1]["state"], "met");
+    assert_eq!(p["after"][1]["done"], 1);
+    assert_eq!((p["after"][0]["status"].as_str(), p["after"][0]["pr_phase"].as_str()), (Some("done"), Some("review")), "done, its PR in review");
     assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
 
     done(&app, t, Some((7, "merged")));

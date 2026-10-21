@@ -1175,8 +1175,9 @@ unless `no_script`), and records the release by whoever set it up. A named task 
 unmerged, a goal archived unfinished, a script that fails, or an empty Unreleased drops the pending cut and raises an
 alert saying why. While releases are off for the project it is hidden and waits.
 
-`pending`: `{project, name, notes, after: [{ref, state: "waiting"|"met"|"dead", why: str|null}], no_script, made_at,
-made_by, running: bool}` (`running` while its cut is under way).
+`pending`: `{project, name, notes, after: [{ref, state: "waiting"|"met"|"dead", why: str|null, title, status?, pr_phase?,
+done?, total?}], no_script, made_at, made_by, running: bool}` (`running` while its cut is under way). A task in `after`
+carries its `title`, `status` and `pr_phase`; a goal its name as `title` and how many of its tasks are `done` of `total`.
 
 `release`: `{id, ref: "R3", project, name, notes, cut_at, cut_by, updated_at, tasks: int}`. A group:
 `{goal: "G2"|null, name: str|null, tasks: [{id, ref, title, summary, goal, pr_url, pr_num, finished_at}]}`, goals in
@@ -1184,7 +1185,7 @@ the order their first task finished, tasks with no goal last.
 
 | Request | Body | What |
 |---|---|---|
-| `GET /releases` | query `project`, else `by_session` (that terminal's task's project) or `cwd` | `tb releases`. `{project, on: bool, unreleased: int, pending: pending\|null, releases: [release]}`, newest first; with releases off, `on: false` and nothing else. |
+| `GET /releases` | query `project`, else `by_session` (that terminal's task's project) or `cwd`; `limit` (1–500), `before` (a release id) | `tb releases`. `{project, on: bool, unreleased: int, pending: pending\|null, releases: [release], more: bool, counts: {total, recent, failed}}`, newest first; `limit` caps the page and `before` starts after that release, `more` saying older ones are left. `counts` is the whole project's: every release, those cut in the last 30 days, and those marked failed. With releases off, `on: false` and nothing else. |
 | `POST /releases` | `{name, project?, notes?, by_session?, cwd?, who?, after?: ["T4"\|"G2"]\|str, no_script?: bool}` | `tb release cut`. Cut a release holding every task in Unreleased; each gets a "release" log line. The name (80 characters at most, not "unreleased") is unique in the project, any case, and not held by its pending cut (409). 409 when Unreleased is empty. With `after` (`tb release cut <name> --after T4 --after G2`), nothing is cut now: the project gets a pending cut instead (see Pending cuts). **Response read:** as `GET /releases/:ref`; with `after`, the pending cut. |
 | `POST /releases/pending/cancel` | `{project?, by_session?, cwd?}` | `tb release cancel`. Drop the project's pending cut. 404 when there is none, 409 while it is cutting. `{project, name, cancelled: true}`. |
 | `GET /releases/:ref` | `R<n>`, or `unreleased` with the project query above | `tb release show`. The release (or `{ref: "unreleased", project, name: "Unreleased", tasks}`) with `groups: [group]` and `markdown`: a changelog ready to paste (`tb release show --markdown`): `## <name> (<date>)`, the notes, then `### <goal>` per group (`Other changes` for no goal) with `- <title> ([#<n>](<pr>))`. |

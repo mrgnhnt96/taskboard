@@ -135,7 +135,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         .child(nav("nav-ideas", "Ideas", kit::dot(t.goal, 8.), None, Page::Ideas, on(Page::Ideas) || matches!(page, Page::Idea(_)), cx))
         .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days) || page == Page::Review, cx));
     if !crate::ui::releases::projects_on(&st).is_empty() {
-        col = col.child(nav("nav-releases", "Releases", square(t.up, true), None, Page::Releases, on(Page::Releases), cx));
+        col = col.child(nav("nav-releases", "Releases", square(t.up, true), None, Page::Releases, on(Page::Releases) || matches!(page, Page::ReleasesOf(_)), cx));
     }
 
     if !goals.is_empty() {
