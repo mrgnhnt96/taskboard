@@ -194,3 +194,18 @@ fn a_task_waiting_for_a_start_moved_into_a_running_goal_is_picked_up_by_the_run(
     b.post(&format!("tasks/T{t}"), json!({"goal_id": format!("G{g}"), "pickup": "manual"}));
     assert_eq!(b.task(t).st("pickup"), "manual", "a pickup asked for with the move is kept");
 }
+
+#[test]
+fn a_running_goal_starts_a_task_that_waited_for_start() {
+    let b = new_board();
+    let (_, t) = b.goal("Login", true);
+    // It waited for Start before it joined, and kept that.
+    board::update_task(&b.app, t[0], fields!["pickup" => "manual"]).unwrap();
+    let why = waitsfor::waiting_line(&b.app, &b.task(t[0])).unwrap();
+    assert!(!why.as_str().unwrap_or("").contains("press Start"), "{why}");
+    assert!(taskboardd::runner::start_queued(&b.app).unwrap().contains(&t[0]), "the run starts it, no Start or Pause and Play");
+
+    let (_, kept) = b.goal("Signup", false);
+    board::update_task(&b.app, kept[0], fields!["status" => "queued", "pickup" => "manual"]).unwrap();
+    assert_eq!(waitsfor::waiting_line(&b.app, &b.task(kept[0])).unwrap(), "Waits for you to press Start", "its goal wasn't run");
+}

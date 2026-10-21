@@ -242,6 +242,19 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Whether `t` waits for a Start on the board: its pickup is manual and it isn't in a goal that was run. A
+/// running goal starts its tasks itself (its pause still holds them); a task on a terminal's line waits there.
+pub fn waits_for_start(app: &App, t: &Row) -> Result<bool> {
+    if t.s("pickup") != Some("manual") {
+        return Ok(false);
+    }
+    if has(t.s("line_session")) {
+        return Ok(true);
+    }
+    let goal = board::find_goal(app, t.i("goal_id"))?;
+    Ok(!goal.is_some_and(|g| has(g.s("ran_at")) && !g.b("archived")))
+}
+
 /// The line a queued card shows when something holds it back.
 pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
     if t.i("start_job").is_some() {
@@ -261,7 +274,7 @@ pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
     if has(t.s("line_session")) && crate::lines::held_by_clock(app, t)? {
         return Ok(json!(hours::blocker(app)));
     }
-    if t.s("pickup") == Some("manual") {
+    if waits_for_start(app, t)? {
         return Ok(json!("Waits for you to press Start"));
     }
     if let Some(r) = t.s("retry_at").filter(|r| r > &now_iso().as_str()) {
