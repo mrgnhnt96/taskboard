@@ -15,6 +15,13 @@ pub struct Fresh {
     again: Option<Value>,
 }
 
+impl Fresh {
+    /// The first page as the board sent it, for what else it says about the list.
+    pub fn first(&self) -> &Value {
+        &self.first
+    }
+}
+
 #[derive(Default)]
 pub struct Paged {
     /// In the board's order as the pages came, each once.

@@ -211,8 +211,15 @@ fn move_to(app: &App, r: &str, to: &str, body: &Value) -> Result<Value> {
     show(app, &get(app, r)?)
 }
 
+/// Where an idea sorts on the Ideas page: open ones first, then planned, shelved and dropped.
+const RANK: &str = "CASE state WHEN 'planned' THEN 1 WHEN 'shelved' THEN 2 WHEN 'dropped' THEN 3 ELSE 0 END";
+
 /// `GET /ideas`: a project's ideas (`project=all` for every project; else the folder `tb` ran in),
-/// the open ones unless `state` asks for others (`all`, or one state), newest change first.
+/// the open ones unless `state` asks for others (`all`, or one state), newest change first; `ids`
+/// (a comma list) picks out those ideas. With a `limit` they come a page at a time in the Ideas
+/// page's order (by project, open first, each group newest change first), with the `total` that
+/// match and the `next` page's cursor (null at the end). `projects` is each project with ideas under
+/// `state` and how many are open, whatever `project` picked.
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let q = |k: &str| query.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty());
     let every = q("project") == Some("all");
@@ -225,19 +232,58 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     if state != "open" && state != "all" && !STATES.contains(&state) {
         return err(400, format!("An idea's state is open, all or one of {}.", STATES.join(", ")));
     }
-    let rows = app.db.q("SELECT * FROM ideas WHERE ? IS NULL OR project = ? ORDER BY updated_at DESC, id DESC", p![project, project])?;
-    let mut out = vec![];
-    for i in rows.iter().filter(|i| {
-        let s = i.s("state").unwrap_or("");
-        match state {
-            "all" => true,
-            "open" => OPEN.contains(&s),
-            st => s == st,
+    let page = crate::api::Paging::of(query);
+    let (mut by_state, mut state_args) = (String::new(), p![]);
+    match state {
+        "all" => {}
+        "open" => {
+            by_state = format!(" AND state IN ({})", vec!["?"; OPEN.len()].join(", "));
+            state_args.extend(OPEN.iter().map(|s| json!(s)));
         }
-    }) {
-        out.push(dict(app, i)?);
+        st => {
+            by_state = " AND state = ?".into();
+            state_args.push(json!(st));
+        }
     }
-    Ok(json!({"project": project, "ideas": out}))
+    let mut sql = format!("SELECT * FROM ideas WHERE (? IS NULL OR project = ?){by_state}");
+    let mut args = p![project, project];
+    args.extend(state_args.iter().cloned());
+    if let Some(ids) = q("ids") {
+        let ids: Vec<i64> = ids.split(',').filter_map(|x| parse_ref_str(x.trim(), "idea").ok().flatten()).collect();
+        sql += &format!(" AND id IN ({})", vec!["NULL"].into_iter().chain(ids.iter().map(|_| "?")).collect::<Vec<_>>().join(", "));
+        args.extend(ids.iter().map(|i| json!(i)));
+    }
+    if page.limit.is_none() {
+        let rows = app.db.q(&format!("{sql} ORDER BY updated_at DESC, id DESC"), args)?;
+        let out = rows.iter().map(|i| dict(app, i)).collect::<Result<Vec<_>>>()?;
+        return Ok(json!({"project": project, "ideas": out}));
+    }
+    let total = app.db.count(&sql.replacen("SELECT *", "SELECT COUNT(*)", 1), args.clone())?;
+    let at = format!("project, {RANK} AS rk, COALESCE(updated_at, '') AS u, id");
+    if let Some(b) = page.before.as_deref().and_then(|b| b.parse::<i64>().ok()) {
+        if let Some(c) = app.db.q1(&format!("SELECT {at} FROM ideas WHERE id = ?"), p![b])? {
+            sql += &format!(
+                " AND (project > ? OR (project = ? AND ({RANK} > ? OR ({RANK} = ? AND (COALESCE(updated_at, '') < ? OR (COALESCE(updated_at, '') = ? AND id < ?))))))"
+            );
+            args.extend([c.v("project"), c.v("project"), c.v("rk"), c.v("rk"), c.v("u"), c.v("u"), json!(b)]);
+        }
+    }
+    sql += &format!(" ORDER BY project, {RANK}, COALESCE(updated_at, '') DESC, id DESC LIMIT ?");
+    args.extend(page.sql_limit().map(|l| json!(l)));
+    let mut rows = app.db.q(&sql, args)?;
+    let more = page.cut(&mut rows);
+    let next = rows.last().filter(|_| more).map(|i| i.id().to_string());
+    let out = rows.iter().map(|i| dict(app, i)).collect::<Result<Vec<_>>>()?;
+    let mut pargs: Vec<Value> = OPEN.iter().map(|s| json!(s)).collect();
+    pargs.extend(state_args);
+    let open = vec!["?"; OPEN.len()].join(", ");
+    let projects: Vec<Value> = app
+        .db
+        .q(&format!("SELECT project, SUM(state IN ({open})) AS open FROM ideas WHERE 1{by_state} GROUP BY project ORDER BY project"), pargs)?
+        .iter()
+        .map(|r| json!({"project": r.v("project"), "open": r.i("open").unwrap_or(0)}))
+        .collect();
+    Ok(json!({"project": project, "ideas": out, "total": total, "next": next, "projects": projects}))
 }
 
 /// `/ideas…` routes.
