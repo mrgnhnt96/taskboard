@@ -68,6 +68,7 @@ pub mod prflow;
 pub mod prhost;
 pub mod proc;
 pub mod progress;
+pub mod palette;
 pub mod projects;
 pub mod propen;
 pub mod qa;

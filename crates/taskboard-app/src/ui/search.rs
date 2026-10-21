@@ -15,6 +15,8 @@ use std::ops::Range;
 
 /// Results shown per kind; the group's header counts them all.
 const PER_GROUP: usize = 6;
+/// The tasks and issues asked of the board per query, best first; the palette ranks them again.
+const WINDOW: usize = 30;
 
 #[derive(Default)]
 pub struct State {
@@ -22,6 +24,8 @@ pub struct State {
     /// The highlighted result, counted down the whole list.
     pub sel: usize,
     scroll: ScrollHandle,
+    /// What the board last answered: the query and how many tasks and issues match it in all.
+    found: Option<(String, usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,67 +86,9 @@ pub struct Group {
 
 // ================================================================== matching
 
-/// Where `needle` (already lower case) first sits in `hay`, ignoring case, as a byte range of `hay`.
-pub fn find_ci(hay: &str, needle: &str) -> Option<Range<usize>> {
-    if needle.is_empty() {
-        return None;
-    }
-    let want: Vec<char> = needle.chars().collect();
-    let chars: Vec<(usize, char)> = hay.char_indices().collect();
-    let low = |c: char| c.to_lowercase().next().unwrap_or(c);
-    (0..chars.len()).find_map(|start| {
-        let ok = want.len() <= chars.len() - start && want.iter().enumerate().all(|(k, w)| low(chars[start + k].1) == *w);
-        ok.then(|| {
-            let end = chars.get(start + want.len()).map(|(b, _)| *b).unwrap_or(hay.len());
-            chars[start].0..end
-        })
-    })
-}
-
-/// The query as lower-case words.
-fn words(q: &str) -> Vec<String> {
-    q.split_whitespace().map(str::to_lowercase).collect()
-}
-
-/// How well an object matches: `None` when a word is found nowhere, else lower is better —
-/// its ref, then its title's start, a word in its title, anywhere in its title, then its other text.
-/// The highlights are each word's first place in the title.
-fn score(r: &str, title: &str, other: &[&str], words: &[String]) -> Option<(u8, Vec<Range<usize>>)> {
-    let r = r.to_lowercase();
-    let mut best = u8::MAX;
-    let mut hl = Vec::new();
-    for w in words {
-        let in_title = find_ci(title, w);
-        let rank = if !r.is_empty() && r == *w {
-            0
-        } else if !r.is_empty() && r.starts_with(w.as_str()) {
-            1
-        } else if let Some(at) = &in_title {
-            if at.start == 0 {
-                2
-            } else if title[..at.start].ends_with(|c: char| !c.is_alphanumeric()) {
-                3
-            } else {
-                4
-            }
-        } else if other.iter().any(|o| find_ci(o, w).is_some()) {
-            5
-        } else {
-            return None;
-        };
-        best = best.min(rank);
-        hl.extend(in_title);
-    }
-    hl.sort_by_key(|r| r.start);
-    let mut merged: Vec<Range<usize>> = Vec::new();
-    for h in hl {
-        match merged.last_mut() {
-            Some(last) if h.start <= last.end => last.end = last.end.max(h.end),
-            _ => merged.push(h),
-        }
-    }
-    Some((best, merged))
-}
+#[cfg(test)]
+use taskboardd::palette::find_ci;
+use taskboardd::palette::{score, words};
 
 /// Ranked hits of one kind, best first, then in each object's own order.
 fn rank<T>(rows: Vec<(T, Option<(u8, Vec<Range<usize>>)>)>, words: &[String], order: impl Fn(&T) -> (u8, i64)) -> Vec<(T, Vec<Range<usize>>)> {
@@ -281,7 +227,56 @@ pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<
 
 fn current(m: &MainWindow, cx: &App) -> Vec<Group> {
     let q = m.search.input.as_ref().map(|i| i.text(cx)).unwrap_or_default();
-    results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.data.sessions.as_ref())
+    let mut groups = results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.data.sessions.as_ref());
+    // The board sent the best few: its counts are the whole.
+    if let Some((_, tasks, issues)) = m.search.found.as_ref().filter(|f| f.0 == q) {
+        for g in &mut groups {
+            match g.kind {
+                Kind::Tasks => g.total = g.total.max(*tasks),
+                Kind::Backlog => g.total = g.total.max(*issues),
+                _ => {}
+            }
+        }
+    }
+    groups
+}
+
+/// The query to ask the board about while the palette is open.
+pub fn query(m: &MainWindow, cx: &App) -> Option<String> {
+    m.search.input.as_ref().filter(|_| is_open(m)).map(|i| i.text(cx))
+}
+
+/// `GET /search?palette=1`: the best tasks and backlog issues for `q`, and how many match.
+pub fn ask(be: &dyn crate::backend::Backend, q: &str) -> Result<Value, String> {
+    be.get("search", &[("palette", "1".into()), ("q", q.to_string()), ("limit", WINDOW.to_string())]).map_err(|e| e.message)
+}
+
+/// Keep the board's answer for `q` if it's still what's typed.
+pub fn land(m: &mut MainWindow, q: &str, v: Value, cx: &App) {
+    if query(m, cx).as_deref() != Some(q) {
+        return;
+    }
+    let total = |k: &str| v[k].as_u64().unwrap_or(0) as usize;
+    m.search.found = Some((q.to_string(), total("tasks_total"), total("issues_total")));
+    m.data.tasks = Some(serde_json::json!({"tasks": v["tasks"]}));
+    m.data.backlog = Some(serde_json::json!({"issues": v["issues"]}));
+}
+
+/// Ask the board about what's typed now, without waiting for the rest of a refresh.
+fn fetch(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let Some(q) = query(m, cx) else { return };
+    let backend = m.backend.clone();
+    cx.spawn(async move |this, cx| {
+        let ask_q = q.clone();
+        let v = cx.background_executor().spawn(async move { ask(&*backend, &ask_q) }).await;
+        let _ = this.update(cx, |m, cx| {
+            if let Ok(v) = v {
+                land(m, &q, v, cx);
+                cx.notify();
+            }
+        });
+    })
+    .detach();
 }
 
 fn flat(groups: &[Group]) -> Vec<&Hit> {
@@ -301,13 +296,15 @@ pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
         cx.subscribe(&input.field, |m: &mut MainWindow, _, _: &FieldChanged, cx| {
             m.search.sel = 0;
             m.search.scroll.scroll_to_item(0);
+            fetch(m, cx);
             cx.notify();
         })
         .detach();
         m.search = State { input: Some(input), ..Default::default() };
         m.set_modal(Some(Modal::Search), window, cx);
-        // The task and terminal lists load with the palette.
+        // The terminal list loads with the palette, the tasks and issues for what's typed.
         m.refresh(cx);
+        fetch(m, cx);
     }
     if let Some(i) = &m.search.input {
         window.focus(&i.focus, cx);
