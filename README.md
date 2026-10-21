@@ -126,6 +126,12 @@ moves tickets or sends notifications) unless you pass `--runner`. Screenshots wi
 `cargo build -p taskboard-app --features snapshot`, then run with `TASKBOARD_BACKEND=fake TASKBOARD_SNAPSHOT=out.png`
 (`TASKBOARD_PAGE=backlog|sessions|G1`, `TASKBOARD_OPEN=T3|B1`, `TASKBOARD_SEARCH=pass`, `TASKBOARD_THEME=dark`).
 
+main only takes PRs (a GitHub ruleset; force-pushes and deletes are refused too). Releases are the
+exception: `scripts/release.sh` pushes its version commit with a deploy key the ruleset lets past,
+`~/.ssh/taskboard-release` (or `TB_RELEASE_DEPLOY_KEY`). On a new machine, make one and add it to the
+repo with write access: `ssh-keygen -t ed25519 -N "" -f ~/.ssh/taskboard-release`, then
+`gh repo deploy-key add ~/.ssh/taskboard-release.pub --allow-write --title release`.
+
 ## Removing it
 
 1. `claude plugin uninstall task-board@taskboard` and `claude plugin marketplace remove taskboard`.
