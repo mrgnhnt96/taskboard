@@ -1004,7 +1004,7 @@ impl Wants {
                     (list, one)
                 })
             });
-            let releases: Vec<_> = self.releases.iter().map(|p| s.spawn(move || (p.clone(), get("releases", &[("project", p.clone())])))).collect();
+            let releases: Vec<_> = self.releases.iter().map(|p| s.spawn(move || (p.clone(), get("releases", &[("project", p.clone()), ("limit", ui::releases::PAGE.to_string())])))).collect();
             let release_rows: Vec<_> = self
                 .release_rows
                 .iter()
@@ -1082,6 +1082,7 @@ impl Got {
             }
             for (p, v) in self.releases {
                 if let Ok(v) = v {
+                    let v = ui::releases::merge_page(m.releases.lists.get(&p), v);
                     m.releases.lists.insert(p, v);
                 }
             }

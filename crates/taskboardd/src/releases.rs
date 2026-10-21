@@ -320,18 +320,39 @@ fn show(app: &App, r: &str, query: &crate::api::Query) -> Result<Value> {
 }
 
 /// `GET /releases`: the project's releases, newest first, and how many done tasks wait in Unreleased.
+/// `before` (a release ref or id) starts after that release and `limit` caps the page, with `more`
+/// saying whether older ones are left; `total` counts them all.
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let project = query_project(app, query)?;
     if !on(app, &project) {
-        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "pending": null}));
+        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "total": 0, "more": false, "pending": null}));
     }
-    let rows = app.db.q("SELECT * FROM releases WHERE project = ? ORDER BY id DESC", p![project])?;
+    let q = |k: &str| query.get(k).map(|s| s.trim()).unwrap_or("");
+    let before = q("before").trim_start_matches(['R', 'r']).parse::<i64>().ok();
+    let limit = q("limit").parse::<i64>().ok().map(|n| n.clamp(1, 500));
+    let mut sql = "SELECT * FROM releases WHERE project = ?".to_string();
+    let mut args = p![project];
+    if let Some(b) = before {
+        sql += " AND id < ?";
+        args.push(json!(b));
+    }
+    sql += " ORDER BY id DESC";
+    if let Some(l) = limit {
+        sql += " LIMIT ?";
+        args.push(json!(l + 1));
+    }
+    let mut rows = app.db.q(&sql, args)?;
+    let more = limit.is_some_and(|l| rows.len() as i64 > l);
+    if let Some(l) = limit {
+        rows.truncate(l as usize);
+    }
+    let total = app.db.count("SELECT COUNT(*) FROM releases WHERE project = ?", p![project])?;
     let releases = rows.iter().map(|r| dict(app, r)).collect::<Result<Vec<_>>>()?;
     let pending = match crate::pending_cut::for_project(app, &project)? {
         Some(r) => crate::pending_cut::dict(app, &r)?,
         None => Value::Null,
     };
-    Ok(json!({"project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases, "pending": pending}))
+    Ok(json!({"project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases, "total": total, "more": more, "pending": pending}))
 }
 
 /// `POST /releases`: cut a release holding every task in Unreleased. With `check`, only says whether
