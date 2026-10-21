@@ -609,6 +609,11 @@ pub struct ModelsConfig {
     pub large: String,
     /// `small`, `large`, or a model name.
     pub default: String,
+    /// The effort (`--effort`) each tier runs at, unless the task sets its own (`tb task new --effort`).
+    pub small_effort: String,
+    pub large_effort: String,
+    /// The effort of tasks that name a model outright; empty passes none, Claude's own.
+    pub default_effort: String,
     /// The model of PR visits that don't change code (merging, asking for reviews): `small`, `large` or a
     /// model name. Empty runs them on the task's own model.
     pub pr_visit: String,
@@ -623,6 +628,9 @@ impl Default for ModelsConfig {
             small: "sonnet".into(),
             large: "opus".into(),
             default: "large".into(),
+            small_effort: "medium".into(),
+            large_effort: "high".into(),
+            default_effort: "".into(),
             pr_visit: "sonnet".into(),
             fresh_pr_visits: true,
         }
@@ -642,6 +650,30 @@ impl ModelsConfig {
             other => other,
         };
         (!model.is_empty()).then(|| model.to_string())
+    }
+
+    /// The effort to start a task's terminal with: the task's own `effort`, else its model's tier's.
+    pub fn resolve_effort(&self, model: Option<&str>, effort: Option<&str>) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        if let Some(e) = effort.map(str::trim).filter(|e| !e.is_empty()) {
+            return Some(e.to_string());
+        }
+        let effort = match model.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(self.default.trim()) {
+            "small" => self.small_effort.trim(),
+            "large" => self.large_effort.trim(),
+            _ => self.default_effort.trim(),
+        };
+        (!effort.is_empty()).then(|| effort.to_string())
+    }
+
+    /// The effort of a PR visit that doesn't change code: `pr_visit`'s, or the task's own when it's empty.
+    pub fn resolve_pr_visit_effort(&self, model: Option<&str>, effort: Option<&str>) -> Option<String> {
+        match self.pr_visit.trim() {
+            "" => self.resolve_effort(model, effort),
+            m => self.resolve_effort(Some(m), None),
+        }
     }
 
     /// The model of a PR visit that doesn't change code; the task's own when `pr_visit` is empty.
@@ -1062,6 +1094,20 @@ mod tests {
         let tier = ModelsConfig { pr_visit: "large".into(), ..ModelsConfig::default() };
         assert_eq!(tier.resolve_pr_visit(None).as_deref(), Some("opus"));
         assert_eq!(off.resolve_pr_visit(None), None);
+    }
+
+    #[test]
+    fn task_efforts_resolve_through_the_tiers() {
+        let m = ModelsConfig::default();
+        assert_eq!(m.resolve_effort(None, None).as_deref(), Some("high"), "no model: the default, large");
+        assert_eq!(m.resolve_effort(Some("small"), None).as_deref(), Some("medium"));
+        assert_eq!(m.resolve_effort(Some("claude-haiku-5-5"), None), None, "a model name: Claude's own");
+        assert_eq!(m.resolve_effort(Some("small"), Some("max")).as_deref(), Some("max"));
+        assert_eq!(m.resolve_pr_visit_effort(Some("large"), Some("max")), None, "PR visits on sonnet: Claude's own");
+        let own = ModelsConfig { pr_visit: "".into(), ..ModelsConfig::default() };
+        assert_eq!(own.resolve_pr_visit_effort(Some("small"), None).as_deref(), Some("medium"));
+        let off = ModelsConfig { enabled: false, ..ModelsConfig::default() };
+        assert_eq!(off.resolve_effort(Some("small"), Some("max")), None);
     }
 
     #[test]

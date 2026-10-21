@@ -200,8 +200,8 @@ enum Cmd {
         goal: String,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
-        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs and/or "::project=api" to put it in another project than the goal's
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::project=P]")]
+        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs, "::effort=high" (low, medium, high, xhigh or max) for its effort and/or "::project=api" to put it in another project than the goal's
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::effort=E][::project=P]")]
         tasks: Vec<String>,
         /// Planned even while the goal is running, so they wait for its next run
         #[arg(long)]
@@ -1239,8 +1239,8 @@ enum GoalCmd {
         after: Vec<String>,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
-        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs and/or "::project=api" to put it in another project than the goal's
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::project=P]")]
+        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs, "::effort=high" (low, medium, high, xhigh or max) for its effort and/or "::project=api" to put it in another project than the goal's
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::effort=E][::project=P]")]
         tasks: Vec<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
@@ -1449,10 +1449,13 @@ enum TaskCmd {
         /// The model its terminal runs: small or large (`[models]` in config.toml) or a model name; `[models] default` when left out
         #[arg(long, value_name = "small|large|NAME")]
         model: Option<String>,
+        /// The effort its terminal runs at: low, medium, high, xhigh or max; its model's tier's (`[models]`) when left out
+        #[arg(long, value_name = "low|medium|high|xhigh|max")]
+        effort: Option<String>,
         /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
         /// starts on it, --detail holds the steps and links, and the owner presses Done in the app.
         /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that
-        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "model", "lock", "alone", "kind"], requires = "detail")]
+        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
         human: bool,
         /// design: its work is a design (concepts, a canvas, mockups). It ends without a PR once its design
         /// is attached (tb attach <link> --kind design), and in a goal the other tasks wait for it
@@ -1537,6 +1540,9 @@ enum TaskCmd {
         /// The model its terminal runs: small or large (`[models]` in config.toml) or a model name; default for `[models] default`
         #[arg(long, value_name = "small|large|NAME|default")]
         model: Option<String>,
+        /// The effort its terminal runs at: low, medium, high, xhigh or max; default for its model's tier's
+        #[arg(long, value_name = "low|medium|high|xhigh|max|default")]
+        effort: Option<String>,
         /// Move it to another project, any case, in any state: on a terminal it carries on there, a PR stays with it,
         /// and one that ran with no terminal waits for Start there
         #[arg(long, value_name = "NAME")]
@@ -2747,10 +2753,18 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     Ok(0)
 }
 
-/// "Models: small runs sonnet, large runs opus; a task without one runs opus." Nothing while `[models]` is off.
+/// "Models: small runs sonnet at medium effort, large runs opus at high; a task without one runs opus at
+/// high." Nothing while `[models]` is off.
 fn models_line(m: &Value) -> Option<String> {
+    let at = |k: &str| m[k].as_str().map(|e| format!(" at {e}")).unwrap_or_default();
     let (small, large, default) = (m["small"].as_str()?, m["large"].as_str()?, m["default"].as_str()?);
-    Some(format!("Models (tb task new --model small|large): small runs {small}, large runs {large}; a task without one runs {default}."))
+    Some(format!(
+        "Models (tb task new --model small|large, --effort low|medium|high|xhigh|max to change its effort): small runs {small}{}, \
+         large runs {large}{}; a task without one runs {default}{}.",
+        at("small_effort"),
+        at("large_effort"),
+        at("default_effort")
+    ))
 }
 
 fn planning_lessons_cmd(c: &Ctx, project: Option<String>, accept: bool) -> Result<i32, String> {
@@ -3350,16 +3364,22 @@ fn task_lane_line(v: &Value) -> Option<String> {
     Some(format!("Lane: {lane}{from}"))
 }
 
-/// "Model: small (sonnet)": the task's model and what its terminal runs; nothing when neither is known.
+/// "Model: small (sonnet · medium)": the task's model and the model and effort its terminal runs;
+/// nothing when neither is known.
 fn model_line(v: &Value) -> Option<String> {
     let set = v["model"].as_str().filter(|m| !m.is_empty());
     let runs = v["model_runs"].as_str().filter(|m| !m.is_empty());
-    match (set, runs) {
-        (Some(s), Some(r)) if s != r => Some(format!("Model: {s} ({r})")),
-        (Some(s), _) => Some(format!("Model: {s}")),
-        (None, Some(r)) => Some(format!("Model: default ({r})")),
-        (None, None) => None,
-    }
+    let effort = v["effort_runs"].as_str().filter(|e| !e.is_empty());
+    let name = match (set, runs) {
+        (Some(s), _) => s,
+        (None, Some(_)) => "default",
+        (None, None) => return None,
+    };
+    let runs: Vec<&str> = runs.filter(|r| Some(*r) != set).into_iter().chain(effort).collect();
+    Some(match runs.is_empty() {
+        true => format!("Model: {name}"),
+        false => format!("Model: {name} ({})", runs.join(" · ")),
+    })
 }
 
 /// `tb backlog show`: GET /backlog/<id> with its history (the board sends it oldest first).
@@ -5790,7 +5810,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, human, kind, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -5851,6 +5871,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(m) = model {
                     body["model"] = json!(m);
                 }
+                if let Some(e) = effort {
+                    body["effort"] = json!(e);
+                }
                 if let Some(j) = jira {
                     body["jira"] = jira_arg(&j);
                 }
@@ -5897,7 +5920,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, area, model, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, area, model, effort, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -5935,6 +5958,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = model {
                     b["model"] = json!(x);
+                }
+                if let Some(x) = effort {
+                    b["effort"] = json!(x);
                 }
                 if let Some(x) = jira {
                     b["jira_key"] = json!(x);
@@ -7345,6 +7371,15 @@ mod tests {
         assert_eq!(model_line(&json!({"model": "haiku", "model_runs": "haiku"})).as_deref(), Some("Model: haiku"));
         assert_eq!(model_line(&json!({"model": null, "model_runs": "opus"})).as_deref(), Some("Model: default (opus)"));
         assert_eq!(model_line(&json!({"model": null, "model_runs": null})), None);
+        assert_eq!(model_line(&json!({"model": "small", "model_runs": "sonnet", "effort_runs": "medium"})).as_deref(), Some("Model: small (sonnet · medium)"));
+        assert_eq!(model_line(&json!({"model": "haiku", "model_runs": "haiku", "effort_runs": "max"})).as_deref(), Some("Model: haiku (max)"));
+        assert_eq!(model_line(&json!({"model": null, "model_runs": "opus", "effort_runs": "high"})).as_deref(), Some("Model: default (opus · high)"));
+        let effort = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
+            Cmd::Task { action: TaskCmd::New { effort, .. } | TaskCmd::Set { effort, .. } } => effort,
+            _ => panic!("not a task command"),
+        };
+        assert_eq!(effort(&["tb", "task", "new", "Pen", "--effort", "high"]).as_deref(), Some("high"));
+        assert_eq!(effort(&["tb", "task", "set", "T3", "--effort", "default"]).as_deref(), Some("default"));
     }
 
     #[test]
@@ -7369,7 +7404,12 @@ mod tests {
     #[test]
     fn planning_names_the_models_while_they_are_on() {
         let v = json!({"small": "sonnet", "large": "opus", "default": "opus"});
-        assert_eq!(models_line(&v).as_deref(), Some("Models (tb task new --model small|large): small runs sonnet, large runs opus; a task without one runs opus."));
+        assert_eq!(
+            models_line(&v).as_deref(),
+            Some("Models (tb task new --model small|large, --effort low|medium|high|xhigh|max to change its effort): small runs sonnet, large runs opus; a task without one runs opus.")
+        );
+        let v = json!({"small": "sonnet", "large": "opus", "default": "opus", "small_effort": "medium", "large_effort": "high", "default_effort": "high"});
+        assert!(models_line(&v).unwrap().ends_with("small runs sonnet at medium, large runs opus at high; a task without one runs opus at high."));
         assert_eq!(models_line(&Value::Null), None);
     }
 

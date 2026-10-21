@@ -643,7 +643,8 @@ fn fresh_visit(app: &App, t: &Row, phase: &str, mut args: Value) -> Result<Value
     }
     args["prompt"] = json!(format!("{}\n\nThis is a fresh conversation for this step only. {place}", args["prompt"].as_str().unwrap_or("")));
     let model = app.cfg.models.resolve_pr_visit(t.s("model"));
-    if let Some(f) = runner::with_model(None, model.as_deref()) {
+    let effort = app.cfg.models.resolve_pr_visit_effort(t.s("model"), t.s("effort"));
+    if let Some(f) = runner::with_effort(runner::with_model(None, model.as_deref()), effort.as_deref()) {
         args["flags"] = json!(f);
     }
     if let Some(id) = replaceable(app, last) {
@@ -659,7 +660,8 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     let cid = task_conversation(t, last.as_ref())
         .filter(|c| transcript::conversation_saved(&app.cfg.claude_projects, args["cwd"].as_str().unwrap_or(""), c));
     let model = app.cfg.models.resolve(t.s("model"));
-    if let Some(f) = runner::with_model(None, model.as_deref()) {
+    let effort = app.cfg.models.resolve_effort(t.s("model"), t.s("effort"));
+    if let Some(f) = runner::with_effort(runner::with_model(None, model.as_deref()), effort.as_deref()) {
         args["flags"] = json!(f);
     }
     if flow(t).contains_key("resume_cid") {
@@ -686,7 +688,7 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
             args["prompt"] = json!(p);
         }
         Some(cid) => {
-            args["flags"] = json!(runner::with_model(Some(format!("--resume {cid}")), model.as_deref()));
+            args["flags"] = json!(runner::with_effort(runner::with_model(Some(format!("--resume {cid}")), model.as_deref()), effort.as_deref()));
             if let Some(id) = replaceable(app, last) {
                 args["replace"] = id;
             }

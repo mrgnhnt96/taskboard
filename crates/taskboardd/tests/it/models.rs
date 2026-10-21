@@ -1,5 +1,5 @@
-//! A task's model (`tb task new --model`, `[models]`): kept on the task, carried by planned tasks, and
-//! passed to its terminal as `--model`.
+//! A task's model and effort (`tb task new --model --effort`, `[models]`): kept on the task, carried by
+//! planned tasks, and passed to its terminal as `--model` and `--effort`.
 
 use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
@@ -52,21 +52,38 @@ fn a_task_s_terminal_starts_with_its_model() {
     let b = board_with(|_| {});
     let small = b.new_task(json!({"model": "small"}));
     assert_eq!(board::get_task(&b.app, small).unwrap().s("model"), Some("small"));
-    assert_eq!(b.start_flags(small, None).as_deref(), Some("--model sonnet"));
+    assert_eq!(b.start_flags(small, None).as_deref(), Some("--model sonnet --effort medium"));
 
     let plain = b.new_task(json!({}));
-    assert_eq!(b.start_flags(plain, None).as_deref(), Some("--model opus"), "no model: [models] default, large");
-    assert_eq!(b.start_flags(plain, Some("--resume c1")).as_deref(), Some("--resume c1 --model opus"));
-    assert_eq!(b.start_flags(plain, Some("--model haiku")).as_deref(), Some("--model haiku"), "flags that name one keep it");
+    assert_eq!(b.start_flags(plain, None).as_deref(), Some("--model opus --effort high"), "no model: [models] default, large");
+    assert_eq!(b.start_flags(plain, Some("--resume c1")).as_deref(), Some("--resume c1 --model opus --effort high"));
+    assert_eq!(b.start_flags(plain, Some("--model haiku")).as_deref(), Some("--model haiku --effort high"), "flags that name one keep it");
+    assert_eq!(b.start_flags(plain, Some("--effort low")).as_deref(), Some("--effort low --model opus"));
 
     let named = b.new_task(json!({"model": "claude-haiku-5-5"}));
-    assert_eq!(b.start_flags(named, None).as_deref(), Some("--model claude-haiku-5-5"));
+    assert_eq!(b.start_flags(named, None).as_deref(), Some("--model claude-haiku-5-5"), "a model name: Claude's own effort");
+
+    let own = b.new_task(json!({"model": "small", "effort": "max"}));
+    assert_eq!(board::get_task(&b.app, own).unwrap().s("effort"), Some("max"));
+    assert_eq!(b.start_flags(own, None).as_deref(), Some("--model sonnet --effort max"));
+}
+
+#[test]
+fn tier_efforts_come_from_config() {
+    let b = board_with(|c| {
+        c.models.small_effort = "low".into();
+        c.models.default_effort = "xhigh".into();
+    });
+    let small = b.new_task(json!({"model": "small"}));
+    assert_eq!(b.start_flags(small, None).as_deref(), Some("--model sonnet --effort low"));
+    let named = b.new_task(json!({"model": "claude-haiku-5-5"}));
+    assert_eq!(b.start_flags(named, None).as_deref(), Some("--model claude-haiku-5-5 --effort xhigh"));
 }
 
 #[test]
 fn with_models_off_no_model_is_passed() {
     let b = board_with(|c| c.models.enabled = false);
-    let id = b.new_task(json!({"model": "small"}));
+    let id = b.new_task(json!({"model": "small", "effort": "high"}));
     assert_eq!(b.start_flags(id, None), None);
     assert_eq!(b.start_flags(id, Some("--resume c1")).as_deref(), Some("--resume c1"));
 }
@@ -86,13 +103,31 @@ fn task_set_changes_and_clears_the_model() {
 }
 
 #[test]
+fn task_set_changes_and_clears_the_effort() {
+    let b = board_with(|_| {});
+    let id = b.new_task(json!({"model": "small"}));
+    let card = board::task_card(&b.app, &board::get_task(&b.app, id).unwrap()).unwrap();
+    assert_eq!((&card["effort"], card["effort_runs"].as_str()), (&Value::Null, Some("medium")));
+    b.post(&format!("/tasks/T{id}"), json!({"effort": "xhigh"})).unwrap();
+    let card = board::task_card(&b.app, &board::get_task(&b.app, id).unwrap()).unwrap();
+    assert_eq!((card["effort"].as_str(), card["effort_runs"].as_str()), (Some("xhigh"), Some("xhigh")));
+    b.post(&format!("/tasks/T{id}"), json!({"effort": "default"})).unwrap();
+    assert_eq!(board::get_task(&b.app, id).unwrap().s("effort"), None);
+    let (status, msg) = b.post(&format!("/tasks/T{id}"), json!({"effort": "turbo"})).unwrap_err();
+    assert_eq!(status, 400, "{msg}");
+    let (status, msg) = b.post("/tasks", json!({"title": "Bad", "project": "webapp", "effort": "turbo"})).unwrap_err();
+    assert_eq!(status, 400, "{msg}");
+}
+
+#[test]
 fn planned_tasks_carry_their_model() {
     let b = board_with(|_| {});
     let g = b.post("/goals", json!({"name": "Cut spend", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
     let r = reports::handle(
         &b.app,
         json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"),
-               "tasks": ["One::do it::model=small", "Two::do it too::1::::src/a.rs::model=large", "Three::no model", {"title": "Four", "model": "small"}]}),
+               "tasks": ["One::do it::model=small::effort=low", "Two::do it too::1::::src/a.rs::model=large", "Three::no model",
+                         {"title": "Four", "model": "small", "effort": "max"}]}),
         false,
     )
     .unwrap();
@@ -100,6 +135,8 @@ fn planned_tasks_carry_their_model() {
     let tasks: Vec<_> = ids.iter().map(|id| board::get_task(&b.app, *id).unwrap()).collect();
     let models: Vec<Option<&str>> = tasks.iter().map(|t| t.s("model")).collect();
     assert_eq!(models, vec![Some("small"), Some("large"), None, Some("small")]);
+    let efforts: Vec<Option<&str>> = tasks.iter().map(|t| t.s("effort")).collect();
+    assert_eq!(efforts, vec![Some("low"), None, None, Some("max")]);
     assert_eq!(tasks[0].st("detail"), "do it");
     assert_eq!((tasks[1].st("detail"), tasks[1].i("wave")), ("do it too".to_string(), Some(1)));
     assert!(serde_json::Value::Object(board::task_context(&tasks[1])).to_string().contains("src/a.rs"), "the files part still reads");

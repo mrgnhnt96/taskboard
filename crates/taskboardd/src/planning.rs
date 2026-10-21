@@ -104,7 +104,11 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
     let p = pick(app, project.as_deref());
     let lessons = crate::lessons::unwritten_planning(app, project.as_deref(), &p.text)?;
     let m = &app.cfg.models;
-    let models = m.enabled.then(|| json!({"small": m.resolve(Some("small")), "large": m.resolve(Some("large")), "default": m.resolve(None)}));
+    let models = m.enabled.then(|| {
+        json!({"small": m.resolve(Some("small")), "large": m.resolve(Some("large")), "default": m.resolve(None),
+               "small_effort": m.resolve_effort(Some("small"), None), "large_effort": m.resolve_effort(Some("large"), None),
+               "default_effort": m.resolve_effort(None, None)})
+    });
     Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
               "lessons": crate::lessons::lines(&lessons), "models": models, "lanes": LANE_RULES}))
 }

@@ -277,11 +277,15 @@ global_max = 8                       # a task opens its terminal while fewer tas
 
 # The model each task's terminal starts with (`--model`, unless its flags name one). A task picks
 # small or large at planning (tb task new --model small), or names a model outright.
+# Its effort (`--effort`) comes from the tier, unless the task sets its own (tb task new --effort high).
 [models]
 enabled = true                       # false: no --model, Claude's own default
 small = "sonnet"                     # small, contained work
 large = "opus"                       # everything else
 default = "large"                    # tasks without a model: small, large, or a model name
+small_effort = "medium"              # the --effort small tasks run at: low, medium, high, xhigh or max; "" for Claude's own
+large_effort = "high"                # the --effort large tasks run at
+default_effort = ""                  # tasks that name a model: "" for Claude's own (tb task set --effort sets one task's)
 pr_visit = "sonnet"                  # PR visits that don't change code (merge, ask for reviews); "" for the task's model
 fresh_pr_visits = true               # those visits start a fresh, short conversation instead of resuming the task's
 

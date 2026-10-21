@@ -85,7 +85,9 @@ pub fn start_task(
             return err(409, format!("The board doesn't know the folder for the project “{}”.", t.st("project")));
         };
         let mut args = json!({"cwd": cwd, "title": title, "prompt": prompt, "queue": mode == "queue"});
-        if let Some(f) = with_model(flags, app.cfg.models.resolve(t.s("model")).as_deref()) {
+        let m = &app.cfg.models;
+        let flags = with_effort(with_model(flags, m.resolve(t.s("model")).as_deref()), m.resolve_effort(t.s("model"), t.s("effort")).as_deref());
+        if let Some(f) = flags {
             args["flags"] = json!(f);
         }
         board::create_job(app, "agent", args, Some(t.id()), "start", None)?
@@ -115,16 +117,44 @@ pub fn clean_model(v: Option<&serde_json::Value>) -> Result<Option<String>> {
     Ok(Some(m))
 }
 
+/// A task's `effort` from a body: low, medium, high, xhigh or max; null, empty or `default` clears it.
+pub fn clean_effort(v: Option<&serde_json::Value>) -> Result<Option<String>> {
+    let e = match v {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::String(s)) => s.trim().to_lowercase(),
+        Some(_) => return err(400, "The effort is low, medium, high, xhigh or max."),
+    };
+    if e.is_empty() || e == "default" {
+        return Ok(None);
+    }
+    if !EFFORTS.contains(&e.as_str()) {
+        return err(400, format!("“{e}” isn't an effort: use low, medium, high, xhigh or max."));
+    }
+    Ok(Some(e))
+}
+
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 /// The terminal's Claude flags with `--model` added, unless they already name one.
 pub(crate) fn with_model(flags: Option<String>, model: Option<&str>) -> Option<String> {
-    let Some(m) = model else { return flags };
-    if flags.as_deref().is_some_and(|f| f.split_whitespace().any(|w| w == "--model" || w.starts_with("--model="))) {
+    with_flag(flags, "--model", model)
+}
+
+/// The terminal's Claude flags with `--effort` added, unless they already name one.
+pub(crate) fn with_effort(flags: Option<String>, effort: Option<&str>) -> Option<String> {
+    with_flag(flags, "--effort", effort)
+}
+
+fn with_flag(flags: Option<String>, flag: &str, value: Option<&str>) -> Option<String> {
+    let Some(v) = value else { return flags };
+    let eq = format!("{flag}=");
+    if flags.as_deref().is_some_and(|f| f.split_whitespace().any(|w| w == flag || w.starts_with(&eq))) {
         return flags;
     }
-    let m = shlex::try_quote(m).map(|q| q.into_owned()).unwrap_or_else(|_| m.to_string());
+    let v = shlex::try_quote(v).map(|q| q.into_owned()).unwrap_or_else(|_| v.to_string());
     Some(match flags.filter(|f| !f.trim().is_empty()) {
-        Some(f) => format!("{f} --model {m}"),
-        None => format!("--model {m}"),
+        Some(f) => format!("{f} {flag} {v}"),
+        None => format!("{flag} {v}"),
     })
 }
 
@@ -650,6 +680,17 @@ mod tests {
         assert_eq!(with_model(Some("--model=haiku".into()), Some("opus")).as_deref(), Some("--model=haiku"));
         assert_eq!(with_model(Some("--x".into()), None).as_deref(), Some("--x"));
         assert_eq!(with_model(None, None), None);
+        assert_eq!(with_effort(Some("--model opus".into()), Some("high")).as_deref(), Some("--model opus --effort high"));
+        assert_eq!(with_effort(Some("--effort=low".into()), Some("high")).as_deref(), Some("--effort=low"));
+    }
+
+    #[test]
+    fn clean_effort_takes_levels_and_clears_on_default() {
+        assert_eq!(clean_effort(Some(&json!("XHigh"))).unwrap().as_deref(), Some("xhigh"));
+        assert_eq!(clean_effort(Some(&json!("default"))).unwrap(), None);
+        assert_eq!(clean_effort(None).unwrap(), None);
+        assert!(clean_effort(Some(&json!("huge"))).is_err());
+        assert!(clean_effort(Some(&json!(3))).is_err());
     }
 
     #[test]
