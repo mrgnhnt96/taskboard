@@ -346,6 +346,8 @@ pub fn clean_setup(body: &Value) -> Value {
 
 /// How many of a task's newest log entries its detail carries.
 pub const LOG_PAGE: i64 = 200;
+/// How many notes a goal's detail carries (pinned first, then newest); `notes_total` counts them all.
+pub const NOTE_PAGE: usize = 100;
 
 pub fn task_detail(app: &App, id: i64) -> Result<Value> {
     let t = board::get_task(app, id)?;
@@ -451,6 +453,8 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
     }
     let rows = board::goal_tasks(app, id)?;
     let waves = if crate::waves::uses_waves(&rows) { crate::waves::waves(app, &g, &rows)? } else { vec![] };
+    // The newest page of notes; the goal page fetches older ones from `goals/:id/notes`.
+    let (notes, _) = board::goal_notes_page(app, id, None, NOTE_PAGE)?;
     let mut shared_cards = vec![];
     for t in shared::tasks_for(app, id)? {
         shared_cards.push(board::task_card(app, &t)?);
@@ -462,7 +466,8 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
             "shared": shared_cards,
             "waves": waves,
             "qa": crate::qa::for_goal(app, id)?,
-            "notes": board::goal_notes(app, id)?.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
+            "notes": notes.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
+            "notes_total": app.db.count("SELECT COUNT(*) FROM goal_notes WHERE goal_id = ?", p![id])?,
             "backlog": backlog,
             "attachments": board::attachments(app, None, Some(id))?,
             "task_attachments": task_attachments,

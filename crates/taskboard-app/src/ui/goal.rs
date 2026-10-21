@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 mod attached;
+mod lists;
 mod pool;
 mod waves;
 
@@ -43,11 +44,14 @@ pub struct State {
     att_closed: HashMap<String, HashSet<String>>,
     notes: HashMap<String, (String, bool)>,
     busy: HashSet<String>,
+    /// The body's two lists and the notes fetched so far; started over for each goal.
+    lists: lists::Lists,
 }
 
 impl State {
     pub fn reset_for(&mut self, goal: &str) {
         self.for_goal = goal.to_string();
+        self.lists = lists::Lists::default();
         self.backlog_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "backlog");
         // Dev: `TASKBOARD_GOAL_NOTES=open|Decision|Finding|Reference` expands Notes, filtered to that kind (screenshots).
         let notes = std::env::var("TASKBOARD_GOAL_NOTES").unwrap_or_default();
@@ -410,10 +414,15 @@ pub fn note_groups(items: &[NoteItem]) -> Vec<&'static str> {
     ["Decision", "Finding", "Reference"].into_iter().filter(|k| items.iter().any(|x| x.group == *k)).collect()
 }
 
-/// The goal's notes, pinned first, then oldest first.
+/// The order the board pages a goal's notes in: pinned first, then newest.
+pub fn note_order(a: &Value, c: &Value) -> std::cmp::Ordering {
+    b(c, "pinned").cmp(&b(a, "pinned")).then_with(|| s(c, "at").cmp(s(a, "at"))).then_with(|| c["id"].as_i64().cmp(&a["id"].as_i64()))
+}
+
+/// The goal's notes, pinned first, then newest first.
 pub fn note_items(notes: &[Value]) -> Vec<NoteItem> {
     let mut list: Vec<&Value> = notes.iter().collect();
-    list.sort_by(|a, c| b(c, "pinned").cmp(&b(a, "pinned")).then_with(|| s(a, "at").cmp(s(c, "at"))));
+    list.sort_by(|a, c| note_order(a, c));
     list.into_iter()
         .map(|n| {
             let (label, tone) = match s(n, "kind") {
@@ -754,7 +763,19 @@ fn side_box(t: &Theme) -> Div {
     div().flex().flex_col().px(px(18.)).py(px(16.)).border_b_1().border_color(t.divider)
 }
 
-fn side_head(t: &Theme, title: &str, count: Option<String>) -> Div {
+/// One piece of an aside section drawn as its own list item: the first holds the section's top,
+/// the last its bottom and divider; `gap` stands for the space its column had above it.
+pub(super) fn side_piece(t: &Theme, first: bool, last: bool, gap: f32, body: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .px(px(18.))
+        .pt(px(if first { 16. } else { gap }))
+        .when(last, |d| d.pb(px(16.)).border_b_1().border_color(t.divider))
+        .child(body)
+}
+
+pub(super) fn side_head(t: &Theme, title: &str, count: Option<String>) -> Div {
     div()
         .flex()
         .items_baseline()
@@ -1074,17 +1095,10 @@ fn jira_row(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
         .child(div().flex_1().min_w_0().child(control))
 }
 
-fn notes_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
-    let items = note_items(arr(g, "notes"));
-    if items.is_empty() {
-        return None;
-    }
-    let total = items.len();
+/// The Notes head: the count and Show or Hide; open, the kind filter under it.
+fn notes_head(m: &MainWindow, t: &Theme, v: &lists::Notes, cx: &mut Context<MainWindow>) -> Div {
     let open = m.goal_page.notes_open;
-    let groups = note_groups(&items);
-    let filter = m.goal_page.note_filter.filter(|k| groups.contains(k));
-    let shown: Vec<NoteItem> = items.into_iter().filter(|x| filter.is_none_or(|k| x.group == k)).collect();
-    let count = if filter.is_some() { format!("{} of {total}", shown.len()) } else { total.to_string() };
+    let count = if v.filter.is_some() { format!("{} of {}", v.shown.len(), v.total) } else { v.total.to_string() };
     let hover = t.accent;
     let head = side_head(t, "Notes", Some(count)).child(div().flex_1()).child(
         div()
@@ -1101,32 +1115,17 @@ fn notes_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
             })),
     );
     if !open {
-        return Some(side_box(t).child(head));
+        return side_box(t).child(head);
     }
-    let mut list = div().flex().flex_col().gap(px(10.));
-    for (ix, x) in shown.into_iter().enumerate() {
-        let fg = match x.tone {
-            "goal" => t.goal,
-            "results" => t.results,
-            _ => t.muted,
-        };
-        list = list.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(fg).child(x.kind))
-                .child(div().text_size(px(13.)).line_height(relative(1.45)).child(inline_el(t, &inline_segments(&x.text), format!("gnote-{ix}")))),
-        );
-    }
-    let mut out = side_box(t).child(head.pb(px(8.)));
-    if groups.len() > 1 {
+    let mut out = side_piece(t, true, v.shown.is_empty() && !v.more, 0., head.pb(px(8.)));
+    if v.groups.len() > 1 {
+        let groups = v.groups.clone();
         let labels: Vec<&str> = std::iter::once("All").chain(groups.iter().map(|k| match *k {
             "Decision" => "Decisions",
             "Finding" => "Findings",
             _ => "References",
         })).collect();
-        let on = filter.and_then(|k| groups.iter().position(|x| *x == k)).map_or(0, |i| i + 1);
+        let on = v.filter.and_then(|k| groups.iter().position(|x| *x == k)).map_or(0, |i| i + 1);
         out = out.child(div().pb(px(10.)).child(kit::seg(t, "goal-note-kind", &labels, on, |i, item| {
             let pick = i.checked_sub(1).map(|i| groups[i]);
             item.on_click(cx.listener(move |m, _, _, cx| {
@@ -1135,58 +1134,58 @@ fn notes_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
             }))
         })));
     }
-    Some(out.child(list))
+    out
 }
 
-fn backlog_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
-    let open = open_issues(g);
-    if open.is_empty() {
-        return None;
-    }
-    let n = open.len();
-    let all = m.goal_page.backlog_view;
-    let hover = t.accent;
-    let mut list = div().flex().flex_col().gap(px(6.)).text_size(px(13.));
-    for (r, title) in open.into_iter().take(if all { usize::MAX } else { BACKLOG_SHOWN }) {
-        let target = r.clone();
-        list = list.child(
-            div()
-                .id(SharedString::from(format!("goal-issue-{r}")))
-                .flex()
-                .gap(px(8.))
-                .cursor_pointer()
-                .hover(move |s| s.text_color(hover))
-                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).pt(px(2.)).child(r))
-                .child(div().flex_1().min_w_0().truncate().child(title))
-                .on_click(cx.listener(move |m, _, _, cx| m.open_issue(target.clone(), cx))),
-        );
-    }
-    if !all && n > BACKLOG_SHOWN {
-        list = list.child(
-            kit::link(t, "goal-backlog-more", format!("{} more", n - BACKLOG_SHOWN)).text_size(px(12.)).on_click(cx.listener(|m, _, _, cx| {
-                m.goal_page.backlog_view = true;
-                cx.notify();
-            })),
-        );
-    }
-    Some(side(t, "Backlog", Some(format!("{n} open")), list))
-}
-
-fn aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
-    kit::card(t)
+/// One note, the `ix`th shown.
+fn note_piece(t: &Theme, x: &NoteItem, ix: usize, last: bool) -> Div {
+    let fg = match x.tone {
+        "goal" => t.goal,
+        "results" => t.results,
+        _ => t.muted,
+    };
+    let note = div()
         .flex()
         .flex_col()
-        .flex_none()
-        .w(px(330.))
-        .p(px(0.))
-        .gap(px(0.))
-        .overflow_hidden()
-        .child(how_runs_el(m, t, g, cx))
-        .children(notes_el(m, t, g, cx))
-        .children(attached::attachments_el(m, t, g, cx))
-        .children(pool::devices_aside(m, t, g, cx))
-        .children(pool::bits_aside(t, g))
-        .children(backlog_el(m, t, g, cx))
+        .gap(px(2.))
+        .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(fg).child(x.kind.clone()))
+        .child(div().text_size(px(13.)).line_height(relative(1.45)).child(inline_el(t, &inline_segments(&x.text), format!("gnote-{ix}"))));
+    side_piece(t, false, last, if ix == 0 { 0. } else { 10. }, note)
+}
+
+/// Under the notes while older ones are still to come.
+fn notes_more(t: &Theme, any: bool) -> Div {
+    side_piece(t, false, true, if any { 10. } else { 0. }, kit::help(t, "Loading…"))
+}
+
+fn backlog_head(t: &Theme, n: usize) -> Div {
+    side_piece(t, true, false, 0., side_head(t, "Backlog", Some(format!("{n} open"))).pb(px(8.)))
+}
+
+/// One open issue of the Backlog section, the `ix`th.
+fn issue_piece(t: &Theme, (r, title): (String, String), ix: usize, last: bool, cx: &mut Context<MainWindow>) -> Div {
+    let hover = t.accent;
+    let target = r.clone();
+    let row = div()
+        .id(SharedString::from(format!("goal-issue-{r}")))
+        .flex()
+        .gap(px(8.))
+        .text_size(px(13.))
+        .cursor_pointer()
+        .hover(move |s| s.text_color(hover))
+        .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).pt(px(2.)).child(r))
+        .child(div().flex_1().min_w_0().truncate().child(title))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_issue(target.clone(), cx)));
+    side_piece(t, false, last, if ix == 0 { 0. } else { 6. }, row)
+}
+
+/// "N more" under the first few open issues: lists them all.
+fn backlog_more(t: &Theme, more: usize, cx: &mut Context<MainWindow>) -> Div {
+    let link = kit::link(t, "goal-backlog-more", format!("{more} more")).text_size(px(12.)).on_click(cx.listener(|m, _, _, cx| {
+        m.goal_page.backlog_view = true;
+        cx.notify();
+    }));
+    side_piece(t, false, true, 6., link)
 }
 
 pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -1210,25 +1209,29 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             })
             .into_any_element();
     };
+    lists::sync(m, &g, cx);
+    // The header stays put; under it the wave cards and the aside each scroll as a list that
+    // draws only what's in view.
     div()
         .id("goal-page")
         .flex_1()
         .min_w_0()
-        .overflow_y_scroll()
+        .flex()
+        .flex_col()
         .line_height(relative(1.5))
         .child(
             div()
                 .flex()
                 .flex_col()
+                .flex_none()
                 .gap(px(16.))
                 .pt(px(20.))
                 .px(px(36.))
-                .pb(px(48.))
                 .child(crumbs(&t, &g, cx))
                 .child(header(m, &t, &g, cx))
-                .children(gate(m, &t, &g, cx))
-                .child(div().flex().items_start().gap(px(16.)).child(waves::list(m, &t, &g, cx).flex_1().min_w_0()).child(aside(m, &t, &g, cx))),
+                .children(gate(m, &t, &g, cx)),
         )
+        .child(lists::body(m, cx))
         .children(start_menu(m, &t, &g, cx))
         .children(wait_menu(m, &t, &g, cx))
         .into_any_element()
@@ -1390,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_put_pinned_first_then_oldest() {
+    fn notes_put_pinned_first_then_newest() {
         let notes = vec![
             json!({"kind": "finding", "text": "Late  one", "at": "2026-10-09T10:00:00Z", "source": "T12"}),
             json!({"kind": "reference", "text": "Old", "at": "2026-10-01T10:00:00Z"}),
@@ -1398,10 +1401,10 @@ mod tests {
         ];
         let got = note_items(&notes);
         assert_eq!(got[0], NoteItem { group: "Decision", kind: "Decision · pinned · T3".into(), tone: "goal", text: "Pinned".into() });
-        assert_eq!((got[1].kind.as_str(), got[1].tone), ("Reference", "muted"));
-        assert_eq!(got[2], NoteItem { group: "Finding", kind: "Finding · T12".into(), tone: "results", text: "Late one".into() });
+        assert_eq!(got[1], NoteItem { group: "Finding", kind: "Finding · T12".into(), tone: "results", text: "Late one".into() });
+        assert_eq!((got[2].kind.as_str(), got[2].tone), ("Reference", "muted"));
         assert_eq!(note_groups(&got), vec!["Decision", "Finding", "Reference"]);
-        assert_eq!(note_groups(&got[2..]), vec!["Finding"], "one kind: no filter to pick");
+        assert_eq!(note_groups(&got[1..2]), vec!["Finding"], "one kind: no filter to pick");
     }
 
     #[test]

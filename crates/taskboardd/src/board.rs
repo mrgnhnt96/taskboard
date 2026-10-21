@@ -1023,6 +1023,26 @@ pub fn goal_notes(app: &App, goal_id: i64) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM goal_notes WHERE goal_id = ? ORDER BY pinned DESC, at DESC, id DESC", p![goal_id])
 }
 
+/// One page of a goal's notes in `goal_notes` order (pinned first, then newest), `limit` long,
+/// after the note `before` (the last one of the page before); true when more are left.
+pub fn goal_notes_page(app: &App, goal_id: i64, before: Option<i64>, limit: usize) -> Result<(Vec<Row>, bool)> {
+    let mut sql = "SELECT * FROM goal_notes WHERE goal_id = ?".to_string();
+    let mut args = p![goal_id];
+    if let Some(b) = before {
+        if let Some(n) = app.db.q1("SELECT pinned, at FROM goal_notes WHERE id = ? AND goal_id = ?", p![b, goal_id])? {
+            let (pinned, at) = (n.v("pinned"), n.v("at"));
+            sql += " AND (pinned < ? OR (pinned = ? AND (at < ? OR (at = ? AND id < ?))))";
+            args.extend([pinned.clone(), pinned, at.clone(), at, json!(b)]);
+        }
+    }
+    sql += " ORDER BY pinned DESC, at DESC, id DESC LIMIT ?";
+    args.push(json!(limit as i64 + 1));
+    let mut rows = app.db.q(&sql, args)?;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    Ok((rows, more))
+}
+
 pub fn add_goal_note(
     app: &App,
     goal_id: i64,

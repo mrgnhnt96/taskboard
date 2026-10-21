@@ -244,69 +244,78 @@ fn files(t: &Theme, list: &[File], key: &str) -> Div {
     div().flex().flex_col().gap(px(2.)).children(list.iter().enumerate().map(|(ix, f)| file_row(t, f, format!("goal-att-{key}-{ix}"))))
 }
 
-pub(super) fn attachments_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+/// How many list items the Attached section takes: its head (the count, chips and the goal's own
+/// files) and one per wave group; none when nothing's attached.
+pub(super) fn attached_parts(m: &MainWindow, g: &Value) -> usize {
     let r = rollup(g, m.goal_page.att_filter);
-    if r.total == 0 {
-        return None;
-    }
+    if r.total == 0 { 0 } else { 1 + r.waves.len() }
+}
+
+/// Piece `k` of the Attached section (`attached_parts`): 0 is its head, then each wave group.
+pub(super) fn attached_piece(m: &MainWindow, t: &Theme, g: &Value, k: usize, cx: &mut Context<MainWindow>) -> Div {
+    let r = rollup(g, m.goal_page.att_filter);
+    let last = k == r.waves.len();
     let gr = s(g, "ref").to_string();
     let shut = m.goal_page.att_closed.get(&gr).cloned().unwrap_or_default();
     let mut out = div().flex().flex_col().gap(px(10.));
-    if r.chips() {
-        let mut row = div().flex().flex_wrap().gap(px(6.));
-        for (ix, (f, label)) in FILTERS.iter().enumerate() {
-            let n = r.counts[ix];
-            if n == 0 {
-                continue;
+    let Some(w) = k.checked_sub(1).and_then(|k| r.waves.get(k)) else {
+        if r.chips() {
+            let mut row = div().flex().flex_wrap().gap(px(6.));
+            for (ix, (f, label)) in FILTERS.iter().enumerate() {
+                let n = r.counts[ix];
+                if n == 0 {
+                    continue;
+                }
+                let f = *f;
+                row = row.child(chip(t, format!("goal-att-chip-{ix}"), format!("{label} {n}"), r.filter == f).on_click(cx.listener(move |m, _, _, cx| {
+                    m.goal_page.att_filter = f;
+                    cx.notify();
+                })));
             }
-            let f = *f;
-            row = row.child(chip(t, format!("goal-att-chip-{ix}"), format!("{label} {n}"), r.filter == f).on_click(cx.listener(move |m, _, _, cx| {
-                m.goal_page.att_filter = f;
-                cx.notify();
-            })));
+            out = out.child(row);
         }
-        out = out.child(row);
-    }
-    if !r.goal.is_empty() {
-        let label = div().pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.muted).child("GOAL");
-        out = out.child(div().flex().flex_col().gap(px(4.)).child(label).child(files(t, &r.goal, "goal")));
-    }
-    for w in &r.waves {
-        let open = !shut.contains(&w.key);
-        let mut tasks = div().flex().flex_col().gap(px(6.));
-        for tg in &w.tasks {
-            let topen = !shut.contains(&tg.r);
-            let r2 = tg.r.clone();
-            let head = toggle(t, &gr, &tg.r, topen, cx)
-                .child(
-                    div()
-                        .id(SharedString::from(format!("goal-att-ref-{}", tg.r)))
-                        .flex_none()
-                        .text_size(px(11.))
-                        .font_family(t.mono_font.clone())
-                        .text_color(t.muted)
-                        .cursor_pointer()
-                        .hover(|s| s.underline())
-                        .child(tg.r.clone())
-                        .on_click(cx.listener(move |m, _, _, cx| {
-                            cx.stop_propagation();
-                            m.open_task(r2.clone(), cx);
-                        })),
-                )
-                .child(div().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(t.text_2).child(tg.title.clone()))
-                .child(count(t, tg.files.len()));
-            tasks = tasks.child(div().flex().flex_col().gap(px(2.)).child(head).when(topen, |d| d.child(files(t, &tg.files, &tg.r).pl(px(16.)))));
+        if !r.goal.is_empty() {
+            let label = div().pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.muted).child("GOAL");
+            out = out.child(div().flex().flex_col().gap(px(4.)).child(label).child(files(t, &r.goal, "goal")));
         }
-        out = out.child(match &w.label {
-            Some(label) => {
-                let head = toggle(t, &gr, &w.key, open, cx).child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(label.clone())).child(count(t, w.count()));
-                div().flex().flex_col().gap(px(6.)).pt(px(10.)).border_t_1().border_color(t.divider).child(head).when(open, |d| d.child(tasks.pl(px(18.))))
-            }
-            None => tasks,
-        });
+        let n = if r.filter == Filter::All { r.total.to_string() } else { format!("{} of {}", r.shown(), r.total) };
+        return side_piece(t, true, last, 0., side_head(t, "Attached", Some(n)).pb(px(8.))).child(out);
+    };
+    let open = !shut.contains(&w.key);
+    let mut tasks = div().flex().flex_col().gap(px(6.));
+    for tg in &w.tasks {
+        let topen = !shut.contains(&tg.r);
+        let r2 = tg.r.clone();
+        let head = toggle(t, &gr, &tg.r, topen, cx)
+            .child(
+                div()
+                    .id(SharedString::from(format!("goal-att-ref-{}", tg.r)))
+                    .flex_none()
+                    .text_size(px(11.))
+                    .font_family(t.mono_font.clone())
+                    .text_color(t.muted)
+                    .cursor_pointer()
+                    .hover(|s| s.underline())
+                    .child(tg.r.clone())
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        cx.stop_propagation();
+                        m.open_task(r2.clone(), cx);
+                    })),
+            )
+            .child(div().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(t.text_2).child(tg.title.clone()))
+            .child(count(t, tg.files.len()));
+        tasks = tasks.child(div().flex().flex_col().gap(px(2.)).child(head).when(topen, |d| d.child(files(t, &tg.files, &tg.r).pl(px(16.)))));
     }
-    let n = if r.filter == Filter::All { r.total.to_string() } else { format!("{} of {}", r.shown(), r.total) };
-    Some(side(t, "Attached", Some(n), out))
+    let body = match &w.label {
+        Some(label) => {
+            let head = toggle(t, &gr, &w.key, open, cx).child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(label.clone())).child(count(t, w.count()));
+            div().flex().flex_col().gap(px(6.)).pt(px(10.)).border_t_1().border_color(t.divider).child(head).when(open, |d| d.child(tasks.pl(px(18.))))
+        }
+        None => tasks,
+    };
+    // The head's column kept a 10px gap before its first group, none when it had nothing under it.
+    let gap = if k == 1 && !r.chips() && r.goal.is_empty() { 0. } else { 10. };
+    side_piece(t, false, last, gap, body)
 }
 
 // ------------------------------------------------------------------ hover card

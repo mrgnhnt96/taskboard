@@ -272,24 +272,34 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .child(div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(x.row.age))
 }
 
-/// The goal's wave cards.
-pub fn list(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
-    let gr = fmt::ref_of(g, "G");
-    let mut out = div().flex().flex_col().gap(px(12.));
-    for c in cards(g) {
-        let mut card = div().id(SharedString::from(format!("goal-wave-{}", c.key))).flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
-        if let Some(h) = c.head {
-            card = card.child(head_el(t, h));
-        }
-        if let Some(g) = c.gate {
-            card = card.child(gate_el(m, t, &gr, g, cx));
-        }
-        for r in c.rows {
-            card = card.child(row_el(t, r, cx));
-        }
-        out = out.child(card);
-    }
-    out
+/// How many list items card `c` takes: its header (with its gate) when it has one, then each row.
+pub fn pieces(c: &Card) -> usize {
+    (c.head.is_some() || c.gate.is_some()) as usize + c.rows.len()
+}
+
+/// Piece `k` of card `c` (`pieces`) as a list item: the card's border down its sides, its top edge
+/// and corners on the first piece, its bottom ones on the last, and 12px above every card but the first.
+pub fn piece(m: &MainWindow, t: &Theme, gr: &str, cards: &[Card], c: usize, k: usize, cx: &mut Context<MainWindow>) -> AnyElement {
+    let card = &cards[c];
+    let head = (card.head.is_some() || card.gate.is_some()) as usize;
+    let (top, bottom) = (k == 0, k + 1 == pieces(card));
+    let body = match k.checked_sub(head) {
+        Some(r) => row_el(t, card.rows[r].clone(), cx).into_any_element(),
+        None => div().flex().flex_col().children(card.head.clone().map(|h| head_el(t, h))).children(card.gate.clone().map(|g| gate_el(m, t, gr, g, cx))).into_any_element(),
+    };
+    let edge = div()
+        .flex()
+        .flex_col()
+        .border_l_1()
+        .border_r_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .overflow_hidden()
+        .when(top, |d| d.border_t_1().rounded_t(px(12.)))
+        .when(bottom, |d| d.border_b_1().rounded_b(px(12.)))
+        .child(body);
+    let edge = if top { edge.id(SharedString::from(format!("goal-wave-{}", card.key))).into_any_element() } else { edge.into_any_element() };
+    div().when(top && c > 0, |d| d.pt(px(12.))).child(edge).into_any_element()
 }
 
 /// "Continue to wave 2": `POST goals/:g/waves/:n/continue`; "The goal goes on" under the gate.
