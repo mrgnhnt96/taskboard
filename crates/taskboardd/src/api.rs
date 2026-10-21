@@ -268,13 +268,13 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "pr", "reviewers"]) => crate::asks::pr_reviewers(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reviewed"]) => {
             let t = tid(id)?;
-            // The owner's review is their word: only the app's button marks it.
-            if !from_app(query) {
-                return err(403, "Only the owner marks a PR reviewed, from its task page.");
-            }
+            // The owner's review is their word: the app's button, or `tb pr reviewed` from the owner (or an
+            // agent on the owner's word in its terminal).
+            let who = if from_app(query) { app.cfg.owner.clone() } else { crate::prcmds::reviewed_by(app, t, body)? };
             app.db.tx(|| {
-                board::get_task(app, t)?;
+                let row = board::get_task(app, t)?;
                 prflow::merge_flow(app, t, fields!["reviewed" => now_iso()])?;
+                board::log_event(app, t, &who, "status", &format!("PR #{}: marked reviewed", row.i0("pr_num")))?;
                 alerts::clear_alerts(app, Some(t), None)?;
                 alerts::prune_alerts(app)
             })?;

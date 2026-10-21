@@ -584,7 +584,7 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "build_url": str|null,       // the link of the newest check by its updated/created time (failed, else running, else any), else the PR's checks page
     "checks": "not_needed"|"none_yet"|"skipped"|"not_ours"|null,   // no checks at all / none yet while it waits on its base / this push's checks skipped (a hook, tb pr skip-checks) / its failures cleared (`tb pr not-ours`)
     "checks_why": str|null,      // why they were skipped
-    "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
+    "you": "waiting"|"early"|"reviewed"|"skipped"|"off"|null,   // the owner's own look: a green PR waits for them / not green yet, they may mark it now / they marked it / review skipped / owner review is off
     "approvals": int, "reviewers": int,           // approvals; reviewers = approvals + reviewers still asked
     "need": int|null,            // approvals the PR needs (the project's `approvals`, else `pr.approvals`): the Review step and the
                                  // home tile show "1 of 2" against it, Done at approvals >= need; null: the host's verdict decides ("x of reviewers")
@@ -654,7 +654,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
 | `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", stack_merge: "head"\|"tail", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--stack-merge`, `--pr`, `--no-pr`. `stack_merge` needs a stack parent (400 otherwise). `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. In the same goal, when both have a wave, the parent has to be in an earlier wave (409 otherwise, also when a `wave` change would break that). `ships_pr` "auto" (or null) goes back to the project's default. |
-| `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. Only from the app (`X-Task-Board-From: app`): any other caller gets 403 "Only the owner marks a PR reviewed, from its task page." and the stage stays as it was. |
+| `POST /tasks/:id/pr/reviewed` | `{agent?: bool, via_session?: str}` | "I reviewed it": the owner looked at the PR, at any open stage (before it's green too: the ask stage goes on once checks pass); logs "PR #N: marked reviewed" and clears its alerts. From the app (`X-Task-Board-From: app`) or the owner's own `tb pr reviewed`. An agent's `tb` (`agent: true`) needs the owner's word in terminal `via_session` that they reviewed it ("mark PR #N reviewed", by number, task or "the PR"), else 403 "Only <owner> marks a PR reviewed, and they haven't told you in this terminal…" and the stage stays as it was; with it, the log names the terminal. |
 | `POST /done/close-terminals` | `{project?, goal?}` | Close every done task's still-open terminal (no force; a busy one is left), within a project or goal when given: `tb close --done` (on the owner's word). **Response read:** `jobs` (how many close). |
 
 **The app's own requests.** `X-Task-Board-From: app` marks a request as the owner's own click in Taskboard.app

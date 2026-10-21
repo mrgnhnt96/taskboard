@@ -729,8 +729,8 @@ fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
     poll(&b);
     assert_eq!(b.phase(id), "review");
     assert!(pr_jobs(&b, id).is_empty());
-    let e = b.try_post(&format!("/tasks/{id}/pr/reviewed"), json!({})).unwrap_err();
-    assert_eq!(e, "Only the owner marks a PR reviewed, from its task page.");
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewed"), json!({"agent": true, "via_session": "s1"})).unwrap_err();
+    assert!(e.starts_with("Only ") && e.contains("haven't told you"), "{e}");
     assert_eq!(b.phase(id), "review", "an agent can't mark the owner's review");
     b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask");
