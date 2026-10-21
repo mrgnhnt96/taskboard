@@ -58,6 +58,17 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "Commit or stash your changes first." >&2
   exit 1
 fi
+# main only takes PRs. The release commit is the one direct push, made with a deploy key
+# the repo's main-branch ruleset lets past. Set it up: README.md, "Developing".
+deploy_key=${TB_RELEASE_DEPLOY_KEY:-$HOME/.ssh/taskboard-release}
+if [ ! -f "$deploy_key" ]; then
+  echo "No release deploy key at $deploy_key (see README.md, \"Developing\")." >&2
+  exit 1
+fi
+push() {
+  GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes" git push git@github.com:mrgnhnt96/taskboard.git "$@"
+  git fetch -q origin
+}
 git fetch --tags origin
 replace=
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
@@ -94,9 +105,9 @@ if [ -n "$replace" ]; then
     echo "Deleting the failed run's GitHub release $tag."
     gh release delete "$tag" --yes
   fi
-  git push origin "$branch" "+refs/tags/$tag:refs/tags/$tag"
+  push "$branch" "+refs/tags/$tag:refs/tags/$tag"
 else
-  git push origin "$branch" "$tag"
+  push "$branch" "$tag"
 fi
 
 # The release job's own page, which shows when it's done; the workflow page if it doesn't show up
