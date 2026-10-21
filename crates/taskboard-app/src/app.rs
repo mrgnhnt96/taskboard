@@ -989,7 +989,11 @@ impl Wants {
             let backlog = self.backlog.then(|| s.spawn(move || get("backlog", &[("state", "all".into())])));
             let reviews = self.review.map(|id| {
                 s.spawn(move || {
-                    let list = get("reviews", &[]);
+                    let mut list = get("reviews", &[]);
+                    // Before the first review the page shows this week so far, kept on the list as `this_week`.
+                    if let Ok(l) = list.as_mut() && arr(l, "reviews").is_empty() {
+                        l["this_week"] = get("reviews/now", &[("week", "this".into())]).unwrap_or(Value::Null);
+                    }
                     let newest = list.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
                     let one = id.or(newest).map(|id| (id, get(&format!("reviews/{id}"), &[])));
                     (list, one)

@@ -84,7 +84,9 @@ fn report_counts_categories_repeats_timeouts_reruns_and_owner_wait() {
     add_state(&app, 7, t0 + 3600.0, "working", "");
     add_state(&app, 8, t0, "needs", "lost");
 
-    let r = get(&app, "reviews/now")["data"].clone();
+    let now = get(&app, "reviews/now");
+    assert!(now["period_start"].is_string() && now["period_end"].is_string(), "{now}");
+    let r = now["data"].clone();
     assert_eq!(r["seconds"], 810.0, "the subagent wrapper and refused calls aren't counted");
     assert_eq!(r["categories"], json!([{"name": "build", "seconds": 600.0}, {"name": "test", "seconds": 210.0}]));
     assert_eq!(r["projects"][0]["name"], "webapp");

@@ -187,6 +187,19 @@ pub fn current(m: &MainWindow) -> Option<i64> {
     m.review.id.or_else(|| m.data.reviews.as_ref().and_then(|l| arr(l, "reviews").first()).and_then(|r| r["id"].as_i64()))
 }
 
+/// The first review's day and time ("Friday, Oct 23 · 5:00 PM") and how far off it is ("in 3 days"),
+/// from `GET /reviews`' `next`; `None` while the schedule is off.
+pub fn first_review(next: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(String, String)> {
+    let at = fmt::local(fmt::parse(next)?);
+    let today = fmt::local(now).date_naive();
+    let away = match (at.date_naive() - today).num_days() {
+        ..=0 => "today".to_string(),
+        1 => "tomorrow".to_string(),
+        n => format!("in {n} days"),
+    };
+    Some((at.format("%A, %b %-d · %-I:%M %p").to_string(), away))
+}
+
 // ------------------------------------------------------------------ actions
 
 /// Open review `id` (`None`: the newest), from a link, Home or the Days page.
@@ -260,19 +273,195 @@ fn lines(t: &Theme, key: &str, title: &str, list: &[Line], mono: bool, cx: &mut 
     (!list.is_empty()).then(|| section(t, title).children(list.iter().enumerate().map(|(n, l)| line_el(t, format!("review-{key}-{n}"), l, mono, cx))))
 }
 
+/// Day | Week: the Days page and the weekly review, from either one.
+pub fn day_week(t: &Theme, week: bool, cx: &mut Context<MainWindow>) -> Div {
+    kit::seg(t, "day-week", &["Day", "Week"], week as usize, |i, item| {
+        item.on_click(cx.listener(move |m, _, _, cx| match (i, m.page == Page::Review) {
+            (0, true) => m.go(Page::Days, cx),
+            (1, false) => open(m, None, cx),
+            _ => {}
+        }))
+    })
+}
+
+/// A review's sections: where the time went on the left; fixes, waiting and projects in the rail.
+fn body(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Div {
+    // ---- where the time went
+    let cats = (!v.categories.is_empty()).then(|| {
+        section(t, "By category").children(v.categories.iter().map(|(name, took, share)| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(div().w(px(130.)).flex_none().text_size(px(13.)).child(name.clone()))
+                .child(div().flex_1().h(px(8.)).rounded_full().bg(t.seg).child(div().h_full().rounded_full().w(relative(share.clamp(0.0, 1.0))).bg(t.accent)))
+                .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_align(TextAlign::Right).child(took.clone()))
+                .child(div().w(px(40.)).flex_none().text_size(px(12.)).text_color(t.muted).text_align(TextAlign::Right).child(format!("{:.0}%", share * 100.0)))
+        }))
+    });
+    let wait = v.wait.clone().map(|(time, why)| {
+        section(t, "Waiting on you").child(div().text_size(px(13.)).child(div().font_weight(FontWeight::SEMIBOLD).child(sel(t, "review-wait-time", time))).child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, "review-wait-why", why))))
+    });
+
+    // ---- suggested fixes
+    let refs = v.plan();
+    let mut fixes = section(t, "Suggested fixes");
+    if !refs.is_empty() {
+        let n = refs.len();
+        fixes = fixes.child(
+            div().flex().child(kit::btn_primary(t, "review-plan", "Plan a goal").tooltip(kit::tip(format!("Check {} on the Backlog page", fmt::plural(n as i64, "fix", "fixes")))).on_click(
+                cx.listener(move |m, _, _, cx| plan(m, refs.clone(), cx)),
+            )),
+        );
+    }
+    fixes = fixes.children(v.fixes.iter().map(|f| {
+        let r = f.r.clone();
+        div()
+            .id(SharedString::from(format!("review-fix-{}", f.r)))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .py(px(4.))
+            .px(px(6.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(|d| d.bg(t.panel_2))
+            .child(kit::mono(t, f.r.clone()).flex_none())
+            .child(div().flex_1().min_w_0().text_size(px(13.)).overflow_hidden().text_ellipsis().child(f.title.clone()))
+            .when(!f.kind.is_empty(), |d| d.child(kit::chip(t, f.kind.clone())))
+            .when(!f.went.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).child(f.went.clone())))
+            .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
+    }));
+    fixes = fixes.children(v.fixes_note.clone().map(|n| div().text_size(px(13.)).text_color(t.muted).child(sel(t, "review-fixes-note", n))));
+    fixes = fixes.children(
+        v.suggestions.iter().enumerate().map(|(n, (title, detail))| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(sel(t, SharedString::from(format!("review-sugg-title-{n}")), title.clone())))
+                .child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, SharedString::from(format!("review-sugg-detail-{n}")), detail.clone())))
+        }),
+    );
+    let has_fixes = !v.fixes.is_empty() || v.fixes_note.is_some() || !v.suggestions.is_empty();
+
+    let left = div()
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .flex_1()
+        .min_w(px(420.))
+        .children(cats)
+        .children(lines(t, "slow", "Slowest tasks", &v.slowest, false, cx))
+        .children(lines(t, "rep", "Slowest repeated commands", &v.repeated, true, cx))
+        .children(lines(t, "to", "Timeouts", &v.timeouts, true, cx))
+        .children(lines(t, "rerun", "Failed, then rerun", &v.reruns, true, cx));
+    let rail = div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .w(px(340.))
+        .flex_none()
+        .when(has_fixes, |d| d.child(fixes))
+        .children(wait)
+        .children(lines(t, "proj", "By project", &v.projects, false, cx));
+    div().flex().flex_wrap().items_start().gap(px(16.)).child(left).child(rail)
+}
+
+fn page(header: Div) -> Div {
+    div().flex().flex_col().gap(px(16.)).w_full().px(px(28.)).py(px(22.)).child(header)
+}
+
+fn header(t: &Theme, title: String, sub: String, nav: Div) -> Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(14.))
+        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(sel(t, "review-period", title)))
+        .child(div().text_size(px(14.)).text_color(t.text_2).child(sel(t, "review-total", sub)))
+        .child(div().flex_1())
+        .child(nav)
+}
+
+/// Before the first review: when it comes, and this week so far with the review's own sections.
+fn first_week(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
+    let list = m.data.reviews.as_ref();
+    let next = list.and_then(|l| first_review(s(l, "next"), chrono::Utc::now()));
+    let week = list.map(|l| &l["this_week"]).filter(|w| w["data"].is_object());
+    let v = week.map(view);
+    let tracked = v.as_ref().is_some_and(|v| !v.categories.is_empty());
+    let sub = match &v {
+        Some(v) if tracked => format!("{} of agent time so far", v.total),
+        _ => String::new(),
+    };
+    let title = v.as_ref().filter(|_| tracked).map_or("This week".to_string(), |v| v.period.clone());
+
+    // ---- when the first review comes: the week's days up to it, today and the review day marked
+    let strip = |at: chrono::NaiveDate| {
+        let start = week.and_then(|w| fmt::parse(s(w, "period_start"))).map(|t| fmt::local(t).date_naive());
+        let today = fmt::local(chrono::Utc::now()).date_naive();
+        let first = start.unwrap_or(today).min(at);
+        div().flex().gap(px(6.)).children((0..7).map(|k| first + chrono::Duration::days(k)).map(|d| {
+            let (fg, bg, border) = if d == at {
+                (t.accent_fg, t.accent_soft, t.accent)
+            } else if d == today {
+                (t.text, t.panel_2, t.border_2)
+            } else if d < today {
+                (t.muted, t.seg, t.seg)
+            } else {
+                (t.faint, t.card, t.border)
+            };
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(1.))
+                .w(px(40.))
+                .h(px(44.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(border)
+                .bg(bg)
+                .text_color(fg)
+                .child(div().text_size(px(10.5)).font_weight(FontWeight::MEDIUM).child(d.format("%a").to_string()))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(d.format("%-d").to_string()))
+        }))
+    };
+    let next_at = list.and_then(|l| fmt::parse(s(l, "next"))).map(|t| fmt::local(t).date_naive());
+    let callout = kit::card(t).flex_row().flex_wrap().px(px(20.)).py(px(16.)).items_center().justify_between().gap(px(16.)).child(match &next {
+        Some((when, away)) => div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).child(format!("First review {away}")))
+            .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(sel(t, "review-first-at", when.clone()))),
+        None => div().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Weekly reviews are off"),
+    });
+    let callout = callout.children(next_at.map(strip));
+
+    let content = match v.filter(|_| tracked) {
+        Some(v) => body(t, &v, cx),
+        None => kit::card(t).flex().flex_col().items_center().gap(px(6.)).py(px(36.)).child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("No agent time this week yet"))
+            .children(m.data.errs.review.clone().map(|e| div().text_size(px(13.)).text_color(t.muted).child(e))),
+    };
+    page(header(t, title, sub, day_week(t, true, cx))).child(callout).child(content)
+}
+
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let shell = div().id("review-page").flex().flex_col().flex_1().min_w_0().size_full().overflow_y_scroll();
     let list: Vec<Value> = m.data.reviews.as_ref().map(|l| arr(l, "reviews").to_vec()).unwrap_or_default();
+    if m.data.reviews.is_some() && list.is_empty() {
+        return shell.child(first_week(m, &t, cx)).into_any_element();
+    }
     let want = current(m);
     let shown = m.data.review.clone().filter(|r| r["id"].as_i64().is_some() && r["id"].as_i64() == want);
     let Some(r) = shown else {
-        let msg = match (&m.data.errs.review, &m.data.reviews) {
-            (Some(e), _) => e.clone(),
-            (None, Some(_)) if list.is_empty() => "No reviews yet".into(),
-            _ => "Loading…".into(),
-        };
-        return shell.child(div().p(px(28.)).child(kit::empty(&t, msg))).into_any_element();
+        let msg = m.data.errs.review.clone().unwrap_or_else(|| "Loading…".into());
+        let nav = div().flex().child(day_week(&t, true, cx));
+        return shell.child(page(header(&t, String::new(), String::new(), nav)).child(kit::empty(&t, msg))).into_any_element();
     };
     mark_seen(m, &r, cx);
     let v = view(&r);
@@ -298,96 +487,9 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .child(kit::btn(&t, "review-week-btn", "Weeks  ▾").on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
             let p = e.position();
             m.toggle_menu(MENU_WEEK, point(p.x - px(160.), p.y + px(14.)), cx);
-        })));
-    let header = div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(14.))
-        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(sel(&t, "review-period", v.period.clone())))
-        .child(div().text_size(px(14.)).text_color(t.text_2).child(sel(&t, "review-total", format!("{} of agent time", v.total))))
-        .child(div().flex_1())
-        .child(nav);
-
-    // ---- where the time went
-    let cats = (!v.categories.is_empty()).then(|| {
-        section(&t, "By category").children(v.categories.iter().map(|(name, took, share)| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(div().w(px(130.)).flex_none().text_size(px(13.)).child(name.clone()))
-                .child(div().flex_1().h(px(8.)).rounded_full().bg(t.seg).child(div().h_full().rounded_full().w(relative(share.clamp(0.0, 1.0))).bg(t.accent)))
-                .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_align(TextAlign::Right).child(took.clone()))
-                .child(div().w(px(40.)).flex_none().text_size(px(12.)).text_color(t.muted).text_align(TextAlign::Right).child(format!("{:.0}%", share * 100.0)))
-        }))
-    });
-    let wait = v.wait.clone().map(|(time, why)| {
-        section(&t, "Waiting on you").child(div().text_size(px(13.)).child(div().font_weight(FontWeight::SEMIBOLD).child(sel(&t, "review-wait-time", time))).child(div().text_size(px(12.)).text_color(t.muted).child(sel(&t, "review-wait-why", why))))
-    });
-
-    // ---- suggested fixes
-    let refs = v.plan();
-    let mut fixes = section(&t, "Suggested fixes");
-    if !refs.is_empty() {
-        let n = refs.len();
-        fixes = fixes.child(
-            div().flex().child(kit::btn_primary(&t, "review-plan", "Plan a goal").tooltip(kit::tip(format!("Check {} on the Backlog page", fmt::plural(n as i64, "fix", "fixes")))).on_click(
-                cx.listener(move |m, _, _, cx| plan(m, refs.clone(), cx)),
-            )),
-        );
-    }
-    fixes = fixes.children(v.fixes.iter().map(|f| {
-        let r = f.r.clone();
-        div()
-            .id(SharedString::from(format!("review-fix-{}", f.r)))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .py(px(4.))
-            .px(px(6.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .hover(|d| d.bg(t.panel_2))
-            .child(kit::mono(&t, f.r.clone()).flex_none())
-            .child(div().flex_1().min_w_0().text_size(px(13.)).overflow_hidden().text_ellipsis().child(f.title.clone()))
-            .when(!f.kind.is_empty(), |d| d.child(kit::chip(&t, f.kind.clone())))
-            .when(!f.went.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).child(f.went.clone())))
-            .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
-    }));
-    fixes = fixes.children(v.fixes_note.clone().map(|n| div().text_size(px(13.)).text_color(t.muted).child(sel(&t, "review-fixes-note", n))));
-    fixes = fixes.children(
-        v.suggestions.iter().enumerate().map(|(n, (title, detail))| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(sel(&t, SharedString::from(format!("review-sugg-title-{n}")), title.clone())))
-                .child(div().text_size(px(12.)).text_color(t.muted).child(sel(&t, SharedString::from(format!("review-sugg-detail-{n}")), detail.clone())))
-        }),
-    );
-    let has_fixes = !v.fixes.is_empty() || v.fixes_note.is_some() || !v.suggestions.is_empty();
-
-    let left = div()
-        .flex()
-        .flex_col()
-        .gap(px(16.))
-        .flex_1()
-        .min_w(px(420.))
-        .children(cats)
-        .children(lines(&t, "slow", "Slowest tasks", &v.slowest, false, cx))
-        .children(lines(&t, "rep", "Slowest repeated commands", &v.repeated, true, cx))
-        .children(lines(&t, "to", "Timeouts", &v.timeouts, true, cx))
-        .children(lines(&t, "rerun", "Failed, then rerun", &v.reruns, true, cx));
-    let rail = div()
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .w(px(340.))
-        .flex_none()
-        .when(has_fixes, |d| d.child(fixes))
-        .children(wait)
-        .children(lines(&t, "proj", "By project", &v.projects, false, cx));
+        })))
+        .child(day_week(&t, true, cx));
+    let header = header(&t, v.period.clone(), format!("{} of agent time", v.total), nav);
 
     let mut menus: Vec<AnyElement> = vec![];
     if let Some(at) = m.menu_open(MENU_WEEK) {
@@ -401,18 +503,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     }
 
     shell
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(16.))
-                .w_full()
-                .px(px(28.))
-                .py(px(22.))
-                .child(header)
-                .children(v.change.clone().map(|c| div().text_size(px(13.)).text_color(t.text_2).child(c)))
-                .child(div().flex().flex_wrap().items_start().gap(px(16.)).child(left).child(rail)),
-        )
+        .child(page(header).children(v.change.clone().map(|c| div().text_size(px(13.)).text_color(t.text_2).child(c))).child(body(&t, &v, cx)))
         .children(menus)
         .into_any_element()
 }
@@ -459,6 +550,17 @@ mod tests {
         assert_eq!(v.timeouts[0].sub, "2 timeouts");
         assert_eq!(v.reruns[0].sub, "T12 · 3 runs, then passed");
         assert_eq!(v.wait, Some(("1.5 h".into(), "question 1.0 h, review 30 min".into())));
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_first_review_says_when_and_how_far_off() {
+        let next = fmt::parse("2026-10-23T17:00:00Z").unwrap();
+        let (when, away) = first_review("2026-10-23T17:00:00Z", next - chrono::Duration::days(3)).unwrap();
+        assert_eq!(when, fmt::local(next).format("%A, %b %-d · %-I:%M %p").to_string());
+        assert_eq!(away, "in 3 days");
+        assert_eq!(first_review("2026-10-23T17:00:00Z", next - chrono::Duration::days(1)).unwrap().1, "tomorrow");
+        assert_eq!(first_review("2026-10-23T17:00:00Z", next).unwrap().1, "today");
+        assert_eq!(first_review("", next), None, "the schedule is off");
     }
 
     #[::core::prelude::v1::test]
