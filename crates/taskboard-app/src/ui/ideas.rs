@@ -137,6 +137,7 @@ pub fn is_open(i: &Value) -> bool {
 pub struct Row {
     pub r: String,
     pub title: String,
+    pub project: String,
     pub verdict: Option<(&'static str, &'static str)>,
     pub state: (&'static str, &'static str),
     /// When it last changed.
@@ -168,6 +169,7 @@ fn groups_of(ideas: &[&Value], picked: &str, now: DateTime<Utc>) -> Vec<(String,
                 .map(|i| Row {
                     r: fmt::ref_of(i, "I"),
                     title: s(i, "title").to_string(),
+                    project: p.clone(),
                     verdict: verdict_pill(&i["verdict"]),
                     state: state_pill(i),
                     when: fmt::parse(s(i, "updated_at")).map(|t| cut_at(t, now)).unwrap_or_default(),
@@ -355,6 +357,7 @@ fn row(t: &Theme, row: &Row, first: bool, cx: &mut Context<MainWindow>) -> State
         .when(row.put_away, |d| d.opacity(0.6))
         .child(div().flex_none().w(px(36.)).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(row.r.clone()))
         .child(div().min_w_0().flex_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).truncate().child(row.title.clone()))
+        .child(kit::chip(t, row.project.clone()))
         .children(row.verdict.map(|(label, tone)| kit::tone_pill(t, tone, label)))
         .child(kit::tone_pill(t, row.state.1, row.state.0))
         .child(div().flex_none().w(px(140.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(row.when.clone()))
@@ -555,6 +558,7 @@ mod tests {
         assert_eq!(names("web"), ["web"]);
         // A project without ideas falls back to every one.
         assert_eq!(names("kass"), ["api", "web"]);
+        assert!(groups(&list, "all", now).iter().all(|(p, rows)| rows.iter().all(|r| &r.project == p)), "each row carries its project");
         assert_eq!(tabs(&list), [("api".to_string(), 1), ("web".to_string(), 1)]);
     }
 
