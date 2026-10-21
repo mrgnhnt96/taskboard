@@ -7,19 +7,28 @@
 //! each with a key. Claude plans the goal's waves when asked (`POST /backlog/plan`); checking more
 //! afterwards asks for a re-plan, removing one doesn't. Create makes the goal
 //! (`POST /backlog/goal`): one planned task per issue, in its wave. Starting it is on its goal page.
+//!
+//! The list comes a page at a time, newest first, and draws only the lines in view: an older page is
+//! asked for as it nears its end, so its issues join their groups then.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
 use crate::ui::issue_panel as ip;
 use crate::ui::kit;
+use crate::ui::paged::Paged;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const SYNC_EVERY: Duration = Duration::from_secs(3);
 /// While Claude plans, ask for the plan this often.
 const PLAN_EVERY: Duration = Duration::from_millis(1500);
+/// Issues per page of `GET /backlog/triage`.
+pub const PAGE: usize = 100;
+/// Ask for the next page this many lines before the list's end.
+const AHEAD: usize = 40;
 const KINDS: [&str; 4] = ["bug", "gap", "follow", "clean"];
 const MENU_MOVE: &str = "plan-move";
 const MENU_PRIO: &str = "plan-prio";
@@ -64,8 +73,12 @@ pub struct State {
     /// Checked issues, in the order checked: the new goal's issues and the bar's selection.
     pub picked: Vec<String>,
     focus: Option<FocusHandle>,
-    /// `GET /backlog/triage` and `GET /backlog/plan`.
+    /// `GET /backlog/triage`'s first page (the counts and projects) and `GET /backlog/plan`.
     data: Option<Value>,
+    /// The issues held so far, page by page.
+    held: Paged,
+    list: Option<ListState>,
+    view: Option<View>,
     err: Option<String>,
     plan: Option<Value>,
     synced: Option<Instant>,
@@ -83,6 +96,9 @@ impl Default for State {
             picked: vec![],
             focus: None,
             data: None,
+            held: Paged::default(),
+            list: None,
+            view: None,
             err: None,
             plan: None,
             synced: None,
@@ -94,6 +110,26 @@ impl Default for State {
 }
 
 // ------------------------------------------------------------------ view model
+
+/// One line of the list: each is drawn only while it's in view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Line {
+    Help,
+    Empty,
+    Grouping,
+    Group(usize),
+    Row(usize, usize),
+    End,
+}
+
+/// The grouped issues and the list's lines, rebuilt when the issues, lens, kinds or checks change.
+struct View {
+    key: (u64, Lens, [bool; 4], Vec<String>),
+    project: String,
+    groups: Rc<Vec<GroupView>>,
+    lines: Vec<Line>,
+    more: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Check {
@@ -293,8 +329,8 @@ pub fn enter(m: &mut MainWindow) {
     m.backlog.just_made = None;
 }
 
-fn issues(m: &MainWindow) -> Vec<Value> {
-    m.backlog.data.as_ref().map(|d| arr(d, "issues").to_vec()).unwrap_or_default()
+fn issues(m: &MainWindow) -> Rc<Vec<Value>> {
+    m.backlog.held.rows.clone()
 }
 
 /// The checked issues still on the page.
@@ -313,11 +349,13 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     m.backlog.generation += 1;
     let generation = m.backlog.generation;
     let project = m.backlog.project.clone();
+    // Any issue held can be triaged or changed elsewhere, so a refresh asks for them all again.
+    let recheck = m.backlog.held.recheck(|_| true);
     let backend = m.backend.clone();
     cx.spawn(async move |this, cx| {
         let got = cx
             .background_executor()
-            .spawn(async move { (backend.get("backlog/triage", &[("project", project)]), backend.get("backlog/plan", &[])) })
+            .spawn(async move { (Paged::fetch(&*backend, "backlog/triage", "issues", &[("project", project)], PAGE, recheck), backend.get("backlog/plan", &[])) })
             .await;
         let _ = this.update(cx, |m, cx| {
             if m.backlog.generation != generation {
@@ -325,11 +363,12 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             }
             let (list, plan) = got;
             match list {
-                Ok(v) => {
-                    m.backlog.data = Some(v);
+                Ok(f) => {
+                    m.backlog.data = Some(f.first().clone());
+                    m.backlog.held.land("issues", f);
                     m.backlog.err = None;
                 }
-                Err(e) => m.backlog.err = Some(e.message),
+                Err(e) => m.backlog.err = Some(e),
             }
             if let Ok(p) = plan {
                 let was_planning = m.backlog.plan.as_ref().is_some_and(|p| s(p, "state") == "planning");
@@ -339,6 +378,26 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
                     m.backlog.synced = None;
                 }
             }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Fetch the next older page once the list nears its end (a short list is always near it).
+fn load_older(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let st = &mut m.backlog;
+    let (Some(before), Some(l), Some(v)) = (st.held.next.clone(), &st.list, &st.view) else { return };
+    if st.held.loading || v.lines.len() > l.logical_scroll_top().item_ix + AHEAD {
+        return;
+    }
+    st.held.loading = true;
+    let backend = m.backend.clone();
+    let query = vec![("project", st.project.clone()), ("limit", PAGE.to_string()), ("before", before.clone())];
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get("backlog/triage", &query).map_err(|e| e.message) }).await;
+        let _ = this.update(cx, |m, cx| {
+            m.backlog.held.land_older("issues", &before, got);
             cx.notify();
         });
     })
@@ -570,7 +629,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         m.backlog.focus = Some(cx.focus_handle());
     }
     let list = issues(m);
-    let groups = groups(&list, m.backlog.lens, m.backlog.kinds, &m.backlog.picked);
+    sync_view(m);
+    load_older(m, cx);
     let d = draft(&list, m.backlog.plan.as_ref(), &m.backlog.picked);
     let data = m.backlog.data.clone().unwrap_or(Value::Null);
     let (untriaged, triaged, total) = (fmt::i(&data, "untriaged"), fmt::i(&data, "triaged"), fmt::i(&data, "total"));
@@ -609,6 +669,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         ip::project_filter(&t, MENU_PROJECT, &m.backlog.project.clone(), &counts, cx, |m, v, cx| {
             m.backlog.project = v;
             m.backlog.data = None;
+            m.backlog.held = Paged::default();
             resync(m, cx);
         })
     });
@@ -684,51 +745,14 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     };
     let toolbar = div().flex().flex_wrap().items_center().justify_between().gap(px(10.)).min_h(px(36.)).child(kinds).child(bar);
 
-    // ---- the grouped list
-    let mut col = div().flex().flex_col().gap(px(14.)).flex_1().min_w_0();
-    col = col.child(div().text_size(px(12.5)).text_color(t.muted).child(m.backlog.lens.help()));
-    if m.backlog.data.is_some() && groups.is_empty() {
-        col = col.child(
-            div()
-                .p(px(24.))
-                .rounded(px(12.))
-                .border_1()
-                .border_color(t.border)
-                .flex()
-                .justify_center()
-                .text_size(px(13.))
-                .text_color(if untriaged == 0 { t.up_fg } else { t.muted })
-                .child(if untriaged == 0 { "Backlog is triaged. Every open issue is in a goal, deferred or dropped." } else { "No issues of the kinds shown." }),
-        );
-    }
-    if fmt::b(&data, "grouping") {
-        col = col.child(div().text_size(px(12.5)).text_color(t.goal).child("Claude is grouping new issues…"));
-    }
-    for (gi, g) in groups.iter().enumerate() {
-        let refs: Vec<String> = g.rows.iter().map(|r| r.r.clone()).collect();
-        let all = g.check == Check::All;
-        let head = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(10.))
-            .child(check_box(&t, SharedString::from(format!("plan-gcheck-{gi}")), g.check).tooltip(kit::tip(if all { "Deselect all" } else { "Select all" })).on_click(cx.listener(move |m, _, _, cx| toggle(m, &refs, !all, cx))))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(g.label.clone()))
-            .child(div().text_size(px(12.)).text_color(t.faint).child(g.rows.len().to_string()))
-            .child(div().min_w_0().truncate().text_size(px(12.5)).text_color(t.muted).child(g.about.clone()));
-        let mut rows = div().flex().flex_col().gap(px(6.));
-        for row in &g.rows {
-            rows = rows.child(row_el(&t, row, m.backlog.lens, cx));
-        }
-        col = col.child(div().flex().flex_col().gap(px(6.)).child(head).child(rows));
-    }
-
     // ---- the new goal
     let aside = draft_el(m, &t, &d, window, cx);
 
     let menus = ip::render_project_filter(m, &t, MENU_PROJECT, window, cx);
 
     let focus = m.backlog.focus.clone().unwrap();
+    let state = m.backlog.list.clone().unwrap();
+    let col = gpui_kit::list(state, cx.processor(line_item)).flex_1().min_w_0().h_full();
     div()
         .id("plan-page")
         .track_focus(&focus)
@@ -743,23 +767,132 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .flex_1()
         .min_w_0()
         .size_full()
-        .overflow_y_scroll()
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(16.))
+                .flex_1()
+                .min_h_0()
                 .w_full()
                 .max_w(px(1320.))
                 .px(px(28.))
                 .pt(px(22.))
-                .pb(px(40.))
                 .child(header)
                 .child(toolbar)
-                .child(div().flex().items_start().gap(px(20.)).child(col).child(div().flex_none().w(px(380.)).child(aside))),
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_h_0()
+                        .gap(px(20.))
+                        .child(col)
+                        .child(div().id("plan-draft").flex_none().w(px(380.)).h_full().overflow_y_scroll().pb(px(40.)).child(aside)),
+                ),
         )
         .children(menus)
         .into_any_element()
+}
+
+/// Group the held issues and lay out the list's lines, keeping the place scrolled to unless the
+/// lens, kinds or project changed.
+fn sync_view(m: &mut MainWindow) {
+    let st = &mut m.backlog;
+    let key = (st.held.version, st.lens, st.kinds, st.picked.clone());
+    let more = st.held.next.is_some();
+    let old = st.view.take();
+    let filters_same = old.as_ref().is_some_and(|v| (v.key.1, v.key.2, &v.project) == (key.1, key.2, &st.project));
+    let mut v = match old {
+        Some(v) if v.key == key && v.project == st.project => v,
+        _ => {
+            let groups = Rc::new(groups(&st.held.rows, key.1, key.2, &key.3));
+            View { key, project: st.project.clone(), groups, lines: vec![], more }
+        }
+    };
+    let data = st.data.as_ref();
+    let mut lines = vec![Line::Help];
+    if data.is_some() && v.groups.is_empty() {
+        lines.push(Line::Empty);
+    }
+    if data.is_some_and(|d| fmt::b(d, "grouping")) {
+        lines.push(Line::Grouping);
+    }
+    for (gi, g) in v.groups.iter().enumerate() {
+        lines.push(Line::Group(gi));
+        lines.extend((0..g.rows.len()).map(|ri| Line::Row(gi, ri)));
+    }
+    lines.push(Line::End);
+    let changed = lines != v.lines || v.more != more;
+    let count = lines.len();
+    match &st.list {
+        None => st.list = Some(ListState::new(count, ListAlignment::Top, px(600.))),
+        Some(l) if changed || !filters_same => {
+            let top = l.logical_scroll_top();
+            l.reset(count);
+            // An older page or a refresh keeps the place scrolled to; another lens or filter starts at the top.
+            if filters_same {
+                l.scroll_to(ListOffset { item_ix: top.item_ix.min(count - 1), offset_in_item: top.offset_in_item });
+            }
+        }
+        _ => {}
+    }
+    v.lines = lines;
+    v.more = more;
+    st.view = Some(v);
+}
+
+/// One line of the grouped list: the lens's help, a group's head or one of its issues.
+fn line_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    let Some(v) = m.backlog.view.as_ref() else { return div().into_any_element() };
+    let (lens, groups, more) = (v.key.1, v.groups.clone(), v.more);
+    let untriaged = m.backlog.data.as_ref().map(|d| fmt::i(d, "untriaged")).unwrap_or(0);
+    match v.lines.get(ix).copied() {
+        Some(Line::Help) => div().text_size(px(12.5)).text_color(t.muted).child(lens.help()).into_any_element(),
+        Some(Line::Empty) => div()
+            .pt(px(14.))
+            .child(
+                div()
+                    .p(px(24.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(t.border)
+                    .flex()
+                    .justify_center()
+                    .text_size(px(13.))
+                    .text_color(if untriaged == 0 { t.up_fg } else { t.muted })
+                    .child(if untriaged == 0 {
+                        "Backlog is triaged. Every open issue is in a goal, deferred or dropped."
+                    } else if more {
+                        "Loading…"
+                    } else {
+                        "No issues of the kinds shown."
+                    }),
+            )
+            .into_any_element(),
+        Some(Line::Grouping) => div().pt(px(14.)).text_size(px(12.5)).text_color(t.goal).child("Claude is grouping new issues…").into_any_element(),
+        Some(Line::Group(gi)) => {
+            let g = &groups[gi];
+            let refs: Vec<String> = g.rows.iter().map(|r| r.r.clone()).collect();
+            let all = g.check == Check::All;
+            div()
+                .pt(px(14.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(10.))
+                        .child(check_box(&t, SharedString::from(format!("plan-gcheck-{gi}")), g.check).tooltip(kit::tip(if all { "Deselect all" } else { "Select all" })).on_click(cx.listener(move |m, _, _, cx| toggle(m, &refs, !all, cx))))
+                        .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(g.label.clone()))
+                        .child(div().text_size(px(12.)).text_color(t.faint).child(g.rows.len().to_string()))
+                        .child(div().min_w_0().truncate().text_size(px(12.5)).text_color(t.muted).child(g.about.clone())),
+                )
+                .into_any_element()
+        }
+        Some(Line::Row(gi, ri)) => div().pt(px(6.)).child(row_el(&t, &groups[gi].rows[ri], lens, cx)).into_any_element(),
+        Some(Line::End) | None => div().pb(px(40.)).pt(px(14.)).when(more, |d| d.text_size(px(12.5)).text_color(t.muted).child("Loading…")).into_any_element(),
+    }
 }
 
 fn row_el(t: &Theme, v: &RowView, lens: Lens, cx: &mut Context<MainWindow>) -> Stateful<Div> {
@@ -981,7 +1114,7 @@ fn item_el(t: &Theme, it: &Item, prefix: &str, cx: &mut Context<MainWindow>) -> 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Check, Item, Lens, MENU_PROJECT, create, draft, goal_waves, groups, issues, on_key, plan_waves, sync, toggle, bulk};
+    use super::{Check, Item, Lens, Line, MENU_PROJECT, PAGE, create, draft, goal_waves, groups, issues, on_key, plan_waves, sync, toggle, bulk};
     use crate::app::Page;
     use crate::backend::Backend;
     use crate::fmt;
@@ -1102,6 +1235,43 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         assert_eq!(rec.last("backlog/bulk"), Some(json!({"ids": [later], "action": "defer"})));
+    }
+
+    #[gpui_kit::test]
+    fn a_long_backlog_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        let (w, rec) = parity::window(cx);
+        for k in 0..300 {
+            rec.board().post("backlog", json!({"title": format!("Paged {k}"), "kind": "bug", "project": "webapp"})).unwrap();
+        }
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(Page::Backlog, cx)).unwrap();
+        parity::settle(cx);
+        draw(cx);
+        let held = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| (m.backlog.held.rows.len(), m.backlog.held.next.is_some())).unwrap();
+        assert_eq!(held(cx), (PAGE, true), "only the first page until the list nears its end");
+        let untriaged = w.update(cx, |m, _, _| fmt::i(m.backlog.data.as_ref().unwrap(), "untriaged") as usize).unwrap();
+        assert!(untriaged >= 300, "the header counts every issue: {untriaged}");
+
+        for _ in 0..5 {
+            w.update(cx, |m, _, _| {
+                let n = m.backlog.view.as_ref().unwrap().lines.len();
+                m.backlog.list.as_ref().unwrap().scroll_to(gpui_kit::ListOffset { item_ix: n, offset_in_item: gpui_kit::px(0.) });
+            })
+            .unwrap();
+            draw(cx);
+        }
+        assert_eq!(held(cx), (untriaged, false), "scrolling to the end pages back through the rest");
+        let refs: std::collections::HashSet<String> = w.update(cx, |m, _, _| issues(m).iter().map(|b| fmt::ref_of(b, "B")).collect()).unwrap();
+        assert_eq!(refs.len(), untriaged, "each issue once");
+        let rows = w.update(cx, |m, _, _| m.backlog.view.as_ref().unwrap().lines.iter().filter(|l| matches!(l, Line::Row(..))).count()).unwrap();
+        assert_eq!(rows, untriaged, "every issue has a line");
     }
 
     #[gpui_kit::test]

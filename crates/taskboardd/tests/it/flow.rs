@@ -674,6 +674,29 @@ fn the_plan_page_turns_picked_issues_into_a_goal_in_waves() {
 }
 
 #[test]
+fn the_triage_list_pages_newest_first() {
+    let b = new_board();
+    let refs: Vec<String> = (0..5).map(|n| issue(&b, &format!("Issue {n}"), "bug")).collect();
+    let page = |q: &str| {
+        let v = b.get(&format!("backlog/triage?{q}"));
+        let got: Vec<String> = v["issues"].as_array().unwrap().iter().map(|x| x["ref"].as_str().unwrap().to_string()).collect();
+        (got, v["next"].as_str().map(str::to_string), v["untriaged"].as_i64())
+    };
+    let (got, next, n) = page("limit=2");
+    assert_eq!((got, n), (vec![refs[4].clone(), refs[3].clone()], Some(5)), "the newest page; untriaged counts them all");
+    let next = next.expect("more to come");
+    // The cursor's issue triaged in between: the next page still starts after it.
+    b.post("backlog/bulk", json!({"ids": [refs[3]], "action": "defer"}));
+    let (got, next, n) = page(&format!("limit=2&before={next}"));
+    assert_eq!((got, n), (vec![refs[2].clone(), refs[1].clone()], Some(4)));
+    let (got, next, _) = page(&format!("limit=2&before={}", next.unwrap()));
+    assert_eq!((got, next), (vec![refs[0].clone()], None), "the last page");
+    let (got, _, _) = page(&format!("ids={},{}", refs[0], refs[3]));
+    assert_eq!(got, vec![refs[0].clone()], "by id: a triaged one doesn't come back");
+    assert_eq!(page("").0.len(), 4, "no limit: every one");
+}
+
+#[test]
 fn a_backlog_goal_holds_one_project() {
     let b = new_board();
     let a = issue(&b, "A", "bug");
