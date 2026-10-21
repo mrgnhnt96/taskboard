@@ -845,6 +845,41 @@ fn a_long_log_comes_a_page_at_a_time() {
 }
 
 #[test]
+fn a_goals_notes_come_a_page_at_a_time_pinned_first() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Notes", "project": "webapp"}))["id"].as_i64().unwrap();
+    for k in 0..320 {
+        board::add_goal_note(&b.app, g, "finding", &format!("Note {k}"), Some("you"), k % 100 == 7, None).unwrap();
+    }
+    let d = b.get(&format!("/goals/G{g}"));
+    assert_eq!(d["notes_total"], 320);
+    let first = d["notes"].as_array().unwrap();
+    assert_eq!(first.len(), 100, "the goal carries only its newest page");
+    let pinned: Vec<&str> = first.iter().take(4).map(|n| n["text"].as_str().unwrap()).collect();
+    assert_eq!(pinned, ["Note 307", "Note 207", "Note 107", "Note 7"], "pinned first, newest of them first");
+    assert_eq!(first[4]["text"], "Note 319");
+
+    let (mut seen, mut before) = (Vec::new(), None::<i64>);
+    loop {
+        let q = before.map(|x| format!("&before={x}")).unwrap_or_default();
+        let page = b.get(&format!("/goals/G{g}/notes?limit=60{q}"));
+        let notes = page["notes"].as_array().unwrap();
+        assert!(notes.len() <= 60);
+        seen.extend(notes.iter().map(|n| n["text"].as_str().unwrap().to_string()));
+        before = notes.last().map(|n| n["id"].as_i64().unwrap());
+        if page["more"] != true {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 320, "paging back walks every note once");
+    assert_eq!(seen.iter().collect::<std::collections::HashSet<_>>().len(), 320);
+    let head: Vec<&str> = first.iter().map(|n| n["text"].as_str().unwrap()).collect();
+    assert_eq!(seen[..100], head[..], "the first page is the goal's own");
+    assert_eq!(seen.last().unwrap(), "Note 0");
+    assert_eq!(b.get(&format!("/goals/G{g}/notes"))["notes"].as_array().unwrap().len(), 320, "without a limit, all of them");
+}
+
+#[test]
 fn the_task_list_comes_a_page_at_a_time_still_to_do_first() {
     let b = new_board();
     let ids: Vec<i64> = (0..300).map(|k| new_task(&b, &format!("Task {k}"), json!({}))).collect();

@@ -340,6 +340,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["goals", id, "delete"]) => delete_goal(app, gid(id)?, body),
         ("POST", ["goals", id, "order"]) => goal_order(app, gid(id)?, body),
+        ("GET", ["goals", id, "notes"]) => goal_notes(app, gid(id)?, &Paging::of(query)),
         ("POST", ["goals", id, "notes"]) => goal_note(app, gid(id)?, body),
         ("POST", ["goals", id, "notes", nid]) => goal_note_edit(app, gid(id)?, nid, body),
         ("POST", ["goals", id, "plan"]) => goal_plan(app, gid(id)?, body),
@@ -2243,6 +2244,15 @@ fn goal_order(app: &App, id: i64, body: &Value) -> Result<Value> {
         board::renumber_goal(app, id)
     })?;
     goal_detail(app, id)
+}
+
+/// `GET /goals/:id/notes?before=<note id>&limit=`: the goal's notes after `before`, pinned first,
+/// then newest, as `{notes, more}`. Without a limit, all of them.
+fn goal_notes(app: &App, id: i64, page: &Paging) -> Result<Value> {
+    board::get_goal(app, id)?;
+    let before = page.before.as_deref().and_then(|b| b.parse::<i64>().ok());
+    let (rows, more) = board::goal_notes_page(app, id, before, page.limit.unwrap_or(1 << 40))?;
+    Ok(json!({"notes": rows.iter().map(board::goal_note_dict).collect::<Vec<_>>(), "more": more}))
 }
 
 fn goal_note(app: &App, id: i64, body: &Value) -> Result<Value> {
