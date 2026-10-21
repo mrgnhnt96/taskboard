@@ -227,7 +227,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         p![],
     )?;
     for t in queued {
-        if t.s("pickup") == Some("manual") {
+        if crate::waitsfor::waits_for_start(app, &t)? {
             continue;
         }
         let g = board::find_goal(app, t.i("goal_id"))?;
@@ -288,6 +288,10 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
                 match t.s("pickup") {
                     Some("queue") | Some("new") => {
                         start_task(app, &t, &t.st("pickup"), None, None, None, None)?;
+                    }
+                    // It waited for Start before it joined a goal that's running: the run starts it.
+                    Some("manual") if !waitsfor::waits_for_start(app, &t)? => {
+                        start_task(app, &t, "queue", None, None, None, None)?;
                     }
                     Some("attach") => {
                         let Some(sid) = t.s("pickup_session").filter(|s| !s.is_empty()) else { return Ok(false) };

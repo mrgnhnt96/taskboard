@@ -175,7 +175,7 @@ fn alone_ahead(app: &App, t: &Row) -> Result<Option<Row>> {
 }
 
 fn ready_but_for_others(app: &App, t: &Row) -> Result<bool> {
-    if t.s("pickup") == Some("manual") {
+    if crate::waitsfor::waits_for_start(app, t)? {
         return Ok(false);
     }
     let g = board::find_goal(app, t.i("goal_id"))?;
