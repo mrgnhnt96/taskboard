@@ -219,7 +219,8 @@ const RANK: &str = "CASE state WHEN 'planned' THEN 1 WHEN 'shelved' THEN 2 WHEN 
 /// (a comma list) picks out those ideas. With a `limit` they come a page at a time in the Ideas
 /// page's order (by project, open first, each group newest change first), with the `total` that
 /// match and the `next` page's cursor (null at the end). `projects` is each project with ideas under
-/// `state` and how many are open, whatever `project` picked.
+/// `state`, how many are open, how many are closed (shelved or dropped) and its `total`, whatever
+/// `project` picked.
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let q = |k: &str| query.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty());
     let every = q("project") == Some("all");
@@ -279,9 +280,12 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let open = vec!["?"; OPEN.len()].join(", ");
     let projects: Vec<Value> = app
         .db
-        .q(&format!("SELECT project, SUM(state IN ({open})) AS open FROM ideas WHERE 1{by_state} GROUP BY project ORDER BY project"), pargs)?
+        .q(
+            &format!("SELECT project, SUM(state IN ({open})) AS open, SUM(state IN ('shelved', 'dropped')) AS closed, COUNT(*) AS n FROM ideas WHERE 1{by_state} GROUP BY project ORDER BY project"),
+            pargs,
+        )?
         .iter()
-        .map(|r| json!({"project": r.v("project"), "open": r.i("open").unwrap_or(0)}))
+        .map(|r| json!({"project": r.v("project"), "open": r.i("open").unwrap_or(0), "closed": r.i("closed").unwrap_or(0), "total": r.i("n").unwrap_or(0)}))
         .collect();
     Ok(json!({"project": project, "ideas": out, "total": total, "next": next, "projects": projects}))
 }

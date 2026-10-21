@@ -1,10 +1,11 @@
 //! An idea's page (`GET /ideas/:id`): its ref, project, state and verdict, its detail and notes,
 //! and its report rounds newest first.
 //!
-//! The only actions are Dig (`POST /ideas/:id/dig`: Claude reads the project's code and reports)
-//! and Plan (`POST /ideas/:id/plan`: Claude makes a planned goal from it). Each is a start signal:
-//! the page shows the dig's progress and links to the goal once planned. Nothing here edits the
-//! idea: `tb idea` does.
+//! Its actions are Dig (`POST /ideas/:id/dig`: Claude reads the project's code and reports), Plan
+//! (`POST /ideas/:id/plan`: Claude makes a planned goal from it) and Close (`POST
+//! /ideas/:id/shelve|drop`, or `reopen` once closed). Dig and Plan are start signals: the page
+//! shows the dig's progress and links to the goal once planned. Closing offers Undo, which reopens
+//! it. Nothing else here edits the idea: `tb idea` does.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
@@ -20,10 +21,11 @@ use std::collections::HashSet;
 
 /// How much of the detail the page renders.
 const DETAIL_MAX: usize = 20_000;
+const CLOSE_MENU: &str = "idea-close";
 
 #[derive(Default)]
 pub struct State {
-    /// The requests running, by `dig::I3` / `plan::I3`.
+    /// The requests running, by `dig::I3` / `plan::I3` / `close::I3`.
     busy: HashSet<String>,
 }
 
@@ -70,8 +72,8 @@ fn closed_reason(i: &Value) -> Option<String> {
     }
     match s(i, "state") {
         "planned" => Some(format!("It became {}", fmt::opt_s(i, "goal").unwrap_or("a goal"))),
-        "shelved" => Some("It’s shelved; reopen it with tb idea reopen".into()),
-        "dropped" => Some("It’s dropped; reopen it with tb idea reopen".into()),
+        "shelved" => Some("It’s shelved; reopen it first".into()),
+        "dropped" => Some("It’s closed as won’t do; reopen it first".into()),
         _ => None,
     }
 }
@@ -103,6 +105,35 @@ pub fn plan_slot(i: &Value) -> PlanSlot {
         Some(why) => PlanSlot::Button(Btn { label, enabled: false, tip: why }),
         None => PlanSlot::Button(Btn { label, enabled: true, tip: "Claude makes a planned goal from it and its reports, not started".into() }),
     }
+}
+
+fn is_closed(i: &Value) -> bool {
+    matches!(s(i, "state"), "shelved" | "dropped")
+}
+
+/// The Close button: "Close", or the state it was closed as. None once planned: the goal link
+/// stands in.
+pub fn close_button(i: &Value) -> Option<Btn> {
+    if s(i, "state") == "planned" {
+        return None;
+    }
+    if is_closed(i) {
+        let (label, _) = state_pill(i);
+        return Some(Btn { label: label.into(), enabled: true, tip: "Reopen it".into() });
+    }
+    let label = "Close".to_string();
+    Some(if b(i, "planning") {
+        Btn { label, enabled: false, tip: "A plan is being made".into() }
+    } else if s(i, "state") == "digging" {
+        Btn { label, enabled: false, tip: "Wait for the dig to finish".into() }
+    } else {
+        Btn { label, enabled: true, tip: "Shelve it for later or close it as won’t do".into() }
+    })
+}
+
+/// The Close menu's items: (what it posts, its label).
+pub fn close_menu_view(i: &Value) -> Vec<(&'static str, &'static str)> {
+    if is_closed(i) { vec![("reopen", "Reopen")] } else { vec![("shelve", "Shelve for later"), ("drop", "Won’t do")] }
 }
 
 /// One report round as the page shows it.
@@ -207,6 +238,35 @@ pub(crate) fn start(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Con
     cx.notify();
 }
 
+/// Shelve, drop or reopen it, once at a time. Closing it offers Undo, which reopens it.
+pub(crate) fn close(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
+    m.menu = None;
+    let key = format!("close::{r}");
+    if !m.idea.busy.insert(key.clone()) {
+        return;
+    }
+    let k2 = key.clone();
+    let r = r.to_string();
+    m.post_or(
+        format!("ideas/{r}/{act}"),
+        json!({}),
+        cx,
+        move |m, _, cx| {
+            m.idea.busy.remove(&key);
+            match act {
+                "shelve" => m.toast_undo(format!("{r} shelved"), format!("ideas/{r}/reopen"), cx),
+                "drop" => m.toast_undo(format!("{r} closed as won’t do"), format!("ideas/{r}/reopen"), cx),
+                _ => m.toast(format!("{r} reopened"), false, cx),
+            }
+        },
+        move |m, e, cx| {
+            m.idea.busy.remove(&k2);
+            m.toast(e.message, true, cx);
+        },
+    );
+    cx.notify();
+}
+
 // ================================================================== render
 
 /// Ideas › webapp › I3: the project crumb opens the Ideas page on that project.
@@ -260,7 +320,29 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
             button(t, "idea-plan", bt, false, busy).when(can, |d| d.on_click(cx.listener(move |m, _, _, cx| start(m, "plan", &r2, cx))))
         }
     };
-    div().flex().flex_none().items_center().gap(px(8.)).child(dig_el).child(plan_el)
+    let close_el = close_button(i).map(|bt| {
+        let busy = m.idea.busy.contains(&format!("close::{r}"));
+        let can = bt.enabled && !busy;
+        let bt = Btn { label: format!("{} ▾", bt.label), ..bt };
+        button(t, "idea-close", bt, false, busy).when(can, |d| {
+            d.on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+                let p = e.position();
+                m.toggle_menu(CLOSE_MENU, point(p.x - px(160.), p.y + px(14.)), cx);
+            }))
+        })
+    });
+    div().flex().flex_none().items_center().gap(px(8.)).child(dig_el).child(plan_el).children(close_el)
+}
+
+fn close_menu(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let at = m.menu_open(CLOSE_MENU)?;
+    let r = fmt::ref_of(i, "I");
+    let mut menu = kit::menu_box(t, 200.).id("idea-close-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for (act, label) in close_menu_view(i) {
+        let r = r.clone();
+        menu = menu.child(kit::menu_item(t, SharedString::from(format!("idea-{act}")), label, false).on_click(cx.listener(move |m, _, _, cx| close(m, act, &r, cx))));
+    }
+    Some(kit::popover(at, menu))
 }
 
 fn header(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Div {
@@ -423,6 +505,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     };
     let detail = s(&i, "detail").trim().to_string();
     let views = rounds(&i, fmt::now());
+    let menu = close_menu(m, &t, &i, cx);
     let mut reports = section(&t, "Reports");
     for (n, rv) in views.iter().enumerate() {
         reports = reports.child(round_card(&t, n, rv, cx));
@@ -433,6 +516,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
         .min_w_0()
         .overflow_y_scroll()
         .line_height(relative(1.5))
+        .children(menu)
         .child(
             div()
                 .flex()
@@ -551,6 +635,55 @@ mod tests {
         let now = at(2026, 10, 15, 16);
         assert_eq!(note_byline(&json!({"source": "T12", "at": at(2026, 10, 15, 14).to_rfc3339()}), now), "T12 · Today, 2:05 PM");
         assert_eq!(note_byline(&json!({"source": null, "at": at(2026, 10, 2, 8).to_rfc3339()}), now), "Oct 2, 8:05 AM");
+    }
+
+    #[test]
+    fn close_hides_once_planned_waits_on_a_dig_and_reopens_once_closed() {
+        let now = Utc::now();
+        assert_eq!(close_button(&idea("planned", json!([]))), None);
+        let open = close_button(&idea("reported", json!([]))).unwrap();
+        assert_eq!((open.label.as_str(), open.enabled), ("Close", true));
+        assert_eq!(close_menu_view(&idea("new", json!([]))), [("shelve", "Shelve for later"), ("drop", "Won’t do")]);
+        assert_eq!(close_button(&idea("digging", json!([]))).unwrap(), Btn { label: "Close".into(), enabled: false, tip: "Wait for the dig to finish".into() });
+        let mut planning = idea("reported", json!([]));
+        planning["planning"] = json!(true);
+        assert!(!close_button(&planning).unwrap().enabled);
+
+        let shelved = idea("shelved", json!([]));
+        assert_eq!(close_button(&shelved).unwrap(), Btn { label: "Shelved".into(), enabled: true, tip: "Reopen it".into() });
+        assert_eq!(close_button(&idea("dropped", json!([]))).unwrap().label, "Won’t do");
+        assert_eq!(close_menu_view(&shelved), [("reopen", "Reopen")]);
+        assert_eq!(dig_button(&shelved, now).tip, "It’s shelved; reopen it first");
+    }
+
+    #[gpui_kit::test]
+    fn shelving_offers_undo_which_reopens_it(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        use crate::parity::{settle, window};
+        let (w, rec) = window(cx);
+        let list = rec.board().get("ideas", &crate::ui::ideas::query()).unwrap();
+        let r = fmt::ref_of(arr(&list, "ideas").iter().find(|i| s(i, "state") == "reported").unwrap(), "I");
+        w.update(cx, |m, _, cx| {
+            close(m, "shelve", &r, cx);
+            close(m, "shelve", &r, cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.posts().iter().filter(|(p, _)| *p == format!("ideas/{r}/shelve")).count(), 1, "once at a time");
+        let undo = w
+            .update(cx, |m, _, _| {
+                assert!(m.idea.busy.is_empty());
+                let t = &m.toasts[0];
+                assert_eq!((t.text.clone(), t.err), (format!("{r} shelved"), false));
+                t.undo.clone()
+            })
+            .unwrap();
+        assert_eq!(undo, Some(format!("ideas/{r}/reopen")));
+        w.update(cx, |m, _, cx| close(m, "reopen", &r, cx)).unwrap();
+        settle(cx);
+        assert_eq!(rec.last(&format!("ideas/{r}/reopen")), Some(json!({})));
+        let state = rec.board().get(&format!("ideas/{r}"), &[]).unwrap();
+        assert_eq!(s(&state, "state"), "reported", "back to its report");
     }
 
     #[gpui_kit::test]
