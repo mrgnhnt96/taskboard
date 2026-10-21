@@ -5942,7 +5942,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
             TaskCmd::Show { task, log, json } => {
-                let v = c.call("GET", &format!("/tasks/{}", task_ref(&task)?), None)?;
+                let t = task_ref(&task)?;
+                let mut v = c.call("GET", &format!("/tasks/{t}"), None)?;
+                // The detail carries only the newest page of the log.
+                let have = v["log"].as_array().map_or(0, |a| a.len());
+                if log > have && v["log_total"].as_u64().is_some_and(|n| n as usize > have) {
+                    v["log"] = c.call("GET", &format!("/tasks/{t}/log?limit={}", log.min(500)), None)?["log"].take();
+                }
                 if json {
                     out(&serde_json::to_string_pretty(&v).unwrap_or_default());
                 } else {

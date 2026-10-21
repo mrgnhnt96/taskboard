@@ -786,3 +786,37 @@ fn a_task_that_started_or_is_switched_explicitly_keeps_its_status_on_a_goal_move
     b.post(&format!("/tasks/T{asked}"), json!({"status": "queued"}));
     assert_eq!(b.task(asked).s("status"), Some("queued"));
 }
+
+#[test]
+fn a_long_log_comes_a_page_at_a_time() {
+    let b = new_board();
+    let id = new_task(&b, "Chatty", json!({}));
+    for k in 0..450 {
+        board::log_event(&b.app, id, "", if k % 3 == 0 { "turn" } else { "status" }, &format!("Entry {k}")).unwrap();
+    }
+    let d = b.get(&format!("/tasks/T{id}"));
+    let total = d["log_total"].as_u64().unwrap() as usize;
+    assert!(total >= 450);
+    assert_eq!(d["log"].as_array().unwrap().len(), 200, "the task carries only its newest page");
+    assert_eq!(d["log"][0]["text"], "Entry 449");
+
+    let (mut seen, mut before) = (Vec::new(), None::<i64>);
+    loop {
+        let q = before.map(|x| format!("&before={x}")).unwrap_or_default();
+        let page = b.get(&format!("/tasks/T{id}/log?limit=100{q}"));
+        let log = page["log"].as_array().unwrap();
+        assert!(log.len() <= 100);
+        seen.extend(log.iter().map(|e| e["id"].as_i64().unwrap()));
+        before = log.last().map(|e| e["id"].as_i64().unwrap());
+        if page["more"] != true {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), total, "paging back walks the whole log");
+    assert!(seen.windows(2).all(|p| p[0] > p[1]), "newest first, each once");
+
+    let turns = b.get(&format!("/tasks/T{id}/log?kind=turn,commit&limit=500"));
+    let turns = turns["log"].as_array().unwrap();
+    assert_eq!(turns.iter().filter(|e| e["text"].as_str().unwrap().starts_with("Entry ")).count(), 150);
+    assert!(turns.iter().all(|e| e["kind"] == "turn"));
+}

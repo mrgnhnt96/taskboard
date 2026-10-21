@@ -47,6 +47,7 @@ fn tree(i: &Value) -> view::Node {
     let folds: HashMap<String, String> = i["ui"]["folds"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default();
     let trail: Vec<String> = i["from"].as_str().map(|f| f.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
     let r = i["task"]["ref"].as_str().or(i["ref"].as_str()).unwrap_or("").to_string();
+    let log = view::LogRows::of(&i["task"], ui.log_filter());
     let c = Ctx {
         state: &i["state"],
         task: i["task"].is_object().then_some(&i["task"]),
@@ -57,6 +58,7 @@ fn tree(i: &Value) -> view::Node {
         err: i["err"].as_str(),
         ui: &ui,
         folds: &folds,
+        log: &log,
     };
     view::panel(&c)
 }
@@ -1075,4 +1077,52 @@ fn a_step_with_nothing_more_to_show_does_not_open() {
         }
     });
     assert_eq!(steps, 0);
+}
+
+/// Draw the window as it is now, then let what that started (fetches) land.
+fn draw(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>) {
+    let _ = cx.update_window((*w).into(), |_, window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    settle(cx);
+}
+
+#[gpui_kit::test]
+fn a_long_log_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    for k in 0..450 {
+        taskboardd::board::log_event(rec.board().app(), 2, "", if k % 3 == 0 { "turn" } else { "status" }, &format!("Entry {k}")).unwrap();
+    }
+    open(cx, &w, "T2");
+    press(cx, &w, "tab", Some("log"));
+    draw(cx, &w);
+    let total = w.update(cx, |m, _, _| m.data.task.as_ref().unwrap()["log_total"].as_u64().unwrap() as usize).unwrap();
+    let held = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| m.task_panel.log_list.as_ref().map(|l| (l.rows.len(), l.more))).unwrap();
+    assert_eq!(held(cx), Some((200, true)), "only the newest page until the list nears its end");
+    assert!(w.update(cx, |m, _, _| view::text(&build(m).unwrap())).unwrap().contains(&format!("Full log {total}")), "the tab counts the whole log");
+
+    for _ in 0..5 {
+        w.update(cx, |m, _, _| {
+            let l = m.task_panel.log_list.as_ref().unwrap();
+            l.state.scroll_to(gpui_kit::ListOffset { item_ix: l.rows.len(), offset_in_item: gpui_kit::px(0.) });
+        })
+        .unwrap();
+        draw(cx, &w);
+    }
+    let (n, more) = held(cx).unwrap();
+    assert_eq!((n, more), (total, false), "scrolling to the end pages back through the rest");
+    let order: Vec<(String, i64)> = w
+        .update(cx, |m, _, _| m.task_panel.log_list.as_ref().unwrap().rows.iter().map(|e| (e["at"].as_str().unwrap().to_string(), e["id"].as_i64().unwrap())).collect())
+        .unwrap();
+    assert!(order.windows(2).all(|p| p[0] > p[1]), "newest first, each once");
+
+    // A filter starts over with that kind's entries, fetched from the board.
+    press(cx, &w, "log-filter", Some("turn"));
+    for _ in 0..3 {
+        draw(cx, &w);
+    }
+    let rows = w.update(cx, |m, _, _| m.task_panel.log_list.as_ref().unwrap().rows.clone()).unwrap();
+    assert_eq!(rows.iter().filter(|e| e["text"].as_str().unwrap_or("").starts_with("Entry ")).count(), 150);
+    assert!(rows.iter().all(|e| view::log_group(e["kind"].as_str().unwrap()) == "turn"));
 }

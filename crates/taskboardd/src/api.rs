@@ -205,7 +205,11 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             board::get_task(app, t)?;
             Ok(json!({"text": handoff::build(app, t)?}))
         }
-        ("GET", ["tasks", id, "log"]) => get_log(app, tid(id)?, q(query, "kind", "all")),
+        ("GET", ["tasks", id, "log"]) => {
+            let before = q(query, "before", "").parse::<i64>().ok();
+            let limit = q(query, "limit", "").parse::<i64>().ok().map(|n| n.clamp(1, 500));
+            get_log(app, tid(id)?, q(query, "kind", "all"), before, limit)
+        }
         ("GET", ["tasks", id, "pr"]) => {
             let t = tid(id)?;
             let mut v = get_pr(app, t)?;
@@ -897,17 +901,41 @@ fn list_tasks(app: &App, query: &Query) -> Result<Value> {
     Ok(json!({"tasks": out}))
 }
 
-fn get_log(app: &App, id: i64, kind: &str) -> Result<Value> {
+/// A task's log, newest first. `kind` is "all" or a comma list of kinds; `before` (an event id)
+/// starts after that entry and `limit` caps the page, with `more` saying whether older ones are left.
+fn get_log(app: &App, id: i64, kind: &str, before: Option<i64>, limit: Option<i64>) -> Result<Value> {
     board::get_task(app, id)?;
-    let log: Vec<Value> = app
+    let mut sql = "SELECT * FROM events WHERE task_id = ?".to_string();
+    let mut args = p![id];
+    let kinds: Vec<&str> = kind.split(',').map(str::trim).filter(|k| !k.is_empty() && *k != "all").collect();
+    if !kinds.is_empty() {
+        sql += &format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(", "));
+        args.extend(kinds.iter().map(|k| json!(k)));
+    }
+    if let Some(b) = before {
+        let at = app.db.val("SELECT at FROM events WHERE id = ? AND task_id = ?", p![b, id])?;
+        if !at.is_null() {
+            sql += " AND (at < ? OR (at = ? AND id < ?))";
+            args.extend([at.clone(), at, json!(b)]);
+        }
+    }
+    sql += " ORDER BY at DESC, id DESC";
+    if let Some(l) = limit {
+        sql += " LIMIT ?";
+        args.push(json!(l + 1));
+    }
+    let mut log: Vec<Value> = app
         .db
-        .q("SELECT * FROM events WHERE task_id = ? ORDER BY at DESC, id DESC", p![id])?
+        .q(&sql, args)?
         .iter()
-        .filter(|e| kind == "all" || e.s("kind") == Some(kind))
-        .map(|e| json!({"at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text"),
+        .map(|e| json!({"id": e.v("id"), "at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text"),
                         "data": if has(e.s("data")) { serde_json::from_str(&e.st("data")).unwrap_or(Value::Null) } else { Value::Null }}))
         .collect();
-    Ok(json!({"log": log}))
+    let more = limit.is_some_and(|l| log.len() as i64 > l);
+    if let Some(l) = limit {
+        log.truncate(l as usize);
+    }
+    Ok(json!({"log": log, "more": more}))
 }
 
 fn meta(v: Option<&Value>) -> Result<Value> {

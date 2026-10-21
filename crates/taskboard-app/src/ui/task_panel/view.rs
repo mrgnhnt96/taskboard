@@ -8,6 +8,7 @@
 use crate::fmt::{self, arr, b, obj, opt_s, s};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 // ------------------------------------------------------------------ nodes
 
@@ -202,7 +203,6 @@ pub enum K {
     Files,
     MetaRow,
     Chips,
-    Log,
     LogItem,
     Md,
     MdP,
@@ -309,6 +309,9 @@ pub enum Node {
     Note { s: String, err: bool },
     Dot(Dot),
     El { k: K, tip: Option<String>, kids: Vec<Node> },
+    /// The Full log's entries (`<ol class="log">`), drawn only as they scroll into view: each
+    /// becomes a [`log_item`] when drawn. `more` means older ones are still to be fetched.
+    Log { rows: Rc<Vec<Value>>, more: bool },
 }
 
 fn el(k: K, kids: Vec<Node>) -> Node {
@@ -373,6 +376,8 @@ pub struct Ctx<'a> {
     pub ui: &'a Ui,
     /// Saved fold states by localStorage key ("open" / "closed").
     pub folds: &'a HashMap<String, String>,
+    /// The Full log's entries under the current filter.
+    pub log: &'a LogRows,
 }
 
 impl Ctx<'_> {
@@ -824,7 +829,8 @@ pub fn panel(c: &Ctx) -> Node {
 
 /// `panelFoot(t, tab)`: What to do, Context and the full log; Timeline goes back.
 fn panel_foot(c: &Ctx, t: &Value, tab: &str) -> Node {
-    let n = arr(t, "log").len();
+    // The task carries only its newest page of the log; `log_total` counts them all.
+    let n = t["log_total"].as_u64().map_or(arr(t, "log").len(), |n| n as usize);
     let mut kids = Vec::new();
     for (id, label) in [("overview", "Timeline"), ("what", "What to do"), ("context", "Context"), ("log", "Full log")] {
         if id == "overview" && tab == "overview" {
@@ -1104,7 +1110,10 @@ fn started_detail(c: &Ctx, t: &Value) -> Vec<Node> {
         Value::Number(n) if n.as_f64() == Some(0.) => changes.push("Nothing uncommitted".to_string()),
         v => changes.push(format!("{} not committed", uncommitted(v))),
     }
-    let last = arr(t, "log").iter().filter(|e| s(e, "kind") == "commit").map(|e| s(e, "at")).max().map(fmt::hhmm).filter(|h| !h.is_empty());
+    let last = opt_s(t, "last_commit_at")
+        .or_else(|| arr(t, "log").iter().filter(|e| s(e, "kind") == "commit").map(|e| s(e, "at")).max())
+        .map(fmt::hhmm)
+        .filter(|h| !h.is_empty());
     if let Some(h) = last {
         changes.push(format!("{} {h}", if changes.is_empty() { "Last commit" } else { "last commit" }));
     }
@@ -2258,7 +2267,7 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
 pub const LOG_FILTERS: [(&str, &str); 7] = [("all", "All"), ("status", "Status"), ("turn", "Turns"), ("checkpoint", "Checkpoints"), ("question", "Questions"), ("found", "Found"), ("jira", "Jira")];
 
 /// `LOG_GROUP`.
-fn log_group(kind: &str) -> &'static str {
+pub fn log_group(kind: &str) -> &'static str {
     match kind {
         "status" | "midna" | "handoff" | "checkin" | "outside" => "status",
         "turn" | "commit" => "turn",
@@ -2302,36 +2311,62 @@ fn log_dot(kind: &str) -> Dot {
     }
 }
 
-/// `logTab(t)`.
+/// The kinds a log filter shows ("all" for every kind), as the board's `?kind=` takes them.
+pub fn log_kinds(f: &str) -> String {
+    const KINDS: [&str; 14] = ["status", "midna", "handoff", "checkin", "outside", "turn", "commit", "checkpoint", "question", "answer", "found", "jira", "note", ""];
+    if f == "all" {
+        return f.to_string();
+    }
+    KINDS.iter().filter(|k| !k.is_empty() && log_group(k) == f).copied().collect::<Vec<_>>().join(",")
+}
+
+/// The Full log's entries under a filter, newest first; `more` when older ones are left to fetch.
+#[derive(Clone, Debug, Default)]
+pub struct LogRows {
+    pub rows: Rc<Vec<Value>>,
+    pub more: bool,
+}
+
+#[cfg(test)]
+impl LogRows {
+    /// Just the task's own page of the log.
+    pub fn of(t: &Value, f: &str) -> Self {
+        let rows = arr(t, "log").iter().filter(|e| f == "all" || log_group(s(e, "kind")) == f).cloned().collect();
+        LogRows { rows: Rc::new(rows), more: false }
+    }
+}
+
+pub const LOG_HELP: &str = "The log is saved as it happens, so it survives a closed terminal or a restart.";
+
+/// One Full log entry (`.log li`).
+pub fn log_item(e: &Value) -> Node {
+    let at = s(e, "at");
+    let kind = s(e, "kind");
+    el(
+        K::LogItem,
+        vec![
+            txt_tip(fmt::log_time(at), St::Time, fmt::full_time(at)),
+            Node::Dot(log_dot(kind)),
+            txt(opt_s(e, "who").unwrap_or("Task board"), St::Strong),
+            txt(log_label(kind), St::Kind),
+            txt(or_empty(&e["text"]), St::Plain),
+        ],
+    )
+}
+
+/// `logTab(t)`: the entries go in a [`Node::Log`], with [`LOG_HELP`] drawn after them.
 fn log_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let f = c.ui.log_filter();
-    let all = arr(t, "log");
-    let list: Vec<&Value> = all.iter().filter(|e| f == "all" || log_group(s(e, "kind")) == f).collect();
     let chips = LOG_FILTERS.iter().map(|(id, label)| c.btn(label, Act::new("log-filter", *id, "", ""), Look::Tab { on: f == *id }, false, None)).collect();
     let mut out = vec![el(K::Chips, chips)];
-    if list.is_empty() {
-        out.push(txt(if all.is_empty() { "Nothing logged yet." } else { "Nothing of this kind yet." }, St::Empty));
+    if c.log.rows.is_empty() && c.log.more {
+        out.push(txt("Loading…", St::Muted));
+    } else if c.log.rows.is_empty() {
+        out.push(txt(if arr(t, "log").is_empty() { "Nothing logged yet." } else { "Nothing of this kind yet." }, St::Empty));
+        out.push(txt(LOG_HELP, St::Help));
     } else {
-        let items = list
-            .iter()
-            .map(|e| {
-                let at = s(e, "at");
-                let kind = s(e, "kind");
-                el(
-                    K::LogItem,
-                    vec![
-                        txt_tip(fmt::log_time(at), St::Time, fmt::full_time(at)),
-                        Node::Dot(log_dot(kind)),
-                        txt(opt_s(e, "who").unwrap_or("Task board"), St::Strong),
-                        txt(log_label(kind), St::Kind),
-                        txt(or_empty(&e["text"]), St::Plain),
-                    ],
-                )
-            })
-            .collect();
-        out.push(el(K::Log, items));
+        out.push(Node::Log { rows: c.log.rows.clone(), more: c.log.more });
     }
-    out.push(txt("The log is saved as it happens, so it survives a closed terminal or a restart.", St::Help));
     out
 }
 
@@ -2572,6 +2607,10 @@ fn walk_text(n: &Node, out: &mut Vec<String>) {
         Node::Btn { label, .. } => out.push(label.clone()),
         Node::Field { .. } | Node::Dot(_) => {}
         Node::El { .. } => shown(n).for_each(|k| walk_text(k, out)),
+        Node::Log { rows, .. } => {
+            rows.iter().for_each(|e| walk_text(&log_item(e), out));
+            out.push(LOG_HELP.to_string());
+        }
     }
 }
 
@@ -2632,6 +2671,7 @@ fn walk_titles(n: &Node, out: &mut Vec<String>) {
             }
             shown(n).for_each(|k| walk_titles(k, out));
         }
+        Node::Log { rows, .. } => rows.iter().for_each(|e| walk_titles(&log_item(e), out)),
         _ => {}
     }
 }
