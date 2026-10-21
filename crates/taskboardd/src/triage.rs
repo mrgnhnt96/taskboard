@@ -56,11 +56,27 @@ fn untriaged(app: &App, project: &str) -> Result<Vec<Row>> {
 }
 
 /// `GET /backlog/triage`: the untriaged issues with their grouping, and how much of the backlog is triaged.
-pub fn list(app: &App, project: &str) -> Result<Value> {
+/// `limit` caps the page (newest first), `before` (an issue id) starts after that issue and `ids`
+/// keeps those issues only; a page says where the next starts (`next`). `untriaged` counts them all.
+pub fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     ensure_grouped(app);
-    let rows = untriaged(app, project)?;
+    let project = crate::api::q(query, "project", "all");
+    let page = crate::api::Paging::of(query);
+    let all = untriaged(app, project)?;
+    let ids: Option<Vec<i64>> = query.get("ids").map(|s| s.split(',').filter_map(|x| parse_ref_str(x.trim(), "issue").ok().flatten()).collect());
+    let mut rows: Vec<&Row> = all.iter().filter(|b| ids.as_ref().is_none_or(|ids| ids.contains(&b.id()))).collect();
+    // In `untriaged`'s order: an issue's place stays put even once the cursor's issue is triaged.
+    let at = |b: &Row| (b.st("created_at"), b.id());
+    if let Some(b) = page.before.as_deref().and_then(|b| parse_ref_str(b, "issue").ok().flatten()) {
+        if let Some(c) = app.db.q1("SELECT * FROM issues WHERE id = ?", p![b])? {
+            let c = at(&c);
+            rows.retain(|b| at(b) < c);
+        }
+    }
+    let more = page.cut(&mut rows);
+    let next = rows.last().filter(|_| more).map(|b| b.id().to_string());
     let mut out = vec![];
-    for b in &rows {
+    for b in rows {
         let mut d = board::issue_card(app, b)?;
         let o = d.as_object_mut().unwrap();
         for (k, v) in fields(b).as_object().unwrap() {
@@ -81,7 +97,7 @@ pub fn list(app: &App, project: &str) -> Result<Value> {
     }
     let sh = app.shared.lock();
     Ok(json!({
-        "issues": out, "untriaged": rows.len(), "triaged": total - rows.len() as i64, "total": total,
+        "issues": out, "untriaged": all.len(), "triaged": total - all.len() as i64, "total": total, "next": next,
         "projects": projects, "grouping": sh.grouping, "ai": ai_on(app),
     }))
 }

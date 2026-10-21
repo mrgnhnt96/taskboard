@@ -13,7 +13,7 @@ use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff,
 
 pub type Query = HashMap<String, String>;
 
-fn q<'a>(query: &'a Query, k: &str, default: &'a str) -> &'a str {
+pub(crate) fn q<'a>(query: &'a Query, k: &str, default: &'a str) -> &'a str {
     query.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty()).unwrap_or(default)
 }
 
@@ -392,7 +392,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["backlog"]) => list_backlog(app, query),
         ("POST", ["backlog"]) => post_issue(app, body),
         ("POST", ["backlog", "bulk"]) => backlog_bulk(app, body),
-        ("GET", ["backlog", "triage"]) => triage::list(app, q(query, "project", "all")),
+        ("GET", ["backlog", "triage"]) => triage::list(app, query),
         ("GET", ["backlog", "plan"]) => Ok(triage::plan_get(app)),
         ("POST", ["backlog", "plan"]) => triage::plan_start(app, body),
         ("POST", ["backlog", "goal"]) => triage::create_goal(app, body),
