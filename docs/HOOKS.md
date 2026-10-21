@@ -286,16 +286,16 @@ prompt = "Sign off the screens this task changes."
   terminal, so its session id never replaces the task's conversation, and only the app token guard applies to it.
   A task or PR wake resumes a conversation only when Claude saved its transcript; otherwise it starts fresh
   from the handoff.
-- **The app token guard.** The plugin's `PreToolUse` hook (also on Read, Grep and Glob, and in every terminal,
-  Midna's or not) refuses a tool call that reads the daemon's `app-token` file (see API.md, "The app's own
-  requests"; only a daemon without a team signature writes it): one that names it, quoted in pieces or not
-  (`app-to''ken`) or by a glob that matches it and not every token (`app-*`); one that reaches into the board's data
-  folder with a glob, a search, a listing or a program that could print it, spelled any way that resolves there
-  (`$TASKBOARD_DATA`, `$HOME`, `~`, `./`, `..`, `/tmp` for `/private/tmp`, a symlink, a path from the call's working
-  folder); one that walks a folder above it (`find ~`, `grep -r … ~`, Grep or Glob from `~`); or one that mentions
-  `TASKBOARD_DATA` unexpanded (a script reading it from the environment). It errs on the side of refusing; an agent
-  has no reason to look in that folder. It reads what a call says, so it can't be complete: a program that builds
-  the path at run time gets past it. The signed app doesn't use the file at all.
+- **The app token guard.** The daemon's app token (see API.md, "The app's own requests"; only a daemon without a
+  team signature writes it) sits alone in a hidden folder of its own in the board's data folder (`.app-only`). The
+  plugin's `PreToolUse` hook (also on Read, Grep and Glob, and in every terminal, Midna's or not) refuses a tool call
+  that reaches into that folder: one that names it, quoted in pieces or not; one whose path lands in it, spelled any
+  way that resolves there (the data folder's variable, `$HOME`, `~`, `./`, `..`, `/tmp` for `/private/tmp`, a
+  symlink); a glob that can match it (`.*/*`, `**/*`); or any path from a working folder inside it. The rest of the
+  data folder is the agent's: `config.toml`, a listing, `find ~ -name config.toml`, `grep -r` over the data folder,
+  Grep or Glob there. A shell's `*` and `rg` pass the hidden folder by; `grep -r` and `find` walk into it, and the
+  guard lets them. It reads what a call says, so it can't be complete: a program that builds the path at run time
+  gets past it. The signed app doesn't use the file at all.
 - **Closed input for Bash.** The plugin's `PreToolUse` hook (in every terminal, Midna's or not) runs each Bash
   command it lets through as `{ <command>\n} < /dev/null`, through `updatedInput`, so a stray `cat > file`, a
   `read` or an interactive prompt meets the end of its input and fails at once instead of waiting forever and

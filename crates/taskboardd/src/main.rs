@@ -147,6 +147,7 @@ fn serve(cfg: Config) -> i32 {
         let trust = taskboardd::apporigin::Trust::detect(&app.cfg);
         app.info(trust.describe());
         let token_path = taskboardd::apptoken::path(&app.cfg);
+        let _ = std::fs::remove_file(taskboardd::apptoken::old_path(&app.cfg));
         if trust.token {
             if let Err(e) = taskboardd::apptoken::write(&token_path, &app.app_token) {
                 app.info(format!("can't write the app token: {e}; the app's Start and review stops won't work"));
