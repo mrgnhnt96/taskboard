@@ -182,8 +182,9 @@ fn many_ideas_come_a_page_at_a_time_in_the_pages_order() {
     let whole = try_call(&app, "GET", "/ideas", &[("project", "all"), ("state", "all"), ("limit", "500")], json!({})).unwrap();
     assert_eq!(whole["total"], 330);
     assert_eq!(whole["next"], Value::Null);
-    let open = |p: &str| whole["ideas"].as_array().unwrap().iter().filter(|i| i["project"] == p && ["new", "digging", "reported"].contains(&i["state"].as_str().unwrap())).count();
-    assert_eq!(whole["projects"], json!([{"project": "api", "open": open("api")}, {"project": "webapp", "open": open("webapp")}]));
+    let count = |p: &str, states: &[&str]| whole["ideas"].as_array().unwrap().iter().filter(|i| i["project"] == p && states.contains(&i["state"].as_str().unwrap())).count();
+    let counts = |p: &str, total: usize| json!({"project": p, "open": count(p, &["new", "digging", "reported"]), "closed": count(p, &["shelved", "dropped"]), "total": total});
+    assert_eq!(whole["projects"], json!([counts("api", 110), counts("webapp", 220)]));
 
     let (mut seen, mut before) = (Vec::<Value>::new(), None::<String>);
     loop {

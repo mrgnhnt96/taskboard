@@ -183,6 +183,8 @@ pub struct Toast {
     pub text: String,
     pub err: bool,
     pub at: Instant,
+    /// The POST its Undo sends, if it has one.
+    pub undo: Option<String>,
 }
 
 pub struct MainWindow {
@@ -620,9 +622,18 @@ impl MainWindow {
     /// One toast at a time, as the web did: a new one replaces the last; it goes after 3 s (6 s
     /// for an error).
     pub fn toast(&mut self, text: impl Into<String>, err: bool, cx: &mut Context<Self>) {
-        let at = Instant::now();
-        self.toasts = vec![Toast { text: text.into(), err, at }];
-        let stay = if err { TOAST_ERR } else { TOAST_OK };
+        self.show_toast(Toast { text: text.into(), err, at: Instant::now(), undo: None }, cx);
+    }
+
+    /// A toast with Undo, which POSTs `undo`; it stays as long as an error's.
+    pub fn toast_undo(&mut self, text: impl Into<String>, undo: impl Into<String>, cx: &mut Context<Self>) {
+        self.show_toast(Toast { text: text.into(), err: false, at: Instant::now(), undo: Some(undo.into()) }, cx);
+    }
+
+    fn show_toast(&mut self, toast: Toast, cx: &mut Context<Self>) {
+        let at = toast.at;
+        let stay = if toast.err || toast.undo.is_some() { TOAST_ERR } else { TOAST_OK };
+        self.toasts = vec![toast];
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(stay).await;
             let _ = this.update(cx, |m, cx| {
@@ -1123,6 +1134,7 @@ impl Got {
             Some(Ok(f)) => {
                 d.errs.ideas = None;
                 m.ideas.projects = ui::ideas::tabs(f.first());
+                m.ideas.split = ui::ideas::split(f.first());
                 m.ideas.held.land("ideas", f);
             }
             Some(Err(e)) => d.errs.ideas = Some(e),
@@ -1314,7 +1326,7 @@ impl Render for MainWindow {
             .children(panel)
             .children(modal)
             .children(hours_menu)
-            .children(toasts(self, &t))
+            .children(toasts(self, &t, cx))
             .when(self.menu.is_some(), |d| {
                 // A click anywhere outside an open menu closes it.
                 d.child(deferred(div().id("menu-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
@@ -1807,7 +1819,7 @@ pub(crate) fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
 }
 
 /// `.toast`: centred 24px above the bottom, 9px 16px, radius 9, 13px, `--shadow-modal`.
-fn toasts(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
+fn toasts(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     if m.toasts.is_empty() {
         return None;
     }
@@ -1824,7 +1836,23 @@ fn toasts(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
                 .text_size(px(13.))
                 .bg(if x.err { t.down } else { t.text })
                 .text_color(if x.err { gpui_kit::white() } else { t.bg })
-                .child(x.text.clone()),
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .child(x.text.clone())
+                .children(x.undo.clone().map(|path| {
+                    let at = x.at;
+                    div()
+                        .id("toast-undo")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.accent_soft)
+                        .cursor_pointer()
+                        .child("Undo")
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            m.toasts.retain(|t| t.at != at);
+                            m.post(path.clone(), serde_json::json!({}), cx, |_, _, _| {});
+                        }))
+                })),
         );
     }
     Some(deferred(col).with_priority(4).into_any_element())

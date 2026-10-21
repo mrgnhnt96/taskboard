@@ -1,7 +1,8 @@
 //! The Ideas page (`GET /ideas?project=all&state=all`, a page at a time): each project's ideas as
-//! rows, the open ones first, each with its newest report's verdict and its state. A row opens the
-//! idea's page (`ui::idea`). New idea opens a dialog that adds one (`POST /ideas`); notes, shelving
-//! and dropping go through `tb idea`.
+//! rows, each with its newest report's verdict and its state, under two tabs: Open (planned ones
+//! last) and Closed (shelved and dropped). A row opens the idea's page (`ui::idea`), where it's
+//! closed and reopened. New idea opens a dialog that adds one (`POST /ideas`); notes go through
+//! `tb idea`.
 use crate::app::MainWindow;
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
@@ -34,6 +35,10 @@ pub struct State {
     pub held: Paged,
     /// (project, its open ideas) for the filter, from the board's count of every idea.
     pub projects: Vec<(String, usize)>,
+    /// (project, its ideas under Open, under Closed) for the tabs.
+    pub split: Vec<(String, usize, usize)>,
+    /// The Closed tab is showing.
+    pub closed: bool,
     /// The page as last drawn, rebuilt when the ideas or the filter change.
     view: Option<View>,
     list: Option<ListState>,
@@ -44,7 +49,9 @@ pub struct State {
 struct Key {
     version: u64,
     picked: String,
+    closed: bool,
     projects: Vec<(String, usize)>,
+    split: Vec<(String, usize, usize)>,
     day: NaiveDate,
 }
 
@@ -58,9 +65,9 @@ struct View {
 /// One item of the page's list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Line {
-    /// The title, the filter and New idea.
+    /// The title, the filter, the tabs and New idea.
     Top,
-    /// "No ideas", or "Loading…" while older pages are still to come.
+    /// "No ideas" (or "No closed ideas"), or "Loading…" while older pages are still to come.
     Empty,
     /// A project's name, over its card when there are several.
     Group(usize),
@@ -113,7 +120,7 @@ pub fn state_pill(i: &Value) -> (&'static str, &'static str) {
         "reported" => ("Reported", "results"),
         "planned" => ("Planned", "goal"),
         "shelved" => ("Shelved", "muted"),
-        "dropped" => ("Dropped", "muted"),
+        "dropped" => ("Won’t do", "muted"),
         _ => ("New", "muted"),
     }
 }
@@ -133,6 +140,11 @@ pub fn is_open(i: &Value) -> bool {
     rank(s(i, "state")) == 0
 }
 
+/// Shelved or dropped: shown only under Closed.
+pub fn is_closed(i: &Value) -> bool {
+    rank(s(i, "state")) >= 2
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub r: String,
@@ -142,8 +154,6 @@ pub struct Row {
     pub state: (&'static str, &'static str),
     /// When it last changed.
     pub when: String,
-    /// Shelved or dropped: shown faded.
-    pub put_away: bool,
 }
 
 /// The projects shown and each one's rows: the picked project while it has ideas, else every one
@@ -173,7 +183,6 @@ fn groups_of(ideas: &[&Value], picked: &str, now: DateTime<Utc>) -> Vec<(String,
                     verdict: verdict_pill(&i["verdict"]),
                     state: state_pill(i),
                     when: fmt::parse(s(i, "updated_at")).map(|t| cut_at(t, now)).unwrap_or_default(),
-                    put_away: rank(s(i, "state")) >= 2,
                 })
                 .collect();
             (p, rows)
@@ -198,6 +207,31 @@ pub fn tabs(list: &Value) -> Vec<(String, usize)> {
     }
     v.sort();
     v
+}
+
+/// (project, its ideas under Open, under Closed): the board's `projects` when it sends them, else
+/// counted from the ideas.
+pub fn split(list: &Value) -> Vec<(String, usize, usize)> {
+    let n = |p: &Value, k: &str| p[k].as_u64().unwrap_or(0) as usize;
+    if let Some(ps) = list["projects"].as_array().filter(|ps| ps.iter().all(|p| p["total"].is_u64())) {
+        return ps.iter().map(|p| (s(p, "project").to_string(), n(p, "total").saturating_sub(n(p, "closed")), n(p, "closed"))).collect();
+    }
+    let mut v: Vec<(String, usize, usize)> = vec![];
+    for i in arr(list, "ideas") {
+        let p = s(i, "project");
+        let (open, closed) = if is_closed(i) { (0, 1) } else { (1, 0) };
+        match v.iter_mut().find(|(q, ..)| q == p) {
+            Some((_, o, c)) => (*o, *c) = (*o + open, *c + closed),
+            None => v.push((p.to_string(), open, closed)),
+        }
+    }
+    v.sort();
+    v
+}
+
+/// The ideas under (Open, Closed) for the picked project, or every one's.
+fn tab_counts(split: &[(String, usize, usize)], picked: &str) -> (usize, usize) {
+    split.iter().filter(|(p, ..)| picked == "all" || p == picked).fold((0, 0), |(o, c), (_, po, pc)| (o + po, c + pc))
 }
 
 // ================================================================== new idea
@@ -354,7 +388,6 @@ fn row(t: &Theme, row: &Row, first: bool, cx: &mut Context<MainWindow>) -> State
         .when(!first, |d| d.border_t_1().border_color(t.divider))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .when(row.put_away, |d| d.opacity(0.6))
         .child(div().flex_none().w(px(36.)).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(row.r.clone()))
         .child(div().min_w_0().flex_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).truncate().child(row.title.clone()))
         .child(kit::chip(t, row.project.clone()))
@@ -369,14 +402,26 @@ fn sync(m: &mut MainWindow) {
     let s = &mut m.ideas;
     let picked = if s.projects.iter().any(|(p, _)| p == s.project()) { s.project().to_string() } else { "all".to_string() };
     let now = fmt::now();
-    let key = Key { version: s.held.version, picked, projects: s.projects.clone(), day: fmt::local(now).date_naive() };
+    let key = Key {
+        version: s.held.version,
+        picked,
+        closed: s.closed,
+        projects: s.projects.clone(),
+        split: s.split.clone(),
+        day: fmt::local(now).date_naive(),
+    };
     let more = s.held.next.is_some();
     let old = s.view.take();
-    let filter_same = old.as_ref().is_some_and(|v| v.key.picked == key.picked);
+    let filter_same = old.as_ref().is_some_and(|v| v.key.picked == key.picked && v.key.closed == key.closed);
     let mut v = match old {
         Some(v) if v.key == key => v,
         _ => {
-            let mine: Vec<&Value> = s.held.rows.iter().filter(|i| key.picked == "all" || fmt::s(i, "project") == key.picked).collect();
+            let mine: Vec<&Value> = s
+                .held
+                .rows
+                .iter()
+                .filter(|i| (key.picked == "all" || fmt::s(i, "project") == key.picked) && is_closed(i) == key.closed)
+                .collect();
             let groups = groups_of(&mine, &key.picked, now);
             View { key, groups, more, lines: vec![] }
         }
@@ -400,12 +445,12 @@ fn sync(m: &mut MainWindow) {
         Some(l) if changed || !filter_same => {
             let top = l.logical_scroll_top();
             l.reset(count);
-            // New ideas keep the place scrolled to; another project starts at the top.
+            // New ideas keep the place scrolled to; another project or tab starts at the top.
             if filter_same {
                 l.scroll_to(ListOffset { item_ix: top.item_ix.min(count - 1), offset_in_item: top.offset_in_item });
             }
         }
-        // The filter's counts can change with the lines staying put.
+        // The filter's and tabs' counts can change with the lines staying put.
         Some(l) => l.remeasure_items(0..1),
     }
     v.lines = lines;
@@ -434,9 +479,18 @@ fn load_older(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     .detach();
 }
 
-/// The title, the project filter and New idea: the list's first line.
+/// The title, the project filter, the Open / Closed tabs and New idea: the list's first line.
 fn top(m: &MainWindow, t: &Theme, picked: &str, cx: &mut Context<MainWindow>) -> Div {
     let tabs = &m.ideas.projects;
+    let (open, closed) = tab_counts(&m.ideas.split, picked);
+    let labels = [format!("Open {open}"), format!("Closed {closed}")];
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let which = kit::seg(t, "ideas-tab", &labels, m.ideas.closed as usize, |i, item| {
+        item.on_click(cx.listener(move |m, _, _, cx| {
+            m.ideas.closed = i == 1;
+            cx.notify();
+        }))
+    });
     div()
         .flex()
         .items_center()
@@ -449,6 +503,7 @@ fn top(m: &MainWindow, t: &Theme, picked: &str, cx: &mut Context<MainWindow>) ->
             }))
         })
         .child(div().flex_1())
+        .child(which)
         .child(kit::btn_primary(t, "ideas-new", "New idea").on_click(cx.listener(|m, _, window, cx| open_form(m, window, cx))))
 }
 
@@ -460,7 +515,10 @@ fn line_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Mai
     let line = div().px(px(PAGE_X)).line_height(relative(1.4));
     let el = match v.lines.get(ix).copied() {
         Some(Line::Top) => line.pt(px(22.)).pb(px(20.)).child(top(m, &t, &v.key.picked, cx)),
-        Some(Line::Empty) => line.child(kit::empty(&t, if v.more { "Loading…" } else { "No ideas" })),
+        Some(Line::Empty) => {
+            let none = if v.key.closed { "No closed ideas" } else { "No ideas" };
+            line.child(kit::empty(&t, if v.more { "Loading…" } else { none }))
+        }
         Some(Line::Group(gi)) => line
             .when(gi > 0, |d| d.pt(px(20.)))
             .pb(px(10.))
@@ -530,18 +588,69 @@ mod tests {
         ]});
         let got = groups(&list, "all", now);
         assert_eq!(got.len(), 1);
-        let rows: Vec<(&str, Option<&str>, &str, &str, bool)> =
-            got[0].1.iter().map(|r| (r.r.as_str(), r.verdict.map(|v| v.0), r.state.0, r.when.as_str(), r.put_away)).collect();
+        let rows: Vec<(&str, Option<&str>, &str, &str)> = got[0].1.iter().map(|r| (r.r.as_str(), r.verdict.map(|v| v.0), r.state.0, r.when.as_str())).collect();
         assert_eq!(
             rows,
             [
-                ("I4", Some("Partly fits"), "Reported", "Today, 11:05 AM", false),
-                ("I3", None, "New", "Oct 7, 9:05 AM", false),
-                ("I2", Some("Fits"), "Planned", "Oct 14, 9:05 AM", false),
-                ("I5", Some("Doesn’t fit"), "Shelved", "Dec 1, 2025, 9:05 AM", true),
-                ("I1", None, "Dropped", "Today, 3:05 PM", true),
+                ("I4", Some("Partly fits"), "Reported", "Today, 11:05 AM"),
+                ("I3", None, "New", "Oct 7, 9:05 AM"),
+                ("I2", Some("Fits"), "Planned", "Oct 14, 9:05 AM"),
+                ("I5", Some("Doesn’t fit"), "Shelved", "Dec 1, 2025, 9:05 AM"),
+                ("I1", None, "Won’t do", "Today, 3:05 PM"),
             ]
         );
+    }
+
+    #[test]
+    fn the_tabs_count_open_and_closed_ideas_from_the_board_or_the_ideas() {
+        let now = at(2026, 10, 15, 16);
+        let ideas = json!([
+            idea(1, "web", "new", json!(null), now),
+            idea(2, "web", "planned", json!(null), now),
+            idea(3, "web", "shelved", json!(null), now),
+            idea(4, "api", "dropped", json!(null), now),
+        ]);
+        let counted = split(&json!({"ideas": ideas}));
+        assert_eq!(counted, [("api".to_string(), 0, 1), ("web".to_string(), 2, 1)]);
+        // The board counts every idea, not only the page held.
+        let board = json!({"ideas": ideas, "projects": [
+            {"project": "api", "open": 3, "closed": 4, "total": 9},
+            {"project": "web", "open": 1, "closed": 1, "total": 3},
+        ]});
+        assert_eq!(split(&board), [("api".to_string(), 5, 4), ("web".to_string(), 2, 1)]);
+        assert_eq!(tab_counts(&split(&board), "all"), (7, 5));
+        assert_eq!(tab_counts(&split(&board), "web"), (2, 1));
+        // A board without totals falls back to counting.
+        let old = json!({"ideas": ideas, "projects": [{"project": "web", "open": 1}]});
+        assert_eq!(split(&old), counted);
+    }
+
+    #[gpui_kit::test]
+    fn shelved_and_dropped_ideas_show_only_under_closed(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link("ideas", cx)).unwrap();
+        crate::parity::settle(cx);
+        redraw(w, cx);
+        let shown = |cx: &mut gpui_kit::TestAppContext| {
+            w.update(cx, |m, _, _| {
+                let v = m.ideas.view.as_ref().unwrap();
+                let rows: Vec<&'static str> = v.lines.iter().filter_map(|l| if let Line::Row(g, r) = l { Some(v.groups[*g].1[*r].state.0) } else { None }).collect();
+                (rows, tab_counts(&m.ideas.split, "all"))
+            })
+            .unwrap()
+        };
+        let (open, (n_open, n_closed)) = shown(cx);
+        assert!(!open.is_empty() && open.iter().all(|s| !["Shelved", "Won’t do"].contains(s)), "{open:?}");
+        assert_eq!(open.len(), n_open);
+        w.update(cx, |m, _, cx| {
+            m.ideas.closed = true;
+            cx.notify();
+        })
+        .unwrap();
+        redraw(w, cx);
+        let (closed, _) = shown(cx);
+        assert_eq!(closed, ["Shelved"], "the seeded shelved idea");
+        assert_eq!(closed.len(), n_closed);
     }
 
     #[test]
@@ -631,8 +740,13 @@ mod tests {
         assert_eq!(held(cx), (total, false, total), "scrolling to the end pages back through the rest");
         let ids: HashSet<i64> = w.update(cx, |m, _, _| m.ideas.held.rows.iter().map(|i| i["id"].as_i64().unwrap()).collect()).unwrap();
         assert_eq!(ids.len(), total, "each idea once");
-        let rows = w.update(cx, |m, _, _| m.ideas.view.as_ref().unwrap().lines.iter().filter(|l| matches!(l, Line::Row(..))).count()).unwrap();
-        assert_eq!(rows, total, "every idea has a line");
+        let (rows, open) = w
+            .update(cx, |m, _, _| {
+                let rows = m.ideas.view.as_ref().unwrap().lines.iter().filter(|l| matches!(l, Line::Row(..))).count();
+                (rows, m.ideas.held.rows.iter().filter(|i| !is_closed(i)).count())
+            })
+            .unwrap();
+        assert_eq!(rows, open, "every open idea has a line");
         let webapp = w.update(cx, |m, _, _| m.ideas.projects.iter().find(|(p, _)| p == "webapp").map(|(_, n)| *n).unwrap()).unwrap();
         assert!(webapp >= 160, "the filter counts the board's open ideas, not the held ones: {webapp}");
     }
