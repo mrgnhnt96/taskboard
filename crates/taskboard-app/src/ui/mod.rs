@@ -12,6 +12,7 @@ pub mod ideas;
 pub mod issue_panel;
 pub mod kit;
 pub mod md;
+pub mod paged;
 pub mod modals;
 pub mod projects;
 pub mod prwatch;

@@ -1,12 +1,14 @@
 //! The Tasks page (`GET /tasks`): every task, goal tasks included, in one list. A project, a status
 //! and words in the title or ref narrow it; it groups by goal, status or project, each group a card
 //! whose header carries its progress and what it waits on. A group opens in place, a row opens its
-//! task and a goal's name opens the goal's page.
+//! task and a goal's name opens the goal's page. The tasks come a page at a time (`ui::paged`) and
+//! the page is one list of lines (the header, each group's header and rows) drawn only in view.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::issue_panel as ip;
 use crate::ui::kit;
+use crate::ui::paged::Paged;
 use crate::ui::status::{self, St};
 use crate::ui::text_input::FieldChanged;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
@@ -17,6 +19,10 @@ use std::collections::HashSet;
 
 const PAGE_X: f32 = 28.;
 const PROJECT_FILTER: &str = "tasks-project";
+/// How many tasks one fetch asks for.
+pub const PAGE: usize = 200;
+/// Fetch the next page once the list is scrolled within this many lines of its end.
+const AHEAD: usize = 60;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GroupBy {
@@ -58,6 +64,48 @@ pub struct State {
     /// The groups opened or closed against how they start, by key.
     pub toggled: HashSet<String>,
     pub search: Option<kit::Input>,
+    /// The tasks fetched so far.
+    pub held: Paged,
+    /// The page as last drawn, rebuilt when the tasks or a filter change.
+    view: Option<View>,
+    list: Option<ListState>,
+}
+
+/// What the grouped view is built from.
+#[derive(Clone, PartialEq)]
+struct Key {
+    version: u64,
+    project: Option<String>,
+    show: Show,
+    words: String,
+    group: GroupBy,
+    goals: Vec<Value>,
+    since: DateTime<Utc>,
+}
+
+struct View {
+    key: Key,
+    all: Head,
+    hd: Head,
+    picked: Option<String>,
+    groups: Vec<Group>,
+    toggled: HashSet<String>,
+    more: bool,
+    lines: Vec<Line>,
+}
+
+/// One item of the page's list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Line {
+    /// The title, counts and filters.
+    Top,
+    /// "No tasks", or "Loading…" while older pages are still to come.
+    Empty,
+    /// A group's header: the top of its card.
+    Group(usize),
+    /// A group's row; the last closes the card.
+    Row(usize, usize),
+    End,
 }
 
 // ================================================================== view models
@@ -79,8 +127,11 @@ pub struct Item {
 
 /// The `GET /tasks` answer as rows.
 pub fn items(v: &Value) -> Vec<Item> {
-    arr(v, "tasks")
-        .iter()
+    items_of(arr(v, "tasks"))
+}
+
+fn items_of(rows: &[Value]) -> Vec<Item> {
+    rows.iter()
         .map(|c| {
             let row = status::row(c);
             let open = row.st != St::Done && !(row.st == St::Failed && s(c, "status") == "done");
@@ -312,7 +363,7 @@ fn task_row(t: &Theme, it: &Item, col: String, cx: &mut Context<MainWindow>) -> 
         .child(div().flex_none().w(px(96.)).whitespace_nowrap().text_right().text_size(px(12.)).text_color(t.muted).child(it.row.age.clone()))
 }
 
-fn group_card(t: &Theme, g: &Group, open: bool, by: GroupBy, cx: &mut Context<MainWindow>) -> Div {
+fn group_header(t: &Theme, g: &Group, open: bool, by: GroupBy, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let key = g.key.clone();
     let mut title = div().flex().flex_1().min_w_0().items_baseline().gap(px(8.));
     if let Some(st) = g.st {
@@ -361,48 +412,100 @@ fn group_card(t: &Theme, g: &Group, open: bool, by: GroupBy, cx: &mut Context<Ma
         };
         header = header.child(div().flex_none().w(px(150.)).text_right().truncate().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(color).child(text));
     }
-    let mut card = kit::card(t).rounded(px(12.)).overflow_hidden().child(header);
-    if open {
-        for it in &g.rows {
-            let col = match by {
-                GroupBy::Goal => it.wave.map(|w| format!("Wave {w}")).unwrap_or_default(),
-                _ => it.goal.as_ref().map(|g| g.0.clone()).unwrap_or_default(),
-            };
-            card = card.child(task_row(t, it, col, cx));
-        }
-    }
-    card
+    header
 }
 
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let t = cx.global::<Theme>().clone();
-    if m.tasks.search.is_none() {
-        let input = kit::Input::new(cx, "Filter by title or ref", false);
-        cx.subscribe(&input.field, |_, _, _: &FieldChanged, cx| cx.notify()).detach();
-        m.tasks.search = Some(input);
+/// Bring the grouped view and the list's lines up to date, rebuilding only what changed.
+fn sync(m: &mut MainWindow, words: &str) {
+    let s = &mut m.tasks;
+    let key = Key {
+        version: s.held.version,
+        project: s.project.clone(),
+        show: s.show,
+        words: words.to_string(),
+        group: s.group,
+        goals: m.data.goals.clone(),
+        since: week_start(),
+    };
+    let more = s.held.next.is_some();
+    let old = s.view.take();
+    let filters_same = old.as_ref().is_some_and(|v| (&v.key.project, v.key.show, &v.key.words, v.key.group) == (&key.project, key.show, &key.words, key.group));
+    let mut v = match old {
+        Some(v) if v.key == key => v,
+        _ => {
+            let items = items_of(&s.held.rows);
+            let all = head(&items, None, key.since);
+            // A picked project with no tasks left falls back to every project.
+            let picked = key.project.clone().filter(|p| all.projects.iter().any(|(n, _)| n == p));
+            let hd = head(&items, picked.as_deref(), key.since);
+            let f = Filter { project: picked.as_deref(), show: key.show, words };
+            let groups = groups(&items, &m.data.goals, key.group, &f);
+            View { key, all, hd, picked, groups, toggled: HashSet::new(), more, lines: vec![] }
+        }
+    };
+    let mut lines = vec![Line::Top];
+    if v.groups.is_empty() {
+        lines.push(Line::Empty);
     }
-    let words = m.tasks.search.as_ref().map(|x| x.text(cx)).unwrap_or_default();
-    let shell = div().id("tasks-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis();
+    for (gi, g) in v.groups.iter().enumerate() {
+        lines.push(Line::Group(gi));
+        if g.open != s.toggled.contains(&g.key) {
+            lines.extend((0..g.rows.len()).map(|ri| Line::Row(gi, ri)));
+        }
+    }
+    lines.push(Line::End);
+    let changed = lines != v.lines || v.more != more;
+    let count = lines.len();
+    match &s.list {
+        None => s.list = Some(ListState::new(count, ListAlignment::Top, px(600.))),
+        Some(l) if changed || !filters_same => {
+            let top = l.logical_scroll_top();
+            l.reset(count);
+            // New tasks or a group opened keep the place scrolled to; another filter starts at the top.
+            if filters_same {
+                l.scroll_to(ListOffset { item_ix: top.item_ix.min(count - 1), offset_in_item: top.offset_in_item });
+            }
+        }
+        // The header's counts can change with the lines staying put.
+        Some(l) => l.remeasure_items(0..1),
+    }
+    v.lines = lines;
+    v.more = more;
+    v.toggled = s.toggled.clone();
+    s.view = Some(v);
+}
+
+/// Fetch the next older page once the list nears its end (a short list is always near it).
+fn load_older(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let s = &mut m.tasks;
+    let (Some(before), Some(l), Some(v)) = (s.held.next.clone(), &s.list, &s.view) else { return };
+    if s.held.loading || v.lines.len() > l.logical_scroll_top().item_ix + AHEAD {
+        return;
+    }
+    s.held.loading = true;
+    let backend = m.backend.clone();
+    let query = vec![("limit", PAGE.to_string()), ("before", before.clone())];
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get("tasks", &query).map_err(|e| e.message) }).await;
+        let _ = this.update(cx, |m, cx| {
+            m.tasks.held.land_older("tasks", &before, got);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// The title, its counts and the filters: the list's first line.
+fn top(m: &MainWindow, t: &Theme, v: &View, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
     let search = m.tasks.search.as_ref().map(|x| {
         div()
             .relative()
             .flex_none()
             .w(px(340.))
-            .child(x.render(&t, "tasks-search", window).pl(px(32.)))
+            .child(x.render(t, "tasks-search", window).pl(px(32.)))
             .child(div().absolute().left(px(11.)).top_0().bottom_0().flex().items_center().child(kit::glyph(kit::Glyph::Search, 14., t.muted)))
     });
-
-    let Some(v) = m.data.tasks.clone() else {
-        let msg = if m.down.is_some() { "Can’t load the board." } else { "Loading…" };
-        let head = div().flex().items_center().gap(px(16.)).child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Tasks"));
-        return shell.child(div().flex().flex_col().gap(px(18.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).child(head).child(kit::empty(&t, msg))).into_any_element();
-    };
-    let items = items(&v);
-    let all = head(&items, None, week_start());
-    // A picked project with no tasks left falls back to every project.
-    let picked = m.tasks.project.clone().filter(|p| all.projects.iter().any(|(n, _)| n == p));
-    let hd = head(&items, picked.as_deref(), week_start());
-
+    let hd = &v.hd;
     let head_row = div()
         .flex()
         .items_center()
@@ -411,7 +514,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).text_color(t.muted).child(format!("{} open · {} done this week", hd.open, hd.done_week)))
         .children(search);
 
-    let projects = ip::project_filter(&t, PROJECT_FILTER, picked.as_deref().unwrap_or("all"), &all.projects, cx, |m, p, cx| {
+    let projects = ip::project_filter(t, PROJECT_FILTER, v.picked.as_deref().unwrap_or("all"), &v.all.projects, cx, |m, p, cx| {
         m.tasks.project = (p != "all").then_some(p);
         cx.notify();
     });
@@ -426,7 +529,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .collect();
     let refs: Vec<&str> = show_labels.iter().map(String::as_str).collect();
     let on = SHOW.iter().position(|sh| *sh == m.tasks.show).unwrap_or(0);
-    let shows = kit::seg(&t, "tasks-show", &refs, on, |i, item| {
+    let shows = kit::seg(t, "tasks-show", &refs, on, |i, item| {
         item.on_click(cx.listener(move |m, _, _, cx| {
             m.tasks.show = SHOW[i];
             cx.notify();
@@ -435,28 +538,74 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 
     let refs: Vec<&str> = GroupBy::ALL.iter().map(|g| g.label()).collect();
     let on = GroupBy::ALL.iter().position(|g| *g == m.tasks.group).unwrap_or(0);
-    let group_by = kit::seg(&t, "tasks-group-by", &refs, on, |i, item| {
+    let group_by = kit::seg(t, "tasks-group-by", &refs, on, |i, item| {
         item.on_click(cx.listener(move |m, _, _, cx| {
             m.tasks.group = GroupBy::ALL[i];
             cx.notify();
         }))
     });
     let filters = div().flex().flex_wrap().items_center().gap(px(10.)).child(projects).child(shows).child(div().ml_auto().child(group_by));
+    div().flex().flex_col().gap(px(16.)).pt(px(22.)).pb(px(16.)).child(head_row).child(filters)
+}
 
-    let by = m.tasks.group;
-    let f = Filter { project: picked.as_deref(), show: m.tasks.show, words: &words };
-    let gs = groups(&items, &m.data.goals, by, &f);
-    let mut list = div().flex().flex_col().gap(px(8.));
-    if gs.is_empty() {
-        list = list.child(kit::empty(&t, "No tasks"));
+/// One line of the page's list. A group's card is drawn in pieces: its header carries the top
+/// edge and each row the sides, the last row (or a closed header) the bottom.
+fn line_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    let Some(v) = m.tasks.view.take() else { return div().into_any_element() };
+    let line = div().px(px(PAGE_X)).line_height(relative(1.4));
+    let by = v.key.group;
+    let el = match v.lines.get(ix).copied() {
+        Some(Line::Top) => line.child(top(m, &t, &v, window, cx)),
+        Some(Line::Empty) => line.child(kit::empty(&t, if v.more { "Loading…" } else { "No tasks" })),
+        Some(Line::Group(gi)) => {
+            let g = &v.groups[gi];
+            let open = g.open != v.toggled.contains(&g.key);
+            let mut card = div().flex().flex_col().bg(t.card).border_color(t.border).border_t_1().border_x_1().rounded_t(px(12.));
+            if !open || g.rows.is_empty() {
+                card = card.border_b_1().rounded_b(px(12.));
+            }
+            line.when(gi > 0, |d| d.pt(px(8.))).child(card.child(group_header(&t, g, open, by, cx)))
+        }
+        Some(Line::Row(gi, ri)) => {
+            let g = &v.groups[gi];
+            let it = &g.rows[ri];
+            let col = match by {
+                GroupBy::Goal => it.wave.map(|w| format!("Wave {w}")).unwrap_or_default(),
+                _ => it.goal.as_ref().map(|g| g.0.clone()).unwrap_or_default(),
+            };
+            let mut card = div().bg(t.card).border_color(t.border).border_x_1();
+            if ri + 1 == g.rows.len() {
+                card = card.border_b_1().rounded_b(px(12.)).overflow_hidden();
+            }
+            line.child(card.child(task_row(&t, it, col, cx)))
+        }
+        Some(Line::End) | None => line.h(px(32.)),
+    };
+    m.tasks.view = Some(v);
+    el.into_any_element()
+}
+
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    if m.tasks.search.is_none() {
+        let input = kit::Input::new(cx, "Filter by title or ref", false);
+        cx.subscribe(&input.field, |_, _, _: &FieldChanged, cx| cx.notify()).detach();
+        m.tasks.search = Some(input);
     }
-    for g in &gs {
-        let open = g.open != m.tasks.toggled.contains(&g.key);
-        list = list.child(group_card(&t, g, open, by, cx));
+    let words = m.tasks.search.as_ref().map(|x| x.text(cx)).unwrap_or_default();
+    let shell = div().id("tasks-page").relative().flex().flex_col().flex_1().min_w_0().h_full();
+
+    if !m.tasks.held.loaded {
+        let msg = if m.down.is_some() { "Can’t load the board." } else { "Loading…" };
+        let head = div().flex().items_center().gap(px(16.)).child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Tasks"));
+        return shell.child(div().flex().flex_col().gap(px(18.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).child(head).child(kit::empty(&t, msg))).into_any_element();
     }
-    let page = div().flex().flex_col().gap(px(16.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head_row).child(filters).child(list);
+    sync(m, &words);
+    load_older(m, cx);
+    let Some(state) = m.tasks.list.clone() else { return shell.into_any_element() };
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
-    shell.child(page).children(filter).into_any_element()
+    shell.child(list(state, cx.processor(line_item)).flex_1().min_h_0()).children(filter).into_any_element()
 }
 
 /// The home page's "N queued" on a project's card: the Tasks page, narrowed to that project.
@@ -559,5 +708,47 @@ mod tests {
         let gs = groups(&it, &goals, GroupBy::Goal, &Filter { project: None, show: Show::Open, words: "" });
         let got: Vec<(&str, Option<&(String, Option<St>)>)> = gs.iter().map(|g| (g.r.as_str(), g.state.as_ref())).collect();
         assert_eq!(got, [("G5", Some(&("Stopped for your review".to_string(), Some(St::Needs)))), ("G4", Some(&("After G9".to_string(), None)))]);
+    }
+
+    #[gpui_kit::test]
+    fn a_long_task_list_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        use gpui_kit::AppContext as _;
+        let (w, rec) = crate::parity::window(cx);
+        let project = rec.board().get("tasks", &[]).unwrap()["tasks"][0]["project"].as_str().unwrap().to_string();
+        for k in 0..450 {
+            rec.board().post("tasks", json!({"title": format!("Paged {k}"), "project": project, "status": "planned"})).unwrap();
+        }
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(Page::Tasks, cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let held = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| (m.tasks.held.rows.len(), m.tasks.held.next.is_some(), m.tasks.held.total)).unwrap();
+        let (n, more, total) = held(cx);
+        assert_eq!((n, more), (PAGE, true), "only the first page until the list nears its end");
+        assert!(total > 450, "the header counts every task: {total}");
+
+        for _ in 0..5 {
+            w.update(cx, |m, _, _| {
+                let n = m.tasks.view.as_ref().unwrap().lines.len();
+                m.tasks.list.as_ref().unwrap().scroll_to(ListOffset { item_ix: n, offset_in_item: px(0.) });
+            })
+            .unwrap();
+            draw(cx);
+        }
+        assert_eq!(held(cx), (total, false, total), "scrolling to the end pages back through the rest");
+        let ids: HashSet<i64> = w.update(cx, |m, _, _| m.tasks.held.rows.iter().map(|t| t["id"].as_i64().unwrap()).collect()).unwrap();
+        assert_eq!(ids.len(), total, "each task once");
+        // Idle groups start closed; open them all and every task gets its line.
+        w.update(cx, |m, _, _| m.tasks.toggled = m.tasks.view.as_ref().unwrap().groups.iter().filter(|g| !g.open).map(|g| g.key.clone()).collect()).unwrap();
+        draw(cx);
+        let rows = w.update(cx, |m, _, _| m.tasks.view.as_ref().unwrap().lines.iter().filter(|l| matches!(l, Line::Row(..))).count()).unwrap();
+        assert!(rows >= 450, "every planned task has a line: {rows}");
     }
 }
