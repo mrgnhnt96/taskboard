@@ -144,3 +144,16 @@ fn play_says_what_a_task_waits_on_even_in_the_goals_order() {
     let run = b.play(gid);
     assert_eq!(run["waiting"], json!([format!("T{id} waits for you to do {h}")]), "the runbook only waits its turn: {run}");
 }
+
+#[test]
+fn open_in_claude_shows_its_terminal_once_open() {
+    let b = new_board();
+    let gid = goal(&b, true);
+    let job = |mode: &str| {
+        let v = b.post(&format!("/goals/G{gid}/plan"), json!({"mode": mode}));
+        let jid = v["job"].as_str().unwrap().trim_start_matches('J').parse::<i64>().unwrap();
+        board::job_args(&b.app.db.q1("SELECT * FROM jobs WHERE id = ?", taskboardd::p![jid]).unwrap().unwrap())
+    };
+    assert_eq!(job("edit").v("focus"), json!(true), "the owner pressed it, so Midna switches to it");
+    assert_eq!(job("suggest").v("focus"), Value::Null, "a planner opened for suggestions stays where it is");
+}

@@ -2478,6 +2478,8 @@ fn goal_plan(app: &App, id: i64, body: &Value) -> Result<Value> {
         let Some(cwd) = cwd else { return err(409, format!("The board doesn't know the folder for the project “{}”.", g.st("project"))) };
         let mut args = json!({"cwd": cwd, "title": short(&format!("Plan: {}", g.st("name")), 40), "queue": false});
         if edit {
+            // The owner pressed Open in Claude, so the terminal comes to the front once open.
+            args["focus"] = json!(true);
             args["prompt"] = json!("");
             args["context"] = json!(goal_context(app, &g, false)?);
         } else {

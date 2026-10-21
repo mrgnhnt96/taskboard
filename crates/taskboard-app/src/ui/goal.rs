@@ -730,7 +730,7 @@ pub fn run_goal(m: &mut MainWindow, gr: &str, now: bool, cx: &mut Context<MainWi
 /// Open in Claude: a Claude terminal in Midna on the goal's plan.
 pub fn plan_goal(m: &mut MainWindow, gr: &str, cx: &mut Context<MainWindow>) {
     run(m, format!("goal-plan-edit::{gr}"), None, true, format!("goals/{gr}/plan"), json!({"mode": "edit"}), cx, |_, _, _| {
-        "Opening a Claude terminal in Midna. It starts in about half a minute.".into()
+        "Opening a Claude terminal in Midna on this goal’s plan".into()
     });
 }
 
