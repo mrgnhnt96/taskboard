@@ -657,6 +657,13 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/pr/reviewed` | `{agent?: bool, via_session?: str}` | "I reviewed it": the owner looked at the PR, at any open stage (before it's green too: the ask stage goes on once checks pass); logs "PR #N: marked reviewed" and clears its alerts. From the app (`X-Task-Board-From: app`) or the owner's own `tb pr reviewed`. An agent's `tb` (`agent: true`) needs the owner's word in terminal `via_session` that they reviewed it ("mark PR #N reviewed", by number, task or "the PR"), else 403 "Only <owner> marks a PR reviewed, and they haven't told you in this terminal…" and the stage stays as it was; with it, the log names the terminal. |
 | `POST /done/close-terminals` | `{project?, goal?}` | Close every done task's still-open terminal (no force; a busy one is left), within a project or goal when given: `tb close --done` (on the owner's word). **Response read:** `jobs` (how many close). |
 
+**A task on this terminal** (`tb task new … --here`, report `tb.new_task` with `here: true`): a task for the work the
+terminal is already doing, claimed by it at once (`status: "working"`; with `line: "next"` queued in its line). It's
+standalone, or in `goal: "G<n>"` (design work: the agent makes the goal first, then this task, and the build tasks
+that follow join it). Held by the terminal (or its line), it's never started elsewhere by the goal's runner, whether
+the goal is running or not. `also` is refused with `--here` (400). **Response read:** `created: [ref]`, `status`,
+`project`, `goal` (the ref, or null) and `context` (what `tb` prints).
+
 **The app's own requests.** `X-Task-Board-From: app` marks a request as the owner's own click in Taskboard.app
 (Start, a wave's review stop). The header alone is anyone's say-so: a request with it that the board can't tie to the
 app is refused with 403 before it reaches the API. How it ties a request to the app is decided at each launch from

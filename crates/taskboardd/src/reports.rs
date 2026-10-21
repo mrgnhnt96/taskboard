@@ -962,7 +962,10 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     Ok(Some(format!(
         "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
          Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
-         --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR).{backlog} \
+         --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR). \
+         If the work is a design (concepts, a canvas, mockups, a design artifact), make a goal for the feature first: \
+         {tb} goal new \"<feature>\" --tldr \"…\" --outcome \"<done when>\", then the task with --goal G<n> --here; \
+         the build tasks that follow go in that goal.{backlog} \
          To check the board for this work first: {tb} search \"<words>\".{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn."
     )))
@@ -2815,13 +2818,16 @@ fn note_made(r: &Report, refs: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `tb task new … --here`: a standalone task for the work this terminal is already doing, claimed at once.
+/// `tb task new … --here`: a task for the work this terminal is already doing, claimed at once. With `goal` it
+/// sits in that goal (design work whose build tasks follow there); held by this terminal, the goal's runner
+/// never starts it elsewhere.
 fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Value> {
     let app = r.app;
     let Some(sid) = r.sid.clone() else { return err(400, "--here only works inside a Midna terminal.") };
-    if body_has(&r.body, "goal") || r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
-        return err(400, "--here makes a standalone task on this terminal; leave out --goal and --also.");
+    if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
+        return err(400, "--here takes no --also: give the task its one goal with --goal G<n>.");
     }
+    let goal = if body_has(&r.body, "goal") { Some(board::get_goal(app, need_ref(&r.body["goal"], "goal")?)?) } else { None };
     let place = r.b("line");
     let current = board::task_for_session(app, Some(&sid))?;
     if let Some(mine) = &current {
@@ -2870,7 +2876,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     let mut fields = json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
             "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-            "area": r.body.get("area"), "not_backlog": r.body.get("not_backlog"),
+            "area": r.body.get("area"), "not_backlog": r.body.get("not_backlog"), "goal_id": goal.as_ref().map(|g| g.id()),
             "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}});
     let how = match issue {
         Some(b) => {
@@ -2881,6 +2887,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     };
     let c = ops::new_task(app, &fields, &name, Some(&how))?;
     let t = board::get_task(app, c["id"].as_i64().unwrap_or(0))?;
+    let goal_ref = goal.as_ref().map(|g| json!(rf("goal", g.id()))).unwrap_or(Value::Null);
     crate::startword::note_made(app, &sid, t.id())?;
     if let Some(b) = issue {
         let text = format!("Taken as {} on {name}. Its handoff starts with this report and snapshot.", rf("task", t.id()));
@@ -2891,7 +2898,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
         board::log_event(app, t.id(), &name, "status", &format!("Queued in {name} after {}", rf("task", mine.id())))?;
         let (tr, mr) = (rf("task", t.id()), rf("task", mine.id()));
         let text = format!("{tr} is queued in this terminal after {mr}; it starts here once {mr} is done. Carry on with {mr}.");
-        return Ok(with(ok(Some(mine), Some(text)), json!({"created": [tr], "title": title, "status": "queued", "project": c["project"]})));
+        return Ok(with(ok(Some(mine), Some(text)), json!({"created": [tr], "title": title, "status": "queued", "project": c["project"], "goal": goal_ref})));
     }
     if let Err(why) = board::claim(app, &t, &sid, r.claude.as_deref(), None, "Tracked", false)? {
         return err(409, why);
@@ -2903,10 +2910,14 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
         "Task board: you're on {tr} now, and the board tracks this terminal's work on it. Keep working with {owner}; \
          follow the task-board skill's “When you're on a task”, and finish with tb submit when the work is."
     );
+    if let Some(g) = &goal {
+        let gr = rf("goal", g.id());
+        text.push_str(&format!(" {tr} is in {gr}; the tasks that build on it go there too: tb task new \"<title>\" --goal {gr}."));
+    }
     if let Some(mine) = &current {
         text.push_str(&format!(" {} waits here to resume once {tr} is done.", rf("task", mine.id())));
     }
-    Ok(with(ok(Some(&t), Some(text)), json!({"created": [tr], "title": title, "status": "working", "project": c["project"]})))
+    Ok(with(ok(Some(&t), Some(text)), json!({"created": [tr], "title": title, "status": "working", "project": c["project"], "goal": goal_ref})))
 }
 
 fn on_attach(r: &mut Report) -> Result<Value> {
