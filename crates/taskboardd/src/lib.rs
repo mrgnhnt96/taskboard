@@ -36,6 +36,7 @@ pub mod handoff;
 pub mod hooks;
 pub mod home;
 pub mod hours;
+pub mod hunks;
 pub mod human;
 pub mod import;
 pub mod cutover;

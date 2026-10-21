@@ -150,6 +150,21 @@
         ]
       },
       {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/tb",
+            "args": [
+              "hook",
+              "EditDone"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
         "matcher": "AskUserQuestion",
         "hooks": [
           {
