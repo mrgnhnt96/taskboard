@@ -3152,7 +3152,8 @@ fn pr_wait(app: &App, id: i64) -> Result<Value> {
 
 /// `tb slot claim`: a slot for the task's work, its own again when free, on its pushed branch. A task
 /// that doesn't work in a slot yet takes one and moves to the slot lane, once the slot is there. With
-/// `bring` (files; empty for its own uncommitted ones) its edits in the shared checkout go with it.
+/// `bring` (files; empty for its own uncommitted ones) its edits in the shared checkout go with it, and
+/// with `bring_hunk` (`<file>:<id>`, or `none`) the hunks no task's edit log has that it picks.
 fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
     let me = rf("task", id);
@@ -3163,7 +3164,7 @@ fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
         );
     }
     let bring = match crate::bring::asked(body)? {
-        Some(files) => Some(crate::bring::plan(app, &t, &files)?),
+        Some(files) => Some(crate::bring::plan(app, &t, &files, &crate::bring::picks(body)?)?),
         None => None,
     };
     let held = app.db.q1("SELECT id FROM worktree_slots WHERE task_id = ?", p![id])?.is_some();
@@ -3199,6 +3200,8 @@ fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         out["brought"] = json!(b.files);
         out["left"] = json!(b.left);
+        out["split"] = json!(b.parts.iter().map(|p| &p.file).collect::<Vec<_>>());
+        out["left_hunks"] = json!(b.left_hunks);
         if !patch.is_empty() {
             out["patch"] = json!(patch);
         }

@@ -183,6 +183,36 @@ fn note_edit(data: &Path, task: &str, session: &str, file: &Path) {
     }
 }
 
+/// `tb hook EditDone` (PostToolUse on an edit): appends the patch Claude made the file with to the
+/// task's `hunks/<task>`, one `{"file", "patch"}` line per edit, so `tb slot claim --bring` can tell
+/// its hunks from another task's in a file both edited. The patch is Claude's own `structuredPatch`
+/// (only the changed lines and their context, however large the file); a new file and a notebook
+/// have none, and leave nothing.
+fn note_patch(data: &Path, task: &str, file: &Path, response: &Value) {
+    let Some(patch) = response["structuredPatch"].as_array().filter(|p| !p.is_empty()) else { return };
+    if task.is_empty() || task.contains(['/', '.']) {
+        return;
+    }
+    let dir = data.join("hunks");
+    let _ = std::fs::create_dir_all(&dir);
+    let line = json!({"file": file.display().to_string(), "patch": patch}).to_string();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(task)) {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// `EditDone`: records the edit's patch under this terminal's task. No task or no board: nothing.
+fn edit_done(payload: &Value, session: &str) {
+    let tool = payload["tool_name"].as_str().unwrap_or("");
+    let cwd = payload["cwd"].as_str().unwrap_or("");
+    let Some(file) = EDIT_TOOLS.contains(&tool).then(|| work_place(tool, &payload["tool_input"], cwd)).flatten() else { return };
+    let cfg = client::config();
+    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return };
+    if let Some(task) = v["task"].as_str() {
+        note_patch(&cfg.data, task, &file, &payload["tool_response"]);
+    }
+}
+
 /// One edit from the ledger.
 #[derive(Debug, Clone, PartialEq)]
 struct Edit {
@@ -918,6 +948,10 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         tool_window(&payload, &session, "hook.tool_end");
         return 0;
     }
+    if hook == "EditDone" {
+        edit_done(&payload, &session);
+        return 0;
+    }
     let Some(event) = board_event(&hook) else { return 0 };
     let s = |k: &str| payload[k].as_str().unwrap_or("").to_string();
     let mut extra = serde_json::Map::new();
@@ -1300,6 +1334,22 @@ mod tests {
         assert_eq!(edits.len(), 2, "{edits:?}");
         assert_eq!(edits[0], Edit { task: "T1".into(), session: "s1".into(), file: repo.join("a.rs") });
         assert_eq!(edits[1].task, "T2");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_hook_keeps_each_edits_patch_under_its_task() {
+        let (root, repo, data) = shared_checkout("patches");
+        let patch = json!({"structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-one", "+two"]}]});
+        note_patch(&data, "T1", &repo.join("a.rs"), &patch);
+        note_patch(&data, "T1", &repo.join("b.rs"), &patch);
+        note_patch(&data, "T1", &repo.join("a.rs"), &json!({"structuredPatch": [], "type": "create"}));
+        note_patch(&data, "../x", &repo.join("a.rs"), &patch);
+        let log = std::fs::read_to_string(data.join("hunks").join("T1")).unwrap();
+        let recs: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(recs.len(), 2, "an empty patch isn't kept: {log}");
+        assert_eq!(recs[0], json!({"file": repo.join("a.rs").display().to_string(), "patch": patch["structuredPatch"]}));
+        assert!(!data.join("x").exists() && std::fs::read_dir(data.join("hunks")).unwrap().count() == 1, "a bad task name writes nothing");
         let _ = std::fs::remove_dir_all(&root);
     }
 

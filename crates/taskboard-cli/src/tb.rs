@@ -659,9 +659,14 @@ enum SlotCmd {
         #[arg(long)]
         task: Option<String>,
         /// Move the task's uncommitted edits in these files from the shared checkout into the slot; on
-        /// its own, the files the task edited there. Refused for a file another task is editing too
+        /// its own, the files the task edited there. A file another task edits too gives up only this
+        /// task's hunks; refused where both changed the same lines
         #[arg(long, num_args = 0.., value_name = "FILE")]
         bring: Option<Vec<String>>,
+        /// Also bring this hunk no task's edit log has (shell edits, edits from before the task), by the
+        /// id the claim listed; repeat for more, or `none` to leave them all
+        #[arg(long = "bring-hunk", value_name = "FILE:ID")]
+        bring_hunk: Vec<String>,
     },
     /// Give the slot back; refused while it has uncommitted changes or unpushed commits
     Release {
@@ -3170,9 +3175,9 @@ fn bit_line(b: &Value, tool: &str) -> String {
 
 fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
     match action {
-        SlotCmd::Claim { task, bring } => {
+        SlotCmd::Claim { task, bring, bring_hunk } => {
             let t = c.pr_task(task)?;
-            slot_claim(c, &t, bring)?;
+            slot_claim(c, &t, bring, &bring_hunk)?;
         }
         SlotCmd::Release { task } => {
             let t = c.pr_task(task)?;
@@ -3183,13 +3188,16 @@ fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Claims `t` a slot, bringing `bring`'s files (relative to here) from the shared checkout, and says
-/// where it works now and what came along.
-fn slot_claim(c: &Ctx, t: &str, bring: Option<Vec<String>>) -> Result<(), String> {
+/// Claims `t` a slot, bringing `bring`'s files and the `hunks` picked (relative to here) from the
+/// shared checkout, and says where it works now and what came along.
+fn slot_claim(c: &Ctx, t: &str, bring: Option<Vec<String>>, hunks: &[String]) -> Result<(), String> {
     let mut body = json!({});
+    let here = std::env::current_dir().unwrap_or_default();
     if let Some(files) = bring {
-        let here = std::env::current_dir().unwrap_or_default();
         body["bring"] = json!(files.iter().map(|f| here.join(f).to_string_lossy().to_string()).collect::<Vec<_>>());
+    }
+    if !hunks.is_empty() {
+        body["bring_hunk"] = json!(hunks.iter().map(|h| if h == "none" { h.clone() } else { here.join(h).to_string_lossy().to_string() }).collect::<Vec<_>>());
     }
     let v = c.call("POST", &format!("/tasks/{t}/slot/claim"), Some(body))?;
     out(&slot_claimed(t, &v));
@@ -3202,6 +3210,12 @@ fn slot_claimed(t: &str, v: &Value) -> String {
     let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
     if !list("brought").is_empty() {
         lines.push(format!("Brought from the shared checkout: {} (the patch is kept at {}).", list("brought"), v["patch"].as_str().unwrap_or("")));
+    }
+    if !list("split").is_empty() {
+        lines.push(format!("Only this task's hunks came from {}; the other tasks' edits stay in the shared checkout.", list("split")));
+    }
+    if !list("left_hunks").is_empty() {
+        lines.push(format!("Hunks no task's edit log has, left in the shared checkout: {}.", list("left_hunks")));
     }
     if !list("left").is_empty() {
         lines.push(format!("Left behind in the shared checkout, still uncommitted: {}. Bring them too with tb slot claim --bring <files>, or commit them there by name.", list("left")));
@@ -5945,7 +5959,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
                         midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                         if lane.as_deref() == Some("slot") {
-                            slot_claim(c, &r, bring)?;
+                            slot_claim(c, &r, bring, &[])?;
                         }
                     }
                     Some(v) => {

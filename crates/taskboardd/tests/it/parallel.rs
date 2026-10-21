@@ -1107,6 +1107,8 @@ fn bring_refuses_a_file_another_task_has_edits_in() {
     std::fs::write(Path::new(&repo).join("README"), "both\n").unwrap();
     edited(&b, t, &["README"]);
     edited(&b, other, &["README"]);
+    // Only this task's patches are logged; the other's log is from before patches were kept.
+    patched(&b, t, "README", json!([{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-webapp", "+both"]}]));
     let before = lane(&b, t);
 
     let (code, msg) = b.post_err(&format!("tasks/T{t}/slot/claim"), json!({"bring": ["README"]}));
@@ -1115,6 +1117,141 @@ fn bring_refuses_a_file_another_task_has_edits_in() {
     assert!(!Path::new(&slot(&b, 1)).exists(), "no slot was taken");
     assert_eq!(std::fs::read_to_string(Path::new(&repo).join("README")).unwrap(), "both\n");
     assert_eq!(lane(&b, t), before);
+}
+
+/// Notes one edit's patch (Claude's `structuredPatch` hunks) to `file` in the task's hook patch log.
+fn patched(b: &Board, t: i64, file: &str, patch: Value) {
+    use std::io::Write;
+    let dir = b.app.cfg.data.join("hunks");
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = json!({"file": format!("{}/{file}", b.repo()), "patch": patch});
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("T{t}"))).unwrap();
+    writeln!(f, "{line}").unwrap();
+}
+
+/// A twelve-line `list` on main, here and on origin, and two tasks with edits in it: `mine` changed
+/// line 2 and `theirs` (working) line 10, each through Claude's Edit.
+fn shared_list(b: &Board) -> (i64, i64) {
+    git_repo(b);
+    let repo = Path::new(&b.repo()).to_path_buf();
+    let lines: String = (1..=12).map(|n| format!("{n}\n")).collect();
+    std::fs::write(repo.join("list"), lines).unwrap();
+    git(&repo, &["add", "list"]);
+    git(&repo, &["commit", "-q", "-m", "List"]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    let (mine, theirs) = (b.task("Mine", json!({})), b.task("Theirs", json!({})));
+    working(b, theirs);
+    write_list(b, &[(2, "two (mine)"), (10, "ten (theirs)")]);
+    edited(b, mine, &["list"]);
+    edited(b, theirs, &["list"]);
+    patched(b, mine, "list", json!([{"oldStart": 1, "oldLines": 5, "newStart": 1, "newLines": 5, "lines": [" 1", "-2", "+two (mine)", " 3", " 4", " 5"]}]));
+    patched(b, theirs, "list", json!([{"oldStart": 7, "oldLines": 6, "newStart": 7, "newLines": 6, "lines": [" 7", " 8", " 9", "-10", "+ten (theirs)", " 11", " 12"]}]));
+    (mine, theirs)
+}
+
+/// The shared `list` with these lines changed.
+fn write_list(b: &Board, changed: &[(usize, &str)]) {
+    let text: String = (1..=12).map(|n| format!("{}\n", changed.iter().find(|(m, _)| *m == n).map_or(n.to_string(), |(_, l)| l.to_string()))).collect();
+    std::fs::write(Path::new(&b.repo()).join("list"), text).unwrap();
+}
+
+fn list_in(dir: &str) -> String {
+    std::fs::read_to_string(Path::new(dir).join("list")).unwrap()
+}
+
+/// `list`'s twelve lines with these changed, as `write_list` writes them.
+fn list_with(changed: &[(usize, &str)]) -> String {
+    (1..=12).map(|n| format!("{}\n", changed.iter().find(|(m, _)| *m == n).map_or(n.to_string(), |(_, l)| l.to_string()))).collect()
+}
+
+#[test]
+fn two_tasks_in_one_file_each_keep_their_own_hunks() {
+    let b = new_board();
+    let (mine, _) = shared_list(&b);
+    let repo = b.repo();
+
+    let out = b.post(&format!("tasks/T{mine}/slot/claim"), json!({"bring": []}));
+    assert_eq!((out["brought"].clone(), out["split"].clone()), (json!(["list"]), json!(["list"])), "{out}");
+    assert_eq!(list_in(&slot(&b, 1)), list_with(&[(2, "two (mine)")]), "the slot gets its own hunk only");
+    assert_eq!(list_in(&repo), list_with(&[(10, "ten (theirs)")]), "the other task's hunk stays, its own is gone");
+    assert_eq!(git(Path::new(&repo), &["diff", "--cached", "--name-only"]), "", "nothing of its is staged in the shared checkout");
+    assert_eq!(lane(&b, mine), ("slot".into(), "task".into()));
+}
+
+#[test]
+fn a_hunk_two_tasks_changed_is_refused_naming_the_other() {
+    let b = new_board();
+    let (mine, theirs) = shared_list(&b);
+    let repo = b.repo();
+    // The other task also changed line 3, next to this task's line 2: git sees one hunk.
+    write_list(&b, &[(2, "two (mine)"), (3, "three (theirs)"), (10, "ten (theirs)")]);
+    patched(&b, theirs, "list", json!([{"oldStart": 1, "oldLines": 6, "newStart": 1, "newLines": 6, "lines": [" 1", " two (mine)", "-3", "+three (theirs)", " 4", " 5", " 6"]}]));
+    let before = lane(&b, mine);
+
+    let (code, msg) = b.post_err(&format!("tasks/T{mine}/slot/claim"), json!({"bring": []}));
+    assert_eq!(code, 409);
+    assert!(msg.contains(&format!("can't bring list (T{theirs} changed the same lines as T{mine}, at line 2)")), "{msg}");
+    assert!(!Path::new(&slot(&b, 1)).exists(), "no slot was taken");
+    assert_eq!(list_in(&repo), list_with(&[(2, "two (mine)"), (3, "three (theirs)"), (10, "ten (theirs)")]));
+    assert_eq!(lane(&b, mine), before);
+}
+
+#[test]
+fn a_hunk_no_log_has_is_listed_then_brought_by_its_id() {
+    let b = new_board();
+    let (mine, _) = shared_list(&b);
+    let repo = b.repo();
+    // A shell edit: no task's log has it.
+    write_list(&b, &[(2, "two (mine)"), (6, "six (shell)"), (10, "ten (theirs)")]);
+
+    let (code, msg) = b.post_err(&format!("tasks/T{mine}/slot/claim"), json!({"bring": []}));
+    assert_eq!(code, 409);
+    assert!(msg.contains("(line 6: +six (shell))") && msg.contains("--bring-hunk none"), "{msg}");
+    assert!(!Path::new(&slot(&b, 1)).exists(), "no slot was taken");
+    let id = msg.split("list:").nth(1).unwrap().split(' ').next().unwrap().to_string();
+    assert_eq!(id.len(), 6, "{msg}");
+
+    let (code, msg) = b.post_err(&format!("tasks/T{mine}/slot/claim"), json!({"bring_hunk": [format!("{repo}/list:abcdef")]}));
+    assert_eq!(code, 409);
+    assert!(msg.contains("list:abcdef (no such hunk; its hunks are") && msg.contains(&id), "{msg}");
+
+    let out = b.post(&format!("tasks/T{mine}/slot/claim"), json!({"bring_hunk": [format!("{repo}/list:{id}")]}));
+    assert_eq!(out["brought"], json!(["list"]), "{out}");
+    assert_eq!(list_in(&slot(&b, 1)), list_with(&[(2, "two (mine)"), (6, "six (shell)")]));
+    assert_eq!(list_in(&repo), list_with(&[(10, "ten (theirs)")]));
+}
+
+#[test]
+fn leaving_hunks_no_log_has_brings_its_own_and_lists_the_rest() {
+    let b = new_board();
+    let (mine, _) = shared_list(&b);
+    let repo = b.repo();
+    write_list(&b, &[(2, "two (mine)"), (6, "six (shell)"), (10, "ten (theirs)")]);
+
+    let out = b.post(&format!("tasks/T{mine}/slot/claim"), json!({"bring_hunk": ["none"]}));
+    assert!(out["left_hunks"][0].as_str().unwrap().contains("(line 6: +six (shell))"), "{out}");
+    assert_eq!(list_in(&slot(&b, 1)), list_with(&[(2, "two (mine)")]));
+    assert_eq!(list_in(&repo), list_with(&[(6, "six (shell)"), (10, "ten (theirs)")]));
+}
+
+#[test]
+fn a_shared_copy_that_cant_be_written_leaves_everything_as_it_was() {
+    use std::os::unix::fs::PermissionsExt;
+    let b = new_board();
+    let (mine, _) = shared_list(&b);
+    let repo = b.repo();
+    let file = Path::new(&repo).join("list");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let before = lane(&b, mine);
+
+    let (code, msg) = b.post_err(&format!("tasks/T{mine}/slot/claim"), json!({"bring": []}));
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(code, 409);
+    assert!(msg.contains("couldn't take its hunks out of list") && msg.contains("the slot was given back"), "{msg}");
+    assert_eq!(list_in(&repo), list_with(&[(2, "two (mine)"), (10, "ten (theirs)")]));
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["status", "--porcelain"]), "", "the slot is as it was made");
+    assert!(slot_row(&b, 1).i("task_id").is_none(), "the slot is free again");
+    assert_eq!(lane(&b, mine), before);
 }
 
 #[test]
