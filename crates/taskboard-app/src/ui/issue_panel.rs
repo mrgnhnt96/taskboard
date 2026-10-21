@@ -18,6 +18,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// `.panel`: `width: min(480px, 100vw)`.
@@ -31,6 +32,138 @@ pub struct State {
     /// Running calls by button key (`promote:board:B1`, `ticket::B1`, `drop::B1`).
     pub busy: HashSet<String>,
     pub picker: Option<Picker>,
+    /// The history events held so far: the issue's own page and those fetched after it.
+    hist: HistCache,
+    /// The panel's list, which draws only the history rows in view.
+    hist_list: Option<HistList>,
+}
+
+// ------------------------------------------------------------------ the history
+
+/// How many later events one fetch asks for (the issue itself carries the oldest 200).
+const HIST_PAGE: usize = 200;
+/// Fetch the next page once the list is scrolled within this many events of its end.
+const HIST_AHEAD: usize = 100;
+
+#[derive(Default)]
+struct HistCache {
+    /// The issue page last merged in, so an unchanged one isn't merged again.
+    stamp: String,
+    rows: Rc<Vec<Value>>,
+    keys: HashSet<String>,
+    loading: bool,
+    /// A fetch failed: stop asking; the events already here stay.
+    failed: bool,
+}
+
+impl HistCache {
+    /// Add events not already held, keeping oldest first (the board's `at, id`).
+    fn add(&mut self, new: impl IntoIterator<Item = Value>) {
+        let rows = Rc::make_mut(&mut self.rows);
+        for e in new {
+            if self.keys.insert(hist_key(&e)) {
+                rows.push(e);
+            }
+        }
+        rows.sort_by(|a, b| s(a, "at").cmp(s(b, "at")).then(a["id"].as_i64().cmp(&b["id"].as_i64())));
+    }
+}
+
+fn hist_key(e: &Value) -> String {
+    match e["id"].as_i64() {
+        Some(id) => id.to_string(),
+        None => format!("{}|{}|{}", s(e, "at"), s(e, "kind"), s(e, "text")),
+    }
+}
+
+/// The history: the issue's own page merged into what's been fetched after it, and whether the
+/// board holds more.
+fn hist_rows(st: &mut State, b: &Value) -> (Rc<Vec<Value>>, bool) {
+    let c = &mut st.hist;
+    let page = arr(b, "history");
+    let stamp = format!("{}|{}|{}|{}", page.first().map(hist_key).unwrap_or_default(), page.last().map(hist_key).unwrap_or_default(), page.len(), b["history_total"]);
+    if c.stamp != stamp {
+        c.stamp = stamp;
+        c.add(page.iter().cloned());
+    }
+    let total = b["history_total"].as_u64().map_or(page.len(), |n| n as usize);
+    (c.rows.clone(), !c.failed && total > c.rows.len())
+}
+
+/// Fetch the next later page of the history when the list nears its end.
+fn load_later_hist(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
+    let Some(l) = &m.issue_panel.hist_list else { return };
+    let c = &m.issue_panel.hist;
+    if !l.more || c.loading || l.rows.len() > l.state.logical_scroll_top().item_ix + HIST_AHEAD {
+        return;
+    }
+    let mut query = vec![("limit", HIST_PAGE.to_string())];
+    if let Some(id) = l.rows.last().and_then(|e| e["id"].as_i64()) {
+        query.push(("after", id.to_string()));
+    }
+    m.issue_panel.hist.loading = true;
+    let (r, backend, path) = (r.to_string(), m.backend.clone(), format!("backlog/{r}/history"));
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get(&path, &query) }).await;
+        let _ = this.update(cx, |m, cx| {
+            // Another issue since: its cache started over and isn't waiting on this.
+            if !matches!(&m.panel, Some(Panel::Issue { r: cur }) if *cur == r) {
+                return;
+            }
+            let c = &mut m.issue_panel.hist;
+            c.loading = false;
+            match got {
+                Ok(v) => c.add(arr(&v, "history").iter().cloned()),
+                Err(_) => c.failed = true,
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+struct HistList {
+    state: ListState,
+    /// The events the list was last told about.
+    rows: Rc<Vec<Value>>,
+    more: bool,
+}
+
+/// Keep the list's items (the sheet above, each event, the end below) in step with the events:
+/// later ones come in at the bottom, so the place scrolled to stays put.
+fn sync_hist_list(st: &mut State, rows: &Rc<Vec<Value>>, more: bool) {
+    let count = rows.len() + 2;
+    let l = st.hist_list.get_or_insert_with(|| HistList { state: ListState::new(count, ListAlignment::Top, px(800.)), rows: rows.clone(), more });
+    if !Rc::ptr_eq(&l.rows, rows) {
+        let old = &l.rows;
+        let n = old.len();
+        let kept = rows.len() >= n && old.first().map(hist_key) == rows.first().map(hist_key) && old.last().map(hist_key) == n.checked_sub(1).and_then(|i| rows.get(i)).map(hist_key);
+        if kept {
+            l.state.splice(1 + n..1 + n, rows.len() - n);
+        } else {
+            l.state.reset(count);
+        }
+        l.rows = rows.clone();
+    }
+    l.more = more;
+    // The sheet and the end change with the issue; the events don't.
+    l.state.remeasure_items(0..1);
+    l.state.remeasure_items(count - 1..count);
+}
+
+/// One item of the panel's list: 0 is the sheet above the history, the last the end below.
+fn hist_list_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    let (Some(l), Some(b)) = (&m.issue_panel.hist_list, m.data.issue.clone()) else { return div().into_any_element() };
+    let (rows, more) = (l.rows.clone(), l.more);
+    if ix == 0 {
+        return panel_sheet(m, &t, &b, rows.is_empty() && !more, cx).into_any_element();
+    }
+    let row = div().px(px(24.)).line_height(relative(1.5));
+    match rows.get(ix - 1) {
+        Some(h) => row.pt(px(8.)).child(hist_row(&t, &fmt::ref_of(&b, "B"), ix - 1, &hist_row_of(h), false)).into_any_element(),
+        None => row.pb(px(32.)).when(more, |d| d.pt(px(8.)).child(kit::help(&t, "Loading…"))).into_any_element(),
+    }
 }
 
 // ------------------------------------------------------------------ labels
@@ -260,10 +393,15 @@ pub struct DetailView {
 }
 
 pub fn detail_view(b: &Value) -> DetailView {
-    let r = fmt::ref_of(b, "B");
     let mut hist: Vec<&Value> = arr(b, "history").iter().collect();
     let at = |h: &Value| h.get("at").map(|a| a.as_str().map(str::to_string).unwrap_or_else(|| a.to_string())).unwrap_or_else(|| "undefined".into());
     hist.sort_by(|x, y| locale_cmp(&at(x), &at(y)));
+    DetailView { history: hist.into_iter().map(hist_row_of).collect(), ..detail_head(b) }
+}
+
+/// The detail without its history, which the panel's list draws a row at a time.
+fn detail_head(b: &Value) -> DetailView {
+    let r = fmt::ref_of(b, "B");
     DetailView {
         how: issue_how(b),
         said: fmt::opt_s(b, "said").map(str::to_string),
@@ -273,21 +411,22 @@ pub fn detail_view(b: &Value) -> DetailView {
             let at = fmt::opt_s(b, "created_at").map(|c| format!(" at {}", fmt::hhmm(c))).unwrap_or_default();
             (fr.clone(), format!("Open {fr}’s log{at}"))
         }),
-        history: hist
-            .into_iter()
-            .map(|h| HistRow {
-                time: fmt::hhmm(s(h, "at")),
-                full: fmt::full_time(s(h, "at")),
-                kind: s(h, "kind").to_string(),
-                who: fmt::opt_s(h, "who").map(str::to_string),
-                what: s(h, "text").to_string(),
-                text: match fmt::opt_s(h, "who") {
-                    Some(w) => format!("{w} · {}", s(h, "text")),
-                    None => s(h, "text").to_string(),
-                },
-            })
-            .collect(),
+        history: Vec::new(),
         r,
+    }
+}
+
+fn hist_row_of(h: &Value) -> HistRow {
+    HistRow {
+        time: fmt::hhmm(s(h, "at")),
+        full: fmt::full_time(s(h, "at")),
+        kind: s(h, "kind").to_string(),
+        who: fmt::opt_s(h, "who").map(str::to_string),
+        what: s(h, "text").to_string(),
+        text: match fmt::opt_s(h, "who") {
+            Some(w) => format!("{w} · {}", s(h, "text")),
+            None => s(h, "text").to_string(),
+        },
     }
 }
 
@@ -333,7 +472,14 @@ pub struct PanelView {
     pub detail: DetailView,
 }
 
+/// The whole panel, history and all, as the parity tests read it.
+#[cfg(test)]
 pub fn panel_view(cx: &Ctx, b: &Value) -> PanelView {
+    PanelView { detail: detail_view(b), ..panel_head(cx, b) }
+}
+
+/// The panel without the history in its detail.
+fn panel_head(cx: &Ctx, b: &Value) -> PanelView {
     let r = fmt::ref_of(b, "B");
     let state_line = issue_state(b).map(|x| x.1).unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at"))));
     let open = matches!(s(b, "state"), "" | "open");
@@ -348,7 +494,7 @@ pub fn panel_view(cx: &Ctx, b: &Value) -> PanelView {
             (what, issue_actions(cx, &r, "board"))
         }),
         note: cx.note(&format!("issue:{r}")),
-        detail: detail_view(b),
+        detail: detail_head(b),
         r,
     }
 }
@@ -963,6 +1109,15 @@ fn hist_color(t: &Theme, kind: &str) -> Hsla {
 
 /// `issueDetail`, drawn. `compact` is the aside's smaller text.
 pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
+    let mut history = history_head(t, compact, v.history.is_empty());
+    for (n, h) in v.history.iter().enumerate() {
+        history = history.child(hist_row(t, &v.r, n, h, compact));
+    }
+    detail_sections(t, v, compact, cx).child(history)
+}
+
+/// The detail above the history.
+fn detail_sections(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
     let r = v.r.clone();
     let mut col = div().flex().flex_col().gap(px(18.));
     let sec = |title: &str, gap: f32| if compact { section(t, title) } else { panel_section(t, title, gap) };
@@ -1002,47 +1157,44 @@ pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<
     if let Some((fr, label)) = v.found_log.clone() {
         happening = happening.child(div().flex().text_size(px(13.)).child(kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label).when(!compact, |d| d.underline()).on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx)))));
     }
-    col = col.child(happening);
+    col.child(happening)
+}
 
-    let mut history = sec("History", 8.);
-    if v.history.is_empty() {
-        history = history.child(kit::help(t, "Nothing yet."));
+/// The History heading, and "Nothing yet." when there's none.
+fn history_head(t: &Theme, compact: bool, empty: bool) -> Div {
+    let history = if compact { section(t, "History") } else { panel_section(t, "History", 8.) };
+    history.when(empty, |d| d.child(kit::help(t, "Nothing yet.")))
+}
+
+/// One history event: time · dot · text.
+fn hist_row(t: &Theme, r: &str, n: usize, h: &HistRow, compact: bool) -> Div {
+    if !compact {
+        // `.hist li`: 52px time · 10px dot · text, gap 8px.
+        let text = match &h.who {
+            Some(w) => div().flex_1().min_w_0().text_size(px(13.5)).child(sel_styled(
+                t,
+                SharedString::from(format!("issue-hist-text-{n}")),
+                format!("{w} · {}", h.what),
+                vec![(0..w.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })],
+            )),
+            None => div().flex_1().min_w_0().text_size(px(13.5)).child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.what.clone())),
+        };
+        return div()
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(52.)).whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
+            .child(div().flex_none().w(px(10.)).pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 8.)))
+            .child(text);
     }
-    for (n, h) in v.history.iter().enumerate() {
-        if !compact {
-            // `.hist li`: 52px time · 10px dot · text, gap 8px.
-            let text = match &h.who {
-                Some(w) => div().flex_1().min_w_0().text_size(px(13.5)).child(sel_styled(
-                    t,
-                    SharedString::from(format!("issue-hist-text-{n}")),
-                    format!("{w} · {}", h.what),
-                    vec![(0..w.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })],
-                )),
-                None => div().flex_1().min_w_0().text_size(px(13.5)).child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.what.clone())),
-            };
-            history = history.child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(8.))
-                    .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(52.)).whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
-                    .child(div().flex_none().w(px(10.)).pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 8.)))
-                    .child(text),
-            );
-            continue;
-        }
-        history = history.child(
-            div()
-                .flex()
-                .items_start()
-                .gap(px(10.))
-                .text_size(px(13.))
-                .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(64.)).text_color(t.muted).text_size(px(12.)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
-                .child(div().flex_none().pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 7.)))
-                .child(div().flex_1().min_w_0().child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.text.clone()))),
-        );
-    }
-    col.child(history)
+    div()
+        .flex()
+        .items_start()
+        .gap(px(10.))
+        .text_size(px(13.))
+        .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(64.)).text_color(t.muted).text_size(px(12.)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
+        .child(div().flex_none().pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 7.)))
+        .child(div().flex_1().min_w_0().child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.text.clone())))
 }
 
 /// The issue panel on the Board and the Backlog page (the Goal page draws [`render_aside`] beside
@@ -1053,10 +1205,15 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         Some(Panel::Issue { r }) if !matches!(m.page, Page::Goal(_)) => r.clone(),
         _ => return div().into_any_element(),
     };
-    let close = close_btn(&t).on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)));
     let issue = m.data.issue.clone().filter(|b| fmt::ref_of(b, "B") == r);
     let body = match issue {
-        Some(b) => panel_body(m, &t, &b, close, cx),
+        Some(b) => {
+            let (rows, more) = hist_rows(&mut m.issue_panel, &b);
+            sync_hist_list(&mut m.issue_panel, &rows, more);
+            load_later_hist(m, &r, cx);
+            let state = m.issue_panel.hist_list.as_ref().map(|l| l.state.clone()).expect("synced above");
+            div().id("issue-panel-body").flex().flex_col().size_full().child(list(state, cx.processor(hist_list_item)).flex_1().min_h_0())
+        }
         None => div()
             .id("issue-panel-body")
             .flex()
@@ -1065,7 +1222,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .px(px(24.))
             .pt(px(24.))
             .line_height(relative(1.5))
-            .child(div().flex().items_center().gap(px(8.)).child(web_pill(&t, t.text_2, t.col, "Backlog", false)).child(div().flex_1()).child(close))
+            .child(div().flex().items_center().gap(px(8.)).child(web_pill(&t, t.text_2, t.col, "Backlog", false)).child(div().flex_1()).child(close_btn(&t).on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)))))
             .child(kit::help(&t, "Loading…")),
     };
     let picker = m.issue_panel.picker.as_ref().is_some_and(|p| p.fixed.is_none()).then(|| render_picker(m, &t, window, cx)).flatten();
@@ -1098,8 +1255,10 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     .into_any_element()
 }
 
-fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let v = panel_view(&Ctx::of(m), b);
+/// The panel above its history: the list's first item. `empty`: no history at all.
+fn panel_sheet(m: &mut MainWindow, t: &Theme, b: &Value, empty: bool, cx: &mut Context<MainWindow>) -> Div {
+    let v = panel_head(&Ctx::of(m), b);
+    let close = close_btn(t).on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)));
     let r = v.r.clone();
     let (kfg, kbg) = kind_colors(t, s(b, "kind"));
     // `.panel-top`: Backlog, the kind and the ref as `.pill`s, the close `.icon-btn`.
@@ -1133,18 +1292,8 @@ fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx
                     d.child("·").child(kit::link(t, "issue-open-task", "Open it").underline().on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx))))
                 })),
         );
-    let mut col = div()
-        .id("issue-panel-body")
-        .flex()
-        .flex_col()
-        .gap(px(18.))
-        .size_full()
-        .px(px(24.))
-        .pt(px(24.))
-        .pb(px(32.))
-        .line_height(relative(1.5))
-        .overflow_y_scroll()
-        .child(top)
+    // The history's rows follow as the list's own items; the end item gives the bottom padding.
+    let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(24.)).line_height(relative(1.5)).child(top)
         .child(title);
     match &v.open_box {
         Some((what, acts)) => {
@@ -1166,7 +1315,7 @@ fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx
         }
         None => col = col.children(note_el(t, &v.note)),
     }
-    col.child(render_detail(t, &v.detail, false, cx))
+    col.child(detail_sections(t, &v.detail, false, cx)).child(history_head(t, false, empty))
 }
 
 /// `.pill` (12px semibold, padding 2px 10px); `mono` is `.pill.ref`.
@@ -1377,5 +1526,45 @@ mod tests {
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/promote")), Some(json!({"where": "board"})));
         w.update(cx, |m, _, _| assert!(matches!(&m.panel, Some(Panel::Task { .. })), "the new task's panel opens")).unwrap();
+    }
+
+    fn draw(cx: &mut gpui_kit::TestAppContext, w: &gpui_kit::WindowHandle<crate::app::MainWindow>) {
+        use gpui_kit::AppContext as _;
+        let _ = cx.update_window((*w).into(), |_, window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        parity::settle(cx);
+    }
+
+    #[gpui_kit::test]
+    fn a_long_history_fetches_later_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = parity::window(cx);
+        let r = add_issue(&rec, json!({"title": "Flaky test", "kind": "gap", "project": "webapp"}));
+        let id: i64 = r[1..].parse().unwrap();
+        for k in 0..450 {
+            taskboardd::board::add_issue_event(rec.board().app(), id, "", "note", &format!("Entry {k}"), None).unwrap();
+        }
+        w.update(cx, |m, _, cx| m.open_issue(r.clone(), cx)).unwrap();
+        parity::settle(cx);
+        draw(cx, &w);
+        let total = w.update(cx, |m, _, _| m.data.issue.as_ref().unwrap()["history_total"].as_u64().unwrap() as usize).unwrap();
+        assert!(total > 450);
+        let held = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| m.issue_panel.hist_list.as_ref().map(|l| (l.rows.len(), l.more))).unwrap();
+        assert_eq!(held(cx), Some((200, true)), "only the oldest page until the list nears its end");
+
+        for _ in 0..5 {
+            w.update(cx, |m, _, _| {
+                let l = m.issue_panel.hist_list.as_ref().unwrap();
+                l.state.scroll_to(gpui_kit::ListOffset { item_ix: l.rows.len(), offset_in_item: gpui_kit::px(0.) });
+            })
+            .unwrap();
+            draw(cx, &w);
+        }
+        assert_eq!(held(cx), Some((total, false)), "scrolling to the end pages on through the rest");
+        let rows = w.update(cx, |m, _, _| m.issue_panel.hist_list.as_ref().unwrap().rows.clone()).unwrap();
+        let ids: Vec<i64> = rows.iter().map(|e| e["id"].as_i64().unwrap()).collect();
+        assert!(ids.windows(2).all(|p| p[0] < p[1]), "oldest first, each once");
+        assert_eq!(s(rows.last().unwrap(), "text"), "Entry 449");
     }
 }

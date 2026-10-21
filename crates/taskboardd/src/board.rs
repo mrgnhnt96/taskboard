@@ -1112,15 +1112,51 @@ pub fn issue_dict(app: &App, b: &Row) -> Result<Value> {
 }
 
 pub fn issue_history(app: &App, issue_id: i64) -> Result<Vec<Value>> {
-    Ok(app
+    Ok(issue_history_page(app, issue_id, HistPage::After(None), None)?.0)
+}
+
+/// Where a page of an issue's history starts: oldest first after an event (`None`: from the
+/// first), or newest first before one (`None`: from the newest).
+#[derive(Clone, Copy)]
+pub enum HistPage {
+    After(Option<i64>),
+    Before(Option<i64>),
+}
+
+/// A page of an issue's history in `from`'s order, at most `limit` events, and whether more are left.
+pub fn issue_history_page(app: &App, issue_id: i64, from: HistPage, limit: Option<i64>) -> Result<(Vec<Value>, bool)> {
+    let mut sql = "SELECT * FROM issue_events WHERE issue_id = ?".to_string();
+    let mut args = p![issue_id];
+    let (cursor, cmp, order) = match from {
+        HistPage::After(c) => (c, ">", "at, id"),
+        HistPage::Before(c) => (c, "<", "at DESC, id DESC"),
+    };
+    if let Some(c) = cursor {
+        let at = app.db.val("SELECT at FROM issue_events WHERE id = ? AND issue_id = ?", p![c, issue_id])?;
+        if !at.is_null() {
+            sql += &format!(" AND (at {cmp} ? OR (at = ? AND id {cmp} ?))");
+            args.extend([at.clone(), at, json!(c)]);
+        }
+    }
+    sql += &format!(" ORDER BY {order}");
+    if let Some(l) = limit {
+        sql += " LIMIT ?";
+        args.push(json!(l + 1));
+    }
+    let mut out: Vec<Value> = app
         .db
-        .q("SELECT * FROM issue_events WHERE issue_id = ? ORDER BY at, id", p![issue_id])?
+        .q(&sql, args)?
         .iter()
         .map(|e| {
-            json!({"at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text"),
+            json!({"id": e.v("id"), "at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text"),
                    "snapshot": if has(e.s("snapshot")) { Value::Object(jloads_obj(e.s("snapshot"))) } else { Value::Null }})
         })
-        .collect())
+        .collect();
+    let more = limit.is_some_and(|l| out.len() as i64 > l);
+    if let Some(l) = limit {
+        out.truncate(l as usize);
+    }
+    Ok((out, more))
 }
 
 pub fn create_job(app: &App, kind: &str, args: Value, task_id: Option<i64>, purpose: &str, target: Option<Value>) -> Result<i64> {
