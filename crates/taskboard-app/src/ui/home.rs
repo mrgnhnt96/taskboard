@@ -508,7 +508,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::Focus(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Showing {r}’s terminal in Midna"), cx)),
         Act::AskAgain(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Opening a new terminal for {r}"), cx)),
         Act::Continue(g, n) => m.post(format!("goals/{g}/waves/{n}/continue"), json!({}), cx, move |m, v, cx| {
-            let note = if v["let_start"] == true { format!("Wave {} can start", n + 1) } else { "The goal goes on".into() };
+            let note = if v["let_start"] == true { format!("Wave {n} can start") } else { "The goal goes on".into() };
             sent(m, note, cx)
         }),
         Act::OpenPr(url) => cx.open_url(&url),

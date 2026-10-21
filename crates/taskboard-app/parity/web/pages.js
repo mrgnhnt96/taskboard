@@ -832,7 +832,7 @@ Object.assign(ACTIONS, {
   'goal-run-now': el => { S.startMenu = null; S.waitMenu = null; run(el, () => gpost(el.dataset.id, '/run', { now: true }), { toast: true, ok: r => `Started now: ${plural((r && r.queued_now) || 0, 'task')} queued. The goal runs until work hours open.` }); },
   'wait-menu': el => { S.waitMenu = S.waitMenu === el.dataset.id ? null : el.dataset.id; renderAll(); },
   'start-menu': el => { S.startMenu = S.startMenu === el.dataset.id ? null : el.dataset.id; renderAll(); },
-  'goal-plan-edit': el => run(el, () => gpost(el.dataset.id, '/plan', { mode: 'edit' }), { toast: true, ok: 'Opening a Claude terminal in Midna. It starts in about half a minute.' }),
+  'goal-plan-edit': el => run(el, () => gpost(el.dataset.id, '/plan', { mode: 'edit' }), { toast: true, ok: 'Opening a Claude terminal in Midna on this goal’s plan' }),
   'goal-deprio-ask': el => {
     S.modal = { kind: 'gdeprio', id: el.dataset.id };
     renderModal();
