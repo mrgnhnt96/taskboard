@@ -820,3 +820,35 @@ fn a_long_log_comes_a_page_at_a_time() {
     assert_eq!(turns.iter().filter(|e| e["text"].as_str().unwrap().starts_with("Entry ")).count(), 150);
     assert!(turns.iter().all(|e| e["kind"] == "turn"));
 }
+
+#[test]
+fn the_task_list_comes_a_page_at_a_time_still_to_do_first() {
+    let b = new_board();
+    let ids: Vec<i64> = (0..300).map(|k| new_task(&b, &format!("Task {k}"), json!({}))).collect();
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id % 3 != 0", taskboardd::p![]).unwrap();
+    let whole = b.get("/tasks");
+    assert_eq!(whole["tasks"].as_array().unwrap().len(), 300, "without a limit the whole list comes, as before");
+    assert!(whole.get("next").is_none());
+
+    let (mut seen, mut next) = (Vec::new(), None::<String>);
+    loop {
+        let q = next.as_ref().map(|x| format!("&before={x}")).unwrap_or_default();
+        let page = b.get(&format!("/tasks?limit=70{q}"));
+        assert_eq!(page["total"], 300);
+        let tasks = page["tasks"].as_array().unwrap();
+        assert!(tasks.len() <= 70);
+        seen.extend(tasks.iter().map(|t| (t["status"] == "done", t["id"].as_i64().unwrap())));
+        next = page["next"].as_str().map(String::from);
+        if next.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 300, "paging walks every task once");
+    assert!(seen.windows(2).all(|p| (p[0].0, -p[0].1) < (p[1].0, -p[1].1)), "still to do first, newest first within that");
+    assert_eq!(seen.iter().filter(|(done, _)| !done).count(), 100);
+
+    let picked = b.get(&format!("/tasks?ids=T{},{}", ids[5], ids[9]));
+    let mut got: Vec<i64> = picked["tasks"].as_array().unwrap().iter().map(|t| t["id"].as_i64().unwrap()).collect();
+    got.sort();
+    assert_eq!(got, [ids[5], ids[9]]);
+}

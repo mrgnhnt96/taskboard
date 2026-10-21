@@ -1,6 +1,6 @@
 //! The JSON API under `/tasks/api`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -15,6 +15,37 @@ pub type Query = HashMap<String, String>;
 
 fn q<'a>(query: &'a Query, k: &str, default: &'a str) -> &'a str {
     query.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty()).unwrap_or(default)
+}
+
+/// One page of a long list: `?limit=` (1–500) caps it and `?before=` is the cursor the last page
+/// ended on. Without a limit the whole list comes, as it always has.
+pub struct Paging {
+    pub before: Option<String>,
+    pub limit: Option<usize>,
+}
+
+impl Paging {
+    pub const MAX: usize = 500;
+
+    pub fn of(query: &Query) -> Paging {
+        Paging {
+            before: query.get("before").filter(|s| !s.is_empty()).cloned(),
+            limit: q(query, "limit", "").parse::<usize>().ok().map(|n| n.clamp(1, Paging::MAX)),
+        }
+    }
+
+    /// What to ask SQL for: one past the page, so `cut` can tell whether more are left.
+    pub fn sql_limit(&self) -> Option<i64> {
+        self.limit.map(|l| l as i64 + 1)
+    }
+
+    /// Cut `rows` (everything after the cursor, or `sql_limit` of it) to the page; true when more are left.
+    pub fn cut<T>(&self, rows: &mut Vec<T>) -> bool {
+        let Some(l) = self.limit else { return false };
+        let more = rows.len() > l;
+        rows.truncate(l);
+        more
+    }
 }
 
 fn project_match(project: Option<&str>, want: &str) -> bool {
@@ -205,11 +236,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             board::get_task(app, t)?;
             Ok(json!({"text": handoff::build(app, t)?}))
         }
-        ("GET", ["tasks", id, "log"]) => {
-            let before = q(query, "before", "").parse::<i64>().ok();
-            let limit = q(query, "limit", "").parse::<i64>().ok().map(|n| n.clamp(1, 500));
-            get_log(app, tid(id)?, q(query, "kind", "all"), before, limit)
-        }
+        ("GET", ["tasks", id, "log"]) => get_log(app, tid(id)?, q(query, "kind", "all"), &Paging::of(query)),
         ("GET", ["tasks", id, "pr"]) => {
             let t = tid(id)?;
             let mut v = get_pr(app, t)?;
@@ -890,20 +917,48 @@ fn reopen_session(app: &App, id: &str) -> Result<Value> {
     })
 }
 
+/// Every task, newest first; `status`, `project` and `goal` narrow it and `ids` (a comma list)
+/// picks out those tasks. With a `limit` it comes a page at a time, still to do first and newest
+/// first within that, with the `total` that match and the `next` page's cursor (null at the end).
 fn list_tasks(app: &App, query: &Query) -> Result<Value> {
     let (status, project, goal) = (q(query, "status", "all"), q(query, "project", "all"), q(query, "goal", "all"));
-    let mut out = vec![];
+    let ids: Option<HashSet<i64>> = query.get("ids").map(|s| s.split(',').filter_map(|x| parse_ref_str(x.trim(), "task").ok().flatten()).collect());
+    let page = Paging::of(query);
+    let mut rows = vec![];
     for t in app.db.q("SELECT * FROM tasks ORDER BY id DESC", p![])? {
-        if (status == "all" || t.s("status") == Some(status)) && project_match(t.s("project"), project) && task_goal_match(app, &t, goal)? {
-            out.push(board::task_card(app, &t)?);
+        if ids.as_ref().is_none_or(|ids| ids.contains(&t.id()))
+            && (status == "all" || t.s("status") == Some(status))
+            && project_match(t.s("project"), project)
+            && task_goal_match(app, &t, goal)?
+        {
+            rows.push(t);
         }
     }
-    Ok(json!({"tasks": out}))
+    if page.limit.is_none() {
+        let out: Result<Vec<Value>> = rows.iter().map(|t| board::task_card(app, t)).collect();
+        return Ok(json!({"tasks": out?}));
+    }
+    let at = |t: &Row| (t.s("status") == Some("done"), -t.id());
+    rows.sort_by_key(at);
+    let total = rows.len();
+    if let Some(after) = page.before.as_deref().and_then(task_cursor) {
+        rows.retain(|t| at(t) > after);
+    }
+    let more = page.cut(&mut rows);
+    let next = rows.last().filter(|_| more).map(|t| format!("{}:{}", at(t).0 as u8, t.id()));
+    let out: Result<Vec<Value>> = rows.iter().map(|t| board::task_card(app, t)).collect();
+    Ok(json!({"tasks": out?, "total": total, "next": next}))
+}
+
+/// A `GET /tasks` cursor, `<done 0|1>:<id>`, as the place in its order.
+fn task_cursor(s: &str) -> Option<(bool, i64)> {
+    let (done, id) = s.split_once(':')?;
+    Some((done == "1", -id.parse::<i64>().ok()?))
 }
 
 /// A task's log, newest first. `kind` is "all" or a comma list of kinds; `before` (an event id)
 /// starts after that entry and `limit` caps the page, with `more` saying whether older ones are left.
-fn get_log(app: &App, id: i64, kind: &str, before: Option<i64>, limit: Option<i64>) -> Result<Value> {
+fn get_log(app: &App, id: i64, kind: &str, page: &Paging) -> Result<Value> {
     board::get_task(app, id)?;
     let mut sql = "SELECT * FROM events WHERE task_id = ?".to_string();
     let mut args = p![id];
@@ -912,7 +967,7 @@ fn get_log(app: &App, id: i64, kind: &str, before: Option<i64>, limit: Option<i6
         sql += &format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(", "));
         args.extend(kinds.iter().map(|k| json!(k)));
     }
-    if let Some(b) = before {
+    if let Some(b) = page.before.as_deref().and_then(|b| b.parse::<i64>().ok()) {
         let at = app.db.val("SELECT at FROM events WHERE id = ? AND task_id = ?", p![b, id])?;
         if !at.is_null() {
             sql += " AND (at < ? OR (at = ? AND id < ?))";
@@ -920,9 +975,9 @@ fn get_log(app: &App, id: i64, kind: &str, before: Option<i64>, limit: Option<i6
         }
     }
     sql += " ORDER BY at DESC, id DESC";
-    if let Some(l) = limit {
+    if let Some(l) = page.sql_limit() {
         sql += " LIMIT ?";
-        args.push(json!(l + 1));
+        args.push(json!(l));
     }
     let mut log: Vec<Value> = app
         .db
@@ -931,10 +986,7 @@ fn get_log(app: &App, id: i64, kind: &str, before: Option<i64>, limit: Option<i6
         .map(|e| json!({"id": e.v("id"), "at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text"),
                         "data": if has(e.s("data")) { serde_json::from_str(&e.st("data")).unwrap_or(Value::Null) } else { Value::Null }}))
         .collect();
-    let more = limit.is_some_and(|l| log.len() as i64 > l);
-    if let Some(l) = limit {
-        log.truncate(l as usize);
-    }
+    let more = page.cut(&mut log);
     Ok(json!({"log": log, "more": more}))
 }
 

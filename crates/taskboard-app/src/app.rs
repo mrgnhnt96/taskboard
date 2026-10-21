@@ -498,7 +498,7 @@ impl MainWindow {
                 // What the clicked row already knows shows at once; the rest fills in when the
                 // task's own answer lands.
                 self.data.task = None;
-                self.data.task_card = task_card(&self.data, &self.goals.details, &r);
+                self.data.task_card = task_card(&self.data, &self.goals.details, &self.tasks.held.rows, &r);
                 self.data.errs.task = None;
                 self.task_panel = Default::default();
                 self.fetch_task(r.clone(), cx);
@@ -852,7 +852,7 @@ fn releases_wanted(m: &MainWindow) -> Vec<String> {
 
 /// Task `r`'s row in the lists already loaded (the board's columns, the Tasks page, home, a goal
 /// page), for its panel to show before `GET /tasks/:id` answers.
-fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, r: &str) -> Option<Value> {
+fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, held: &[Value], r: &str) -> Option<Value> {
     let state = d.state.as_ref();
     let columns = state.and_then(|s| s["columns"].as_object()).into_iter().flat_map(|c| c.values());
     let lists = columns
@@ -865,6 +865,7 @@ fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, r: 
     lists
         .filter_map(Value::as_array)
         .flatten()
+        .chain(held)
         .chain(needs)
         .find(|t| t["ref"].as_str() == Some(r) && t["title"].is_string())
         .cloned()
@@ -883,8 +884,10 @@ struct Wants {
     days_q: Option<Vec<(&'static str, String)>>,
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
-    /// The Tasks page, for `GET /tasks`.
+    /// The ⌘K palette, for every task (`GET /tasks`).
     tasks: bool,
+    /// The Tasks page: its first page of `GET /tasks`, and the held tasks to ask for again.
+    task_page: Option<Vec<i64>>,
     /// The ⌘K palette, for `GET /backlog`.
     backlog: bool,
     /// The Review page: the list, and the picked review (`None`: the newest).
@@ -916,6 +919,7 @@ struct Got {
     home: Option<Value>,
     today: Option<Value>,
     tasks: Option<Value>,
+    task_page: Option<Result<ui::paged::Fresh, String>>,
     backlog: Option<Value>,
     reviews: Option<Answer>,
     review: Option<(i64, Answer)>,
@@ -953,7 +957,8 @@ impl Wants {
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
-            tasks: m.page == Page::Tasks || ui::search::is_open(m),
+            tasks: ui::search::is_open(m),
+            task_page: (m.page == Page::Tasks).then(|| m.tasks.held.recheck(|v| v["status"] != "done")),
             backlog: ui::search::is_open(m),
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
@@ -986,6 +991,7 @@ impl Wants {
             let today = self.home.is_some().then(|| s.spawn(move || get("days", &[])));
             let home = self.home.as_ref().map(|p| s.spawn(move || get("home", &[("project", p.clone())])));
             let tasks = self.tasks.then(|| s.spawn(move || get("tasks", &[])));
+            let task_page = self.task_page.map(|ids| s.spawn(move || ui::paged::Paged::fetch(be, "tasks", "tasks", &[], ui::tasks::PAGE, ids)));
             let backlog = self.backlog.then(|| s.spawn(move || get("backlog", &[("state", "all".into())])));
             let reviews = self.review.map(|id| {
                 s.spawn(move || {
@@ -1027,6 +1033,7 @@ impl Wants {
                 today: today.map(join).and_then(Result::ok),
                 home: home.map(join).and_then(Result::ok),
                 tasks: tasks.map(join).and_then(Result::ok),
+                task_page: task_page.map(join),
                 backlog: backlog.map(join).and_then(Result::ok),
                 reviews,
                 review,
@@ -1152,8 +1159,11 @@ impl Got {
                 }
             }
         }
-        if self.tasks.is_some() && (m.page == Page::Tasks || searching) {
+        if self.tasks.is_some() && searching {
             d.tasks = self.tasks;
+        }
+        if let Some(Ok(f)) = self.task_page.filter(|_| m.page == Page::Tasks) {
+            m.tasks.held.land("tasks", f);
         }
         if self.backlog.is_some() && searching {
             d.backlog = self.backlog;
