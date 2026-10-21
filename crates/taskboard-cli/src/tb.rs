@@ -1867,6 +1867,8 @@ enum PrCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Record the owner's review, so reviewers can be asked: only the owner, or an agent on their word
+    Reviewed { task: Option<String> },
     /// A failed check isn't this PR's fault: clear it for this push, with proof
     NotOurs {
         task: Option<String>,
@@ -6305,6 +6307,16 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let t = c.pr_task(task)?;
                 c.call_progress("POST", &format!("/tasks/{t}/pr/close"), Some(json!({"reason": reason.unwrap_or_default(), "agent": !c.session.is_empty(), "via_session": c.session})))?;
                 out(&format!("Closed {t}'s PR without merging it; its branch stays. You can stop here."));
+                Ok(0)
+            }
+            PrCmd::Reviewed { task } => {
+                let t = c.pr_task(task)?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewed"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
+                let stage = v["pr"]["stage"]["label"].as_str().filter(|l| !l.is_empty());
+                out(&match stage {
+                    Some(l) => format!("Marked {t}'s PR reviewed. Stage: {l}."),
+                    None => format!("Marked {t}'s PR reviewed."),
+                });
                 Ok(0)
             }
             PrCmd::NotOurs { task, reason, title, proof, check } => {

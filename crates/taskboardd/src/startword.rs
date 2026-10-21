@@ -1555,6 +1555,12 @@ pub static CLOSES: Lazy<Kind> = Lazy::new(|| {
     let on = format!(r"(?:\b{CLOSE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_CLOSE})))");
     Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
 });
+/// Marks of a task's PR as reviewed by the owner (`tb pr reviewed`), read with its PR named as the task
+/// ([`as_task_refs`]): "mark PR #194 reviewed", "mark it as reviewed", "mark T8 reviewed".
+pub static REVIEWS: Lazy<Kind> = Lazy::new(|| {
+    let on = format!(r"(?:\bmark\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_PR}))\s+(?:as\s+)?reviewed)");
+    Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
+});
 /// A PR named by its number: "PR #194", "the PR 194", "pull request 194", "#194".
 static PR_REF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)(?:\b(?:the|this|that)\s+)?\b(?:pr|pull\s+request)\s*#?\s*(\d+)\b|\B#(\d+)\b").unwrap());
@@ -1614,6 +1620,12 @@ pub fn close_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option
     pr_word_in(&CLOSES, prompts, id, num, own)
 }
 
+/// Which prompt, newest first, is the owner's word that they've reviewed task `id`'s PR #`num`, read as
+/// [`merge_word_in`] reads a merge.
+pub fn reviewed_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
+    pr_word_in(&REVIEWS, prompts, id, num, own)
+}
+
 fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
     for (i, p) in prompts.iter().enumerate() {
         if p.boards() {
@@ -1650,6 +1662,17 @@ pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
     Ok(close_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
+}
+
+/// The owner's word in terminal `sid` that they've reviewed task `id`'s PR #`num` ([`reviewed_word_in`]):
+/// the prompt.
+pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    let prompts = prompts_of(app, sid, None)?;
+    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    Ok(reviewed_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
 }
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
@@ -3865,6 +3888,22 @@ mod tests {
         assert_eq!(close_word_in(&prompts(&["close the PR"], None), 95, 194, false), None);
         assert_eq!(close_word_in(&prompts(&["[task-board:T95] close PR #194"], None), 95, 194, false), None);
         assert_eq!(merge_word_in(&prompts(&["close PR #194"], None), 95, 194, false), None, "a close is no merge");
+    }
+
+    #[test]
+    fn the_owners_word_marks_one_pr_reviewed() {
+        let after = |reply: &str, text: &str| vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }];
+        for yes in ["mark PR #194 reviewed", "mark #194 as reviewed", "please mark T95 reviewed", "looked at it, mark pr 194 reviewed"] {
+            assert_eq!(reviewed_word_in(&prompts(&[yes], None), 95, 194, false), Some(0), "{yes}");
+        }
+        for no in ["don't mark PR #194 reviewed", "should I mark PR #194 reviewed?", "mark PR #196 reviewed", "merge PR #194", "mark it reviewed once CI is green"] {
+            assert_eq!(reviewed_word_in(&prompts(&[no], None), 95, 194, false), None, "{no}");
+        }
+        assert_eq!(reviewed_word_in(&after("PR #194 is green.", "mark it reviewed"), 95, 194, false), Some(0));
+        assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, true), Some(0));
+        assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, false), None);
+        assert_eq!(reviewed_word_in(&prompts(&["[task-board:T95] mark PR #194 reviewed"], None), 95, 194, false), None);
+        assert_eq!(merge_word_in(&prompts(&["mark PR #194 reviewed"], None), 95, 194, false), None, "a review is no merge");
     }
 }
 

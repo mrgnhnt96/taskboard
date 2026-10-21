@@ -71,6 +71,10 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "off"
     } else if t.s("status") == Some("done") && prflow::awaiting_owner(t) {
         "waiting"
+    } else if !matches!(t.s("pr_phase"), Some("merged" | "declined")) && rec["state"].as_str().is_none_or(|s| s.eq_ignore_ascii_case("open")) {
+        // Not green yet (or its agent is still on it): the owner may mark it reviewed early, and the ask
+        // stage goes on once it's green.
+        "early"
     } else {
         ""
     };

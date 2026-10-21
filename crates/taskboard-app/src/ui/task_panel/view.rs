@@ -1667,6 +1667,8 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         "reviewed" => step("You", StepSt::Done, Some("Reviewed"), None),
         "skipped" => step("You", StepSt::Done, Some("Skipped"), None),
         "off" => step("You", StepSt::Done, Some("Off"), None),
+        // Not green yet: the owner may mark it reviewed now; it asks for them once checks pass.
+        "early" => step("You", StepSt::Todo, Some("After checks"), None),
         _ => step("You", StepSt::Todo, None, None),
     });
     let url = opt_s(p, "url").filter(|u| is_web(u)).map(str::to_string);
@@ -1963,12 +1965,14 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
         };
         body.push(Node::El { k: K::PrBar { warn: stopped && opt_s(stage, "session").is_some() }, tip: Some(tip.into()), kids });
     }
-    // The owner's own look at a green PR (the You step): "Waiting on your review · Mark reviewed ›".
-    if bar.is_some_and(|bar| s(bar, "you") == "waiting") {
+    // The owner's own look at the PR (the You step): "Waiting on your review · Mark reviewed ›" once it's
+    // green, "Not reviewed yet · Mark reviewed ›" before.
+    if let Some(you) = bar.map(|bar| s(bar, "you")).filter(|y| matches!(*y, "waiting" | "early")) {
         let r = rf(t, "T");
         let grp = format!("pr:{r}");
         let mark = c.btn("Mark reviewed ›", Act::new("pr-reviewed", "", &r, &grp), Look::Link, false, Some("Tell the board you've looked at this PR"));
-        body.push(Node::El { k: K::PrBar { warn: false }, tip: None, kids: vec![Node::Dot(Dot::Accent), txt("Waiting on your review", St::Plain), mark] });
+        let (dot, line) = if you == "waiting" { (Dot::Accent, "Waiting on your review") } else { (Dot::Faint, "Not reviewed yet") };
+        body.push(Node::El { k: K::PrBar { warn: false }, tip: None, kids: vec![Node::Dot(dot), txt(line, St::Plain), mark] });
         body.extend(c.note(&grp));
     } else if bar.is_none() && obj(p, "stage").is_some_and(|st| b(st, "awaiting_you")) {
         // Native: the owner's one-click "I reviewed it" while a green PR waits for them.

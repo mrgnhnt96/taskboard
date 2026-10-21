@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{board, dispatch, midna, prflow, reports};
+use taskboardd::{asks, board, dispatch, midna, prflow, reports};
 
 struct Board {
     app: Arc<App>,
@@ -88,10 +88,50 @@ fn with_owner_review_off_the_you_step_reads_off_until_someone_reviews() {
     let you = |b: &Board| b.call("GET", &format!("/tasks/T{id}"), json!({}))["pr"]["bar"]["you"].clone();
     assert_eq!(you(&b), "off");
     b.call("POST", "/projects/webapp", json!({"owner_review": true}));
-    assert_eq!(you(&b), Value::Null, "on, it's the owner's step again");
+    assert_eq!(you(&b), "early", "on, it's the owner's step again, offered before it's green");
     b.call("POST", "/projects/webapp", json!({"owner_review": false}));
     b.green(id);
     assert_eq!(you(&b), "reviewed", "a review on record still says so");
+}
+
+#[test]
+fn before_it_s_green_the_owner_marks_it_reviewed_and_it_asks_once_checks_pass() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let id = b.pr_task();
+    let card = |b: &Board| b.call("GET", &format!("/tasks/T{id}"), json!({}));
+    assert_eq!(card(&b)["pr"]["bar"]["you"], "early", "offered before the checks pass");
+    let t = board::get_task(&b.app, id).unwrap();
+    assert!(asks::needs_owner_review(&b.app, &t).unwrap(), "reviewers wait on the owner");
+    let q: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+    api::dispatch(&b.app, "POST", &format!("/tasks/{id}/pr/reviewed"), &q, &json!({})).unwrap();
+    assert_eq!(card(&b)["pr"]["bar"]["you"], "reviewed");
+    assert!(card(&b).to_string().contains("marked reviewed"), "the log says so");
+    let t = b.green(id);
+    assert_eq!(t.s("pr_phase"), Some("ask"), "green, it goes on to asking reviewers");
+    assert!(!asks::needs_owner_review(&b.app, &t).unwrap(), "tb pr reviewers isn't refused");
+    assert_eq!(b.review_alerts(), 0, "no “ready for review” alert for a PR already reviewed");
+}
+
+#[test]
+fn tb_pr_reviewed_takes_the_owner_s_word_from_an_agent() {
+    let b = board_with(|_| {});
+    let id = b.pr_task();
+    let mark = |body: Value| api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/pr/reviewed"), &Query::new(), &body).map_err(|e| (e.status, e.message));
+    let agent = json!({"agent": true, "via_session": "s1"});
+    let (status, msg) = mark(agent.clone()).unwrap_err();
+    assert_eq!(status, 403);
+    assert!(msg.contains("haven't told you") && msg.contains("PR #9"), "{msg}");
+    b.report("hook.prompt", json!({"prompt": "should I mark PR #9 reviewed?"}));
+    assert!(mark(agent.clone()).is_err(), "a question isn't the word");
+    b.report("hook.prompt", json!({"prompt": "I looked at it, mark PR #9 reviewed"}));
+    let v = mark(agent).unwrap();
+    assert_eq!(v["pr"]["bar"]["you"], "reviewed");
+    assert!(v.to_string().contains("via Term"), "the log says whose terminal: {v}");
+    // The owner's own tb, with no terminal behind it, needs no word.
+    let b = board_with(|_| {});
+    let id = b.pr_task();
+    api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/pr/reviewed"), &Query::new(), &json!({})).unwrap();
+    assert_eq!(b.call("GET", &format!("/tasks/T{id}"), json!({}))["pr"]["bar"]["you"], "reviewed");
 }
 
 #[test]

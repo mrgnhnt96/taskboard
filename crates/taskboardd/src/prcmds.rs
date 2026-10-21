@@ -420,6 +420,21 @@ pub fn close(app: &App, id: i64, body: &Value) -> Result<Value> {
     Ok(json!({"task": rf("task", id), "closed": true, "pr": board::pr_card(app, &t)}))
 }
 
+/// Who marks task `id`'s PR reviewed with `tb pr reviewed`: the owner, or an agent on the owner's word
+/// in its terminal ("mark PR #9 reviewed"). An agent without that word is refused.
+pub fn reviewed_by(app: &App, id: i64, body: &Value) -> Result<String> {
+    let t = board::get_task(app, id)?;
+    let pr = pr_of(&t)?;
+    if !as_bool(body.get("agent"), false) {
+        return Ok(app.cfg.owner.clone());
+    }
+    let via = body_str(body, "via_session");
+    if crate::startword::owners_reviewed_word(app, &via, id, pr.num)?.is_none() {
+        return err(403, format!("Only {} marks a PR reviewed, and they haven't told you in this terminal that they've reviewed PR #{}. Ask them, or they can use Mark reviewed on its task page.", app.cfg.owner, pr.num));
+    }
+    Ok(format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)))
+}
+
 /// The host refused a merge because the PR conflicts with its base (GitHub: "the merge commit cannot be
 /// cleanly created"; Bitbucket: "resolve all merge conflicts").
 fn merge_conflict_error(e: &str) -> bool {

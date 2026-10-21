@@ -771,6 +771,15 @@ fn review_says_when_it_needs_setup_or_is_off_and_not_asked_links_nowhere() {
 }
 
 #[::core::prelude::v1::test]
+fn before_checks_pass_the_you_step_says_when_and_can_still_be_marked() {
+    let tree = tree(&json!({"task": with_bar(json!({"you": "early"}), Value::Null, "none"), "state": {}, "ui": {}}));
+    let text = view::text(&tree);
+    assert!(text.contains("You After checks") && text.contains("Not reviewed yet Mark reviewed ›"), "{text}");
+    assert!(!text.contains("Waiting on you"), "{text}");
+    assert!(view::acts(&tree).iter().any(|a| a == "pr-reviewed"));
+}
+
+#[::core::prelude::v1::test]
 fn you_reads_off_when_owner_review_is_off() {
     let text = panel_text(with_bar(json!({"you": "off"}), Value::Null, "none"), json!({}));
     assert!(text.contains("You Off") && !text.contains("Waiting on you"), "{text}");
