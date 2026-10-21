@@ -582,27 +582,23 @@ fn first_week(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
         }))
     };
     let next_at = list.and_then(|l| fmt::parse(s(l, "next"))).map(|t| fmt::local(t).date_naive());
-    let callout = card(t).flex_row().flex_wrap().px(px(20.)).items_center().justify_between().gap(px(16.)).child(match &next {
+    let left = match &next {
         Some((when, away)) => div()
             .flex()
             .flex_col()
             .gap(px(4.))
             .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).child(format!("First review {away}")))
             .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(sel(t, "review-first-at", when.clone()))),
-        None => div().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Weekly reviews are off"),
-    });
-    let callout = callout.children(next_at.map(strip));
-
-    let content = match v.filter(|_| tracked) {
-        Some(v) => body(m, t, &v, cx),
-        None => card(t)
-            .items_center()
-            .gap(px(6.))
-            .py(px(36.))
-            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("No agent time this week yet"))
-            .children(m.data.errs.review.clone().map(|e| div().text_size(px(13.)).text_color(t.muted).child(e))),
+        None => div().flex().flex_col().gap(px(4.)).child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Weekly reviews are off")),
     };
-    page(header(t, title, sub, day_week(t, true, cx))).child(callout).child(content)
+    // With nothing tracked yet, the card says so itself rather than a second card holding one line.
+    let left = left.when(!tracked, |d| {
+        d.child(div().text_size(px(13.)).text_color(t.muted).child("No agent time this week yet"))
+            .children(m.data.errs.review.clone().map(|e| div().text_size(px(13.)).text_color(t.muted).child(e)))
+    });
+    let callout = card(t).flex_row().flex_wrap().px(px(20.)).items_center().justify_between().gap(px(16.)).child(left).children(next_at.map(strip));
+    let content = v.filter(|_| tracked).map(|v| body(m, t, &v, cx));
+    page(header(t, title, sub, day_week(t, true, cx))).child(callout).children(content)
 }
 
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
