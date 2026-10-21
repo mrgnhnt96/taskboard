@@ -98,10 +98,11 @@ Planning a goal? Read `planning.md` first.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
    - Remove an attachment by its link, path or title: `tb unattach "<link-or-title>"` with `--task T<n>` or `--goal G<n>`. To change one, unattach it and attach it again.
    - A tester's Jira comment the owner gave you their word on (when QA comments are on): `tb qa task Q<n> --note "<what they said>"` or `tb qa ignore Q<n>`; `tb qa waiting` lists the ones waiting (`--goal G<n>` for one goal's tickets).
-3. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks (a task that also finishes another goal moves there either way); ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
-4. The project defaults to this terminal's; `--project <name>` picks another.
-5. Nothing you add runs until the owner queues or starts it; don't take it unless asked.
-6. Give the owner the link `tb` printed.
+3. A goal whose work is through but holds failed tasks another task replaced stays open. On the owner's word only, `tb goal done G<n> --why "<what replaced them>"` finishes it: the failed tasks stay failed and keep counting as failed, and a task that fails later holds it open again. It's refused while a task is still to do, a PR is open or a miss on the done-when is open. Never submit a failed task as done or delete it to close its goal.
+4. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks (a task that also finishes another goal moves there either way); ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
+5. The project defaults to this terminal's; `--project <name>` picks another.
+6. Nothing you add runs until the owner queues or starts it; don't take it unless asked.
+7. Give the owner the link `tb` printed.
 
 Titles are short summaries a person reads at a glance (80 characters at most, no test names, paths, commit hashes or error text); all of that goes in `--detail`.
 

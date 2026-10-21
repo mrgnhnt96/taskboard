@@ -1335,6 +1335,14 @@ enum GoalCmd {
         #[arg(long, value_name = "DEVICE")]
         remove: Option<String>,
     },
+    /// Finish a goal whose failed tasks were replaced by other work (only on the owner's word). They stay failed
+    /// and keep counting as failed; refused while a task is still to do, a PR is open or a miss is open
+    Done {
+        goal: String,
+        /// Why the goal is finished anyway (e.g. "T188 replaced T36 and T84; accepted on its numbers")
+        #[arg(long)]
+        why: String,
+    },
     /// Delete a goal (only when the owner asks)
     Delete {
         goal: String,
@@ -4228,7 +4236,10 @@ fn area_bit(v: &Value) -> String {
 
 /// "14/15 done · 1 in review": a task whose PR is still open isn't done until it merges.
 fn done_bit(g: &Value) -> String {
-    let line = format!("{}/{} done", g["done"], g["total"]);
+    let mut line = format!("{}/{} done", g["done"], g["total"]);
+    if let Some(n) = g["failed_accepted"].as_i64().filter(|n| *n > 0) {
+        line = format!("{line} · {n} failed (accepted)");
+    }
     match g["review"].as_i64().unwrap_or(0) {
         0 => line,
         n => format!("{line} · {n} in review"),
@@ -4260,6 +4271,10 @@ fn goal_lines(g: &Value) -> Vec<String> {
     }
     if g["jira_off"] == true {
         lines.push("Jira: off. Its tasks and their PRs need no ticket; don't make one.".into());
+    }
+    if let Some(a) = g["accepted"].as_object() {
+        let tasks: Vec<&str> = a["tasks"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
+        lines.push(format!("Finished by the owner without {}: {}", tasks.join(", "), a["why"].as_str().unwrap_or("")));
     }
     let after: Vec<&str> = g["after"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
     if !after.is_empty() {
@@ -5608,6 +5623,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 for d in devices {
                     out(&goal_device_line(&d));
                 }
+                Ok(0)
+            }
+            GoalCmd::Done { goal, why } => {
+                let g = goal_ref(&goal)?;
+                let v = c.call("POST", &format!("/goals/{g}/accept"), Some(json!({"why": why})))?;
+                out(&format!("{g}: {}", v["state"].as_str().unwrap_or("")));
                 Ok(0)
             }
             GoalCmd::Delete { goal, keep_tasks, delete_tasks, delete_backlog } => {
@@ -7289,6 +7310,11 @@ mod tests {
         assert!(!lines.iter().any(|l| l.starts_with("Jira")), "{lines:?}");
         let off = goal_lines(&json!({"ref": "G2", "name": "Brushes", "project": "rune", "done": 0, "total": 0, "tasks": [], "jira_off": true}));
         assert!(off.iter().any(|l| l.starts_with("Jira: off.")), "{off:?}");
+        let accepted = json!({"ref": "G3", "name": "Teardown", "project": "rune", "done": 20, "total": 22, "failed_accepted": 2, "tasks": [],
+                              "accepted": {"why": "T188 replaced them", "tasks": ["T36", "T84"]}});
+        assert_eq!(done_bit(&accepted), "20/22 done · 2 failed (accepted)");
+        let lines = goal_lines(&accepted);
+        assert!(lines.iter().any(|l| l == "Finished by the owner without T36, T84: T188 replaced them"), "{lines:?}");
     }
 
     #[test]
@@ -7849,6 +7875,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize", "--prioritize"]).is_err());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--jira", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--jira", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "goal", "done", "G1", "--why", "T9 replaced it"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "done", "G1"]).is_err());
         assert!(Cli::try_parse_from(["tb", "project", "show"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "maybe"]).is_err());

@@ -292,6 +292,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Jira off for the goal's tasks (`tb goal set G<n> --jira off`): none asks for a ticket unless it
     // opts in with `--jira new` or a key (`jira::goal_off`).
     ("goals", "jira_off", "INT DEFAULT 0"),
+    // The owner's word to finish the goal with failed tasks in it (`tb goal done G<n> --why`):
+    // {at, why, tasks: [ids]}. Only those failed tasks stop holding it open (`board::accepted_failed`).
+    ("goals", "accepted", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

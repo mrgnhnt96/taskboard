@@ -35,13 +35,15 @@ pub fn goal_counts(g: &Value) -> Counts {
         None => Counts { n: i(g, "total"), done: i(g, "done"), active: i(g, "active"), queued: 0, prs: arr(g, "prs_open").len() as i64, finished: false },
     };
     // A backend bit not made yet holds back a finished goal ("Waiting on N bits"), and so does a missed
-    // outcome: a failed task or an open miss on the goal's done-when ("Outcome not met").
-    let failed = match g.get("tasks").and_then(Value::as_array) {
-        Some(tasks) => tasks.iter().filter(|t| s(t, "status") == "done" && b(t, "failed")).count() as i64,
-        None => i(g, "failed"),
+    // outcome: a failed task or an open miss on the goal's done-when ("Outcome not met"). A failed task the
+    // owner finished the goal without (`tb goal done`) no longer holds it.
+    let accepted = i(g, "failed_accepted");
+    let (failed, settled) = match g.get("tasks").and_then(Value::as_array) {
+        Some(tasks) => (tasks.iter().filter(|t| s(t, "status") == "done" && b(t, "failed")).count() as i64, c.done),
+        None => (i(g, "failed"), c.done + accepted),
     };
-    let met = failed == 0 && i(g, "misses") == 0;
-    Counts { finished: c.n > 0 && c.done == c.n && c.prs == 0 && i(g, "bits_waiting") == 0 && met, ..c }
+    let met = failed == accepted && i(g, "misses") == 0;
+    Counts { finished: c.n > 0 && settled == c.n && c.prs == 0 && i(g, "bits_waiting") == 0 && met, ..c }
 }
 
 /// `goalDone`.
@@ -113,5 +115,9 @@ mod tests {
         let summary = json!({"total": 2, "done": 1, "failed": 1});
         assert!(!goal_counts(&summary).finished);
         assert!(goal_counts(&json!({"tasks": [{"status": "done"}]})).finished);
+        let accepted = json!({"tasks": [{"status": "done"}, {"status": "done", "failed": true}], "failed_accepted": 1});
+        assert!(goal_counts(&accepted).finished);
+        assert!(goal_counts(&json!({"total": 2, "done": 1, "failed": 1, "failed_accepted": 1})).finished);
+        assert!(!goal_counts(&json!({"total": 3, "done": 1, "failed": 2, "failed_accepted": 1})).finished);
     }
 }

@@ -382,6 +382,10 @@ pub fn shelves(goals: &[&Value], now: DateTime<Utc>) -> Vec<Shelf> {
             0 => "No PR".into(),
             n => fmt::plural(n, "PR merged", "PRs merged"),
         };
+        let prs = match i(g, "failed_accepted") {
+            0 => prs,
+            n => format!("{prs} · {n} failed (accepted)"),
+        };
         line(g, if when.is_empty() { prs } else { format!("{prs} · {when}") })
     };
     vec![

@@ -312,6 +312,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["goals", id, "notes"]) => goal_note(app, gid(id)?, body),
         ("POST", ["goals", id, "notes", nid]) => goal_note_edit(app, gid(id)?, nid, body),
         ("POST", ["goals", id, "plan"]) => goal_plan(app, gid(id)?, body),
+        ("POST", ["goals", id, "accept"]) => accept_goal(app, gid(id)?, body),
         ("POST", ["goals", id, "run"]) => run_goal(app, gid(id)?, query, body),
         ("POST", ["goals", id, "waves", n]) => {
             let (g, n) = (gid(id)?, wave_n(n)?);
@@ -699,8 +700,9 @@ fn get_summary(app: &App) -> Result<Value> {
     for g in app.db.q("SELECT * FROM goals WHERE archived = 0 ORDER BY id", p![])? {
         let c = board::goal_counts(app, g.id())?;
         let (done, total) = (c["done"].as_i64().unwrap_or(0), c["total"].as_i64().unwrap_or(0));
+        let accepted = c["failed_accepted"].as_i64().unwrap_or(0);
         // In progress until finished: an open miss on the done-when keeps it here with every task done.
-        if total > 0 && (done < total || c["misses"].as_i64().unwrap_or(0) > 0) {
+        if total > 0 && (done + accepted < total || c["misses"].as_i64().unwrap_or(0) > 0) {
             goals.push(json!({"id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "done": done, "total": total}));
         }
     }
@@ -2158,6 +2160,45 @@ fn goal_note(app: &App, id: i64, body: &Value) -> Result<Value> {
         board::get_goal(app, id)?;
         let src = body_str(body, "source");
         board::add_goal_note(app, id, &kind, &text, Some(if src.is_empty() { "you" } else { &src }), as_bool(body.get("pinned"), false), None)
+    })?;
+    goal_detail(app, id)
+}
+
+/// `tb goal done G<n> --why`: on the owner's word, finish a goal whose work is through but has failed tasks
+/// in it (a failed run another task replaced). The failed tasks stay failed and keep counting as failed; only
+/// these ones stop holding the goal open. Refused while any task is still to do or in review, or a miss on
+/// the done-when is open, and when nothing failed (the goal finishes on its own then).
+fn accept_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let why = required(body, "why", 1000, "Why the goal is finished anyway")?;
+    app.db.tx(|| {
+        let g = board::get_goal(app, id)?;
+        if board::goal_finished(app, id)? {
+            return err(409, format!("{} is finished already.", rf("goal", id)));
+        }
+        let rows = crate::shared::counted_tasks(app, id)?;
+        let open: Vec<String> = rows.iter().filter(|r| r.s("status") != Some("done")).map(|r| rf("task", r.id())).collect();
+        if !open.is_empty() {
+            return err(409, format!("{} isn't through yet: {} still to do. Finish, fail or move them first.", rf("goal", id), open.join(", ")));
+        }
+        let review: Vec<String> = rows.iter().filter(|r| board::pr_still_open(r)).map(|r| rf("task", r.id())).collect();
+        if !review.is_empty() {
+            return err(409, format!("{} has PRs still open: {}. Merge or close them first.", rf("goal", id), review.join(", ")));
+        }
+        if board::open_misses(app, id)? > 0 {
+            return err(409, format!("{} has a miss on its done-when still open. Make it a task, send it to Jira or close it first.", rf("goal", id)));
+        }
+        let failed: Vec<i64> = rows.iter().filter(|r| r.b("failed")).map(|r| r.id()).collect();
+        if failed.is_empty() {
+            return err(409, format!("Nothing in {} failed: it finishes on its own.", rf("goal", id)));
+        }
+        let refs: Vec<String> = failed.iter().map(|t| rf("task", *t)).collect();
+        board::update_goal(app, id, fields!["accepted" => jdumps(&json!({"at": now_iso(), "why": why, "tasks": failed})), "updated_at" => now_iso()])?;
+        let note = format!("Finished by the owner with {} failed ({}): {why}", refs.len(), refs.join(", "));
+        board::add_goal_note(app, id, "decision", &note, Some("you"), false, None)?;
+        if board::goal_finished(app, id)? {
+            board::on_goal_finished(app, g.id(), None)?;
+        }
+        Ok(())
     })?;
     goal_detail(app, id)
 }
