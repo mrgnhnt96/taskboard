@@ -107,7 +107,8 @@ fn read_projects(app: &App) -> Result<Vec<Value>> {
     for (sql, pc) in [
         ("SELECT DISTINCT project, repo_path AS path FROM tasks WHERE project IS NOT NULL AND project != ''", "path"),
         ("SELECT DISTINCT project, repo_path AS path FROM goals WHERE project IS NOT NULL AND project != ''", "path"),
-        ("SELECT DISTINCT project, project_path AS path FROM sessions WHERE project IS NOT NULL AND project != ''", "path"),
+        // Live terminals only: a gone one may name a worktree folder from before `midna::sync` folded those.
+        ("SELECT DISTINCT project, project_path AS path FROM sessions WHERE status != 'gone' AND project IS NOT NULL AND project != ''", "path"),
     ] {
         for r in app.db.q(sql, p![])? {
             add(r.s("project"), r.s(pc));
@@ -508,6 +509,15 @@ pub fn project_for_path(app: &App, path: Option<&str>) -> Result<Option<String>>
 pub fn midna_project_at(app: &App, path: Option<&str>) -> Result<Option<String>> {
     let Some(path) = path.filter(|p| !p.is_empty()) else { return Ok(None) };
     Ok(deepest(&jloads_arr(app.db.get_setting("midna_projects")?.as_deref()), path))
+}
+
+/// The main checkout of the git worktree at `path` (its `.git` file points into `<main>/.git/worktrees/`);
+/// None for a main checkout, a plain folder or one that's gone.
+pub fn main_checkout(path: &str) -> Option<String> {
+    let git = std::fs::read_to_string(format!("{}/.git", path.trim_end_matches('/'))).ok()?;
+    let dir = git.trim().strip_prefix("gitdir:")?.trim();
+    let (main, _) = dir.split_once("/.git/worktrees/")?;
+    Some(main.to_string()).filter(|m| !m.is_empty())
 }
 
 /// The project in `list` whose path holds `path`, the deepest one.

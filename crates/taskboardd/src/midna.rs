@@ -494,9 +494,13 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
     let mut to_close: Vec<String> = vec![];
     app.db.tx(|| {
         if !projects.is_empty() {
+            // A worktree folder Midna lists is its repo's project, not one of its own; a folder that's gone isn't one.
             let list: Vec<Value> = projects
                 .iter()
-                .filter(|p| p.get("path").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+                .filter(|p| {
+                    let path = p.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    !path.is_empty() && std::path::Path::new(path).exists() && crate::projects::main_checkout(path).is_none()
+                })
                 .map(|p| json!({"name": p.get("name"), "path": p.get("path")}))
                 .collect();
             app.db.set_setting("midna_projects", Some(&jdumps(&Value::Array(list))))?;
@@ -537,7 +541,10 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 }
                 continue;
             }
-            let project = proj.s("name").map(|x| x.to_string()).or_else(|| path.as_deref().and_then(base_name));
+            let project = match path.as_deref().and_then(crate::projects::main_checkout) {
+                Some(main) => crate::projects::midna_project_at(app, Some(&main))?.or_else(|| base_name(&main)),
+                None => proj.s("name").map(|x| x.to_string()).or_else(|| path.as_deref().and_then(base_name)),
+            };
             let mut f = crate::fields![
                 "name" => name, "project" => project, "project_path" => path, "branch" => branch, "dirty" => dirty,
                 "agent" => agent, "status" => state_of(&state), "prompt_waiting" => (state == "needs_you") as i64,
