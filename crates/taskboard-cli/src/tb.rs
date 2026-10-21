@@ -223,6 +223,13 @@ enum Cmd {
         #[command(subcommand)]
         action: SlotCmd,
     },
+    /// Stage only this task's own hunks of the files it edited, from its recorded edits, so a commit in a checkout other tasks share takes none of theirs
+    Stage {
+        /// Only these files; on its own, every uncommitted file the task edited here
+        files: Vec<String>,
+        #[arg(long)]
+        task: Option<String>,
+    },
     /// Close the terminals of finished tasks (on the owner's word): tb close --done
     Close {
         /// The terminals of done tasks; terminals still working are left open
@@ -5523,6 +5530,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Slot { action } => slot_cmd(c, action),
+        Cmd::Stage { files, task } => {
+            let t = c.pr_task(task)?;
+            out(&hook::stage_own(&c.cfg.data, &t, std::path::Path::new(&c.cwd), &files)?);
+            Ok(0)
+        }
         Cmd::Devices => {
             let v = c.call("GET", "/devices", None)?;
             let devices = v["devices"].as_array().cloned().unwrap_or_default();
