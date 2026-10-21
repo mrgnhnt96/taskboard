@@ -57,14 +57,15 @@ fn the_built_in_rules_say_when_to_stack_and_how_to_merge_it() {
 fn with_models_on_the_built_in_rules_say_which_model_and_tb_planning_names_them() {
     let (_d, app) = board_with(|_, _| {});
     assert!(planning_for(&app, "project", "webapp")["models"].is_null(), "off: no models");
-    for bit in ["--model small", "mechanical, single-file or copy work", "--model large", "design, cross-crate or risky work", "Unsure: large"] {
+    for bit in ["every task a tier", "--model small", "sonnet at medium effort", "fully specified, few-file, mechanical, copy or test work", "--model large", "opus at high effort", "design, cross-crate, concurrency, daemon or GPUI rendering, release or signing work, or a vague spec", "names the files and the behaviour, it's small", "--effort xhigh for gnarly debugging", "--effort low for trivial copy edits"] {
         assert!(planning::MODEL_RULE.contains(bit), "missing {bit:?}");
     }
+    assert!(!planning::MODEL_RULE.contains("Unsure: large"));
 
     let (_d, app) = board_with(|c, _| c.models.enabled = true);
     let v = planning_for(&app, "project", "webapp");
     assert_eq!(v["text"], format!("{}\n{}", planning::BUILT_IN, planning::MODEL_RULE));
-    assert_eq!(v["models"], json!({"small": "sonnet", "large": "opus", "default": "opus"}));
+    assert_eq!(v["models"], json!({"small": "sonnet", "large": "opus", "default": "opus", "small_effort": "medium", "large_effort": "high", "default_effort": "high"}));
     assert!(planner_prompt(&app, "webapp").contains(planning::MODEL_RULE));
 
     let (_d, app) = board_with(|c, d| {
