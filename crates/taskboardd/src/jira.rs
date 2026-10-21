@@ -1137,10 +1137,46 @@ fn failure(j: Option<&Row>) -> Option<String> {
     Some(jloads_obj(j.s("result")).s("message").filter(|m| !m.is_empty()).unwrap_or("no reason given").to_string())
 }
 
+/// The task's goal has Jira off (`tb goal set G<n> --jira off`).
+pub fn goal_off(app: &App, t: &Row) -> Result<bool> {
+    let Some(gid) = t.i("goal_id") else { return Ok(false) };
+    Ok(app.db.q1("SELECT jira_off FROM goals WHERE id = ?", p![gid])?.is_some_and(|g| g.b("jira_off")))
+}
+
+/// The task opted out of Jira: its goal has Jira off, and it has no ticket and never asked for one.
+fn off_for(app: &App, t: &Row) -> Result<bool> {
+    Ok(!has(t.s("jira_key")) && goal_off(app, t)? && last_create(app, t.id())?.is_none())
+}
+
+/// Turns Jira off or on for a goal's tasks. Turning it on makes no tickets for the tasks it has: each
+/// that has none and never asked keeps none, until it asks with `--jira new` or a key.
+pub fn switch_goal(app: &App, g: &Row, off: bool) -> Result<()> {
+    if off {
+        return Ok(());
+    }
+    for t in app.db.q("SELECT * FROM tasks WHERE goal_id = ? AND status != 'done'", p![g.id()])? {
+        if has(t.s("jira_key")) || t.b("jira_none") || last_create(app, t.id())?.is_some() {
+            continue;
+        }
+        board::update_task(app, t.id(), fields!["jira_none" => 1])?;
+        board::log_event(app, t.id(), board::BOARD, "jira", &format!("Jira turned back on for {}; this task still makes no ticket", rf("goal", g.id())))?;
+    }
+    Ok(())
+}
+
+/// Its PR is refused without a ticket: `[pr_body] require_ticket`, unless its goal has Jira off.
+pub fn pr_needs_ticket(app: &App, t: &Row) -> Result<bool> {
+    Ok(app.cfg.ticket_required() && !has(t.s("jira_key")) && !off_for(app, t)?)
+}
+
 /// With `auto_ticket` on, a queued or working task in a project that ships PRs gets a ticket. A human
-/// task never has a PR, so it gets one only when asked for with `--jira new` or a key.
+/// task never has a PR, and a task in a goal with Jira off makes none, so each gets one only when asked
+/// for with `--jira new` or a key.
 pub fn wants_ticket(app: &App, t: &Row) -> Result<bool> {
     if !app.cfg.jira_on() || !app.cfg.jira.auto_ticket || has(t.s("jira_key")) || t.b("jira_none") || crate::human::is(t) {
+        return Ok(false);
+    }
+    if goal_off(app, t)? {
         return Ok(false);
     }
     if !matches!(t.s("status"), Some("queued") | Some("working") | Some("needs")) {
@@ -1223,7 +1259,13 @@ pub fn handoff_block(app: &App, t: &Row) -> Result<Vec<String>> {
     let tb = board::tb_cmd(app);
     let n = rf("task", t.id());
     let mut lines = vec![];
-    if !has(t.s("jira_key")) {
+    if off_for(app, t)? {
+        let g = rf("goal", t.i("goal_id").unwrap_or_default());
+        lines.push(format!(
+            "Jira: off for {g}, so this task and its PR need no ticket. Don't make one yourself. Only if {} asks for one: {tb} task set {n} --jira new.",
+            app.cfg.owner
+        ));
+    } else if !has(t.s("jira_key")) {
         if app.cfg.jira.auto_ticket && !t.b("jira_none") {
             lines.push(format!("Jira: this task's PR needs a ticket, and the board is getting one{}; it's in your context once it's linked.", if crate::jira_desk::on(app) { " from the Jira desk" } else { "" }));
         } else {

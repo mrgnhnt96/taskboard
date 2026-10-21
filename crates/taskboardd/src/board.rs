@@ -821,7 +821,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
+        "jira_off": g.b("jira_off"), "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
         "lane": crate::worklane::goal_lane(g),
         "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
         "after_blocker": crate::chain::blocker(app, g)?,

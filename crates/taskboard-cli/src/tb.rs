@@ -1270,6 +1270,10 @@ enum GoalCmd {
         epic: Option<String>,
         #[arg(long)]
         product: Option<String>,
+        /// Off: none of its tasks or their PRs asks for a Jira ticket, unless the task opts in with --jira new or a key.
+        /// Turning it back on makes no tickets for the tasks it already has
+        #[arg(long, value_parser = ["on", "off"])]
+        jira: Option<String>,
         /// Start each task in its own git worktree, detached at this branch (like origin/main); off for the shared folder
         #[arg(long, value_name = "BASE|off")]
         worktrees: Option<String>,
@@ -4252,6 +4256,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
     if g["paused"] == true {
         lines.push("Paused: nothing new starts.".into());
     }
+    if g["jira_off"] == true {
+        lines.push("Jira: off. Its tasks and their PRs need no ticket; don't make one.".into());
+    }
     let after: Vec<&str> = g["after"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
     if !after.is_empty() {
         let wait = if g["after_blocker"].is_string() { ": its tasks wait until that's finished" } else { "" };
@@ -5470,7 +5477,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, lane, run, deprioritize, prioritize, area, devices, after } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, jira, worktrees, lane, run, deprioritize, prioritize, area, devices, after } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -5496,6 +5503,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = product {
                     b["product"] = json!(x);
+                }
+                if let Some(x) = jira {
+                    b["jira_off"] = json!(x == "off");
                 }
                 if let Some(x) = worktrees {
                     b["worktree_base"] = json!(x);
@@ -7264,6 +7274,9 @@ mod tests {
         assert_eq!(done_bit(&json!({"done": 14, "total": 15, "review": 1})), "14/15 done · 1 in review");
         assert!(lines.iter().any(|l| l.contains("T3 [planned] Pen · area Quill")), "{lines:?}");
         assert!(lines.iter().any(|l| l.ends_with("T4 [planned] Ink")), "the goal's own area isn't repeated: {lines:?}");
+        assert!(!lines.iter().any(|l| l.starts_with("Jira")), "{lines:?}");
+        let off = goal_lines(&json!({"ref": "G2", "name": "Brushes", "project": "rune", "done": 0, "total": 0, "tasks": [], "jira_off": true}));
+        assert!(off.iter().any(|l| l.starts_with("Jira: off.")), "{off:?}");
     }
 
     #[test]
@@ -7822,6 +7835,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--run"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize", "--prioritize"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--jira", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--jira", "maybe"]).is_err());
         assert!(Cli::try_parse_from(["tb", "project", "show"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "maybe"]).is_err());
