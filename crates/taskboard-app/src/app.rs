@@ -95,8 +95,7 @@ pub struct Data {
     /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
     pub reviews: Option<Value>,
     pub review: Option<Value>,
-    /// `GET /ideas` for the Ideas page and `GET /ideas/:id` for an idea's page.
-    pub ideas: Option<Value>,
+    /// `GET /ideas/:id` for an idea's page (the Ideas page holds its own, `ui::ideas`).
     pub idea: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
@@ -895,8 +894,8 @@ struct Wants {
     /// The Releases page: the projects it lists, and its open rows.
     releases: Vec<String>,
     release_rows: Vec<String>,
-    /// The Ideas page, for `GET /ideas`.
-    ideas: bool,
+    /// The Ideas page: its first page of `GET /ideas`, and the held ideas to ask for again.
+    ideas: Option<Vec<i64>>,
     /// An idea's page, for `GET /ideas/:id`.
     idea: Option<String>,
 }
@@ -925,7 +924,7 @@ struct Got {
     review: Option<(i64, Answer)>,
     releases: Vec<(String, Answer)>,
     release_rows: Vec<(String, Answer)>,
-    ideas: Option<Answer>,
+    ideas: Option<Result<ui::paged::Fresh, String>>,
     idea: Option<(String, Answer)>,
 }
 
@@ -963,7 +962,7 @@ impl Wants {
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
             release_rows: ui::releases::open_rows(&m.releases, &releases_shown(m)),
-            ideas: m.page == Page::Ideas,
+            ideas: (m.page == Page::Ideas).then(|| m.ideas.held.recheck(ui::ideas::is_open)),
             idea: match &m.page {
                 Page::Idea(r) => Some(r.clone()),
                 _ => None,
@@ -1016,7 +1015,7 @@ impl Wants {
                     })
                 })
                 .collect();
-            let ideas = self.ideas.then(|| s.spawn(move || get("ideas", &[("project", "all".into()), ("state", "all".into())])));
+            let ideas = self.ideas.map(|ids| s.spawn(move || ui::paged::Paged::fetch(be, "ideas", "ideas", &ui::ideas::query(), ui::ideas::PAGE, ids)));
             let idea = self.idea.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("ideas/{r}"), &[]))));
             let (reviews, review) = reviews.map(join).map_or((None, None), |(l, one)| (Some(l), one));
             Got {
@@ -1111,8 +1110,14 @@ impl Got {
                 land(&mut d.goal, &mut d.errs.goal, v, merge_goal);
             }
         }
-        if let Some(v) = self.ideas {
-            land(&mut d.ideas, &mut d.errs.ideas, v, |v| v);
+        match self.ideas.filter(|_| m.page == Page::Ideas) {
+            Some(Ok(f)) => {
+                d.errs.ideas = None;
+                m.ideas.projects = ui::ideas::tabs(f.first());
+                m.ideas.held.land("ideas", f);
+            }
+            Some(Err(e)) => d.errs.ideas = Some(e),
+            None => {}
         }
         if let Some((r, v)) = self.idea {
             if m.page == Page::Idea(r) {
@@ -2236,7 +2241,7 @@ mod tests {
         settle(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
             assert_eq!(m.page, Page::Ideas);
-            assert_eq!(arr(m.data.ideas.as_ref().unwrap(), "ideas").len(), 6);
+            assert_eq!(m.ideas.held.rows.len(), 6);
             m.open_link("idea/i1", cx);
         })
         .unwrap();

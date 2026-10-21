@@ -1,7 +1,7 @@
-//! The Ideas page (`GET /ideas?project=all&state=all`): each project's ideas as rows, the open
-//! ones first, each with its newest report's verdict and its state. A row opens the idea's page
-//! (`ui::idea`). New idea opens a dialog that adds one (`POST /ideas`); notes, shelving and
-//! dropping go through `tb idea`.
+//! The Ideas page (`GET /ideas?project=all&state=all`, a page at a time): each project's ideas as
+//! rows, the open ones first, each with its newest report's verdict and its state. A row opens the
+//! idea's page (`ui::idea`). New idea opens a dialog that adds one (`POST /ideas`); notes, shelving
+//! and dropping go through `tb idea`.
 use crate::app::MainWindow;
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
@@ -9,8 +9,9 @@ use crate::ui::issue_panel as ip;
 use crate::ui::releases::cut_at;
 use crate::ui::kit::KeyOutcome;
 use crate::ui::modals::{self, Modal};
+use crate::ui::paged::Paged;
 use crate::ui::{idea, kit};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -18,6 +19,10 @@ use serde_json::{Value, json};
 const PAGE_X: f32 = 28.;
 const PROJECT_FILTER: &str = "ideas-project";
 const FORM_PROJECT: &str = "new-idea-project";
+/// Ideas per page.
+pub const PAGE: usize = 200;
+/// Lines left below the scroll top before the next older page is asked for.
+const AHEAD: usize = 60;
 
 #[derive(Default)]
 pub struct State {
@@ -25,6 +30,48 @@ pub struct State {
     pub project: String,
     /// The New idea dialog's fields while it's open.
     pub form: Option<Form>,
+    /// The ideas fetched so far.
+    pub held: Paged,
+    /// (project, its open ideas) for the filter, from the board's count of every idea.
+    pub projects: Vec<(String, usize)>,
+    /// The page as last drawn, rebuilt when the ideas or the filter change.
+    view: Option<View>,
+    list: Option<ListState>,
+}
+
+/// What the page's groups are built from.
+#[derive(Clone, PartialEq)]
+struct Key {
+    version: u64,
+    picked: String,
+    projects: Vec<(String, usize)>,
+    day: NaiveDate,
+}
+
+struct View {
+    key: Key,
+    groups: Vec<(String, Vec<Row>)>,
+    more: bool,
+    lines: Vec<Line>,
+}
+
+/// One item of the page's list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Line {
+    /// The title, the filter and New idea.
+    Top,
+    /// "No ideas", or "Loading…" while older pages are still to come.
+    Empty,
+    /// A project's name, over its card when there are several.
+    Group(usize),
+    /// A project's row: the first opens its card, the last closes it.
+    Row(usize, usize),
+    End,
+}
+
+/// What every page of `GET /ideas` asks for.
+pub fn query() -> Vec<(&'static str, String)> {
+    vec![("project", "all".into()), ("state", "all".into())]
 }
 
 pub struct Form {
@@ -81,7 +128,8 @@ fn rank(state: &str) -> u8 {
     }
 }
 
-fn is_open(i: &Value) -> bool {
+/// Not yet planned, shelved or dropped: still changing.
+pub fn is_open(i: &Value) -> bool {
     rank(s(i, "state")) == 0
 }
 
@@ -100,7 +148,10 @@ pub struct Row {
 /// The projects shown and each one's rows: the picked project while it has ideas, else every one
 /// with ideas, by name. Rows: open first, each group newest change first.
 pub fn groups(list: &Value, picked: &str, now: DateTime<Utc>) -> Vec<(String, Vec<Row>)> {
-    let ideas = arr(list, "ideas");
+    groups_of(&arr(list, "ideas").iter().collect::<Vec<_>>(), picked, now)
+}
+
+fn groups_of(ideas: &[&Value], picked: &str, now: DateTime<Utc>) -> Vec<(String, Vec<Row>)> {
     let mut projects: Vec<String> = ideas.iter().map(|i| s(i, "project").to_string()).collect();
     projects.sort();
     projects.dedup();
@@ -110,7 +161,7 @@ pub fn groups(list: &Value, picked: &str, now: DateTime<Utc>) -> Vec<(String, Ve
     projects
         .into_iter()
         .map(|p| {
-            let mut mine: Vec<&Value> = ideas.iter().filter(|i| s(i, "project") == p).collect();
+            let mut mine: Vec<&Value> = ideas.iter().copied().filter(|i| s(i, "project") == p).collect();
             mine.sort_by(|a, b| rank(s(a, "state")).cmp(&rank(s(b, "state"))).then_with(|| s(b, "updated_at").cmp(s(a, "updated_at"))));
             let rows = mine
                 .into_iter()
@@ -128,8 +179,12 @@ pub fn groups(list: &Value, picked: &str, now: DateTime<Utc>) -> Vec<(String, Ve
         .collect()
 }
 
-/// (project, its open ideas) for the filter.
+/// (project, its open ideas) for the filter: the board's `projects` when it sends them, else
+/// counted from the ideas.
 pub fn tabs(list: &Value) -> Vec<(String, usize)> {
+    if let Some(ps) = list["projects"].as_array() {
+        return ps.iter().map(|p| (s(p, "project").to_string(), p["open"].as_u64().unwrap_or(0) as usize)).collect();
+    }
     let mut v: Vec<(String, usize)> = vec![];
     for i in arr(list, "ideas") {
         let p = s(i, "project");
@@ -228,9 +283,9 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, in_detail: bool, window: &mut W
 /// The New idea dialog: title, detail, and the project it's for.
 pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let mut projects = crate::app::project_names(m.state(), &m.data.goals);
-    for (p, _) in m.data.ideas.as_ref().map(tabs).unwrap_or_default() {
-        if !projects.contains(&p) {
-            projects.push(p);
+    for (p, _) in &m.ideas.projects {
+        if !projects.contains(p) {
+            projects.push(p.clone());
         }
     }
     projects.sort_by(|a, b| modals::locale_cmp(a, b));
@@ -306,52 +361,141 @@ fn row(t: &Theme, row: &Row, first: bool, cx: &mut Context<MainWindow>) -> State
         .on_click(cx.listener(move |m, _, _, cx| idea::open(m, &r, cx)))
 }
 
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let t = cx.global::<Theme>().clone();
+/// Bring the groups and the list's lines up to date, rebuilding only what changed.
+fn sync(m: &mut MainWindow) {
+    let s = &mut m.ideas;
+    let picked = if s.projects.iter().any(|(p, _)| p == s.project()) { s.project().to_string() } else { "all".to_string() };
     let now = fmt::now();
-    let list = m.data.ideas.clone();
-    let tabs = list.as_ref().map(tabs).unwrap_or_default();
-    let picked = if tabs.iter().any(|(p, _)| p == m.ideas.project()) { m.ideas.project().to_string() } else { "all".to_string() };
-    let head = div()
+    let key = Key { version: s.held.version, picked, projects: s.projects.clone(), day: fmt::local(now).date_naive() };
+    let more = s.held.next.is_some();
+    let old = s.view.take();
+    let filter_same = old.as_ref().is_some_and(|v| v.key.picked == key.picked);
+    let mut v = match old {
+        Some(v) if v.key == key => v,
+        _ => {
+            let mine: Vec<&Value> = s.held.rows.iter().filter(|i| key.picked == "all" || fmt::s(i, "project") == key.picked).collect();
+            let groups = groups_of(&mine, &key.picked, now);
+            View { key, groups, more, lines: vec![] }
+        }
+    };
+    let mut lines = vec![Line::Top];
+    if v.groups.is_empty() {
+        lines.push(Line::Empty);
+    }
+    let many = v.groups.len() > 1;
+    for (gi, (_, rows)) in v.groups.iter().enumerate() {
+        if many {
+            lines.push(Line::Group(gi));
+        }
+        lines.extend((0..rows.len()).map(|ri| Line::Row(gi, ri)));
+    }
+    lines.push(Line::End);
+    let changed = lines != v.lines || v.more != more;
+    let count = lines.len();
+    match &s.list {
+        None => s.list = Some(ListState::new(count, ListAlignment::Top, px(600.))),
+        Some(l) if changed || !filter_same => {
+            let top = l.logical_scroll_top();
+            l.reset(count);
+            // New ideas keep the place scrolled to; another project starts at the top.
+            if filter_same {
+                l.scroll_to(ListOffset { item_ix: top.item_ix.min(count - 1), offset_in_item: top.offset_in_item });
+            }
+        }
+        // The filter's counts can change with the lines staying put.
+        Some(l) => l.remeasure_items(0..1),
+    }
+    v.lines = lines;
+    v.more = more;
+    s.view = Some(v);
+}
+
+/// Fetch the next older page once the list nears its end (a short list is always near it).
+fn load_older(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let s = &mut m.ideas;
+    let (Some(before), Some(l), Some(v)) = (s.held.next.clone(), &s.list, &s.view) else { return };
+    if s.held.loading || v.lines.len() > l.logical_scroll_top().item_ix + AHEAD {
+        return;
+    }
+    s.held.loading = true;
+    let backend = m.backend.clone();
+    let mut query = query();
+    query.extend([("limit", PAGE.to_string()), ("before", before.clone())]);
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get("ideas", &query).map_err(|e| e.message) }).await;
+        let _ = this.update(cx, |m, cx| {
+            m.ideas.held.land_older("ideas", &before, got);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// The title, the project filter and New idea: the list's first line.
+fn top(m: &MainWindow, t: &Theme, picked: &str, cx: &mut Context<MainWindow>) -> Div {
+    let tabs = &m.ideas.projects;
+    div()
         .flex()
         .items_center()
         .gap(px(16.))
         .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Ideas"))
         .when(tabs.len() > 1, |d| {
-            d.child(ip::project_filter(&t, PROJECT_FILTER, &picked, &tabs, cx, |m, p, cx| {
+            d.child(ip::project_filter(t, PROJECT_FILTER, picked, tabs, cx, |m, p, cx| {
                 m.ideas.project = p;
                 cx.notify();
             }))
         })
         .child(div().flex_1())
-        .child(kit::btn_primary(&t, "ideas-new", "New idea").on_click(cx.listener(|m, _, window, cx| open_form(m, window, cx))));
-    let mut page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head);
+        .child(kit::btn_primary(t, "ideas-new", "New idea").on_click(cx.listener(|m, _, window, cx| open_form(m, window, cx))))
+}
+
+/// One line of the page's list. A project's card is drawn in pieces: its first row carries the
+/// top edge, each row the sides, the last row the bottom.
+fn line_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    let Some(v) = m.ideas.view.take() else { return div().into_any_element() };
+    let line = div().px(px(PAGE_X)).line_height(relative(1.4));
+    let el = match v.lines.get(ix).copied() {
+        Some(Line::Top) => line.pt(px(22.)).pb(px(20.)).child(top(m, &t, &v.key.picked, cx)),
+        Some(Line::Empty) => line.child(kit::empty(&t, if v.more { "Loading…" } else { "No ideas" })),
+        Some(Line::Group(gi)) => line
+            .when(gi > 0, |d| d.pt(px(20.)))
+            .pb(px(10.))
+            .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.muted).child(v.groups[gi].0.to_uppercase())),
+        Some(Line::Row(gi, ri)) => {
+            let rows = &v.groups[gi].1;
+            let (first, last) = (ri == 0, ri + 1 == rows.len());
+            let card = div()
+                .bg(t.card)
+                .border_color(t.border)
+                .border_x_1()
+                .overflow_hidden()
+                .when(first, |d| d.border_t_1().rounded_t(px(12.)))
+                .when(last, |d| d.border_b_1().rounded_b(px(12.)));
+            line.child(card.child(row(&t, &rows[ri], first, cx)))
+        }
+        Some(Line::End) | None => line.h(px(32.)),
+    };
+    m.ideas.view = Some(v);
+    el.into_any_element()
+}
+
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
     // The dialog's project list: a popover, drawn over the dialog.
     let form_project = ip::render_project_filter(m, &t, FORM_PROJECT, window, cx);
-    let shell = div().id("ideas-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter).children(form_project);
+    let shell = div().id("ideas-page").relative().flex().flex_col().flex_1().min_w_0().h_full().children(filter).children(form_project);
 
-    let Some(list) = list else {
+    if !m.ideas.held.loaded {
         let msg = m.data.errs.ideas.clone().unwrap_or_else(|| "Loading…".into());
-        return shell.child(page.child(kit::empty(&t, msg))).into_any_element();
-    };
-    let groups = groups(&list, &picked, now);
-    if groups.is_empty() {
-        return shell.child(page.child(kit::empty(&t, "No ideas"))).into_any_element();
+        let page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4));
+        return shell.child(page.child(top(m, &t, "all", cx)).child(kit::empty(&t, msg))).into_any_element();
     }
-    let many = groups.len() > 1;
-    for (p, rows) in groups {
-        let mut col = div().flex().flex_col().gap(px(8.));
-        if many {
-            col = col.child(div().mb(px(2.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.muted).child(p.to_uppercase()));
-        }
-        let mut card = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
-        for (n, r) in rows.iter().enumerate() {
-            card = card.child(row(&t, r, n == 0, cx));
-        }
-        page = page.child(col.child(card));
-    }
-    shell.child(page).into_any_element()
+    sync(m);
+    load_older(m, cx);
+    let Some(state) = m.ideas.list.clone() else { return shell.into_any_element() };
+    shell.child(list(state, cx.processor(line_item)).flex_1().min_h_0()).into_any_element()
 }
 
 #[cfg(test)]
@@ -453,6 +597,40 @@ mod tests {
             assert_eq!(m.data.idea.as_ref().unwrap()["title"], "Dark mode for the phone", "{r} opens");
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_long_idea_list_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        use std::collections::HashSet;
+        let (w, rec) = crate::parity::window(cx);
+        for k in 0..320 {
+            let project = if k % 2 == 0 { "webapp" } else { "api" };
+            rec.board().post("ideas", json!({"title": format!("Paged {k}"), "project": project})).unwrap();
+        }
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link("ideas", cx)).unwrap();
+        crate::parity::settle(cx);
+        redraw(w, cx);
+        let held = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| (m.ideas.held.rows.len(), m.ideas.held.next.is_some(), m.ideas.held.total)).unwrap();
+        let (n, more, total) = held(cx);
+        assert_eq!((n, more), (PAGE, true), "only the first page until the list nears its end");
+        assert!(total > 320, "the board counts every idea: {total}");
+
+        for _ in 0..5 {
+            w.update(cx, |m, _, _| {
+                let n = m.ideas.view.as_ref().unwrap().lines.len();
+                m.ideas.list.as_ref().unwrap().scroll_to(ListOffset { item_ix: n, offset_in_item: px(0.) });
+            })
+            .unwrap();
+            redraw(w, cx);
+        }
+        assert_eq!(held(cx), (total, false, total), "scrolling to the end pages back through the rest");
+        let ids: HashSet<i64> = w.update(cx, |m, _, _| m.ideas.held.rows.iter().map(|i| i["id"].as_i64().unwrap()).collect()).unwrap();
+        assert_eq!(ids.len(), total, "each idea once");
+        let rows = w.update(cx, |m, _, _| m.ideas.view.as_ref().unwrap().lines.iter().filter(|l| matches!(l, Line::Row(..))).count()).unwrap();
+        assert_eq!(rows, total, "every idea has a line");
+        let webapp = w.update(cx, |m, _, _| m.ideas.projects.iter().find(|(p, _)| p == "webapp").map(|(_, n)| *n).unwrap()).unwrap();
+        assert!(webapp >= 160, "the filter counts the board's open ideas, not the held ones: {webapp}");
     }
 
     #[test]

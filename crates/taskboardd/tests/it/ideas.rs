@@ -166,3 +166,57 @@ fn the_sample_board_has_ideas_in_every_state() {
     assert_eq!((i1["verdict"].as_str(), i1["rounds"].as_array().unwrap().len(), i1["notes"].as_array().unwrap().len()), (Some("fits"), 3, 2));
     assert_eq!(i1["rounds"][0]["report"]["related"][0], "G1");
 }
+
+#[test]
+fn many_ideas_come_a_page_at_a_time_in_the_pages_order() {
+    let (_dir, app) = new_board();
+    for k in 0..330 {
+        let r = idea(&app, if k % 3 == 0 { "api" } else { "webapp" }, &format!("Idea {k}"), "");
+        match k % 5 {
+            1 => drop(call(&app, "POST", &format!("/ideas/{r}/shelve"), json!({}))),
+            2 => drop(call(&app, "POST", &format!("/ideas/{r}/drop"), json!({}))),
+            _ => {}
+        }
+    }
+    let all = [("project", "all"), ("state", "all")];
+    let whole = try_call(&app, "GET", "/ideas", &[("project", "all"), ("state", "all"), ("limit", "500")], json!({})).unwrap();
+    assert_eq!(whole["total"], 330);
+    assert_eq!(whole["next"], Value::Null);
+    let open = |p: &str| whole["ideas"].as_array().unwrap().iter().filter(|i| i["project"] == p && ["new", "digging", "reported"].contains(&i["state"].as_str().unwrap())).count();
+    assert_eq!(whole["projects"], json!([{"project": "api", "open": open("api")}, {"project": "webapp", "open": open("webapp")}]));
+
+    let (mut seen, mut before) = (Vec::<Value>::new(), None::<String>);
+    loop {
+        let mut q = all.to_vec();
+        q.push(("limit", "100"));
+        if let Some(b) = &before {
+            q.push(("before", b));
+        }
+        let page = try_call(&app, "GET", "/ideas", &q, json!({})).unwrap();
+        assert_eq!(page["total"], 330, "every page counts the whole list");
+        let ideas = page["ideas"].as_array().unwrap();
+        assert!(ideas.len() <= 100);
+        seen.extend(ideas.iter().cloned());
+        before = page["next"].as_str().map(String::from);
+        if before.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 330, "paging walks every idea once");
+    let rank = |s: &str| match s {
+        "planned" => 1,
+        "shelved" => 2,
+        "dropped" => 3,
+        _ => 0,
+    };
+    let key = |i: &Value| (i["project"].as_str().unwrap().to_string(), rank(i["state"].as_str().unwrap()), std::cmp::Reverse((i["updated_at"].as_str().unwrap().to_string(), i["id"].as_i64().unwrap())));
+    assert!(seen.windows(2).all(|p| key(&p[0]) < key(&p[1])), "by project, open first, newest change first");
+
+    let web = try_call(&app, "GET", "/ideas", &[("project", "webapp"), ("state", "all"), ("limit", "500")], json!({})).unwrap();
+    assert_eq!(web["total"], 220);
+    assert_eq!(web["ideas"].as_array().unwrap().len(), 220);
+    assert_eq!(web["projects"].as_array().unwrap().len(), 2, "the filter still lists every project");
+    let two = try_call(&app, "GET", "/ideas", &[("project", "all"), ("state", "all"), ("ids", "I3,7"), ("limit", "200")], json!({})).unwrap();
+    let refs: Vec<&str> = two["ideas"].as_array().unwrap().iter().map(|i| i["ref"].as_str().unwrap()).collect();
+    assert_eq!(refs.len(), 2, "ids picks out those ideas: {refs:?}");
+}
