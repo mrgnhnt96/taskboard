@@ -186,10 +186,35 @@ fn here_makes_a_standalone_task_this_terminal_is_on() {
 
     let again = b.try_report("tb.new_task", "s1", json!({"title": "Another", "here": true}));
     assert!(again.unwrap_err().contains("already on"), "a terminal on a task tracks its work there");
-    b.add_session("s2");
-    let g = b.goal("Login");
-    let with_goal = b.try_report("tb.new_task", "s2", json!({"title": "X", "here": true, "goal": format!("G{g}")}));
-    assert!(with_goal.unwrap_err().contains("leave out --goal"));
+}
+
+#[test]
+fn here_with_a_goal_puts_the_terminals_task_in_it_and_the_runner_leaves_it_alone() {
+    let b = new_board();
+    b.add_session("s1");
+    let g = b.goal("Releases redesign");
+    let gr = format!("G{g}");
+    let also = b.try_report("tb.new_task", "s1", json!({"title": "X", "here": true, "goal": gr, "also": [gr]}));
+    assert!(also.unwrap_err().contains("--also"));
+
+    let r = b.report("tb.new_task", "s1", json!({"title": "Design the Releases page", "detail": "Concepts on a canvas.", "here": true, "goal": gr}));
+    let tr = r["created"][0].as_str().unwrap().to_string();
+    assert_eq!((r["status"].as_str(), r["goal"].as_str()), (Some("working"), Some(gr.as_str())));
+    let context = r["context"].as_str().unwrap();
+    assert!(context.contains(&format!("you're on {tr} now")) && context.contains(&format!("--goal {gr}")), "{context}");
+    let t = b.get(&format!("tasks/{tr}"));
+    assert_eq!((t["status"].as_str(), t["session_id"].as_str()), (Some("working"), Some("s1")));
+    assert_eq!(t["goal"]["ref"], gr);
+
+    // Its next task in the same goal waits in this terminal's line, and running the goal starts neither elsewhere.
+    let next = b.report("tb.new_task", "s1", json!({"title": "Build the Releases page", "here": true, "goal": gr, "line": "next"}));
+    let nr = next["created"][0].as_str().unwrap().to_string();
+    assert_eq!((next["status"].as_str(), next["goal"].as_str()), (Some("queued"), Some(gr.as_str())));
+    api::dispatch(&b.app, "POST", &format!("goals/{gr}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
+    assert!(taskboardd::runner::start_queued(&b.app).unwrap().is_empty(), "the goal's runner starts no terminal for them");
+    assert_eq!(b.get(&format!("tasks/{tr}"))["session_id"], "s1");
+    let n = b.get(&format!("tasks/{nr}"));
+    assert_eq!((n["status"].as_str(), n["session_id"].as_str()), (Some("queued"), None));
 }
 
 #[test]
@@ -212,6 +237,7 @@ fn a_turn_that_changed_code_with_no_task_is_asked_to_track_it() {
     let block = out["block"].as_str().expect("the stop is blocked");
     assert!(block.contains("header.rs") && !block.contains("scratch"), "{block}");
     assert!(block.contains("--here"), "{block}");
+    assert!(block.contains("If the work is a design") && block.contains("goal new") && block.contains("--goal G<n> --here"), "{block}");
 
     let again = b.report("hook.stop", "s1", json!({"last_message": "Done.", "stop_hook_active": true}));
     assert!(again.get("block").is_none(), "it asks once per turn");

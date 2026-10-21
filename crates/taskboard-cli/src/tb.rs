@@ -1373,6 +1373,7 @@ enum TaskCmd {
         issue: Option<String>,
         #[arg(long)]
         detail: Option<String>,
+        /// The goal it's in; with --here, this terminal does it and the goal's runner leaves it alone
         #[arg(long)]
         goal: Option<String>,
         /// Its work also finishes this goal (counted there, run by --goal); repeat for more
@@ -1390,7 +1391,8 @@ enum TaskCmd {
         /// goal's next run even while the goal is running
         #[arg(long)]
         planned: bool,
-        /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
+        /// A task for the work this terminal is already doing with the owner; you're on it at once. Standalone, or in
+        /// --goal G<n> (design work: make the goal first, and the build tasks that follow join it)
         #[arg(long)]
         here: bool,
         /// With --here on a terminal that has a task: queue it in this terminal's line, after that task
@@ -5740,8 +5742,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if !files.is_empty() && goal.is_none() {
                     return Err("--file needs --goal: it tells the task's wave mates which files are its".into());
                 }
-                if here && (goal.is_some() || !also.is_empty()) {
-                    return Err("--here makes a standalone task on this terminal; leave out --goal and --also".into());
+                if here && !also.is_empty() {
+                    return Err("--here takes no --also: give the task its one goal with --goal G<n>".into());
                 }
                 if !also.is_empty() && goal.is_none() {
                     return Err("--also needs --goal: the task's home goal, which runs it".into());
