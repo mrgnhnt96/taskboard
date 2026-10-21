@@ -417,10 +417,17 @@ pub fn stopped(app: &App, t: &Row, name: &str, message: &str, asked: bool, wrote
     if !WAKE.contains(&t.s("pr_phase").unwrap_or("")) || !f.contains_key("woke") {
         return Ok(false);
     }
+    note_stop(app, t, name, message, asked, wrote)?;
+    Ok(true)
+}
+
+/// Records that the visit stopped (or asked the owner), whether or not the board woke it this time.
+pub fn note_stop(app: &App, t: &Row, name: &str, message: &str, asked: bool, wrote: Option<&str>) -> Result<()> {
+    let f = flow(t);
     let message = if message.is_empty() { "It stopped without saying why." } else { message };
     let before = f.get("stopped").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     if before.s("message") == Some(message) || (before.b("asked") && !asked) {
-        return Ok(true);
+        return Ok(());
     }
     let mut st = json!({"at": now_iso(), "message": message});
     if asked {
@@ -437,7 +444,7 @@ pub fn stopped(app: &App, t: &Row, name: &str, message: &str, asked: bool, wrote
         text += &format!(" (The agent wrote: “{w}”)");
     }
     board::log_event(app, t.id(), name, "question", &text)?;
-    Ok(true)
+    Ok(())
 }
 
 pub fn wake_failed(app: &App, t: &Row, text: &str) -> Result<bool> {
@@ -559,7 +566,8 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
             base = rec["base"].as_str().filter(|b| !b.is_empty()).unwrap_or("the base branch")
         ),
         "comments" => format!(
-            "There are open review threads{}. {tb} pr status {r} lists them with their ids. Address each in the worktree; \
+            "There are open review threads{}. {tb} pr status {r} lists them with their ids, and {tb} pr thread {r} <thread> prints one's \
+             whole text and replies. Address each in the worktree; \
              one that can fairly wait for a later PR goes to the backlog instead ({tb} backlog add \"<title>\" --kind \
              follow). Push the fixes, then answer each thread that asked for something with {tb} pr reply {r} <thread> \
              \"<what you did>\" --resolve. A comment that asks for nothing gets {tb} pr ack {r} <thread>: it's resolved \

@@ -1699,10 +1699,9 @@ fn on_question(r: &mut Report) -> Result<Value> {
             let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
             let wrote = if screened["question"].is_string() { Some(text.as_str()) } else { None };
             if !prflow::stopped(app, v, &r.name(), &asked, true, wrote)? {
-                return err(
-                    409,
-                    format!("{} is done and its PR doesn't need this terminal. Ask {} in the terminal instead.", rf("task", v.id()), app.cfg.owner),
-                );
+                // The board's side of the visit is over (#609), but the agent is still on the PR: its
+                // question reaches the owner the same way.
+                prflow::note_stop(app, v, &r.name(), &asked, true, wrote)?;
             }
             r.set_session_status("needs")?;
             return Ok(with(ok(Some(v), None), rewrite(&screened)));

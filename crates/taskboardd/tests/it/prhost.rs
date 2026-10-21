@@ -137,6 +137,27 @@ fn a_bitbucket_pr_is_watched_and_its_open_threads_drive_the_stage() {
 }
 
 #[test]
+fn pr_thread_prints_a_threads_whole_text_and_replies() {
+    // #609: status clips each thread; the agent can't read the host itself.
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let long = format!("src/a.rs\n{}", "Rename this. ".repeat(30));
+    let mut rec = green();
+    let mut th = thread("1", "rev");
+    th.body = long.clone();
+    th.replies = vec![taskboardd::prhost::Reply { author: "me".into(), author_name: "Me".into(), text: "Why?".into(), body: "Why?\nIt reads fine.".into(), ..Default::default() }];
+    rec.threads = vec![th, thread("2", "me")];
+    fake(&b, rec);
+    poll(&b);
+    let v = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert_eq!(v["thread"]["body"], long.as_str());
+    assert_eq!(v["thread"]["replies"][0]["body"], "Why?\nIt reads fine.");
+    assert_eq!(v["open"], true);
+    assert_eq!(b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "2"}))["open"], false, "the author had the last word");
+    assert!(b.try_post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "9"})).unwrap_err().contains("no thread 9"));
+}
+
+#[test]
 fn ack_resolves_without_a_reply_and_holds_until_someone_speaks_again() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
@@ -855,8 +876,8 @@ fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied()
     rec.checks = vec![check("e2e", "failed")];
     let mut th = thread("1", "rev");
     th.replies = vec![
-        taskboardd::prhost::Reply { author: "me".into(), author_name: "Me".into(), text: "Why rename it?".into(), at: "t2".into() },
-        taskboardd::prhost::Reply { author: "rev".into(), author_name: "Rev".into(), text: "It clashes with the other one".into(), at: "t3".into() },
+        taskboardd::prhost::Reply { author: "me".into(), author_name: "Me".into(), text: "Why rename it?".into(), at: "t2".into(), ..Default::default() },
+        taskboardd::prhost::Reply { author: "rev".into(), author_name: "Rev".into(), text: "It clashes with the other one".into(), at: "t3".into(), ..Default::default() },
     ];
     rec.threads = vec![th];
     let h = fake(&b, rec);

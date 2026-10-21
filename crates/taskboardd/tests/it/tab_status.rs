@@ -301,3 +301,14 @@ fn a_needs_you_tab_says_what_it_waits_on() {
     b.set(id, fields!["pr_flow" => json!({"session": "v1", "stopped": {"asked": true, "message": "Squash the commits?"}}).to_string()]);
     assert_eq!(details(&b), vec![Some(format!("T{id} · Login: asked on PR #9: Squash the commits?"))]);
 }
+
+#[test]
+fn a_question_after_the_pr_visit_ended_reaches_the_owner_instead_of_being_refused() {
+    // #609: the visit's wake was spent but the agent is still on the PR.
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "comments",
+                      "pr_flow" => json!({"session": "s1"}).to_string()]);
+    b.report("tb.question", "s1", json!({"text": "Who can read the thread?"})).unwrap();
+    assert_eq!(details(&b).last(), Some(&Some(format!("T{id} · Login: asked on PR #9: Who can read the thread?"))));
+}

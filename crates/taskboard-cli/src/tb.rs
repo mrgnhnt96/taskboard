@@ -1857,6 +1857,12 @@ enum PrCmd {
         #[arg(num_args = 1..=2, required = true)]
         args: Vec<String>,
     },
+    /// One review thread's whole text and replies, read with the board's account: [T<n>] <thread>
+    Thread {
+        /// [task] thread
+        #[arg(num_args = 1..=2, required = true)]
+        args: Vec<String>,
+    },
     /// Every thread is answered: ask the reviewers who wanted changes to look again
     Addressed { task: Option<String> },
     /// Ask for reviews through the PR host: the board picks, or --ask, --replace X [--with Y], --drop X
@@ -2205,6 +2211,7 @@ fn print_pr_status(t: &str, v: &Value) {
                 out(&format!("      ↳ {who}: {}", r["text"].as_str().unwrap_or("")));
             }
         }
+        out(&format!("  Whole text of one: tb pr thread {t} <id>"));
     } else if rec["comments"].as_i64().unwrap_or(0) > 0 && !rec["threads"].is_array() {
         out(&format!("Review comments from others: {}", rec["comments"]));
     }
@@ -2218,6 +2225,35 @@ fn print_pr_status(t: &str, v: &Value) {
         out(&format!("Before it can merge: {}", b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")));
     }
     out(&format!("Merging: {}", if v["agents_merge"] == true { "agents may merge once it's approved and green (tb pr merge)" } else { "the owner merges it" }));
+}
+
+/// `tb pr thread`: one thread's whole text, then each reply's.
+fn print_pr_thread(v: &Value) {
+    let th = &v["thread"];
+    let name = |x: &Value| x["author_name"].as_str().filter(|n| !n.is_empty()).or(x["author"].as_str()).unwrap_or("").to_string();
+    let whole = |x: &Value| x["body"].as_str().filter(|b| !b.is_empty()).or(x["text"].as_str()).unwrap_or("").to_string();
+    let at = th["path"].as_str().map(|p| format!(" · {p}{}", th["line"].as_i64().map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_default();
+    let state = if th["resolved"] == true {
+        "resolved"
+    } else if v["open"] == true {
+        "open"
+    } else {
+        "answered"
+    };
+    let outdated = if th["outdated"] == true { ", outdated" } else { "" };
+    out(&format!("Thread {} · {}{}{at} · {state}{outdated}", th["id"].as_str().unwrap_or(""), name(th), if th["kind"] == "task" { " · task" } else { "" }));
+    if let Some(u) = th["url"].as_str() {
+        out(u);
+    }
+    out("");
+    out(&whole(th));
+    for r in th["replies"].as_array().cloned().unwrap_or_default() {
+        out("");
+        out(&format!("↳ {}:", name(&r)));
+        for l in whole(&r).lines() {
+            out(&format!("  {l}"));
+        }
+    }
 }
 
 /// `tb pr check`'s answer to `POST /prs/refresh`.
@@ -6366,6 +6402,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let t = c.pr_task(task)?;
                 let v = c.call_progress("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0]})))?;
                 out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v)));
+                Ok(0)
+            }
+            PrCmd::Thread { args } => {
+                let (task, rest) = task_and(args, 1);
+                let t = c.pr_task(task)?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/thread"), Some(json!({"thread": rest[0]})))?;
+                print_pr_thread(&v);
                 Ok(0)
             }
             PrCmd::Addressed { task } => {
