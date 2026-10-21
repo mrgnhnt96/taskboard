@@ -13,6 +13,7 @@ pub mod bits;
 pub mod board;
 pub mod botrun;
 pub mod breaks;
+pub mod bring;
 pub mod builds;
 pub mod chain;
 pub mod checkin;

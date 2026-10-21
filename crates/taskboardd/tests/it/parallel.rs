@@ -1020,3 +1020,121 @@ fn an_older_board_puts_worktree_goals_and_alone_tasks_on_their_lanes() {
     assert_eq!(lanes("goals"), [Some("slot".into()), None]);
     assert_eq!(lanes("tasks"), [Some("alone".into()), None]);
 }
+
+/// Notes `files` (from the project folder) in the task's hook edit log.
+fn edited(b: &Board, t: i64, files: &[&str]) {
+    let dir = b.app.cfg.data.join("edits");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lines: String = files.iter().map(|f| format!("s{t}\t{}/{f}\n", b.repo())).collect();
+    std::fs::write(dir.join(format!("T{t}")), lines).unwrap();
+}
+
+fn working(b: &Board, t: i64) {
+    b.app.db.x("UPDATE tasks SET status = 'working' WHERE id = ?", p![t]).unwrap();
+}
+
+#[test]
+fn a_task_outside_a_goal_claims_a_slot_and_lands_on_the_slot_lane() {
+    let b = new_board();
+    let head = git_repo(&b);
+    let t = b.task("Loose", json!({}));
+    let out = b.post(&format!("tasks/T{t}/slot/claim"), json!({}));
+    assert_eq!((out["slot"].clone(), out["path"].clone()), (json!("slot-1"), json!(slot(&b, 1))), "{out}");
+    assert_eq!((out["brought"].clone(), out["left"].clone()), (json!([]), json!([])));
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]), head);
+    assert_eq!(lane(&b, t), ("slot".into(), "task".into()));
+    assert!(b.card(t)["log"].to_string().contains("Works in a worktree slot: claimed slot-1"), "{}", b.card(t)["log"]);
+    assert_eq!(b.post(&format!("tasks/T{t}/slot/claim"), json!({}))["slot"], "slot-1", "claiming again keeps it");
+}
+
+#[test]
+fn a_task_on_the_alone_lane_takes_no_slot() {
+    let b = new_board();
+    git_repo(&b);
+    let t = b.task("Alone", json!({"lane": "alone"}));
+    let (code, msg) = b.post_err(&format!("tasks/T{t}/slot/claim"), json!({}));
+    assert_eq!(code, 409);
+    assert!(msg.contains("is on the alone lane") && msg.contains(&format!("tb task set T{t} --lane slot")), "{msg}");
+    assert!(!Path::new(&slot(&b, 1)).exists());
+}
+
+#[test]
+fn a_full_pool_leaves_the_lane_as_it_was() {
+    let b = new_board();
+    git_repo(&b);
+    b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 1}));
+    let (one, two) = (b.task("One", json!({})), b.task("Two", json!({})));
+    b.post(&format!("tasks/T{one}/slot/claim"), json!({}));
+    let before = lane(&b, two);
+    let (code, _) = b.post_err(&format!("tasks/T{two}/slot/claim"), json!({}));
+    assert_eq!(code, 409);
+    assert_eq!(lane(&b, two), before);
+    assert!(!b.card(two)["log"].to_string().contains("Works in a worktree slot"));
+}
+
+#[test]
+fn bring_moves_a_tracked_and_a_new_file_and_cleans_the_shared_copies() {
+    let b = new_board();
+    git_repo(&b);
+    let repo = b.repo();
+    let t = b.task("Loose", json!({}));
+    std::fs::write(Path::new(&repo).join("README"), "webapp, changed\n").unwrap();
+    std::fs::create_dir_all(Path::new(&repo).join("src")).unwrap();
+    std::fs::write(Path::new(&repo).join("src/new.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(Path::new(&repo).join("other"), "not mine\n").unwrap();
+    edited(&b, t, &["README", "src/new.rs"]);
+
+    let out = b.post(&format!("tasks/T{t}/slot/claim"), json!({"bring": []}));
+    assert_eq!(out["brought"], json!(["README", "src/new.rs"]), "{out}");
+    assert_eq!(out["left"], json!([]));
+    let s = Path::new(&slot(&b, 1)).to_path_buf();
+    assert_eq!(std::fs::read_to_string(s.join("README")).unwrap(), "webapp, changed\n");
+    assert_eq!(std::fs::read_to_string(s.join("src/new.rs")).unwrap(), "fn main() {}\n");
+    assert!(!s.join("other").exists(), "only its own files go");
+    assert_eq!(git(Path::new(&repo), &["status", "--porcelain", "--", "README", "src", "other"]), "?? other", "the shared copies are gone, others' are left");
+    assert!(Path::new(out["patch"].as_str().unwrap()).exists(), "{out}");
+    assert_eq!(lane(&b, t), ("slot".into(), "task".into()));
+    assert!(b.card(t)["log"].to_string().contains("bringing"), "{}", b.card(t)["log"]);
+}
+
+#[test]
+fn bring_refuses_a_file_another_task_has_edits_in() {
+    let b = new_board();
+    git_repo(&b);
+    let repo = b.repo();
+    let (t, other) = (b.task("Mine", json!({})), b.task("Theirs", json!({})));
+    working(&b, other);
+    std::fs::write(Path::new(&repo).join("README"), "both\n").unwrap();
+    edited(&b, t, &["README"]);
+    edited(&b, other, &["README"]);
+    let before = lane(&b, t);
+
+    let (code, msg) = b.post_err(&format!("tasks/T{t}/slot/claim"), json!({"bring": ["README"]}));
+    assert_eq!(code, 409);
+    assert!(msg.contains(&format!("can't bring README (T{other} has uncommitted edits in it too)")), "{msg}");
+    assert!(!Path::new(&slot(&b, 1)).exists(), "no slot was taken");
+    assert_eq!(std::fs::read_to_string(Path::new(&repo).join("README")).unwrap(), "both\n");
+    assert_eq!(lane(&b, t), before);
+}
+
+#[test]
+fn a_clash_leaves_both_sides_untouched() {
+    let b = new_board();
+    git_repo(&b);
+    let repo = b.repo();
+    std::fs::write(Path::new(&repo).join("README"), "local\n").unwrap();
+    git(Path::new(&repo), &["commit", "-qam", "Local only"]);
+    std::fs::write(Path::new(&repo).join("README"), "local, edited\n").unwrap();
+    let t = b.task("Loose", json!({}));
+    let before = lane(&b, t);
+
+    let (code, msg) = b.post_err(&format!("tasks/T{t}/slot/claim"), json!({"bring": ["README"]}));
+    assert_eq!(code, 409);
+    assert!(msg.contains("couldn't bring README into slot-1") && msg.contains("the slot was given back"), "{msg}");
+    let patch = msg.rsplit("The patch is saved at ").next().unwrap().trim_end_matches('.');
+    assert!(Path::new(patch).exists(), "{msg}");
+    assert_eq!(std::fs::read_to_string(Path::new(&repo).join("README")).unwrap(), "local, edited\n");
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["status", "--porcelain"]), "", "the slot is as it was made");
+    assert!(slot_row(&b, 1).i("task_id").is_none(), "the slot is free again");
+    assert_eq!(lane(&b, t), before);
+}

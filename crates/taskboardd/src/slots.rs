@@ -358,7 +358,7 @@ pub fn release_if_clean(app: &App, t: &Row) -> Result<bool> {
     give_back(app, t)
 }
 
-fn give_back(app: &App, t: &Row) -> Result<bool> {
+pub(crate) fn give_back(app: &App, t: &Row) -> Result<bool> {
     let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])? else { return Ok(false) };
     let (path, n) = (s.st("path"), s.i("n").unwrap_or(0));
     let ctx = board::task_context(&board::get_task(app, t.id())?);
