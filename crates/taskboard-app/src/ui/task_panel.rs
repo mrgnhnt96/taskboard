@@ -1950,6 +1950,7 @@ fn pill(t: &Theme, s: &str, tone: Tone, small: bool) -> Div {
         Tone::Idle => (t.text_2, t.panel_2, None),
         Tone::Gone => (t.muted, t.panel_2, None),
         Tone::Closed => (t.faint, transparent_black(), Some(t.border)),
+        Tone::Design => (t.goal, t.goal_soft, None),
     };
     div()
         .flex()

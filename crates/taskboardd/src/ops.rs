@@ -99,8 +99,9 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         return err(400, "Pick a project.");
     }
     refuse_backlog_match(app, body, &title, &project, goal_id)?;
-    let kind = crate::human::clean_kind(body)?;
-    if kind.is_some() {
+    let kind = crate::design::clean_kind(body.get("kind"))?;
+    let human = kind == Some(crate::human::KIND);
+    if human {
         crate::human::refuse_bare(body)?;
     }
     let priority = if body["priority"] == "high" { "high" } else { "normal" };
@@ -113,13 +114,13 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         _ => json!({}),
     };
     let mut jmode = jopt["mode"].as_str().unwrap_or("none").to_string();
-    if !app.cfg.jira_on() || kind.is_some() {
+    if !app.cfg.jira_on() || human {
         jmode = "none".into();
     }
     let ships = projects::ships_prs(app, &project)?;
     if body_has(body, "ships_pr") && projects::clean_ships_pr(&body["ships_pr"])? == Some(1) {
         if kind.is_some() {
-            return err(400, "A human task ships no PR.");
+            return err(400, if human { "A human task ships no PR." } else { "A design task ships no PR: it ends with its design attached." });
         }
         projects::refuse_without_prs(app, &project)?;
     }
@@ -144,7 +145,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let lock_names = crate::locks::clean(body.get("locks"))?;
     let lock_warning = crate::locks::unseen_warning(app, lock_names.as_deref(), None)?;
     let (lane, alone) = crate::worklane::with_alone(body, None)?;
-    let model = if kind.is_some() { None } else { crate::runner::clean_model(body.get("model"))? };
+    let model = if human { None } else { crate::runner::clean_model(body.get("model"))? };
     let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
     let tid = app.db.insert(
         "tasks",
@@ -174,6 +175,13 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         let t = board::get_task(app, tid)?;
         let wf = waitsfor::clean(app, &body["waits_for"], Some(&t))?;
         board::update_task(app, tid, fields!["waits_for" => wf])?;
+    } else if let Some(g) = goal_id {
+        // A build task added to a goal waits for its design first; `waits_for: none` says otherwise.
+        let t = board::get_task(app, tid)?;
+        let wf = crate::design::waits_with_goal(app, &t, g)?;
+        if wf.is_some() {
+            board::update_task(app, tid, fields!["waits_for" => wf])?;
+        }
     }
     if body_has(body, "stack_on") {
         let t = board::get_task(app, tid)?;

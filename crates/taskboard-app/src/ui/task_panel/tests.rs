@@ -116,6 +116,16 @@ fn lost_task_shows_what_shipped_since() {
 }
 
 #[::core::prelude::v1::test]
+fn a_design_task_wears_the_design_pill() {
+    let task = json!({"ref": "T5", "id": 5, "title": "Concepts", "status": "working", "kind": "design"});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    assert!(text.contains(" Design "), "{text}");
+    let task = json!({"ref": "T6", "id": 6, "title": "Build it", "status": "working", "kind": "agent"});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    assert!(!text.contains(" Design "), "{text}");
+}
+
+#[::core::prelude::v1::test]
 fn a_card_shows_until_the_task_answers() {
     let card = json!({"ref": "T7", "id": 7, "title": "Passkey sign-in", "status": "working", "project": "web",
                       "pr": {"num": 12, "title": "Passkey sign-in", "url": "https://github.com/o/r/pull/12", "repo": "o/r"}});

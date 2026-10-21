@@ -1401,8 +1401,9 @@ enum TaskCmd {
         /// With --here on a terminal that has a task: switch to it now; that task waits here to resume
         #[arg(long, requires = "here")]
         now: bool,
-        /// It starts only once this task (any goal) is done; repeat for more
-        #[arg(long = "waits-for", value_name = "T12")]
+        /// It starts only once this task (any goal) is done; repeat for more. In a goal it waits for the goal's
+        /// open design tasks when left out; none waits for nothing
+        #[arg(long = "waits-for", value_name = "T12|none")]
         waits_for: Vec<String>,
         /// A named lock it holds while it runs; tasks sharing a lock never run together. Repeat for more
         #[arg(long, value_name = "NAME")]
@@ -1451,8 +1452,12 @@ enum TaskCmd {
         /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
         /// starts on it, --detail holds the steps and links, and the owner presses Done in the app.
         /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that
-        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "model", "lock", "alone"], requires = "detail")]
+        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "model", "lock", "alone", "kind"], requires = "detail")]
         human: bool,
+        /// design: its work is a design (concepts, a canvas, mockups). It ends without a PR once its design
+        /// is attached (tb attach <link> --kind design), and in a goal the other tasks wait for it
+        #[arg(long, value_parser = ["design", "none"], conflicts_with = "pr")]
+        kind: Option<String>,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog", conflicts_with = "issue")]
         not_backlog: bool,
@@ -1517,6 +1522,9 @@ enum TaskCmd {
         /// Whether it ends in a PR: yes, no, or auto (its project's default)
         #[arg(long, value_parser = ["yes", "no", "auto"])]
         pr: Option<String>,
+        /// design (it ends with its design attached, not a PR) or none
+        #[arg(long, value_parser = ["design", "none"])]
+        kind: Option<String>,
         /// Planned (waits for its goal's run) or queued (picked up on its own); only a task in one of these two
         #[arg(long, value_parser = ["planned", "queued"])]
         status: Option<String>,
@@ -5735,7 +5743,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, human, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, human, kind, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -5764,6 +5772,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if human {
                     body["kind"] = json!("human");
                 }
+                if let Some(k) = kind {
+                    body["kind"] = json!(k);
+                }
                 if next || now {
                     body["line"] = json!(if next { "next" } else { "now" });
                 }
@@ -5773,7 +5784,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if !files.is_empty() {
                     body["files"] = json!(files);
                 }
-                if !waits_for.is_empty() {
+                if waits_for.iter().any(|x| x.eq_ignore_ascii_case("none")) {
+                    if waits_for.len() > 1 {
+                        return Err("--waits-for none waits for nothing; leave out the other --waits-for".into());
+                    }
+                    body["waits_for"] = json!("none");
+                } else if !waits_for.is_empty() {
                     body["waits_for"] = json!(waits_for.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?);
                 }
                 if !lock.is_empty() {
@@ -5834,7 +5850,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area, model, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, area, model, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -5896,6 +5912,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = stack_merge {
                     b["stack_merge"] = json!(x);
+                }
+                if let Some(x) = kind {
+                    b["kind"] = json!(x);
                 }
                 if let Some(x) = pr {
                     b["ships_pr"] = json!(x);

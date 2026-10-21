@@ -964,8 +964,8 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
          Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
          --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR). \
          If the work is a design (concepts, a canvas, mockups, a design artifact), make a goal for the feature first: \
-         {tb} goal new \"<feature>\" --tldr \"…\" --outcome \"<done when>\", then the task with --goal G<n> --here; \
-         the build tasks that follow go in that goal.{backlog} \
+         {tb} goal new \"<feature>\" --tldr \"…\" --outcome \"<done when>\", then the task with --kind design --goal G<n> --here; \
+         the build tasks that follow go in that goal and wait for it.{backlog} \
          To check the board for this work first: {tb} search \"<words>\".{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn."
     )))
@@ -1947,6 +1947,9 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if let Some(pr) = pr {
         prflow::link_pr(r.app, &t, &pr, &r.name())?;
     }
+    if let Some(text) = crate::design::done_text(r.app, &t)? {
+        r.log(t.id(), "status", &text, None)?;
+    }
     let t = board::get_task(r.app, t.id())?;
     let at = r.at.clone();
     // A failed task handed in later let go of its terminal's line when it failed: that terminal stays put.
@@ -1975,8 +1978,8 @@ pub const NO_PR_MAX: usize = 100;
 
 /// What `tb submit` refuses before anything opens or finishes: a blank or long `--no-pr`; a task that ends
 /// in a PR and has none, finishing without `--pr-body` or `--no-pr` (unless its repo has no remote at all; a
-/// remote the board can't read still counts); and a task with a design attached finishing with no evidence
-/// and no `--no-evidence`.
+/// remote the board can't read still counts); a task with a design attached finishing with no evidence
+/// and no `--no-evidence`; and a design task with no design attached.
 /// Why a PR can't go up for a task with no Jira ticket, and the way out.
 pub fn no_ticket_refusal(t: &Row) -> String {
     let me = rf("task", t.id());
@@ -2026,6 +2029,10 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     }
     if !no_pr && !r.spooled && r.b("merged_note").trim().is_empty() && !crate::merged_note::has_note(t) && crate::merged_note::needed(app, t)? {
         return err(409, crate::merged_note::refusal(app, t));
+    }
+    // A design task's design is what it delivers: it needs one attached, and no evidence of building to it.
+    if crate::design::is(t) {
+        return crate::design::refuse_bare_submit(app, t);
     }
     let atts = board::attachments(app, Some(t.id()), None)?;
     let design = atts.iter().find(|a| a["kind"] == "design");
@@ -2720,7 +2727,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         return err(400, "A task needs a title.");
     }
     if as_bool(r.body.get("here"), false) {
-        if crate::human::clean_kind(&r.body)?.is_some() {
+        if crate::design::clean_kind(r.body.get("kind"))? == Some(crate::human::KIND) {
             return err(400, "A human task isn't done in a terminal; leave out --here.");
         }
         return new_task_here(r, &title, issue.as_ref());
@@ -2758,7 +2765,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     let project = project_for(r, &r.b("project"))?;
     let planned_flag = as_bool(r.body.get("planned"), false);
     // A human task needs no Start: it goes to the owner once nothing holds it back.
-    let human = crate::human::clean_kind(&r.body)?.is_some();
+    let human = crate::design::clean_kind(r.body.get("kind"))? == Some(crate::human::KIND);
     let mut fields = json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": if human { "queue" } else { "manual" }},
                 "kind": r.body.get("kind"),
                 "status": if planned_flag { "planned" } else { "queued" },
@@ -2877,6 +2884,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
             "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
             "area": r.body.get("area"), "not_backlog": r.body.get("not_backlog"), "goal_id": goal.as_ref().map(|g| g.id()),
+            "kind": r.body.get("kind"), "waits_for": "none",
             "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}});
     let how = match issue {
         Some(b) => {
@@ -2913,6 +2921,9 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     if let Some(g) = &goal {
         let gr = rf("goal", g.id());
         text.push_str(&format!(" {tr} is in {gr}; the tasks that build on it go there too: tb task new \"<title>\" --goal {gr}."));
+    }
+    if crate::design::is(&t) {
+        text.push_str(" It's a design task: it ends without a PR, once its design is attached: tb attach <canvas or mockup link> --kind design --title \"<what it shows>\", then tb submit.");
     }
     if let Some(mine) = &current {
         text.push_str(&format!(" {} waits here to resume once {tr} is done.", rf("task", mine.id())));

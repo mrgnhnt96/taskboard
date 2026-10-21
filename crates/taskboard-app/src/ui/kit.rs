@@ -86,6 +86,16 @@ pub fn pill(fg: Hsla, bg: Hsla, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+/// Whether a task card is a design task (`kind: "design"`).
+pub fn is_design(c: &serde_json::Value) -> bool {
+    c["kind"] == "design"
+}
+
+/// The "Design" pill on a design task's row, card and panel.
+pub fn design_pill(t: &Theme) -> Div {
+    pill(t.goal, t.goal_soft, "Design")
+}
+
 /// The pill tones the board uses, by name.
 pub fn tone(t: &Theme, name: &str) -> (Hsla, Hsla) {
     match name {

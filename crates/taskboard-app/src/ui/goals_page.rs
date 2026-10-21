@@ -604,7 +604,10 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
                     .truncate()
                     .hover(move |s| s.text_color(link).underline())
                     .child(s(c, "title").to_string()),
-            ),
+            )
+            .items_center()
+            .gap(px(8.))
+            .when(kit::is_design(c), |d| d.child(kit::design_pill(t))),
             1.,
         ))
         .child(fr(div().text_size(px(12.)).truncate().text_color(if row.loud { loud_fg } else { t.muted }).child(row.line), 1.2))
