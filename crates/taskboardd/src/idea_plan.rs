@@ -221,29 +221,8 @@ fn report_text(r: &Row) -> String {
         rep["verdict"].as_str().unwrap_or("?"),
         rep["why"].as_str().unwrap_or("").trim()
     )];
-    let list = |k: &str| rep[k].as_array().cloned().unwrap_or_default();
-    let builds: Vec<String> = list("builds_on")
-        .iter()
-        .map(|b| {
-            let files: Vec<&str> = b["files"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            let files = if files.is_empty() { String::new() } else { format!(" ({})", files.join(", ")) };
-            format!("{}{files}", b["what"].as_str().unwrap_or(""))
-        })
-        .collect();
-    let risks: Vec<String> =
-        list("risks").iter().map(|x| format!("{}: {}", x["kind"].as_str().unwrap_or(""), x["risk"].as_str().unwrap_or(""))).collect();
-    let plain = |k: &str| list(k).iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
-    for (head, items) in [
-        ("Builds on", builds),
-        ("Ways to extend", plain("ways_to_extend")),
-        ("Risks", risks),
-        ("Pitfalls", plain("pitfalls")),
-        ("Open questions", plain("open_questions")),
-        ("Related", plain("related")),
-    ] {
-        if !items.is_empty() {
-            out.push(format!("{head}:\n{}", items.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")));
-        }
+    for (head, items) in crate::dig::report_sections(&rep) {
+        out.push(format!("{head}:\n{}", items.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")));
     }
     out.join("\n")
 }

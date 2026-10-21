@@ -1218,9 +1218,27 @@ stale: bool}`. `source` is who added it (`by_session`'s terminal, `who`, else th
 the project's checkout is past the round's `sha` (null with no checkout or no sha); `stale` is true at 50 or more, or
 when the sha is no longer in the checkout's history.
 
-`report`: `{verdict: "fits"|"partly"|"doesnt_fit", why, builds_on: [{what, files: [str]}], ways_to_extend: [str],
-risks: [{kind: "security"|"privacy"|"performance"|"maintenance", risk}], pitfalls: [str], open_questions: [str],
-related: [ref]}`. `related` only holds refs (goals, backlog issues, done tasks, lessons) the dig's prompt listed.
+`report`: `{verdict: "fits"|"partly"|"doesnt_fit", why: str, blocks: [block]}`. `blocks` is the report in reading
+order; `verdict` and `why` repeat the scorecard's `fit` and the gist's `text` for headlines. A reader shows each block
+it knows and skips any other `type`. Every report has a scorecard; each other block is left out when it has nothing in it.
+A `block` is one of:
+
+- `{type: "gist", text}`: the verdict in one line, 140 characters at most. One per report.
+- `{type: "scorecard", fit: "fits"|"partly"|"doesnt_fit", size: "s"|"m"|"l"|null, risk: "low"|"medium"|"high"|null}`. One per report.
+- `{type: "points", title, items: [{short, detail, tag?: "security"|"privacy"|"performance"|"maintenance"}]}`: a
+  titled list ("Watch out", "Could grow into"). `short` is one line of 90 characters at most to glance at; `detail`
+  (1200 at most, paragraphs kept) is the reasoning behind it, for More.
+- `{type: "question", id, text, choices: [str]}`: something to settle before planning; `id` is a slug unique in the
+  report, `choices` up to 4.
+- `{type: "compare", lean: str|null, options: [{name, pros: [str], cons: [str]}]}`: 2 to 4 ways to go; `lean` is one
+  option's `name`.
+- `{type: "flow", steps: [{name, new: bool}]}`: 2 to 8 steps in order; `new` marks what the idea adds.
+- `{type: "code", items: [{what, file}]}`: what in the code it builds on (`file` is a path or path:line).
+- `{type: "related", refs: [ref]}`: only refs (goals, backlog issues, done tasks, lessons) the dig's prompt listed. One per report.
+
+Lists hold 12 items at most and a report 20 blocks. Reports from before blocks have no `blocks`; they are
+`{verdict, why, builds_on: [{what, files: [str]}], ways_to_extend: [str], risks: [{kind, risk}], pitfalls: [str],
+open_questions: [str], related: [ref]}`, and are still served as kept.
 
 | Request | Body | What |
 |---|---|---|

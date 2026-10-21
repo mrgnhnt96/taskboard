@@ -45,10 +45,13 @@ fn board() -> Board {
 }
 
 fn report() -> Value {
-    json!({"verdict": "partly", "why": "The store is there; the runner isn't.",
-        "builds_on": [{"what": "The tidy's headless call", "files": ["src/tidy.rs"]}],
-        "ways_to_extend": ["Dig on a branch"], "risks": [{"kind": "privacy", "risk": "Sends code to Claude"}],
-        "pitfalls": ["Long runs"], "open_questions": ["Web by default?"], "related": ["G999"]})
+    json!({"blocks": [
+        {"type": "gist", "text": "The store is there; the runner isn't."},
+        {"type": "scorecard", "fit": "partly", "size": "m", "risk": "medium"},
+        {"type": "code", "items": [{"what": "The tidy's headless call", "file": "src/tidy.rs"}]},
+        {"type": "points", "title": "Watch out", "items": [{"short": "Sends code to Claude", "detail": "The checkout goes out.", "tag": "privacy"}]},
+        {"type": "question", "id": "web", "text": "Web by default?", "choices": ["Yes", "No"]},
+        {"type": "related", "refs": ["G999"]}]})
 }
 
 impl Board {
@@ -101,9 +104,10 @@ fn a_dig_keeps_claudes_report_with_the_commit_it_read() {
     assert_eq!(r["web"], false);
     assert_eq!(r["error"], Value::Null);
     assert!(r["finished_at"].is_string());
-    assert_eq!(r["report"]["verdict"], "partly");
-    assert_eq!(r["report"]["builds_on"][0]["files"], json!(["src/tidy.rs"]));
-    assert_eq!(r["report"]["related"], json!([]), "a ref the prompt didn't list is left out");
+    assert_eq!((r["report"]["verdict"].clone(), r["report"]["why"].clone()), (json!("partly"), json!("The store is there; the runner isn't.")));
+    let kinds: Vec<&str> = r["report"]["blocks"].as_array().unwrap().iter().map(|b| b["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["gist", "scorecard", "code", "points", "question"], "a related block naming refs the prompt didn't list is left out");
+    assert_eq!(r["report"]["blocks"][2]["items"][0]["file"], "src/tidy.rs");
     assert_eq!((r["behind"].clone(), r["stale"].clone()), (json!(0), json!(false)));
 
     b.answer(report());
@@ -111,6 +115,7 @@ fn a_dig_keeps_claudes_report_with_the_commit_it_read() {
     let args = b.calls();
     assert!(args.contains("Read,Grep,Glob,WebSearch,WebFetch"), "the web only when asked: {args}");
     assert!(args.contains("Earlier rounds") && args.contains("Web by default?"), "earlier rounds are in the prompt: {args}");
+    assert!(args.contains("privacy: Sends code to Claude — The checkout goes out."), "with their detail: {args}");
     assert_eq!(v["rounds"].as_array().unwrap().len(), 2);
     assert_eq!((v["rounds"][0]["focus"].clone(), v["rounds"][0]["web"].clone()), (json!(""), json!(true)));
 }

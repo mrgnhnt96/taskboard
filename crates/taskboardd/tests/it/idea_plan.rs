@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::p;
+use taskboardd::{fields, p};
 use taskboardd::util::RowExt;
 
 struct Board {
@@ -45,10 +45,18 @@ fn board() -> Board {
 }
 
 fn report() -> Value {
-    json!({"verdict": "partly", "why": "The store is there; the sync isn't.",
-        "builds_on": [{"what": "The write queue", "files": ["src/queue.rs"]}],
-        "ways_to_extend": ["Sync on a schedule"], "risks": [{"kind": "privacy", "risk": "Keeps writes on disk"}],
-        "pitfalls": ["Conflicting writes"], "open_questions": ["Last write wins?"], "related": []})
+    json!({"blocks": [
+        {"type": "gist", "text": "The store is there; the sync isn't."},
+        {"type": "scorecard", "fit": "partly", "size": "m", "risk": "medium"},
+        {"type": "code", "items": [{"what": "The write queue", "file": "src/queue.rs"}]},
+        {"type": "points", "title": "Watch out", "items": [{"short": "Writes on disk", "detail": "Keeps writes on disk", "tag": "privacy"}]},
+        {"type": "question", "id": "conflicts", "text": "Last write wins?", "choices": ["Yes", "Ask"]}]})
+}
+
+/// A report kept before reports were blocks.
+fn old_report() -> Value {
+    json!({"verdict": "fits", "why": "It fits.", "builds_on": [], "ways_to_extend": ["Sync on a schedule"], "risks": [],
+        "pitfalls": [], "open_questions": [], "related": []})
 }
 
 fn plan() -> Value {
@@ -87,6 +95,9 @@ fn a_plan_makes_a_planned_goal_and_the_idea_becomes_it() {
     let b = board();
     let i = b.idea();
     b.post(&format!("/ideas/{i}/note"), json!({"text": "Only for the inbox at first."}));
+    let id: i64 = i[1..].parse().unwrap();
+    b.app.db.insert("idea_rounds", fields!["idea_id" => id, "focus" => "", "web" => 0, "started_at" => "2026-10-19T12:00:00Z",
+        "finished_at" => "2026-10-19T12:10:00Z", "report" => old_report().to_string()]).unwrap();
     b.answer(report());
     b.post(&format!("/ideas/{i}/dig"), json!({}));
     b.calls();
@@ -98,6 +109,7 @@ fn a_plan_makes_a_planned_goal_and_the_idea_becomes_it() {
     assert!(!args.contains("WebSearch") && !args.contains("Bash") && !args.contains("Edit"), "{args}");
     assert!(args.contains("Queue writes while offline.") && args.contains("Only for the inbox at first."), "detail and notes: {args}");
     assert!(args.contains("Last write wins?") && args.contains("src/queue.rs") && args.contains("Keeps writes on disk"), "the dig report: {args}");
+    assert!(args.contains("Sync on a schedule"), "a report from before blocks: {args}");
     assert!(args.contains("How to slice the work:") && args.contains("--stack-merge"), "the planning rules: {args}");
 
     assert_eq!(v["state"], "planned");
@@ -110,7 +122,7 @@ fn a_plan_makes_a_planned_goal_and_the_idea_becomes_it() {
     assert_eq!(goal.st("tldr"), "Writes wait while offline and go out once back.");
     let note = b.app.db.q1("SELECT * FROM goal_notes WHERE goal_id = ?", p![gid]).unwrap().unwrap();
     assert_eq!((note.st("kind"), note.i("pinned")), ("decision".to_string(), Some(1)));
-    assert!(note.st("text").contains(&format!("Planned from idea {i}")) && note.st("text").contains("its dig report"), "{}", note.st("text"));
+    assert!(note.st("text").contains(&format!("Planned from idea {i}")) && note.st("text").contains("its 2 dig reports"), "{}", note.st("text"));
 
     let tasks = b.app.db.q("SELECT * FROM tasks WHERE goal_id = ? ORDER BY id", p![gid]).unwrap();
     assert_eq!(tasks.len(), 2);
