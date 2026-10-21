@@ -238,10 +238,11 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
         };
         out.push(RunButton { act: "goal-run", label, title, busy_label: "Starting…" });
     }
-    if going > 0 && !b(g, "paused") && !b(g, "deprioritized") && !unstarted {
-        // Outside work hours with tasks queued, and not started now: Pause gives way to a button that
-        // says it's waiting for the hours; its menu starts it now or pauses it.
-        let waiting = tasks.iter().any(|x| s(x, "status") == "queued") && after_hours(hours) && !ran_now(g, hours);
+    // Outside work hours with tasks queued, and not started now: Pause gives way to a button that says
+    // it's waiting for the hours, its menu starting it now or pausing it; Start tomorrow's menu holds
+    // Pause instead when that shows.
+    let waiting = waits_for_hours(g, hours);
+    if going > 0 && !b(g, "paused") && !b(g, "deprioritized") && !unstarted && !(split && waiting) {
         out.push(if waiting {
             let (day, at) = opens_at(hours);
             RunButton {
@@ -263,13 +264,28 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
     (split, out)
 }
 
-/// The split button's menu: (act, title, sub).
-pub fn start_menu_view(hours: &Value) -> Vec<(&'static str, String, String)> {
+/// The split button's menu: (act, title, sub); Pause too while the goal waits for the hours.
+pub fn start_menu_view(g: &Value, hours: &Value) -> Vec<(&'static str, String, String)> {
     let (day, at) = opens_at(hours);
-    vec![
+    let mut out = vec![
         ("goal-run", format!("Start {day}"), format!("Queued now, starts when work hours open{}", if at.is_empty() { String::new() } else { format!(" at {at}") })),
         ("goal-run-now", "Start now".into(), "Runs outside work hours until they open".into()),
-    ]
+    ];
+    if waits_for_hours(g, hours) {
+        out.push(("goal-pause", "Pause".into(), "Nothing new starts; running tasks carry on".into()));
+    }
+    out
+}
+
+/// Whether the goal's queued tasks wait for work hours: not paused, and not started now.
+fn waits_for_hours(g: &Value, hours: &Value) -> bool {
+    let tasks = arr(g, "tasks");
+    !b(g, "paused")
+        && !b(g, "deprioritized")
+        && !tasks.iter().any(|x| s(x, "status") == "needs" && s(x, "needs_reason") == "start_failed")
+        && tasks.iter().any(|x| s(x, "status") == "queued")
+        && after_hours(hours)
+        && !ran_now(g, hours)
 }
 
 /// Whether the goal was started now and runs outside the hours until they next open.
@@ -816,7 +832,7 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
     let at = m.menu_open(START_MENU)?;
     let gr = fmt::ref_of(g, "G");
     let mut menu = kit::menu_box(t, 290.).id("goal-start-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    for (act, title, sub) in start_menu_view(&hours(m)) {
+    for (act, title, sub) in start_menu_view(g, &hours(m)) {
         let hover = t.panel_2;
         let gr = gr.clone();
         menu = menu.child(
@@ -832,7 +848,14 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
                 .hover(move |d| d.bg(hover))
                 .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(title))
                 .child(div().text_size(px(12.)).text_color(t.muted).child(sub))
-                .on_click(cx.listener(move |m, _, _, cx| run_goal(m, &gr, act == "goal-run-now", cx))),
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    if act == "goal-pause" {
+                        m.menu = None;
+                        set_paused(m, &gr, true, cx)
+                    } else {
+                        run_goal(m, &gr, act == "goal-run-now", cx)
+                    }
+                })),
         );
     }
     Some(kit::popover(at, menu))
@@ -1230,7 +1253,7 @@ mod tests {
                     json!({"split": split, "buttons": bs.iter().map(|b| json!({"act": b.act, "label": b.label, "title": b.title})).collect::<Vec<_>>()})
                 }
                 "waitMenu" => json!(wait_menu_view().into_iter().map(|(a, t, s)| json!({"act": a, "title": t, "sub": s})).collect::<Vec<_>>()),
-                "startMenu" => json!(start_menu_view(&i["hours"]).into_iter().map(|(a, t, s)| json!({"act": a, "title": t, "sub": s})).collect::<Vec<_>>()),
+                "startMenu" => json!(start_menu_view(goal, &i["hours"]).into_iter().map(|(a, t, s)| json!({"act": a, "title": t, "sub": s})).collect::<Vec<_>>()),
                 "opensAt" => {
                     let (d, a) = opens_at(&i["hours"]);
                     json!([d, a])

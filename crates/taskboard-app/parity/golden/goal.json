@@ -1009,6 +1009,90 @@
       "expect": "Queued"
     },
     {
+      "name": "goalState queued and planned",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        }
+      },
+      "expect": "Queued"
+    },
+    {
       "name": "goalState queued, started now",
       "input": {
         "fn": "goalState",
@@ -4195,6 +4279,106 @@
         "epic_link": null,
         "tabs": [
           "Tasks 1",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header queued and planned",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "jira": false
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Queued",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp 0 of 2 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 2",
           "Backlog 0"
         ],
         "tool": "Add a task"
@@ -7629,6 +7813,106 @@
         "epic_link": null,
         "tabs": [
           "Tasks 1",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header queued and planned (jira)",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "jira": true
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Queued",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp No Jira epic 0 of 2 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 2",
           "Backlog 0"
         ],
         "tool": "Add a task"
@@ -16708,6 +16992,130 @@
       }
     },
     {
+      "name": "runButtons queued and planned / open",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start 1 more task",
+            "title": "Queue the 1 planned task; the goal’s rules decide what runs when"
+          },
+          {
+            "act": "goal-pause",
+            "label": "Pause",
+            "title": "Nothing new starts; running tasks carry on"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
       "name": "runButtons queued, started now / open",
       "input": {
         "fn": "runButtons",
@@ -19723,6 +20131,124 @@
       }
     },
     {
+      "name": "runButtons queued and planned / off",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": false,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start 1 more task",
+            "title": "Queue the 1 planned task; the goal’s rules decide what runs when"
+          },
+          {
+            "act": "goal-pause",
+            "label": "Pause",
+            "title": "Nothing new starts; running tasks carry on"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
       "name": "runButtons queued, started now / off",
       "input": {
         "fn": "runButtons",
@@ -20893,6 +21419,125 @@
       }
     },
     {
+      "name": "runButtons queued and planned / closed, tomorrow",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": "2026-10-08T06:00",
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": true,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start tomorrow: 1 more task",
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
       "name": "runButtons queued, started now / closed, tomorrow",
       "input": {
         "fn": "runButtons",
@@ -21495,11 +22140,6 @@
             "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
           },
           {
-            "act": "wait-menu",
-            "label": "Waiting until tomorrow 6am",
-            "title": "The queued tasks start when work hours open (tomorrow at 6am)"
-          },
-          {
             "act": "goal-plan-edit",
             "label": "Plan in Claude",
             "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
@@ -22066,6 +22706,125 @@
             "act": "wait-menu",
             "label": "Waiting until today 6:30pm",
             "title": "The queued tasks start when work hours open (today at 6:30pm)"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons queued and planned / closed, today",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": "2026-10-07T18:30",
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": true,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start today: 1 more task",
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
           },
           {
             "act": "goal-plan-edit",
@@ -22683,11 +23442,6 @@
             "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
           },
           {
-            "act": "wait-menu",
-            "label": "Waiting until today 6:30pm",
-            "title": "The queued tasks start when work hours open (today at 6:30pm)"
-          },
-          {
             "act": "goal-plan-edit",
             "label": "Plan in Claude",
             "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
@@ -23254,6 +24008,125 @@
             "act": "wait-menu",
             "label": "Waiting until Saturday 6am",
             "title": "The queued tasks start when work hours open (Saturday at 6am)"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons queued and planned / closed, saturday",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": "2026-10-10T06:00",
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": true,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start Saturday: 1 more task",
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
           },
           {
             "act": "goal-plan-edit",
@@ -23871,11 +24744,6 @@
             "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
           },
           {
-            "act": "wait-menu",
-            "label": "Waiting until Saturday 6am",
-            "title": "The queued tasks start when work hours open (Saturday at 6am)"
-          },
-          {
             "act": "goal-plan-edit",
             "label": "Plan in Claude",
             "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
@@ -24442,6 +25310,125 @@
             "act": "wait-menu",
             "label": "Waiting for work hours",
             "title": "The queued tasks start when work hours open"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons queued and planned / closed, unknown",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": true,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start later: 1 more task",
+            "title": "Queue the planned tasks now; they start when work hours open"
           },
           {
             "act": "goal-plan-edit",
@@ -25059,11 +26046,6 @@
             "title": "Queue the planned tasks now; they start when work hours open"
           },
           {
-            "act": "wait-menu",
-            "label": "Waiting for work hours",
-            "title": "The queued tasks start when work hours open"
-          },
-          {
             "act": "goal-plan-edit",
             "label": "Plan in Claude",
             "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
@@ -25077,9 +26059,86 @@
       }
     },
     {
-      "name": "startMenu closed, tomorrow",
+      "name": "startMenu planned only / closed, tomorrow",
       "input": {
         "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
         "hours": {
           "on": true,
           "open": false,
@@ -25107,6 +26166,122 @@
           "act": "goal-run-now",
           "title": "Start now",
           "sub": "Runs outside work hours until they open"
+        }
+      ]
+    },
+    {
+      "name": "startMenu queued and planned / closed, tomorrow",
+      "input": {
+        "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": "2026-10-08T06:00",
+          "today_until": null
+        }
+      },
+      "expect": [
+        {
+          "act": "goal-run",
+          "title": "Start tomorrow",
+          "sub": "Queued now, starts when work hours open at 6am"
+        },
+        {
+          "act": "goal-run-now",
+          "title": "Start now",
+          "sub": "Runs outside work hours until they open"
+        },
+        {
+          "act": "goal-pause",
+          "title": "Pause",
+          "sub": "Nothing new starts; running tasks carry on"
         }
       ]
     },
@@ -25171,9 +26346,86 @@
       ]
     },
     {
-      "name": "startMenu closed, today",
+      "name": "startMenu planned only / closed, today",
       "input": {
         "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
         "hours": {
           "on": true,
           "open": false,
@@ -25201,6 +26453,122 @@
           "act": "goal-run-now",
           "title": "Start now",
           "sub": "Runs outside work hours until they open"
+        }
+      ]
+    },
+    {
+      "name": "startMenu queued and planned / closed, today",
+      "input": {
+        "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": "2026-10-07T18:30",
+          "today_until": null
+        }
+      },
+      "expect": [
+        {
+          "act": "goal-run",
+          "title": "Start today",
+          "sub": "Queued now, starts when work hours open at 6:30pm"
+        },
+        {
+          "act": "goal-run-now",
+          "title": "Start now",
+          "sub": "Runs outside work hours until they open"
+        },
+        {
+          "act": "goal-pause",
+          "title": "Pause",
+          "sub": "Nothing new starts; running tasks carry on"
         }
       ]
     },
@@ -25265,9 +26633,86 @@
       ]
     },
     {
-      "name": "startMenu closed, saturday",
+      "name": "startMenu planned only / closed, saturday",
       "input": {
         "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
         "hours": {
           "on": true,
           "open": false,
@@ -25295,6 +26740,122 @@
           "act": "goal-run-now",
           "title": "Start now",
           "sub": "Runs outside work hours until they open"
+        }
+      ]
+    },
+    {
+      "name": "startMenu queued and planned / closed, saturday",
+      "input": {
+        "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": "2026-10-10T06:00",
+          "today_until": null
+        }
+      },
+      "expect": [
+        {
+          "act": "goal-run",
+          "title": "Start Saturday",
+          "sub": "Queued now, starts when work hours open at 6am"
+        },
+        {
+          "act": "goal-run-now",
+          "title": "Start now",
+          "sub": "Runs outside work hours until they open"
+        },
+        {
+          "act": "goal-pause",
+          "title": "Pause",
+          "sub": "Nothing new starts; running tasks carry on"
         }
       ]
     },
@@ -25359,9 +26920,86 @@
       ]
     },
     {
-      "name": "startMenu closed, unknown",
+      "name": "startMenu planned only / closed, unknown",
       "input": {
         "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
         "hours": {
           "on": true,
           "open": false,
@@ -25389,6 +27027,122 @@
           "act": "goal-run-now",
           "title": "Start now",
           "sub": "Runs outside work hours until they open"
+        }
+      ]
+    },
+    {
+      "name": "startMenu queued and planned / closed, unknown",
+      "input": {
+        "fn": "startMenu",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": []
+        },
+        "hours": {
+          "on": true,
+          "open": false,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": [
+        {
+          "act": "goal-run",
+          "title": "Start later",
+          "sub": "Queued now, starts when work hours open"
+        },
+        {
+          "act": "goal-run-now",
+          "title": "Start now",
+          "sub": "Runs outside work hours until they open"
+        },
+        {
+          "act": "goal-pause",
+          "title": "Pause",
+          "sub": "Nothing new starts; running tasks carry on"
         }
       ]
     },
