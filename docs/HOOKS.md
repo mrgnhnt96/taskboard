@@ -275,6 +275,12 @@ prompt = "Sign off the screens this task changes."
   file's current text, a comment already in the file or in its HEAD version may move or re-indent, and the refusal
   names the file's line. Opening a PR, `tb pr wait` and `tb submit` are refused while
   the branch (committed or not, against origin's default branch) adds one, and the handoff tells the agent the rule.
+- **The default-branch guard** (`[default_branch] guard`, on unless set to `false`): the plugin's `PreToolUse`
+  hook refuses a `git commit` while the checkout is on its repository's default branch and a `git push` that lands
+  on it (a refspec naming it, `--all`, `--mirror`, or no refspec from a checkout on it), with or without a task,
+  and points to a branch and a PR. The default branch is `[pr_body] remote`'s HEAD, else `main` or `master`; a
+  repository without that remote isn't guarded. After a `git switch` or `git checkout` earlier in the same command
+  the checkout's branch is taken as unknown. Scripts the agent runs (a release's version commit) aren't seen.
 - **Headless runs.** A `claude -p` (or Agent SDK) run started inside a Midna terminal inherits its
   `MIDNA_SESSION`, but Claude Code marks it `CLAUDE_CODE_ENTRYPOINT=sdk-*`: its hooks report nothing for the
   terminal, so its session id never replaces the task's conversation, and only the app token guard applies to it.

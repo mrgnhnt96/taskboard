@@ -478,6 +478,91 @@ fn stray_worktree_refused(payload: &Value, session: &str, cfg: &Config, cwd: &st
     true
 }
 
+/// `git commit` or `git push` and the rest of its command, up to the next `;`, `&` or `|`.
+static COMMIT_PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(commit|push)\b([^;&|]*)").unwrap());
+static SWITCH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:switch|checkout)\b").unwrap());
+
+fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
+    let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The default branch of the repository at `dir`, by its `remote`: the remote's HEAD, else main or
+/// master, whichever the repository has. None without that remote: nothing is pushed anywhere.
+fn default_branch(dir: &Path, remote: &str) -> Option<String> {
+    git_out(dir, &["remote", "get-url", remote])?;
+    if let Some(head) = git_out(dir, &["symbolic-ref", "--short", "-q", &format!("refs/remotes/{remote}/HEAD")]) {
+        return Some(head.strip_prefix(&format!("{remote}/")).unwrap_or(&head).to_string());
+    }
+    ["main", "master"].into_iter().find(|b| git_out(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).is_some()).map(String::from)
+}
+
+/// Whether `git push <args>`, from a checkout on `current`, lands on `default`: a refspec whose
+/// destination is it (`main`, `HEAD:main`, `+fix:refs/heads/main`, `:main`), `--all` or `--mirror`, or
+/// no refspec while the checkout is on it. `--tags` alone pushes only tags.
+fn push_lands_on(args: &str, current: Option<&str>, default: &str) -> bool {
+    let (mut named, mut tags) = (vec![], false);
+    let mut words = args.split_whitespace();
+    while let Some(w) = words.next() {
+        match w {
+            "--all" | "--branches" | "--mirror" => return true,
+            "--tags" => tags = true,
+            "-o" | "--push-option" | "--repo" | "--receive-pack" | "--exec" => {
+                words.next();
+            }
+            _ if w.starts_with('-') => {}
+            _ => named.push(w.trim_matches(['"', '\''])),
+        }
+    }
+    let refspecs = named.get(1..).unwrap_or_default();
+    if refspecs.is_empty() {
+        return !tags && current == Some(default);
+    }
+    refspecs.iter().any(|r| {
+        let r = r.trim_start_matches('+');
+        let to = r.rsplit_once(':').map_or(r, |(_, to)| to);
+        let to = to.strip_prefix("refs/heads/").unwrap_or(to);
+        to == default || (to == "HEAD" && current == Some(default))
+    })
+}
+
+/// What a command does to its repository's default branch (`remote`'s), with the repository's top
+/// folder and that branch: "commit on" while the checkout is on it, "push to" when a push lands on it.
+/// After a switch or checkout earlier in the command, the checkout's branch is unknown.
+fn onto_default(cmd: &str, cwd: &str, remote: &str) -> Option<(&'static str, PathBuf, String)> {
+    COMMIT_PUSH_RE.captures_iter(cmd).find_map(|c| {
+        let m = c.get(0)?;
+        let dir = runs_in(cmd, Some(m), cwd);
+        let (_, top) = repo_of(&dir)?;
+        let default = default_branch(&top, remote)?;
+        let moved = SWITCH_RE.is_match(&cmd[..m.start()]);
+        let current = git_out(&dir, &["symbolic-ref", "--short", "-q", "HEAD"]).filter(|_| !moved);
+        match &c[1] {
+            "commit" => (current.as_deref() == Some(default.as_str())).then_some("commit on"),
+            _ => push_lands_on(&c[2], current.as_deref(), &default).then_some("push to"),
+        }
+        .map(|what| (what, top, default))
+    })
+}
+
+/// `PreToolUse`: with `[default_branch] guard` on (the default), refuses a commit on a repository's
+/// default branch and a push that lands on it, so work gets there through PRs. Read locally, no board needed.
+fn default_branch_refused(payload: &Value, cfg: &Config, cwd: &str) -> bool {
+    if !cfg.default_branch.guard || payload["tool_name"] != "Bash" {
+        return false;
+    }
+    let cmd = payload["tool_input"]["command"].as_str().unwrap_or("");
+    let Some((what, top, branch)) = onto_default(cmd, cwd, &cfg.pr_body.remote) else { return false };
+    deny(&format!(
+        "Task board: agents don't {what} {branch}, {}'s default branch: work lands there through PRs. Commit on a branch of its own \
+         (git switch -c <branch>; uncommitted edits come along), push that, and open the PR (on a task: tb submit --pr-body <file>). \
+         This is {}'s setting ([default_branch] in the board's config.toml); leave it to them.",
+        top.display(),
+        cfg.owner
+    ));
+    true
+}
+
 /// The head of the task's own checkout (`{worktree}` and `{branch}` in a `GET /steps` answer): its
 /// branch's tip there, else the checkout's head.
 fn own_head(vars: &Value) -> Option<String> {
@@ -522,6 +607,9 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
         return elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or(""));
     }
     let here = cwd.as_deref().unwrap_or("");
+    if default_branch_refused(payload, &cfg, here) {
+        return true;
+    }
     if elsewhere_refused(payload, session, &cfg, here) || stray_worktree_refused(payload, session, &cfg, here) || shared_checkout_refused(payload, session, &cfg, here) {
         return true;
     }
@@ -1139,6 +1227,48 @@ mod tests {
         // A repository that holds the task's (a dotfiles one in the home folder) isn't another project's.
         git_repo(&root);
         assert!(elsewhere(&root.join(".zshrc"), &a, "T115", "a").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pushes_that_land_on_the_default_branch_are_known() {
+        let on_main = |args: &str| push_lands_on(args, Some("main"), "main");
+        let on_fix = |args: &str| push_lands_on(args, Some("fix"), "main");
+        assert!(on_main("") && on_main(" origin") && on_main(" -u origin HEAD"));
+        assert!(on_fix(" origin main") && on_fix(" origin fix:main") && on_fix(" origin +HEAD:refs/heads/main") && on_fix(" origin :main"));
+        assert!(on_fix(" --all origin") && on_fix(" --mirror"));
+        assert!(!on_fix("") && !on_fix(" origin") && !on_fix(" -u origin fix") && !on_fix(" origin HEAD"));
+        assert!(!on_main(" origin v1.2.0") && !on_main(" --tags") && !on_main(" origin :refs/tags/v1.2.0") && !on_main(" origin main:fix"));
+        assert!(!on_fix(" -o ci.skip origin mainline"));
+    }
+
+    #[test]
+    fn commits_on_and_pushes_to_the_default_branch_are_caught() {
+        let root = std::env::temp_dir().join(format!("tb-default-branch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        git_repo(&root);
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&root).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success());
+        git(&["checkout", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        let dir = root.to_string_lossy().to_string();
+        let what = |cmd: &str| onto_default(cmd, &dir, "origin").map(|(what, _, branch)| format!("{what} {branch}"));
+        assert_eq!(what("git commit -m x"), None, "no remote: nothing is pushed anywhere");
+
+        git(&["remote", "add", "origin", "https://example.com/r.git"]);
+        assert_eq!(what("git add a && git commit -m x").as_deref(), Some("commit on main"));
+        assert_eq!(what("git push").as_deref(), Some("push to main"));
+        assert_eq!(what("git switch -c fix && git commit -m x"), None, "the switch moves it off main first");
+        assert_eq!(what("git checkout -b x && git push origin x:main").as_deref(), Some("push to main"), "a named destination still counts");
+        git(&["switch", "-q", "-c", "fix"]);
+        assert_eq!(what("git commit -m x && git push -u origin fix"), None);
+        assert_eq!(what("git push origin fix:main").as_deref(), Some("push to main"));
+        assert_eq!(what(&format!("cd / && git -C {dir} push origin HEAD:main")).as_deref(), Some("push to main"));
+
+        // The remote's HEAD names the default branch when it's set.
+        git(&["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+        git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+        assert_eq!(what("git push origin fix:main"), None);
+        assert_eq!(what("git push origin trunk").as_deref(), Some("push to trunk"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
