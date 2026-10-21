@@ -387,7 +387,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["reviews"]) => crate::review::list(app),
         ("GET", ["reviews", "now"]) => {
             let (start, end) = crate::review::period(app, query.get("since").map(String::as_str), query.get("week").map(String::as_str))?;
-            Ok(json!({"data": crate::review::report(app, start, end)?}))
+            Ok(json!({"period_start": iso(start), "period_end": iso(end), "data": crate::review::report(app, start, end)?}))
         }
         ("POST", ["reviews"]) => {
             let (since, week) = (body_str(body, "since"), body_str(body, "week"));

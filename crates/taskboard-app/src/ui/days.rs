@@ -712,7 +712,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             }
         })))
         .child(kit::btn(&t, "days-today", "Today").when(at_today, kit::disabled).on_click(cx.listener(|m, _, _, cx| set_date(m, None, cx))))
-        .child(kit::btn(&t, "days-review", "Weekly review").on_click(cx.listener(|m, _, _, cx| crate::ui::review::open(m, None, cx))));
+        .child(crate::ui::review::day_week(&t, false, cx));
     let header = div()
         .flex()
         .flex_wrap()

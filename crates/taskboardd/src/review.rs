@@ -486,7 +486,13 @@ fn card(r: &crate::util::Row) -> Value {
 /// Every kept review, newest first.
 pub fn list(app: &App) -> Result<Value> {
     let rows = app.db.q("SELECT * FROM reviews ORDER BY id DESC", p![])?;
-    Ok(json!({"reviews": rows.iter().map(card).collect::<Vec<_>>()}))
+    let next = next_at(&app.cfg.review, Local::now().naive_local()).map(|t| iso(ts_of(t)));
+    Ok(json!({"reviews": rows.iter().map(card).collect::<Vec<_>>(), "next": next}))
+}
+
+/// The next scheduled review after `now`, if the schedule is on.
+pub fn next_at(cfg: &ReviewConfig, now: NaiveDateTime) -> Option<NaiveDateTime> {
+    due_at(cfg, now).map(|t| t + Duration::days(7))
 }
 
 pub fn get(app: &App, id: i64) -> Result<Value> {
@@ -544,6 +550,14 @@ mod tests {
         assert_eq!(due_at(&off, at("2026-10-16", "18:00")), None);
         let mon = ReviewConfig { day: "mon".into(), at: "9am".into(), ..ReviewConfig::default() };
         assert_eq!(due_at(&mon, at("2026-10-14", "09:00")), Some(at("2026-10-12", "09:00")));
+    }
+
+    #[test]
+    fn the_next_review_is_the_coming_friday_at_five() {
+        let c = ReviewConfig::default();
+        assert_eq!(next_at(&c, at("2026-10-14", "09:00")), Some(at("2026-10-16", "17:00")));
+        assert_eq!(next_at(&c, at("2026-10-16", "17:00")), Some(at("2026-10-23", "17:00")), "the one due now is already made");
+        assert_eq!(next_at(&ReviewConfig { cadence: "off".into(), ..ReviewConfig::default() }, at("2026-10-14", "09:00")), None);
     }
 
     #[test]
