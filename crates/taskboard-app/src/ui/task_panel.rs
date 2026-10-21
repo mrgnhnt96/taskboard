@@ -1460,7 +1460,7 @@ impl Draw<'_> {
             .p(px(6.))
             .rounded(px(7.))
             .hover(move |d| d.bg(tint))
-            .tooltip(kit::card_tip(title.clone(), summary, rows))
+            .hoverable_tooltip(att_card(cx.entity().downgrade(), title.clone(), summary, kind, rows))
             .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(icon, fg)))
             .child(
                 div()
@@ -2355,6 +2355,132 @@ fn att_tint(t: &Theme, kind: &str) -> (Hsla, Hsla) {
         "evidence" => (t.up, t.up_soft),
         "results" => (t.results, t.results_soft),
         _ => (t.text_2, t.col),
+    }
+}
+
+/// An attachment's hover card, which stays open under the pointer: its kind and place as pills,
+/// a one-line link that copies on click, and who added it, which opens that task.
+struct AttCard {
+    m: WeakEntity<MainWindow>,
+    title: SharedString,
+    summary: Option<String>,
+    kind: &'static str,
+    rows: Vec<(String, String)>,
+    copied: bool,
+}
+
+impl AttCard {
+    fn row(&self, key: &str) -> Option<&str> {
+        self.rows.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+}
+
+/// The task or goal a value starts with ("T201 Write the…"), opened from the card.
+fn lead_ref(v: &str) -> Option<String> {
+    let w = v.split_whitespace().next()?;
+    (w.len() > 1 && matches!(w.as_bytes()[0], b'T' | b'G') && w[1..].bytes().all(|b| b.is_ascii_digit())).then(|| w.to_string())
+}
+
+impl Render for AttCard {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.global::<Theme>().clone();
+        let open = |m: WeakEntity<MainWindow>, r: String| {
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let _ = m.update(cx, |m, cx| match r.starts_with('T') {
+                    true => act(m, &Act::new("open-task", "", r.as_str(), ""), cx),
+                    false => go(m, &Go::Goal(r.clone()), cx),
+                });
+            }
+        };
+        let key = |k: &str| div().flex_none().w(px(52.)).text_color(t.muted).child(k.to_string());
+        let (fg, bg) = att_tint(&t, self.kind);
+        let mut pills = div().flex().flex_wrap().gap(px(6.)).pb(px(4.)).child(kit::pill(fg, bg, view::att_kind_label(self.kind)));
+        if let Some(on) = self.row("On") {
+            let p = kit::pill(t.text_2, t.col, on.to_string()).id("att-on");
+            pills = pills.child(match lead_ref(on) {
+                Some(g) => p.cursor_pointer().hover(|d| d.bg(t.border_2)).on_click(open(self.m.clone(), g)).into_any_element(),
+                None => p.into_any_element(),
+            });
+        }
+        let mut rows = Vec::new();
+        for (k, v) in &self.rows {
+            let val = div().flex_1().min_w_0().text_color(t.text);
+            rows.push(match k.as_str() {
+                "Kind" | "On" => continue,
+                "Link" => {
+                    let url = v.clone();
+                    div()
+                        .id("att-link")
+                        .group("att-link")
+                        .flex()
+                        .gap(px(10.))
+                        .mx(px(-4.))
+                        .px(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(t.tint))
+                        .on_click(cx.listener(move |c, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                            c.copied = true;
+                            cx.notify();
+                        }))
+                        .child(key(k))
+                        .child(val.truncate().child(v.clone()))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(t.accent_fg)
+                                .when(!self.copied, |d| d.invisible().group_hover("att-link", |d| d.visible()))
+                                .child(if self.copied { "Copied" } else { "Copy" }),
+                        )
+                        .into_any_element()
+                }
+                "Added" => {
+                    let row = div().id("att-added").flex().gap(px(10.)).child(key(k));
+                    match lead_ref(v) {
+                        Some(g) => row
+                            .cursor_pointer()
+                            .on_click(open(self.m.clone(), g))
+                            .child(val.text_color(t.accent_fg).hover(|d| d.underline()).child(v.clone()))
+                            .into_any_element(),
+                        None => row.child(val.child(v.clone())).into_any_element(),
+                    }
+                }
+                _ => div().flex().gap(px(10.)).child(key(k)).child(val.child(v.clone())).into_any_element(),
+            });
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .w(px(340.))
+            .px(px(12.))
+            .py(px(10.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.border_2)
+            .bg(t.card)
+            .shadow_lg()
+            .text_size(px(12.))
+            .font_family(t.ui_font.clone())
+            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone()))
+            .children(self.summary.clone().map(|s| div().text_color(t.text_2).child(s)))
+            .child(pills)
+            .children(rows)
+    }
+}
+
+fn att_card(
+    m: WeakEntity<MainWindow>,
+    title: String,
+    summary: Option<String>,
+    kind: &'static str,
+    rows: Vec<(String, String)>,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let title = SharedString::from(title);
+    move |_, cx| {
+        let card = AttCard { m: m.clone(), title: title.clone(), summary: summary.clone(), kind, rows: rows.clone(), copied: false };
+        cx.new(|_| card).into()
     }
 }
 
