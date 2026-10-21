@@ -304,6 +304,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("POST", [r, "reopen"]) => app.db.tx(|| move_to(app, r, "reopen", body)),
         ("POST", [r, "dig"]) => crate::dig::start(app, r, body),
         ("POST", [r, "plan"]) => crate::idea_plan::start(app, r, body),
+        ("POST", [r, "talk"]) => crate::idea_talk::start(app, r, body),
         _ => err(404, "There's nothing at that address."),
     }
 }

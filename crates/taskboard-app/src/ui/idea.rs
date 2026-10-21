@@ -5,7 +5,9 @@
 //! (`POST /ideas/:id/plan`: Claude makes a planned goal from it) and Close (`POST
 //! /ideas/:id/shelve|drop`, or `reopen` once closed). Dig and Plan are start signals: the page
 //! shows the dig's progress and links to the goal once planned. Closing offers Undo, which reopens
-//! it. Nothing else here edits the idea: `tb idea` does.
+//! it. Talk it over (`POST /ideas/:id/talk`, in the header and on each question) opens a Claude
+//! terminal in the project's checkout to talk it over in; what's settled there comes back as notes.
+//! Nothing else here edits the idea: `tb idea` does.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
@@ -25,7 +27,8 @@ const CLOSE_MENU: &str = "idea-close";
 
 #[derive(Default)]
 pub struct State {
-    /// The requests running, by `dig::I3` / `plan::I3` / `close::I3`.
+    /// The requests running, by `dig::I3` / `plan::I3` / `close::I3` / `talk::I3`, and
+    /// `talk::I3::<question>` for a question's Talk it over.
     busy: HashSet<String>,
     /// Rounds opened or closed by hand, by `I3::<round id>`; the rest follow [`starts_open`].
     open: HashMap<String, bool>,
@@ -142,6 +145,11 @@ pub fn close_button(i: &Value) -> Option<Btn> {
     } else {
         Btn { label, enabled: true, tip: "Shelve it for later or close it as won’t do".into() }
     })
+}
+
+/// Talk it over: open whatever state it's in, as long as it hasn't become a goal.
+pub fn talk_button(i: &Value) -> Option<Btn> {
+    (s(i, "state") != "planned").then(|| Btn { label: "Talk it over".into(), enabled: true, tip: "Talk it over with Claude in a terminal in the project’s checkout".into() })
 }
 
 /// The Close menu's items: (what it posts, its label).
@@ -414,6 +422,33 @@ pub(crate) fn close(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Con
     cx.notify();
 }
 
+/// Talk it over, about one of its reports' questions when `question` is given: once at a time, the
+/// terminal opens on its own.
+pub(crate) fn talk(m: &mut MainWindow, r: &str, question: Option<&str>, cx: &mut Context<MainWindow>) {
+    let key = match question {
+        Some(q) => format!("talk::{r}::{q}"),
+        None => format!("talk::{r}"),
+    };
+    if !m.idea.busy.insert(key.clone()) {
+        return;
+    }
+    let k2 = key.clone();
+    let body = question.map_or(json!({}), |q| json!({"question": q}));
+    m.post_or(
+        format!("ideas/{r}/talk"),
+        body,
+        cx,
+        move |m, _, _| {
+            m.idea.busy.remove(&key);
+        },
+        move |m, e, cx| {
+            m.idea.busy.remove(&k2);
+            m.toast(e.message, true, cx);
+        },
+    );
+    cx.notify();
+}
+
 // ================================================================== render
 
 /// Ideas › webapp › I3: the project crumb opens the Ideas page on that project.
@@ -478,7 +513,12 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
             }))
         })
     });
-    div().flex().flex_none().items_center().gap(px(8.)).child(dig_el).child(plan_el).children(close_el)
+    let talk_el = talk_button(i).map(|bt| {
+        let busy = m.idea.busy.contains(&format!("talk::{r}"));
+        let r3 = r.clone();
+        button(t, "idea-talk", bt, false, busy).when(!busy, |d| d.on_click(cx.listener(move |m, _, _, cx| talk(m, &r3, None, cx))))
+    });
+    div().flex().flex_none().items_center().gap(px(8.)).child(dig_el).child(plan_el).children(talk_el).children(close_el)
 }
 
 fn close_menu(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
@@ -684,9 +724,17 @@ fn points_el(m: &MainWindow, t: &Theme, key: &str, title: &str, items: &[Point],
     col
 }
 
-/// "To decide": each question with its choices. Answering them is still `tb idea`'s.
-fn questions_el(t: &Theme, qs: &[(&String, &Vec<String>)]) -> Div {
-    let cards = qs.iter().map(|(text, choices)| {
+/// "To decide": each question with its choices, and Talk it over on each while `talk` is the idea.
+/// Answering them is still `tb idea`'s.
+fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, qs: &[(&String, &Vec<String>)], cx: &mut Context<MainWindow>) -> Div {
+    let cards = qs.iter().enumerate().map(|(n, (text, choices))| {
+        let talk_el = talk.map(|r| {
+            let busy = m.idea.busy.contains(&format!("talk::{r}::{text}"));
+            let (r, q) = (r.to_string(), (*text).clone());
+            let el = kit::btn_small(t, SharedString::from(format!("idea-talk-{key}::{n}")), if busy { "Sending…" } else { "Talk it over" })
+                .tooltip(kit::tip("Talk this one over with Claude in a terminal"));
+            if busy { kit::disabled(el) } else { el.on_click(cx.listener(move |m, _, _, cx| self::talk(m, &r, Some(&q), cx))) }
+        });
         div()
             .flex()
             .flex_col()
@@ -703,6 +751,7 @@ fn questions_el(t: &Theme, qs: &[(&String, &Vec<String>)]) -> Div {
                     div().flex().items_center().min_h(px(32.)).px(px(12.)).rounded(px(16.)).border_1().border_color(t.border_2).bg(t.card).text_size(px(13.)).child(c.clone())
                 })))
             })
+            .children(talk_el.map(|b| div().flex().child(b)))
     });
     div().flex().flex_col().gap(px(8.)).child(label(t, "To decide")).children(cards)
 }
@@ -739,8 +788,9 @@ fn related_el(t: &Theme, key: &str, refs: &[String], cx: &mut Context<MainWindow
     div().flex().flex_wrap().items_center().gap(px(10.)).text_size(px(12.)).child(label(t, "Related")).children(refs.iter().map(|r| related_link(t, key, r, cx)))
 }
 
-/// A round's blocks in order: points lists side by side in twos, questions under one heading.
-fn blocks_el(m: &MainWindow, t: &Theme, key: &str, blocks: &[Block], cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
+/// A round's blocks in order: points lists side by side in twos, questions under one heading (with
+/// Talk it over while `talk` is the idea).
+fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, blocks: &[Block], cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let mut out = vec![];
     let mut k = 0;
     while k < blocks.len() {
@@ -767,7 +817,7 @@ fn blocks_el(m: &MainWindow, t: &Theme, key: &str, blocks: &[Block], cx: &mut Co
                     k += 1;
                 }
                 k -= 1;
-                out.push(questions_el(t, &qs).into_any_element());
+                out.push(questions_el(m, t, &bkey, talk, &qs, cx).into_any_element());
             }
             Block::Compare { lean, options } => out.push(compare_el(t, lean, options).into_any_element()),
             Block::Related(refs) => out.push(related_el(t, &bkey, refs, cx).into_any_element()),
@@ -777,8 +827,8 @@ fn blocks_el(m: &MainWindow, t: &Theme, key: &str, blocks: &[Block], cx: &mut Co
     out
 }
 
-/// A round: its header line always, its report while open.
-fn round_card(m: &MainWindow, t: &Theme, idea: &str, n: usize, rv: &RoundView, cx: &mut Context<MainWindow>) -> Div {
+/// A round: its header line always, its report while open. `talk`: whether its questions offer Talk it over.
+fn round_card(m: &MainWindow, t: &Theme, idea: &str, talk: bool, n: usize, rv: &RoundView, cx: &mut Context<MainWindow>) -> Div {
     let key = format!("{idea}::{}", rv.id);
     let open = round_open(m, &key, n);
     let k2 = key.clone();
@@ -818,7 +868,7 @@ fn round_card(m: &MainWindow, t: &Theme, idea: &str, n: usize, rv: &RoundView, c
                 .pb(px(18.))
                 .pl(px(40.))
                 .children(rv.error.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e)))
-                .children(blocks_el(m, t, &key, &rv.blocks, cx)),
+                .children(blocks_el(m, t, &key, talk.then_some(idea), &rv.blocks, cx)),
         );
     }
     card
@@ -846,9 +896,10 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     let views = rounds(&i, fmt::now());
     let menu = close_menu(m, &t, &i, cx);
     let r = fmt::ref_of(&i, "I");
+    let talk = talk_button(&i).is_some();
     let mut reports = section(&t, "Reports");
     for (n, rv) in views.iter().enumerate() {
-        reports = reports.child(round_card(m, &t, &r, n, rv, cx));
+        reports = reports.child(round_card(m, &t, &r, talk, n, rv, cx));
     }
     div()
         .id("idea-page")
@@ -1039,6 +1090,50 @@ mod tests {
         assert_eq!(close_button(&idea("dropped", json!([]))).unwrap().label, "Won’t do");
         assert_eq!(close_menu_view(&shelved), [("reopen", "Reopen")]);
         assert_eq!(dig_button(&shelved, now).tip, "It’s shelved; reopen it first");
+    }
+
+    #[test]
+    fn talk_hides_once_planned_and_is_open_otherwise() {
+        assert_eq!(talk_button(&idea("planned", json!([]))), None);
+        for state in ["new", "digging", "reported", "shelved", "dropped"] {
+            let bt = talk_button(&idea(state, json!([]))).unwrap();
+            assert_eq!((bt.label.as_str(), bt.enabled), ("Talk it over", true), "{state}");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn talk_sends_once_names_the_question_and_a_refusal_frees_the_button(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        use crate::parity::{settle, window};
+        let (w, rec) = window(cx);
+        let list = rec.board().get("ideas", &crate::ui::ideas::query()).unwrap();
+        let r = fmt::ref_of(arr(&list, "ideas").iter().find(|i| s(i, "state") == "reported").unwrap(), "I");
+        w.update(cx, |m, _, cx| {
+            talk(m, &r, None, cx);
+            assert!(m.idea.busy.contains(&format!("talk::{r}")), "sending");
+            talk(m, &r, None, cx);
+        })
+        .unwrap();
+        settle(cx);
+        let path = format!("ideas/{r}/talk");
+        assert_eq!(rec.posts().iter().filter(|(p, _)| *p == path).count(), 1, "once at a time");
+        assert_eq!(rec.last(&path), Some(json!({})));
+        let toast = |w: &gpui_kit::WindowHandle<MainWindow>, cx: &mut gpui_kit::TestAppContext| {
+            w.update(cx, |m, _, _| {
+                assert!(m.idea.busy.is_empty(), "a refused talk doesn't stay on Sending…");
+                (m.toasts[0].text.clone(), m.toasts[0].err)
+            })
+            .unwrap()
+        };
+        assert_eq!(toast(&w, cx), ("Midna isn't running, so the board can't open a terminal.".to_string(), true));
+        w.update(cx, |m, _, cx| {
+            talk(m, &r, Some("Which store?"), cx);
+            assert!(m.idea.busy.contains(&format!("talk::{r}::Which store?")));
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.last(&path), Some(json!({"question": "Which store?"})));
+        assert_eq!(toast(&w, cx), (format!("{r}'s reports don't ask “Which store?”."), true));
     }
 
     #[gpui_kit::test]
