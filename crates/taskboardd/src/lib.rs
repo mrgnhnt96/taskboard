@@ -52,6 +52,7 @@ pub mod lens_pr;
 pub mod lens_sweep;
 pub mod ideas;
 pub mod idea_plan;
+pub mod idea_talk;
 pub mod lessons;
 pub mod limits;
 pub mod lines;

@@ -33,6 +33,7 @@ mod hooks;
 mod human_tasks;
 mod idea_dig;
 mod idea_plan;
+mod idea_talk;
 mod ideas;
 mod import;
 mod jira;

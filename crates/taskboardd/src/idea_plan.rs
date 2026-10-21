@@ -212,7 +212,7 @@ fn short(sha: &str) -> &str {
 }
 
 /// A dig round's whole report, for the prompt.
-fn report_text(r: &Row) -> String {
+pub(crate) fn report_text(r: &Row) -> String {
     let rep: Value = r.s("report").and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null);
     let focus = r.s("focus").filter(|f| !f.is_empty()).unwrap_or("the whole idea");
     let at = r.s("sha").map(|s| format!(", at commit {}", short(s))).unwrap_or_default();
