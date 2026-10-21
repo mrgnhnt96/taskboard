@@ -472,10 +472,17 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
     ))
 }
 
+/// How many of an issue's oldest history events its detail carries.
+pub const HISTORY_PAGE: i64 = 200;
+
 pub fn issue_detail(app: &App, id: i64) -> Result<Value> {
     let b = board::get_issue(app, id)?;
     let mut d = board::issue_dict(app, &b)?;
-    d["history"] = Value::Array(board::issue_history(app, id)?);
+    // Only the oldest page, as the panel lists it from the top; `GET /backlog/:id/history?after=`
+    // pages on through the rest.
+    let (history, _) = board::issue_history_page(app, id, board::HistPage::After(None), Some(HISTORY_PAGE))?;
+    d["history"] = Value::Array(history);
+    d["history_total"] = json!(app.db.count("SELECT COUNT(*) FROM issue_events WHERE issue_id = ?", p![id])?);
     Ok(d)
 }
 

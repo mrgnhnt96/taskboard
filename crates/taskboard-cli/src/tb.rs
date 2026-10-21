@@ -5994,10 +5994,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Backlog { action: BacklogCmd::Show { issue, json } } => {
-            let v = c.call("GET", &format!("/backlog/{}", issue_ref(&issue)?), None)?;
+            let b = issue_ref(&issue)?;
+            let mut v = c.call("GET", &format!("/backlog/{b}"), None)?;
             if json {
                 out(&serde_json::to_string_pretty(&v).unwrap_or_default());
             } else {
+                // The detail carries only the oldest page of the history; the lines show the newest.
+                let have = v["history"].as_array().map_or(0, |a| a.len());
+                if v["history_total"].as_u64().is_some_and(|n| n as usize > have) {
+                    let mut newest = c.call("GET", &format!("/backlog/{b}/history?limit=5"), None)?["history"].take();
+                    if let Some(a) = newest.as_array_mut() {
+                        a.reverse();
+                    }
+                    v["history"] = newest;
+                }
                 issue_show_lines(&v).iter().for_each(|l| out(l));
             }
             Ok(0)

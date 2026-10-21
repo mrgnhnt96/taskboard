@@ -399,6 +399,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["backlog", "tidy"]) => Ok(crate::tidy::state(app)),
         ("POST", ["backlog", "tidy"]) => crate::tidy::set(app, body),
         ("GET", ["backlog", id]) => issue_detail(app, iid(id)?),
+        ("GET", ["backlog", id, "history"]) => get_issue_history(app, iid(id)?, query),
         ("POST", ["backlog", id]) => app.db.tx(|| patch_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "promote"]) => app.db.tx(|| promote(app, iid(id)?, body)),
         ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?, body)),
@@ -988,6 +989,20 @@ fn get_log(app: &App, id: i64, kind: &str, page: &Paging) -> Result<Value> {
         .collect();
     let more = page.cut(&mut log);
     Ok(json!({"log": log, "more": more}))
+}
+
+/// An issue's history: oldest first from `after` (an event id), else newest first from `before`
+/// (or the newest); `limit` caps the page, with `more` saying whether any are left past it.
+fn get_issue_history(app: &App, id: i64, query: &Query) -> Result<Value> {
+    board::get_issue(app, id)?;
+    let cursor = |k| q(query, k, "").parse::<i64>().ok();
+    let from = match q(query, "after", "") {
+        "" => board::HistPage::Before(cursor("before")),
+        _ => board::HistPage::After(cursor("after")),
+    };
+    let limit = q(query, "limit", "").parse::<i64>().ok().map(|n| n.clamp(1, 500));
+    let (history, more) = board::issue_history_page(app, id, from, limit)?;
+    Ok(json!({"history": history, "more": more}))
 }
 
 fn meta(v: Option<&Value>) -> Result<Value> {

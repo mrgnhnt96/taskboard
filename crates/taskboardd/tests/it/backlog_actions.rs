@@ -30,7 +30,9 @@ fn new_board() -> Board {
 
 impl Board {
     fn get(&self, path: &str) -> Value {
-        api::dispatch(&self.app, "GET", path, &Query::new(), &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
+        let (p, qs) = path.split_once('?').unwrap_or((path, ""));
+        let q: Query = qs.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        api::dispatch(&self.app, "GET", p, &q, &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
     }
     fn post(&self, path: &str, body: Value) -> Value {
         api::dispatch(&self.app, "POST", path, &Query::new(), &body).unwrap_or_else(|e| panic!("POST {path}: {}", e.message))
@@ -244,4 +246,39 @@ fn issue_refuses_a_closed_or_already_tasked_item() {
     assert!(closed.contains("isn't open any more"), "{closed}");
     assert_eq!(b.task_count(), before);
     assert!(b.get("tasks")["tasks"].as_array().unwrap().iter().all(|t| t["session_id"] != "s1"), "the terminal took nothing");
+}
+
+#[test]
+fn a_long_issue_history_comes_a_page_at_a_time() {
+    let b = new_board();
+    let i = b.issue("Chatty");
+    for k in 0..450 {
+        board::add_issue_event(&b.app, i, "", "note", &format!("Entry {k}"), None).unwrap();
+    }
+    let d = b.get(&format!("backlog/B{i}"));
+    let total = d["history_total"].as_u64().unwrap() as usize;
+    assert!(total >= 450);
+    let first = d["history"].as_array().unwrap();
+    assert_eq!(first.len(), 200, "the issue carries only its oldest page");
+    let all: Vec<i64> = board::issue_history(&b.app, i).unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert_eq!(first[0]["id"].as_i64(), all.first().copied());
+
+    let mut seen: Vec<i64> = first.iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    loop {
+        let page = b.get(&format!("backlog/B{i}/history?limit=100&after={}", seen.last().unwrap()));
+        let h = page["history"].as_array().unwrap();
+        assert!(h.len() <= 100);
+        seen.extend(h.iter().map(|e| e["id"].as_i64().unwrap()));
+        if page["more"] != true {
+            break;
+        }
+    }
+    assert_eq!(seen, all, "paging on walks the whole history, oldest first, each once");
+
+    let newest = b.get(&format!("backlog/B{i}/history?limit=5"));
+    let ids: Vec<i64> = newest["history"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, all.iter().rev().take(5).copied().collect::<Vec<_>>());
+    assert_eq!(newest["history"][0]["text"], "Entry 449");
+    let before = b.get(&format!("backlog/B{i}/history?limit=5&before={}", ids[4]));
+    assert_eq!(before["history"][0]["id"].as_i64(), all.iter().rev().nth(5).copied());
 }
