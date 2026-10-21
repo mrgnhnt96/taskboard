@@ -3624,38 +3624,19 @@ fn idea_show(i: &Value) {
 
 /// A round's report in full, under its line in `tb idea show`.
 fn round_report(rep: &Value) {
-    let items = |k: &str| rep[k].as_array().cloned().unwrap_or_default();
-    let text = |v: &Value| v.as_str().unwrap_or("").to_string();
-    let why = text(&rep["why"]);
+    let why = rep["why"].as_str().unwrap_or("");
     if !why.is_empty() {
         out(&format!("    {why}"));
     }
-    let builds: Vec<String> = items("builds_on")
-        .iter()
-        .map(|b| {
-            let files: Vec<String> = b["files"].as_array().map(|f| f.iter().map(text).collect()).unwrap_or_default();
-            if files.is_empty() { text(&b["what"]) } else { format!("{} ({})", text(&b["what"]), files.join(", ")) }
-        })
-        .collect();
-    let risks: Vec<String> = items("risks").iter().map(|r| format!("{}: {}", text(&r["kind"]), text(&r["risk"]))).collect();
-    let plain = |k: &str| items(k).iter().map(text).collect::<Vec<_>>();
-    for (head, list) in [
-        ("Builds on", builds),
-        ("Ways to extend", plain("ways_to_extend")),
-        ("Risks", risks),
-        ("Pitfalls", plain("pitfalls")),
-        ("Open questions", plain("open_questions")),
-    ] {
-        if !list.is_empty() {
-            out(&format!("    {head}:"));
-            for x in list {
-                out(&format!("      - {x}"));
-            }
+    for (head, list) in taskboardd::dig::report_sections(rep) {
+        if head == "Related" {
+            out(&format!("    Related: {}", list.join(", ")));
+            continue;
         }
-    }
-    let related = plain("related");
-    if !related.is_empty() {
-        out(&format!("    Related: {}", related.join(", ")));
+        out(&format!("    {head}:"));
+        for x in list {
+            out(&format!("      - {x}"));
+        }
     }
 }
 
