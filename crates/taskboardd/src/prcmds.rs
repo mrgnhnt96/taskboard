@@ -119,6 +119,15 @@ pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
     after(app, id, json!({"thread": th.id, "resolved": resolved}))
 }
 
+/// `tb pr thread <thread>`: one thread with its whole text and replies, read from the host now with the
+/// board's own account (the agent has none of its own).
+pub fn thread(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let (t, rec) = fresh(app, id)?;
+    let pr = pr_of(&t)?;
+    let th = find_thread(&rec, pr.num, &body_str(body, "thread"))?;
+    Ok(json!({"thread": th, "open": prflow::open_threads(&flow(&t), &rec).iter().any(|o| o["id"].as_str() == Some(th.id.as_str()))}))
+}
+
 fn thread_name(th: &Thread) -> String {
     let who = if th.author_name.is_empty() { &th.author } else { &th.author_name };
     let kind = if th.kind == "task" { "task" } else { "thread" };

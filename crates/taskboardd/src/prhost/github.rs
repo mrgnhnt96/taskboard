@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, whole, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// Runs `gh` with these arguments and answers its stdout.
 pub trait Gh: Send + Sync {
@@ -513,6 +513,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
                 author: login(c),
                 author_name: login(c),
                 text: crate::util::one_line(c["body"].as_str().unwrap_or(""), REPLY_MAX),
+                body: whole(c["body"].as_str().unwrap_or("")),
                 at: c["createdAt"].as_str().unwrap_or("").to_string(),
             })
             .collect();
@@ -529,6 +530,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
             path: n["path"].as_str().map(|s| s.to_string()),
             line: n["line"].as_i64(),
             text: gist(first["body"].as_str().unwrap_or("")),
+            body: whole(first["body"].as_str().unwrap_or("")),
             url: first["url"].as_str().map(|s| s.to_string()),
             outdated: n["isOutdated"].as_bool().unwrap_or(false),
             replies,
@@ -547,6 +549,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
         path: None,
         line: None,
         text: gist(body),
+        body: whole(body),
         url: url.as_str().map(|s| s.to_string()),
         outdated: false,
         replies: vec![],
@@ -696,7 +699,7 @@ pub(crate) mod tests {
         assert_eq!(open, vec!["PRRT_2", "IC_2"], "the first thread had my last word; my own comment isn't a thread");
         assert_eq!(r.threads.iter().find(|t| t.id == "IC_2").unwrap().text, "Why?");
         let t1 = r.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
-        assert_eq!(t1.replies, vec![Reply { author: "me".into(), author_name: "me".into(), text: "Done in a.rs".into(), at: "t2".into() }]);
+        assert_eq!(t1.replies, vec![Reply { author: "me".into(), author_name: "me".into(), text: "Done in a.rs".into(), body: "Done\nin a.rs".into(), at: "t2".into() }]);
     }
 
     #[test]

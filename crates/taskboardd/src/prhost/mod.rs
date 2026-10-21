@@ -153,6 +153,9 @@ pub struct Thread {
     pub line: Option<i64>,
     /// The first comment's text, clipped.
     pub text: String,
+    /// The first comment's whole text (`tb pr thread`), up to [`BODY_MAX`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// The code it's on changed since (GitHub).
@@ -184,11 +187,16 @@ pub struct Reply {
     pub author_name: String,
     /// The reply's text on one line, clipped.
     pub text: String,
+    /// The reply's whole text (`tb pr thread`), up to [`BODY_MAX`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
     pub at: String,
 }
 
-/// How much of a reply's text a record keeps.
+/// How much of a reply's text a record keeps on one line.
 pub(crate) const REPLY_MAX: usize = 400;
+/// How much of a comment's whole text a record keeps.
+pub(crate) const BODY_MAX: usize = 20_000;
 
 impl Thread {
     /// Waiting on us (the board's account, see [`Record::us`]): unresolved, and someone else spoke last.
@@ -292,9 +300,16 @@ impl Record {
                     path: opt(t, "path"),
                     line: t["line"].as_i64(),
                     text: gist(&s(first, "body")),
+                    body: whole(&s(first, "body")),
                     replies: comments[1..]
                         .iter()
-                        .map(|c| Reply { author: s(c, "author"), author_name: s(c, "author"), text: one_line(&s(c, "body"), REPLY_MAX), at: s(c, "at") })
+                        .map(|c| Reply {
+                            author: s(c, "author"),
+                            author_name: s(c, "author"),
+                            text: one_line(&s(c, "body"), REPLY_MAX),
+                            body: whole(&s(c, "body")),
+                            at: s(c, "at"),
+                        })
                         .collect(),
                     ..Default::default()
                 })
@@ -673,6 +688,15 @@ pub(crate) fn account_key(host: &str, parts: &[&str]) -> String {
 /// The first line of a comment, clipped for a list.
 pub(crate) fn gist(text: &str) -> String {
     one_line(text.lines().find(|l| !l.trim().is_empty()).unwrap_or(""), 140)
+}
+
+/// A comment's whole text as a record keeps it: trimmed, and cut at [`BODY_MAX`] characters.
+pub(crate) fn whole(text: &str) -> String {
+    let text = text.trim();
+    match text.char_indices().nth(BODY_MAX) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_string(),
+    }
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, whole, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// One HTTP call: method, full URL and JSON body; answers the JSON reply (Null when it's empty). An
 /// error starts with "Bitbucket answered <code>" when Bitbucket answered.
@@ -554,6 +554,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
                 author: uid(&x["user"]),
                 author_name: x["user"]["display_name"].as_str().unwrap_or("").to_string(),
                 text: crate::util::one_line(x["content"]["raw"].as_str().unwrap_or(""), REPLY_MAX),
+                body: whole(x["content"]["raw"].as_str().unwrap_or("")),
                 at: x["created_on"].as_str().unwrap_or("").to_string(),
             })
             .collect();
@@ -570,6 +571,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             path: c["inline"]["path"].as_str().map(|s| s.to_string()),
             line: c["inline"]["to"].as_i64().or(c["inline"]["from"].as_i64()),
             text: gist(c["content"]["raw"].as_str().unwrap_or("")),
+            body: whole(c["content"]["raw"].as_str().unwrap_or("")),
             url: c["links"]["html"]["href"].as_str().map(|s| s.to_string()),
             outdated: false,
             replies,
@@ -595,6 +597,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             path: None,
             line: None,
             text: gist(t["content"]["raw"].as_str().unwrap_or("")),
+            body: whole(t["content"]["raw"].as_str().unwrap_or("")),
             url: None,
             outdated: false,
             replies: vec![],
