@@ -1990,9 +1990,11 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     };
     let merge_sub = if matches!(merge_st, TlSt::Done | TlSt::Fail) { String::new() } else { merge.sub.unwrap_or_default() };
     let merge_name = if merge_st == TlSt::Fail { "Closed without merging" } else { "Merged" };
+    // "Updated 4m ago": when the board last read the open PR, so a stale read shows.
+    let updated = opt_s(p, "checked_at").filter(|_| pr_open(p)).map(|at| format!("Updated {}", fmt::ago(at))).unwrap_or_default();
     vec![
         tl_node(TlSt::Done, tl_head(tl_name("Pull request"), "", ""), vec![el(K::PrHead, vec![head, txt(repo, St::Small)])], false),
-        tl_node(st, tl_head(tl_name("Checks and review"), "", ""), body, false),
+        tl_node(st, tl_head(tl_name("Checks and review"), "", &updated), body, false),
         tl_node(merge_st, tl_head(tl_name(merge_name), &merge_sub, ""), merged_note_row(c, t).into_iter().collect(), false),
     ]
 }
