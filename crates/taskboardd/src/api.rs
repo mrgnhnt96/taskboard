@@ -1981,6 +1981,13 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         if hk("product") {
             f.push(("product", json!(jira::clean_product(app, &body_str(body, "product"))?)));
         }
+        if hk("jira_off") {
+            let off = as_bool(body.get("jira_off"), false);
+            if off != g.b("jira_off") {
+                jira::switch_goal(app, &g, off)?;
+            }
+            f.push(("jira_off", json!(off as i64)));
+        }
         if hk("worktree_base") {
             let base = crate::worktrees::clean_base(body.get("worktree_base"))?;
             // Worktrees on puts the goal on the slot lane, and off takes it off it.
@@ -2013,7 +2020,7 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
             };
             f.push(("area", a));
         }
-        let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr" | "setup"));
+        let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr" | "setup" | "jira_off"));
         if !f.is_empty() {
             f.push(("updated_at", json!(now_iso())));
             board::update_goal(app, id, f)?;

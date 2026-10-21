@@ -2018,7 +2018,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
             ),
         );
     }
-    if !no_pr && has_pr && !r.spooled && app.cfg.ticket_required() && !has(t.s("jira_key")) {
+    if !no_pr && has_pr && !r.spooled && crate::jira::pr_needs_ticket(app, t)? {
         return err(409, no_ticket_refusal(t));
     }
     if !no_pr && !r.spooled && r.b("merged_note").trim().is_empty() && !crate::merged_note::has_note(t) && crate::merged_note::needed(app, t)? {

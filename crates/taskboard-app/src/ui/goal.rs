@@ -715,6 +715,13 @@ pub fn set_paused(m: &mut MainWindow, gr: &str, on: bool, cx: &mut Context<MainW
     });
 }
 
+/// Jira off (`off`) or back on for the goal's tasks, from the How it runs box.
+pub fn set_jira_off(m: &mut MainWindow, gr: &str, off: bool, cx: &mut Context<MainWindow>) {
+    run(m, format!("goal-jira::{gr}"), Some(format!("gjira:{gr}")), false, format!("goals/{gr}"), json!({"jira_off": off}), cx, move |_, _, _| {
+        if off { "Jira off: its tasks ask for no tickets.".into() } else { "Jira on for new tasks. Tasks it already has still make no ticket.".into() }
+    });
+}
+
 /// "Bring it back": a deprioritized goal's banner.
 pub fn bring_back(m: &mut MainWindow, gr: &str, cx: &mut Context<MainWindow>) {
     run(m, format!("goal-deprio:off:{gr}"), Some(format!("ggate:{gr}")), true, format!("goals/{gr}"), json!({"deprioritized": false}), cx, |_, _, _| {
@@ -1040,12 +1047,31 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
     )
 }
 
-fn how_runs_el(t: &Theme, g: &Value) -> Div {
+fn how_runs_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let mut kv = div().flex().flex_col().gap(px(6.)).text_size(px(13.));
     for (k, v) in how_runs(g) {
         kv = kv.child(div().flex().child(div().flex_none().w(px(96.)).text_color(t.muted).child(k)).child(div().flex_1().min_w_0().child(v)));
     }
-    side(t, "How it runs", None, kv)
+    if m.jira_on() {
+        kv = kv.child(jira_row(m, t, g, cx));
+    }
+    side(t, "How it runs", None, kv.children(inline_note(m, t, &format!("gjira:{}", fmt::ref_of(g, "G")))))
+}
+
+/// Jira On/Off for the goal's tasks: off, none of them asks for a ticket unless it opts in.
+fn jira_row(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
+    let gr = fmt::ref_of(g, "G");
+    let off = b(g, "jira_off");
+    let is_busy = busy(m, &format!("goal-jira::{gr}"));
+    let control = kit::seg(t, "goal-jira", &["On", "Off"], off as usize, |i, item| {
+        let gr = gr.clone();
+        if is_busy || (i == 1) == off { item } else { item.on_click(cx.listener(move |m, _, _, cx| set_jira_off(m, &gr, i == 1, cx))) }
+    });
+    div()
+        .flex()
+        .items_center()
+        .child(div().flex_none().w(px(96.)).text_color(t.muted).child("Jira tickets"))
+        .child(div().flex_1().min_w_0().child(control))
 }
 
 fn notes_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
@@ -1155,7 +1181,7 @@ fn aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> 
         .p(px(0.))
         .gap(px(0.))
         .overflow_hidden()
-        .child(how_runs_el(t, g))
+        .child(how_runs_el(m, t, g, cx))
         .children(notes_el(m, t, g, cx))
         .children(attached::attachments_el(m, t, g, cx))
         .children(pool::devices_aside(m, t, g, cx))

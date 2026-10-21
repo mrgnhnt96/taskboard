@@ -386,6 +386,50 @@ fn human_tasks_get_a_ticket_only_when_asked() {
 }
 
 #[test]
+fn a_goal_with_jira_off_asks_no_ticket_unless_a_task_opts_in() {
+    let b = board_with(|c, _| {
+        c.jira.auto_ticket = true;
+        c.jira.keychain_item = String::new();
+    });
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("/goals/G{g}"), json!({"jira_off": true}));
+    assert_eq!(b.get(&format!("/goals/G{g}"))["jira_off"], true);
+    let t = b.new_task(json!({"goal_id": g}));
+    let h = b.new_task(json!({"goal_id": g, "title": "Sign it", "detail": "1. Sign.", "kind": "human"}));
+    for id in [t, h] {
+        assert!(!jira::ticket_blocker(&b.app, &b.task(id)).unwrap(), "T{id} doesn't wait");
+    }
+    b.app.db.tx(|| jira::ensure_tickets(&b.app)).unwrap();
+    assert!(b.jobs("kind = 'jira'").is_empty(), "nothing in the goal asks");
+    let lines = jira::handoff_block(&b.app, &b.task(t)).unwrap().join("\n");
+    assert!(lines.contains(&format!("Jira: off for G{g}")), "{lines}");
+
+    // Its PR needs no ticket.
+    on_terminal(&b, "s1", t);
+    report(&b, "tb.done", "s1", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/9"}), false).unwrap();
+    assert_eq!(b.task(t).s("status"), Some("done"));
+
+    // A task can still opt in, and then its PR needs the ticket.
+    let o = b.new_task(json!({"goal_id": g}));
+    b.post(&format!("/tasks/T{o}"), json!({"jira_key": "new"}));
+    assert_eq!(b.jobs(&format!("kind = 'jira' AND state = 'pending' AND task_id = {o}")).len(), 1);
+    assert!(jira::ticket_blocker(&b.app, &b.task(o)).unwrap(), "it waits for the ticket it asked for");
+    on_terminal(&b, "s2", o);
+    let e = report(&b, "tb.done", "s2", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/10"}), false).unwrap_err();
+    assert!(e.starts_with("Every PR needs a Jira ticket"), "{e}");
+
+    // On again: the tasks it already has still make none; new ones do.
+    let before = b.new_task(json!({"goal_id": g}));
+    b.post(&format!("/goals/G{g}"), json!({"jira_off": false}));
+    assert!(b.task(before).b("jira_none"));
+    assert!(!b.task(o).b("jira_none"), "an opted-in task keeps its ticket");
+    let after = b.new_task(json!({"goal_id": g}));
+    b.app.db.tx(|| jira::ensure_tickets(&b.app)).unwrap();
+    let asked: Vec<i64> = b.jobs("kind = 'jira'").iter().filter_map(|j| j.i("task_id")).collect();
+    assert!(asked.contains(&after) && !asked.contains(&before) && !asked.contains(&h), "{asked:?}");
+}
+
+#[test]
 fn no_ticket_for_projects_without_prs_or_with_the_switch_off() {
     let b = board_with(|c, _| c.jira.auto_ticket = true);
     projects::set_pr_flow(&b.app, "webapp", "off").unwrap();

@@ -533,7 +533,7 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str, given_
     if !problems.is_empty() {
         return err(400, format!("The PR description needs work before the board opens the PR:\n- {}\nFix the file and run tb submit again.", problems.join("\n- ")));
     }
-    if app.cfg.ticket_required() && !has(t.s("jira_key")) {
+    if crate::jira::pr_needs_ticket(app, t)? {
         return err(409, crate::reports::no_ticket_refusal(t));
     }
     let Some(dir) = dir_for(t, cwd) else { return err(409, "The board can't find this task's checkout to open the PR from.") };

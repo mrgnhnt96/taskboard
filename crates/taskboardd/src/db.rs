@@ -289,6 +289,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("goals", "lane", "TEXT"),
     // A line on what an attachment is (`tb attach --summary`); null when none was given.
     ("attachments", "summary", "TEXT"),
+    // Jira off for the goal's tasks (`tb goal set G<n> --jira off`): none asks for a ticket unless it
+    // opts in with `--jira new` or a key (`jira::goal_off`).
+    ("goals", "jira_off", "INT DEFAULT 0"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
