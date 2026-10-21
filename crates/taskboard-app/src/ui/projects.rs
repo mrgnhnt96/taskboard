@@ -26,6 +26,8 @@ pub struct State {
     pub open: HashSet<String>,
     /// Every finished goal, not only the newest.
     pub show_all: bool,
+    /// The "No open goals" projects listed; folded by default.
+    pub show_idle: bool,
     /// `GET /goals/:id` for the picked project's open goals and the finished ones open, by ref.
     pub details: HashMap<String, Value>,
 }
@@ -320,7 +322,7 @@ fn project_row(t: &Theme, r: &ProjectRow, on: bool, cx: &mut Context<MainWindow>
         }))
 }
 
-fn project_list(t: &Theme, open: &[ProjectRow], idle: &[ProjectRow], picked: Option<&str>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn project_list(t: &Theme, open: &[ProjectRow], idle: &[ProjectRow], picked: Option<&str>, shown: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let mut col = div()
         .id("projects-list")
         .flex()
@@ -340,8 +342,25 @@ fn project_list(t: &Theme, open: &[ProjectRow], idle: &[ProjectRow], picked: Opt
         col = col.child(project_row(t, r, picked == Some(r.name.as_str()), cx));
     }
     if !idle.is_empty() {
-        col = col.child(div().px(px(12.)).pt(px(18.)).pb(px(4.)).child(section(t, "No open goals".into())));
-        for r in idle {
+        col = col.child(
+            div()
+                .id("projects-idle-toggle")
+                .flex()
+                .items_center()
+                .px(px(12.))
+                .pt(px(18.))
+                .pb(px(4.))
+                .cursor_pointer()
+                .child(section(t, format!("No open goals · {}", idle.len())))
+                .child(div().flex_1())
+                .child(chevron(t, shown))
+                .on_click(cx.listener(|m, _, _, cx| {
+                    m.projects.show_idle = !m.projects.show_idle;
+                    cx.notify();
+                })),
+        );
+        // Folded, the picked project still shows so the selection never disappears.
+        for r in idle.iter().filter(|r| shown || picked == Some(r.name.as_str())) {
             col = col.child(project_row(t, r, picked == Some(r.name.as_str()), cx));
         }
     }
@@ -519,7 +538,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     let goals: Vec<Value> = m.data.goals.clone();
     let (open, idle) = list(&state, &goals);
     let picked = selected(&m.projects, &open, &idle);
-    let shell = div().id("projects-page").flex().flex_1().min_w_0().h_full().line_height(relative(1.4)).child(project_list(&t, &open, &idle, picked.as_deref(), cx));
+    let shell = div().id("projects-page").flex().flex_1().min_w_0().h_full().line_height(relative(1.4)).child(project_list(&t, &open, &idle, picked.as_deref(), m.projects.show_idle, cx));
     let Some(p) = picked else {
         let msg = if m.data.state.is_none() { if m.down.is_some() { "Can’t load the board." } else { "Loading…" } } else { "No projects" };
         return shell.child(div().flex_1().child(kit::empty(&t, msg))).into_any_element();
