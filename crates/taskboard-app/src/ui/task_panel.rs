@@ -217,7 +217,7 @@ fn log_list_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Co
     let mut d = Draw { t: &t, window, path: Vec::new(), within: Vec::new() };
     if ix == 0 {
         return match build(m) {
-            Some(tree) => d.sheet(m, &tree, false, cx).0.into_any_element(),
+            Some(tree) => d.sheet(m, &tree, false, cx).1.into_any_element(),
             None => div().into_any_element(),
         };
     }
@@ -937,40 +937,28 @@ impl Draw<'_> {
         self.within.last().copied()
     }
 
-    /// The whole sheet scrolls as one (`.panel { overflow-y: auto; gap: 18px; padding: 16px 24px 32px }`),
-    /// the header (breadcrumb, title, chips) packed closer above it.
+    /// The sheet scrolls (`.panel { overflow-y: auto; gap: 18px; padding: 16px 24px 32px }`) between
+    /// the header (breadcrumb, title, chips), pinned above it, and the footer tabs, pinned under it.
     fn panel(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
         let r = m.task_panel.r.clone();
         let panel = div().size_full().flex().flex_col().text_size(px(14.));
+        let (head, col, foot) = self.sheet(m, tree, true, cx);
+        let head = head.map(|h| h.flex_none().px(px(24.)).pt(px(16.)).pb(px(16.)).line_height(relative(1.5)).border_b_1().border_color(self.t.border));
         // The Full log: a list that draws only what's in view, the sheet above as its first item.
         if let (Some(l), Some(_)) = (&m.task_panel.log_list, find_log(tree)) {
-            let foot = self.foot(m, tree, cx);
             let items = list(l.state.clone(), cx.processor(log_list_item)).flex_1().min_h_0();
-            return panel.child(items).children(foot).into_any_element();
+            return panel.children(head).child(items).children(foot).into_any_element();
         }
-        let (col, foot) = self.sheet(m, tree, true, cx);
-        // `.panel-foot { position: sticky; bottom: 0 }`: pinned under the scrolling sheet.
         let body = div().id(SharedString::from(format!("task-body-{r}"))).flex_1().min_h_0().overflow_y_scroll().child(col.pb(px(32.)));
-        panel.child(body).children(foot).into_any_element()
+        panel.children(head).child(body).children(foot).into_any_element()
     }
 
-    /// The footer tabs, drawn on their own.
-    fn foot(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-        let Node::El { kids, .. } = tree else { return None };
-        let i = kids.iter().position(|k| matches!(k, Node::El { k: K::Foot, .. }))?;
-        self.within.push(K::Col);
-        self.path.push(i);
-        let e = self.node(m, &kids[i], None, cx);
-        self.path.pop();
-        self.within.pop();
-        Some(e)
-    }
-
-    /// The sheet and (when `with_foot`) the footer under it.
-    fn sheet(&mut self, m: &MainWindow, tree: &Node, with_foot: bool, cx: &mut Context<MainWindow>) -> (Div, Option<AnyElement>) {
-        let Node::El { kids, .. } = tree else { return (div(), None) };
+    /// The header (breadcrumb, title, chips), the sheet under it and (when `with_foot`) the footer.
+    fn sheet(&mut self, m: &MainWindow, tree: &Node, with_foot: bool, cx: &mut Context<MainWindow>) -> (Option<Div>, Div, Option<AnyElement>) {
+        let Node::El { kids, .. } = tree else { return (None, div(), None) };
         let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(16.)).line_height(relative(1.5));
         let mut head = Some(div().flex().flex_col().min_w_0());
+        let mut done = None;
         let mut foot = None;
         self.within.push(K::Col);
         for (i, k) in kids.iter().enumerate() {
@@ -994,12 +982,13 @@ impl Draw<'_> {
             match (gap, head.take()) {
                 (Some(g), Some(h)) => head = Some(h.child(div().mt(px(g)).min_w_0().child(e))),
                 (_, h) => {
-                    col = col.children(h).child(e);
+                    done = done.or(h);
+                    col = col.child(e);
                 }
             }
         }
         self.within.pop();
-        (col.children(head), foot)
+        (done.or(head), col, foot)
     }
 
     fn kids(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
