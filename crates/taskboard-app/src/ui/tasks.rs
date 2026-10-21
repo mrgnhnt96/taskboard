@@ -270,6 +270,8 @@ pub struct Group {
     /// The goal's ref ("" for the other groupings and the tasks outside goals).
     pub r: String,
     pub name: String,
+    /// A goal's projects, when no project is picked ("" otherwise).
+    pub project: String,
     /// The status a status group holds.
     pub st: Option<St>,
     /// "5 open".
@@ -350,6 +352,14 @@ pub fn groups(items: &[Item], goals: &[Value], by: GroupBy, f: &Filter) -> Vec<G
             GroupBy::Project => (String::new(), if key.is_empty() { "No project".into() } else { key.clone() }, 0),
         };
         let goal = goals.iter().find(|g| !r.is_empty() && fmt::ref_of(g, "G") == r);
+        let mut projects: Vec<&str> = vec![];
+        if by == GroupBy::Goal && f.project.is_none() {
+            for it in &tasks {
+                if !it.project.is_empty() && !projects.contains(&it.project.as_str()) {
+                    projects.push(&it.project);
+                }
+            }
+        }
         let (state, urgency) = if by == GroupBy::Status { (None, first.row.st.rank()) } else { state_of(&tasks, goal) };
         let sort = match by {
             GroupBy::Goal => ((r.is_empty()) as u8, urgency, gid, String::new()),
@@ -362,6 +372,7 @@ pub fn groups(items: &[Item], goals: &[Value], by: GroupBy, f: &Filter) -> Vec<G
                 key: format!("{}-{key}", by.label()),
                 r,
                 name,
+                project: projects.join(", "),
                 st: (by == GroupBy::Status).then_some(first.row.st),
                 count: if by == GroupBy::Status { fmt::plural(rows.len() as i64, "task", "tasks") } else { count },
                 bar: if by == GroupBy::Status { vec![] } else { bar },
@@ -420,9 +431,9 @@ fn task_row(t: &Theme, it: &Item, col: String, cx: &mut Context<MainWindow>) -> 
 
 fn group_header(t: &Theme, g: &Group, open: bool, by: GroupBy, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let key = g.key.clone();
-    let mut title = div().flex().flex_1().min_w_0().items_baseline().gap(px(8.));
+    let mut title = div().flex().flex_1().min_w_0().items_center().gap(px(8.));
     if let Some(st) = g.st {
-        title = title.child(div().flex_none().self_center().child(kit::dot(st.colors(t).2, 8.)));
+        title = title.child(div().flex_none().child(kit::dot(st.colors(t).2, 8.)));
     }
     if !g.r.is_empty() {
         title = title.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(g.r.clone()));
@@ -439,6 +450,9 @@ fn group_header(t: &Theme, g: &Group, open: bool, by: GroupBy, cx: &mut Context<
             })),
         )
     };
+    if !g.project.is_empty() {
+        title = title.child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(g.project.clone()));
+    }
     title = title.child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(g.count.clone()));
     let mut header = div()
         .id(SharedString::from(format!("tasks-group-{}", g.key)))
@@ -740,6 +754,10 @@ mod tests {
         assert_eq!(gs[0].bar.iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 1), (St::Needs, 1), (St::Queued, 1)]);
         // A group that needs you or runs starts open; a paused or queued one starts closed.
         assert_eq!(gs.iter().map(|g| g.open).collect::<Vec<_>>(), [true, true, false, false]);
+        // A goal names its project; a picked project already says it.
+        assert_eq!(gs.iter().map(|g| g.project.as_str()).collect::<Vec<_>>(), ["web", "api", "web", "api"]);
+        let picked = groups(&it, &goals, GroupBy::Goal, &Filter { project: Some("web"), show: Show::Open, kind: Kind::All, words: "" });
+        assert!(picked.iter().all(|g| g.project.is_empty()));
     }
 
     #[test]
