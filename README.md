@@ -111,6 +111,7 @@ email = "alex@acme.com"   # token: TASKBOARD_JIRA_TOKEN or the Keychain item "ta
 ## Developing
 
 ```sh
+git config core.hooksPath .githooks                         # once per clone: refuses commits straight to main
 cargo test --workspace                                       # unit, end-to-end and web-parity tests
 cargo test -p taskboardd --test it -- oct8:: waves::         # some daemon test files (tests/it/<file>.rs, one binary)
 crates/taskboard-app/parity/regen.sh                         # regenerate the parity goldens from the frozen web UI (node)
