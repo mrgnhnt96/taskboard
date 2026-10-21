@@ -452,12 +452,13 @@ fn where_str(t: &Row, key: &str) -> Option<String> {
 
 /// The folder the PR is opened from: where the task committed, else its worktree, else the report's
 /// checkout or the task's repo. The terminal's folder comes after the task's own: a terminal in a
-/// shared checkout may be sitting on another task's branch.
+/// shared checkout may be sitting on another task's branch. A folder in another repository than the
+/// task's (one it worked in before it moved project) is passed over.
 fn dir_for(t: &Row, cwd: &str) -> Option<String> {
     [where_str(t, "committed_in"), where_str(t, "worktree"), Some(cwd.to_string()), t.s("repo_path").map(|s| s.to_string())]
         .into_iter()
         .flatten()
-        .find(|d| !d.is_empty() && Path::new(d).is_dir())
+        .find(|d| !d.is_empty() && Path::new(d).is_dir() && steps::outside(t, d).is_none())
 }
 
 /// Why `branch` (in `dir`, going into `base`) isn't this task's to open a PR from: it has nothing on

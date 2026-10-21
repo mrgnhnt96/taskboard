@@ -72,10 +72,14 @@ pub fn task_fields(app: &App, t: &Row, project: &str, goal: Option<i64>) -> Resu
 }
 
 /// What moving task `t` leaves behind in the old repo: its open jobs, its place in a terminal's line and
-/// the checkout it last ran in. A task on a terminal, or a finished one, keeps all of it.
+/// the checkout it last ran in. A finished one keeps all of it; one on a terminal keeps its jobs and
+/// line, and only the checkouts already in the new repo.
 pub fn leave_old(app: &App, t: &Row) -> Result<()> {
-    if on_terminal(t) || finished(t) {
+    if finished(t) {
         return Ok(());
+    }
+    if on_terminal(t) {
+        return forget_old_checkouts(app, t.id());
     }
     deliver::drop(app, t.id(), "it moved to another project")?;
     lines::leave(app, t)?;
@@ -84,6 +88,29 @@ pub fn leave_old(app: &App, t: &Row) -> Result<()> {
         board::save_context(app, t.id(), &ctx, false)?;
     }
     Ok(())
+}
+
+/// Drops the checkouts task `id` recorded in another repository than its (new) project's, so a PR isn't
+/// opened from the old repo: its worktree with the branch and commit seen there, and where it committed.
+fn forget_old_checkouts(app: &App, id: i64) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let mut ctx = board::task_context(&t);
+    let Some(w) = ctx.get_mut("where").and_then(|w| w.as_object_mut()) else { return Ok(()) };
+    let old = |key: &str| w.get(key).and_then(|v| v.as_str()).is_some_and(|d| crate::steps::outside(&t, d).is_some());
+    let mut keys = vec![];
+    if old("worktree") {
+        keys.extend(["worktree", "branch", "last_commit", "sha", "uncommitted"]);
+    }
+    if old("committed_in") {
+        keys.extend(["committed_in", "committed_branch"]);
+    }
+    if keys.is_empty() {
+        return Ok(());
+    }
+    for k in keys {
+        w.remove(k);
+    }
+    board::save_context(app, id, &ctx, false)
 }
 
 /// The log line for task `t` moving to `to`, naming the terminal that carries on with it.

@@ -663,6 +663,52 @@ fn a_failed_task_handed_in_with_a_pr_body_opens_its_pr() {
     assert_eq!(t.i("pr_num"), Some(77));
 }
 
+/// A task taken in one repo that committed there, then moved to another project, opens its PR from the new
+/// repo's checkout: the board forgets the old repo's checkout, and wouldn't open a PR from it anyway.
+#[test]
+fn a_task_moved_to_another_project_opens_its_pr_from_the_new_repo() {
+    let b = new_board();
+    let repo = git_repo(&b);
+    let api_origin = b.dir.path().join("api.git");
+    let api = b.dir.path().join("api");
+    git(b.dir.path(), &["init", "-q", "--bare", "-b", "main", &api_origin.to_string_lossy()]);
+    git(b.dir.path(), &["clone", "-q", &api_origin.to_string_lossy(), &api.to_string_lossy()]);
+    git(&api, &["config", "user.email", "test@example.com"]);
+    git(&api, &["config", "user.name", "Test"]);
+    git(&api, &["switch", "-q", "-c", "main"]);
+    std::fs::write(api.join("README"), "api\n").unwrap();
+    git(&api, &["add", "README"]);
+    git(&api, &["commit", "-q", "-m", "First"]);
+    git(&api, &["push", "-q", "origin", "main"]);
+    git(&api, &["remote", "set-head", "origin", "main"]);
+    let projects = json!([{"name": "webapp", "path": repo.to_string_lossy()}, {"name": "api", "path": api.to_string_lossy()}]);
+    b.app.db.set_setting("midna_projects", Some(&projects.to_string())).unwrap();
+    let id = b.task("Add passkeys", json!({}));
+    b.take(id);
+    let old = repo.to_string_lossy().to_string();
+    let mut ctx = board::task_context(&b.row(id));
+    ctx.insert("where".into(), json!({"worktree": old, "branch": "main", "committed_in": old, "committed_branch": "main", "conversation": "c-s1"}));
+    board::save_context(&b.app, id, &ctx, false).unwrap();
+
+    b.post(&format!("/tasks/T{id}"), json!({"project": "api"}));
+    let w = board::task_context(&b.row(id))["where"].clone();
+    assert_eq!(w, json!({"conversation": "c-s1"}), "the old repo's checkout is forgotten, the conversation kept");
+
+    git(&api, &["switch", "-q", "-c", "feat/passkeys"]);
+    std::fs::write(api.join("a.txt"), "a\n").unwrap();
+    git(&api, &["add", "a.txt"]);
+    git(&api, &["commit", "-q", "-m", "Add a"]);
+    git(&api, &["push", "-q", "-u", "origin", "feat/passkeys"]);
+    // Even with the old checkout still on record, a PR isn't opened from another repo than the task's.
+    board::save_context(&b.app, id, &ctx, false).unwrap();
+    let cwd = api.to_string_lossy().to_string();
+    let v = b.report("tb.done", json!({"summary": "Passkeys", "pr_body": BODY, "cwd": cwd, "pr_branch": "feat/passkeys"})).unwrap();
+    assert_eq!(v["pr_url"], "https://github.com/acme/webapp/pull/77", "{v}");
+    let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap();
+    assert!(log.contains("--head feat/passkeys"), "{log}");
+    assert_eq!(b.row(id).i("pr_num"), Some(77));
+}
+
 /// Two tasks with terminals in one shared checkout: A works in its own worktree, B switches the shared
 /// checkout to its branch. Each PR opens from its own task's branch, a task with no commits can't take
 /// B's, and a second PR for B's branch names B's PR instead of a bare 422.
