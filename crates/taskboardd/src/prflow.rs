@@ -33,6 +33,8 @@ pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments"
 pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+/// How long a terminal a visit opened may sit idle before its prompt reaches it (#592).
+const PROMPT_WAIT_SECS: f64 = 120.0;
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
 const MERGE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge refused for checks still running on the host holds the stage at `checks` for at most this
@@ -334,6 +336,41 @@ pub fn visit_live(app: &App, t: &Row) -> Result<bool> {
     Ok(false)
 }
 
+/// The terminal the task's last PR visit opened, while that visit's prompt hasn't reached it: it isn't
+/// the flow's terminal yet (`picked_up`) and no prompt has run in it. Idle there isn't a finished turn.
+fn unprompted_tab(app: &App, t: &Row) -> Result<Option<Row>> {
+    let f = flow(t);
+    if !f.contains_key("woke") || live_job(app, t)?.is_some() {
+        return Ok(None);
+    }
+    let opened = app.db.val(
+        "SELECT json_extract(target, '$.session') FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'pr' \
+         AND state = 'done' ORDER BY id DESC LIMIT 1",
+        p![t.id()],
+    )?;
+    let Some(sid) = opened.as_str().filter(|s| !s.is_empty() && f.s("session") != Some(*s)) else { return Ok(None) };
+    Ok(board::get_session(app, Some(sid))?.filter(|s| s.v("board_prompt").is_null()))
+}
+
+/// A visit whose new terminal closed, or sat idle, before its prompt reached it: the wake failed, so
+/// the board tries again rather than leaving the PR unvisited (#592).
+pub fn prompts_missed(app: &App) -> Result<()> {
+    let woke = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL AND json_extract(pr_flow, '$.woke') IS NOT NULL", p![])?;
+    for t in woke {
+        if !WAKE.contains(&t.s("pr_phase").unwrap_or("")) {
+            continue;
+        }
+        let Some(s) = unprompted_tab(app, &t)? else { continue };
+        let why = match s.s("status") {
+            Some("gone") => "its terminal closed before the prompt reached it",
+            Some("idle") if age_secs(s.s("status_at")).unwrap_or(0.0) >= PROMPT_WAIT_SECS => "the prompt never reached its terminal",
+            _ => continue,
+        };
+        app.db.tx(|| wake_failed(app, &t, why).map(|_| ()))?;
+    }
+    Ok(())
+}
+
 pub fn waking(app: &App, t: &Row) -> Result<bool> {
     Ok(live_job(app, t)?.is_some() || (WAKE.contains(&t.s("pr_phase").unwrap_or("")) && flow(t).contains_key("woke")))
 }
@@ -411,7 +448,9 @@ pub fn wake_failed(app: &App, t: &Row, text: &str) -> Result<bool> {
     }
     let tries = f.i0("wake_tries") + 1;
     let wait = WAKE_RETRY_WAITS[(tries.min(3) - 1) as usize];
-    merge_flow(app, t.id(), fields!["woke" => null, "wake_tries" => tries, "retry_at" => iso(now_ts() + wait as f64)])?;
+    // Read the PR again once the wait is over, so the retry runs whether or not anything else steps it.
+    let at = iso(now_ts() + wait as f64);
+    merge_flow(app, t.id(), fields!["woke" => null, "wake_tries" => tries, "retry_at" => at.clone(), "reread_at" => at])?;
     let mins = wait / 60;
     let text = text.trim_end_matches(['.', ' ']);
     board::log_event(
@@ -744,7 +783,8 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
         let finished = FINISHED.contains(&t.s("pr_phase").unwrap_or(""));
         let f = flow(&t);
         let still_needed = f.s("session") == s.s("id") && (f.contains_key("woke") || live_job(app, &t)?.is_some());
-        if !finished && still_needed {
+        let awaiting_prompt = unprompted_tab(app, &t)?.is_some_and(|u| u.s("id") == s.s("id"));
+        if !finished && (still_needed || awaiting_prompt) {
             continue;
         }
         out.push((s, t, finished));
