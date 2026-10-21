@@ -60,8 +60,72 @@ pub fn seed(app: &App) -> Result<()> {
         seed_today(app, &[(t1, "done"), (t2, "working"), (t3, "needs")])?;
         seed_history(app)?;
         seed_ideas(app, gid, t2)?;
+        seed_reviews(app, t1, t2, t3)?;
         Ok(())
     })
+}
+
+/// Two weekly reviews: last week's, unseen, with three filed fixes (one already in a goal), and the
+/// one before it to compare against.
+fn seed_reviews(app: &App, t1: i64, t2: i64, t3: i64) -> Result<()> {
+    let end = now_ts() - 86400.0;
+    let week = 7.0 * 86400.0;
+    let older = json!({
+        "seconds": 41400.0, "spans": 1630,
+        "categories": [{"name": "build", "seconds": 16200.0}, {"name": "test", "seconds": 10800.0}, {"name": "edit", "seconds": 6300.0},
+                       {"name": "read", "seconds": 4500.0}, {"name": "load wait", "seconds": 3600.0}],
+        "owner_wait": {"seconds": 9000.0, "reasons": [{"name": "question", "seconds": 9000.0}], "tasks": []},
+        "timeouts": {"count": 3, "commands": []}, "reruns": [{}, {}], "projects": [], "slowest_tasks": [], "repeated": [], "suggestions": []
+    });
+    app.db.insert("reviews", fields!["period_start" => iso(end - 2.0 * week), "period_end" => iso(end - week), "created_at" => iso(end - week),
+                                     "scheduled" => 1, "data" => jdumps(&older), "seen_at" => iso(end - week + 3600.0)])?;
+    let (r1, r2, r3) = (format!("T{t1}"), format!("T{t2}"), format!("T{t3}"));
+    let data = json!({
+        "seconds": 37800.0, "spans": 1412,
+        "categories": [{"name": "build", "seconds": 13500.0}, {"name": "test", "seconds": 9900.0}, {"name": "edit", "seconds": 6100.0},
+                       {"name": "read", "seconds": 4200.0}, {"name": "git", "seconds": 2300.0}, {"name": "load wait", "seconds": 1800.0}],
+        "projects": [
+            {"name": "webapp", "seconds": 27000.0, "categories": [{"name": "build", "seconds": 10800.0}]},
+            {"name": "api", "seconds": 9000.0, "categories": [{"name": "test", "seconds": 4200.0}]},
+            {"name": "untracked", "seconds": 1800.0, "categories": [{"name": "read", "seconds": 900.0}]}
+        ],
+        "slowest_tasks": [
+            {"task": r2, "title": "Sign in with a passkey", "seconds": 12600.0, "top_category": "build"},
+            {"task": r1, "title": "Add the WebAuthn registration endpoint", "seconds": 8100.0, "top_category": "test"},
+            {"task": r3, "title": "Settings page: manage passkeys", "seconds": 4500.0, "top_category": "edit"}
+        ],
+        "repeated": [
+            {"command": "cargo test --workspace", "fingerprint": "a", "category": "test", "runs": 14, "median": 420.0, "p90": 690.0, "seconds": 6100.0},
+            {"command": "npm run build", "fingerprint": "b", "category": "build", "runs": 22, "median": 210.0, "p90": 380.0, "seconds": 5000.0},
+            {"command": "npx playwright test e2e/auth.spec.ts", "fingerprint": "c", "category": "test", "runs": 6, "median": 150.0, "p90": 260.0, "seconds": 1000.0}
+        ],
+        "timeouts": {"count": 2, "commands": [{"command": "npx playwright test", "fingerprint": "d", "count": 2, "seconds": 1200.0}]},
+        "reruns": [
+            {"command": "cargo test -p api auth::", "fingerprint": "e", "task": r1, "runs": 3, "seconds": 960.0, "passed": true},
+            {"command": "npm run lint", "fingerprint": "f", "task": r2, "runs": 2, "seconds": 140.0, "passed": false}
+        ],
+        "owner_wait": {"seconds": 5400.0, "reasons": [{"name": "question", "seconds": 3600.0}, {"name": "review", "seconds": 1800.0}],
+                       "tasks": [{"task": r3, "title": "Settings page: manage passkeys", "seconds": 3600.0}, {"task": r2, "title": "Sign in with a passkey", "seconds": 1800.0}]},
+        "change": {"review": 1, "seconds": -3600.0, "owner_wait": -3600.0, "timeouts": -1, "reruns": 0,
+                   "categories": [{"name": "build", "seconds": -2700.0}, {"name": "test", "seconds": -900.0}, {"name": "edit", "seconds": -200.0},
+                                  {"name": "read", "seconds": -300.0}, {"name": "git", "seconds": 2300.0}, {"name": "load wait", "seconds": -1800.0}]},
+        "suggestions": []
+    });
+    let id = app.db.insert("reviews", fields!["period_start" => iso(end - week), "period_end" => iso(end), "created_at" => iso(end), "scheduled" => 1, "data" => jdumps(&data)])?;
+    let goal = app.db.q1("SELECT id FROM goals ORDER BY id LIMIT 1", p![])?.map(|r| r.id());
+    let now = now_iso();
+    let mut filed = vec![];
+    for (kind, title, in_goal) in [
+        ("follow", "Share one build cache across worktrees", false),
+        ("bug", "Run the Playwright suite in the background", false),
+        ("follow", "Split cargo test --workspace by crate", true),
+    ] {
+        let b = app.db.insert("issues", fields!["project" => "webapp", "kind" => kind, "title" => title, "source" => "review", "review_id" => id,
+                                                "goal_id" => if in_goal { goal } else { None }, "state" => "open", "created_at" => now, "updated_at" => now])?;
+        filed.push(format!("B{b}"));
+    }
+    app.db.x("UPDATE reviews SET fixes = ? WHERE id = ?", p![jdumps(&json!({"state": "done", "filed": filed, "linked": []})), id])?;
+    Ok(())
 }
 
 /// Ideas in every state: two reported (one with notes and two rounds), one digging, one new, one

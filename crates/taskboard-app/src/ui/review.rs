@@ -1,10 +1,14 @@
-//! The Review page: one weekly time review (`GET /reviews/:id`) with the same sections as
+//! The Review page: one weekly time review (`GET /reviews/:id`) with the same numbers as
 //! `tb review`, a picker for earlier weeks, and its suggested fixes as backlog issues. Read-only:
 //! opening a review marks it seen (its Needs you item goes), and Plan a goal hands the open fixes
 //! to the Backlog page, checked.
+//!
+//! Layout: the week and its key numbers against the review before; the suggested fixes, since
+//! they're what to act on; where the time went (by category, by project, waiting on you); then
+//! the slowest tasks and the commands behind them.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, s};
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeMode};
 use crate::ui::kit;
 use crate::ui::select::sel;
 use gpui_kit::prelude::*;
@@ -20,6 +24,8 @@ pub struct State {
     pub id: Option<i64>,
     /// Reviews already marked seen from here, so each is sent once.
     marked: HashSet<i64>,
+    /// The Commands card's tab: 0 slow repeated, 1 timed out, 2 rerun.
+    tab: usize,
 }
 
 // ------------------------------------------------------------------ view model
@@ -36,10 +42,6 @@ pub fn took(secs: f64) -> String {
     }
 }
 
-fn signed(secs: f64) -> String {
-    format!("{}{}", if secs < 0.0 { "-" } else { "+" }, took(secs))
-}
-
 fn secs(v: &Value) -> f64 {
     v.as_f64().unwrap_or(0.0)
 }
@@ -50,7 +52,31 @@ pub fn period(r: &Value) -> String {
     format!("{} – {}", day("period_start"), day("period_end"))
 }
 
-/// One row of a section: what it is, how long, and a line under it.
+/// A change against the review before: its words and whether it went the good way (less is
+/// better for every number here). `None` when it didn't move.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Delta {
+    pub text: String,
+    pub better: bool,
+}
+
+fn time_delta(d: f64) -> Option<Delta> {
+    (d.abs() >= 60.0).then(|| Delta { text: format!("{} {}", took(d), if d < 0.0 { "less" } else { "more" }), better: d < 0.0 })
+}
+
+fn count_delta(d: i64) -> Option<Delta> {
+    (d != 0).then(|| Delta { text: format!("{} {}", d.abs(), if d < 0 { "fewer" } else { "more" }), better: d < 0 })
+}
+
+/// One of the key numbers at the top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Kpi {
+    pub label: &'static str,
+    pub value: String,
+    pub delta: Option<Delta>,
+}
+
+/// One row of a list: what it is, how long, a line under it, and its share of the list's longest.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     /// A task ref to open, when the row is a task.
@@ -58,6 +84,15 @@ pub struct Line {
     pub name: String,
     pub took: String,
     pub sub: String,
+    pub share: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Category {
+    pub name: String,
+    pub took: String,
+    pub share: f32,
+    pub delta: Option<Delta>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,17 +110,18 @@ pub struct Fix {
 pub struct View {
     pub id: i64,
     pub period: String,
-    pub total: String,
-    pub change: Option<String>,
-    /// (name, time, share 0..1)
-    pub categories: Vec<(String, String, f32)>,
+    /// "vs Oct 5 – Oct 12" once there's a review to compare with.
+    pub against: Option<String>,
+    pub kpis: Vec<Kpi>,
+    pub categories: Vec<Category>,
     pub projects: Vec<Line>,
     pub slowest: Vec<Line>,
     pub repeated: Vec<Line>,
     pub timeouts: Vec<Line>,
     pub reruns: Vec<Line>,
-    /// "2.1 h" and its reasons ("question 1.2 h, review 50 min").
-    pub wait: Option<(String, String)>,
+    /// Why tasks waited on the owner, and the tasks that waited longest.
+    pub wait_reasons: Vec<Line>,
+    pub wait_tasks: Vec<Line>,
     pub fixes: Vec<Fix>,
     /// While no fix is filed: the running/failed line, else the plain suggestions.
     pub fixes_note: Option<String>,
@@ -99,55 +135,65 @@ impl View {
     }
 }
 
-pub fn view(r: &Value) -> View {
+/// Sets each line's share of the longest line's time.
+fn shares(mut lines: Vec<(Line, f64)>) -> Vec<Line> {
+    let max = lines.iter().map(|(_, t)| *t).fold(0.0, f64::max);
+    for (l, t) in &mut lines {
+        l.share = if max > 0.0 { (*t / max) as f32 } else { 0.0 };
+    }
+    lines.into_iter().map(|(l, _)| l).collect()
+}
+
+pub fn view(r: &Value, list: &[Value]) -> View {
     let d = &r["data"];
+    let c = &d["change"];
+    let has_change = c.is_object();
     let total = secs(&d["seconds"]);
-    let change = d["change"].is_object().then(|| {
-        let c = &d["change"];
-        format!(
-            "Since review {}: {} agent time, {} waiting on you, {:+} timeouts, {:+} reruns",
-            c["review"],
-            signed(secs(&c["seconds"])),
-            signed(secs(&c["owner_wait"])),
-            c["timeouts"].as_i64().unwrap_or(0),
-            c["reruns"].as_i64().unwrap_or(0)
-        )
-    });
+    let wait = &d["owner_wait"];
+    let n_reruns = arr(d, "reruns").len();
+    let kpi = |label, value: String, delta: Option<Delta>| Kpi { label, value, delta: delta.filter(|_| has_change) };
+    let kpis = vec![
+        kpi("Agent time", took(total), time_delta(secs(&c["seconds"]))),
+        kpi("Waiting on you", took(secs(&wait["seconds"])), time_delta(secs(&c["owner_wait"]))),
+        kpi("Timeouts", fmt::i(&d["timeouts"], "count").to_string(), count_delta(c["timeouts"].as_i64().unwrap_or(0))),
+        kpi("Failed, then rerun", n_reruns.to_string(), count_delta(c["reruns"].as_i64().unwrap_or(0))),
+    ];
+    let against = has_change.then(|| list.iter().find(|x| x["id"] == c["review"]).map(period)).flatten().map(|p| format!("vs {p}"));
     let categories = arr(d, "categories")
         .iter()
-        .map(|x| (s(x, "name").to_string(), took(secs(&x["seconds"])), if total > 0.0 { (secs(&x["seconds"]) / total) as f32 } else { 0.0 }))
-        .collect();
-    let line = |task: Option<&str>, name: &str, t: f64, sub: String| Line { task: task.filter(|t| !t.is_empty()).map(str::to_string), name: name.to_string(), took: took(t), sub };
-    let projects = arr(d, "projects").iter().map(|x| line(None, s(x, "name"), secs(&x["seconds"]), format!("mostly {}", s(&x["categories"][0], "name")))).collect();
-    let slowest = arr(d, "slowest_tasks")
-        .iter()
-        .map(|x| line(Some(s(x, "task")), &format!("{} {}", s(x, "task"), s(x, "title")), secs(&x["seconds"]), format!("mostly {}", s(x, "top_category"))))
-        .collect();
-    let repeated = arr(d, "repeated")
-        .iter()
-        .map(|x| line(None, s(x, "command"), secs(&x["median"]), format!("median · p90 {} · {} runs", took(secs(&x["p90"])), fmt::i(x, "runs"))))
-        .collect();
-    let timeouts = arr(&d["timeouts"], "commands")
-        .iter()
-        .map(|x| line(None, s(x, "command"), secs(&x["seconds"]), fmt::plural(fmt::i(x, "count"), "timeout", "timeouts")))
-        .collect();
-    let reruns = arr(d, "reruns")
-        .iter()
         .map(|x| {
-            let end = if x["passed"] == true { "then passed" } else { "never passed" };
-            line(Some(s(x, "task")), s(x, "command"), secs(&x["seconds"]), format!("{} · {} runs, {end}", s(x, "task"), fmt::i(x, "runs")))
+            let name = s(x, "name");
+            let was = arr(c, "categories").iter().find(|y| s(y, "name") == name).map(|y| secs(&y["seconds"]));
+            Category { name: name.to_string(), took: took(secs(&x["seconds"])), share: if total > 0.0 { (secs(&x["seconds"]) / total) as f32 } else { 0.0 }, delta: was.and_then(time_delta) }
         })
         .collect();
-    let w = &d["owner_wait"];
-    let wait = (secs(&w["seconds"]) > 0.0).then(|| {
-        let why: Vec<String> = arr(w, "reasons").iter().map(|x| format!("{} {}", s(x, "name"), took(secs(&x["seconds"])))).collect();
-        (took(secs(&w["seconds"])), why.join(", "))
-    });
+    let line = |task: Option<&str>, name: &str, t: f64, sub: String| (Line { task: task.filter(|t| !t.is_empty()).map(str::to_string), name: name.to_string(), took: took(t), sub, share: 0.0 }, t);
+    let projects = shares(arr(d, "projects").iter().map(|x| line(None, s(x, "name"), secs(&x["seconds"]), format!("mostly {}", s(&x["categories"][0], "name")))).collect());
+    let slowest = shares(arr(d, "slowest_tasks").iter().map(|x| line(Some(s(x, "task")), s(x, "title"), secs(&x["seconds"]), format!("mostly {}", s(x, "top_category")))).collect());
+    let repeated = shares(
+        arr(d, "repeated")
+            .iter()
+            .map(|x| line(None, s(x, "command"), secs(&x["median"]), format!("median · p90 {} · {}", took(secs(&x["p90"])), fmt::plural(fmt::i(x, "runs"), "run", "runs"))))
+            .collect(),
+    );
+    let timeouts = shares(arr(&d["timeouts"], "commands").iter().map(|x| line(None, s(x, "command"), secs(&x["seconds"]), fmt::plural(fmt::i(x, "count"), "timeout", "timeouts"))).collect());
+    let reruns = shares(
+        arr(d, "reruns")
+            .iter()
+            .map(|x| {
+                let end = if x["passed"] == true { "then passed" } else { "never passed" };
+                line(Some(s(x, "task")), s(x, "command"), secs(&x["seconds"]), format!("{} · {} runs, {end}", s(x, "task"), fmt::i(x, "runs")))
+            })
+            .collect(),
+    );
+    let wait_reasons = shares(arr(wait, "reasons").iter().map(|x| line(None, &fmt::cap(s(x, "name")), secs(&x["seconds"]), String::new())).collect());
+    let wait_tasks = shares(arr(wait, "tasks").iter().map(|x| line(Some(s(x, "task")), s(x, "title"), secs(&x["seconds"]), String::new())).collect());
     let fixes: Vec<Fix> = arr(r, "fix_issues")
         .iter()
         .map(|b| {
             let state = s(b, "state");
-            let goal = s(b, "goal");
+            // The board sends the goal as `{id, ref, name}`.
+            let goal = b["goal"].as_str().unwrap_or_else(|| s(&b["goal"], "ref"));
             let went = match state {
                 "open" if goal.is_empty() => String::new(),
                 "open" => format!("In {goal}"),
@@ -167,15 +213,16 @@ pub fn view(r: &Value) -> View {
     View {
         id: r["id"].as_i64().unwrap_or(0),
         period: period(r),
-        total: took(total),
-        change,
+        against,
+        kpis,
         categories,
         projects,
         slowest,
         repeated,
         timeouts,
         reruns,
-        wait,
+        wait_reasons,
+        wait_tasks,
         fixes,
         fixes_note,
         suggestions,
@@ -198,6 +245,14 @@ pub fn first_review(next: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(S
         n => format!("in {n} days"),
     };
     Some((at.format("%A, %b %-d · %-I:%M %p").to_string(), away))
+}
+
+/// The category palette, in order of time spent: the Days page's project colours, then teal, then grey.
+fn category_color(mode: ThemeMode, index: usize) -> Hsla {
+    const LIGHT: [u32; 5] = [0x2a78d6, 0xeda100, 0x4a3aa7, 0xe87ba4, 0x1f9e89];
+    const DARK: [u32; 5] = [0x3987e5, 0xc98500, 0x9085e9, 0xd55181, 0x2bb39c];
+    let pal = if mode == ThemeMode::Dark { DARK } else { LIGHT };
+    rgb(pal.get(index).copied().unwrap_or(0x8a95a3)).into()
 }
 
 // ------------------------------------------------------------------ actions
@@ -248,29 +303,196 @@ fn plan(m: &mut MainWindow, refs: Vec<String>, cx: &mut Context<MainWindow>) {
 
 // ------------------------------------------------------------------ render
 
-fn section(t: &Theme, title: &str) -> Div {
-    kit::card(t).flex().flex_col().gap(px(8.)).child(kit::h3(t, title.to_string()))
+fn card(t: &Theme) -> Div {
+    div().flex().flex_col().gap(px(12.)).p(px(16.)).bg(t.card).border_1().border_color(t.border).rounded(px(12.))
 }
 
-fn line_el(t: &Theme, id: String, l: &Line, mono: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let name = sel(t, "name", l.name.clone());
-    let name = if mono { div().font_family(t.mono_font.clone()).text_size(px(12.)).child(name) } else { div().text_size(px(13.)).child(name) };
+fn h2(t: &Theme, text: impl Into<SharedString>) -> Div {
+    div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(text.into())
+}
+
+/// A card's title, with what sits at its right (a count, a button, tabs).
+fn head(t: &Theme, title: &str, right: Option<AnyElement>) -> Div {
+    div().flex().items_center().gap(px(10.)).min_h(px(28.)).child(h2(t, title.to_string())).child(div().flex_1()).children(right)
+}
+
+fn delta_el(t: &Theme, d: &Delta) -> Div {
+    let fg = if d.better { t.up_fg } else { t.down };
+    div().flex().items_center().gap(px(3.)).text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(fg).child(if d.better { "↓" } else { "↑" }).child(d.text.clone())
+}
+
+/// A thin bar of `share` (0..1) on the theme's track.
+fn bar(t: &Theme, share: f32, color: Hsla, h: f32) -> Div {
+    div().w_full().h(px(h)).rounded_full().bg(t.seg).child(div().h_full().rounded_full().w(relative(share.clamp(0.0, 1.0).max(0.01))).bg(color))
+}
+
+/// A list row: name, its detail and time over a bar of its share, its time at the right.
+/// Task rows open the task.
+fn line_el(t: &Theme, id: String, l: &Line, mono: bool, color: Hsla, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let name = sel(t, SharedString::from(format!("{id}-name")), l.name.clone());
+    let name = if mono { div().font_family(t.mono_font.clone()).text_size(px(12.5)) } else { div().text_size(px(13.)) }.min_w_0().overflow_hidden().text_ellipsis().child(name);
+    let top = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .children(l.task.clone().map(|r| kit::mono(t, r).flex_none().text_color(t.muted)))
+        .child(name.flex_1())
+        .when(!l.sub.is_empty(), |d| d.child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.sub.clone())))
+        .child(div().flex_none().min_w(px(52.)).text_align(TextAlign::Right).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(l.took.clone()));
     let row = div()
         .id(SharedString::from(id))
         .flex()
-        .items_start()
-        .gap(px(12.))
-        .py(px(3.))
-        .child(div().w(px(64.)).flex_none().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(l.took.clone()))
-        .child(div().flex().flex_col().flex_1().min_w_0().gap(px(1.)).child(name.overflow_hidden().text_ellipsis()).child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, "sub", l.sub.clone()))));
+        .flex_col()
+        .gap(px(5.))
+        .px(px(8.))
+        .py(px(7.))
+        .mx(px(-8.))
+        .rounded(px(8.))
+        .child(top)
+        .child(bar(t, l.share, color, 4.));
     match l.task.clone() {
-        Some(r) => row.cursor_pointer().hover(|d| d.bg(t.panel_2)).rounded(px(6.)).on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx))),
+        Some(r) => {
+            let h = t.panel_2;
+            row.cursor_pointer().hover(move |d| d.bg(h)).on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)))
+        }
         None => row,
     }
 }
 
-fn lines(t: &Theme, key: &str, title: &str, list: &[Line], mono: bool, cx: &mut Context<MainWindow>) -> Option<Div> {
-    (!list.is_empty()).then(|| section(t, title).children(list.iter().enumerate().map(|(n, l)| line_el(t, format!("review-{key}-{n}"), l, mono, cx))))
+fn lines(t: &Theme, key: &str, list: &[Line], mono: bool, color: Hsla, cx: &mut Context<MainWindow>) -> Div {
+    div().flex().flex_col().gap(px(2.)).children(list.iter().enumerate().map(|(n, l)| line_el(t, format!("review-{key}-{n}"), l, mono, color, cx)))
+}
+
+fn kpis_el(t: &Theme, v: &View) -> Div {
+    let any_delta = v.kpis.iter().any(|k| k.delta.is_some());
+    div().flex().flex_wrap().gap(px(12.)).children(v.kpis.iter().map(|k| {
+        card(t)
+            .flex_1()
+            .min_w(px(170.))
+            .gap(px(4.))
+            .child(div().text_size(px(12.)).text_color(t.muted).child(k.label))
+            .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(k.value.clone()))
+            .when(any_delta, |d| d.child(div().min_h(px(16.)).children(k.delta.as_ref().map(|x| delta_el(t, x)))))
+    }))
+}
+
+fn fixes_el(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Option<Div> {
+    if v.fixes.is_empty() && v.fixes_note.is_none() && v.suggestions.is_empty() {
+        return None;
+    }
+    let refs = v.plan();
+    let n = refs.len();
+    let action = (n > 0).then(|| {
+        kit::btn_primary(t, "review-plan", "Plan a goal")
+            .tooltip(kit::tip(format!("Check {} on the Backlog page", fmt::plural(n as i64, "fix", "fixes"))))
+            .on_click(cx.listener(move |m, _, _, cx| plan(m, refs.clone(), cx)))
+            .into_any_element()
+    });
+    let count = v.fixes.len().max(v.suggestions.len());
+    let title = div().flex().items_center().gap(px(8.)).child(h2(t, "Suggested fixes")).when(count > 0, |d| d.child(kit::tone_pill(t, "accent", count.to_string())));
+    let rows = v.fixes.iter().map(|f| {
+        let r = f.r.clone();
+        let h = t.panel_2;
+        let tone = match f.kind.as_str() {
+            "Bug" => "down",
+            "Gap" => "warn",
+            _ => "accent",
+        };
+        div()
+            .id(SharedString::from(format!("review-fix-{}", f.r)))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .px(px(10.))
+            .py(px(9.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.border)
+            .cursor_pointer()
+            .hover(move |d| d.bg(h))
+            .when(!f.kind.is_empty(), |d| d.child(div().w(px(76.)).flex_none().child(kit::tone_pill(t, tone, f.kind.clone()))))
+            .child(kit::mono(t, f.r.clone()).flex_none().text_color(t.muted))
+            .child(div().flex_1().min_w_0().text_size(px(13.)).overflow_hidden().text_ellipsis().when(!f.untriaged, |d| d.text_color(t.text_2)).child(f.title.clone()))
+            .when(!f.went.is_empty(), |d| d.child(kit::tone_pill(t, if f.went.starts_with("In ") { "goal" } else { "" }, f.went.clone())))
+            .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
+    });
+    let suggestions = v.suggestions.iter().enumerate().map(|(n, (title, detail))| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .px(px(10.))
+            .py(px(9.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.border)
+            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(sel(t, SharedString::from(format!("review-sugg-title-{n}")), title.clone())))
+            .child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, SharedString::from(format!("review-sugg-detail-{n}")), detail.clone())))
+    });
+    Some(
+        card(t)
+            .child(div().flex().items_center().gap(px(10.)).min_h(px(28.)).child(title).child(div().flex_1()).children(action))
+            .children(v.fixes_note.clone().map(|n| div().text_size(px(13.)).text_color(t.muted).child(sel(t, "review-fixes-note", n))))
+            .child(div().flex().flex_col().gap(px(6.)).children(rows).children(suggestions)),
+    )
+}
+
+/// Where the time went: one bar split by category, then each category with its change.
+fn categories_el(t: &Theme, v: &View) -> Option<Div> {
+    (!v.categories.is_empty()).then(|| {
+        let c = |i| category_color(t.mode, i);
+        let stacked = div().flex().gap(px(2.)).h(px(14.)).w_full().children(v.categories.iter().enumerate().filter(|(_, x)| x.share > 0.0).map(|(i, x)| div().h_full().rounded(px(3.)).w(relative(x.share)).bg(c(i))));
+        let rows = v.categories.iter().enumerate().map(|(i, x)| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .py(px(6.))
+                .border_t_1()
+                .border_color(t.divider)
+                .text_size(px(13.))
+                .child(div().flex_none().size(px(10.)).rounded(px(3.)).bg(c(i)))
+                .child(div().flex_1().min_w_0().truncate().child(fmt::cap(&x.name)))
+                .child(div().w(px(110.)).flex().flex_none().justify_end().children(x.delta.as_ref().map(|d| delta_el(t, d))))
+                .child(div().w(px(64.)).flex_none().text_align(TextAlign::Right).font_weight(FontWeight::SEMIBOLD).child(x.took.clone()))
+                .child(div().w(px(40.)).flex_none().text_align(TextAlign::Right).text_size(px(12.)).text_color(t.muted).child(format!("{:.0}%", x.share * 100.0)))
+        });
+        card(t).child(head(t, "Where the time went", None)).child(stacked).child(div().flex().flex_col().children(rows))
+    })
+}
+
+fn wait_el(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Option<Div> {
+    (!v.wait_reasons.is_empty()).then(|| {
+        let total = v.kpis.get(1).map(|k| k.value.clone()).unwrap_or_default();
+        let mut c = card(t).child(head(t, "Waiting on you", Some(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(total).into_any_element()))).child(lines(t, "wait", &v.wait_reasons, false, t.warn, cx));
+        if !v.wait_tasks.is_empty() {
+            c = c.child(div().h(px(1.)).bg(t.divider)).child(kit::h3(t, "Longest waits")).child(lines(t, "wait-task", &v.wait_tasks, false, t.warn, cx));
+        }
+        c
+    })
+}
+
+fn commands_el(m: &MainWindow, t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Option<Div> {
+    let tabs: Vec<(usize, String, &[Line])> = [(0, "Slow repeated", &v.repeated), (1, "Timed out", &v.timeouts), (2, "Rerun", &v.reruns)]
+        .into_iter()
+        .filter(|(_, _, l)| !l.is_empty())
+        .map(|(i, name, l)| (i, format!("{name} {}", l.len()), l.as_slice()))
+        .collect();
+    if tabs.is_empty() {
+        return None;
+    }
+    let on = tabs.iter().position(|(i, _, _)| *i == m.review.tab).unwrap_or(0);
+    let labels: Vec<&str> = tabs.iter().map(|(_, l, _)| l.as_str()).collect();
+    let keys: Vec<usize> = tabs.iter().map(|(i, _, _)| *i).collect();
+    let seg = kit::seg(t, "review-cmd-tab", &labels, on, |n, item| {
+        let k = keys[n];
+        item.on_click(cx.listener(move |m, _, _, cx| {
+            m.review.tab = k;
+            cx.notify();
+        }))
+    });
+    let color = if keys[on] == 0 { t.accent } else { t.down };
+    Some(card(t).child(head(t, "Commands", Some(seg.into_any_element()))).child(lines(t, "cmd", tabs[on].2, true, color, cx)))
 }
 
 /// Day | Week: the Days page and the weekly review, from either one.
@@ -284,117 +506,47 @@ pub fn day_week(t: &Theme, week: bool, cx: &mut Context<MainWindow>) -> Div {
     })
 }
 
-/// A review's sections: where the time went on the left; fixes, waiting and projects in the rail.
-fn body(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Div {
-    // ---- where the time went
-    let cats = (!v.categories.is_empty()).then(|| {
-        section(t, "By category").children(v.categories.iter().map(|(name, took, share)| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(div().w(px(130.)).flex_none().text_size(px(13.)).child(name.clone()))
-                .child(div().flex_1().h(px(8.)).rounded_full().bg(t.seg).child(div().h_full().rounded_full().w(relative(share.clamp(0.0, 1.0))).bg(t.accent)))
-                .child(div().w(px(64.)).flex_none().text_size(px(13.)).text_align(TextAlign::Right).child(took.clone()))
-                .child(div().w(px(40.)).flex_none().text_size(px(12.)).text_color(t.muted).text_align(TextAlign::Right).child(format!("{:.0}%", share * 100.0)))
-        }))
-    });
-    let wait = v.wait.clone().map(|(time, why)| {
-        section(t, "Waiting on you").child(div().text_size(px(13.)).child(div().font_weight(FontWeight::SEMIBOLD).child(sel(t, "review-wait-time", time))).child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, "review-wait-why", why))))
-    });
-
-    // ---- suggested fixes
-    let refs = v.plan();
-    let mut fixes = section(t, "Suggested fixes");
-    if !refs.is_empty() {
-        let n = refs.len();
-        fixes = fixes.child(
-            div().flex().child(kit::btn_primary(t, "review-plan", "Plan a goal").tooltip(kit::tip(format!("Check {} on the Backlog page", fmt::plural(n as i64, "fix", "fixes")))).on_click(
-                cx.listener(move |m, _, _, cx| plan(m, refs.clone(), cx)),
-            )),
-        );
-    }
-    fixes = fixes.children(v.fixes.iter().map(|f| {
-        let r = f.r.clone();
-        div()
-            .id(SharedString::from(format!("review-fix-{}", f.r)))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .py(px(4.))
-            .px(px(6.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .hover(|d| d.bg(t.panel_2))
-            .child(kit::mono(t, f.r.clone()).flex_none())
-            .child(div().flex_1().min_w_0().text_size(px(13.)).overflow_hidden().text_ellipsis().child(f.title.clone()))
-            .when(!f.kind.is_empty(), |d| d.child(kit::chip(t, f.kind.clone())))
-            .when(!f.went.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).child(f.went.clone())))
-            .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
-    }));
-    fixes = fixes.children(v.fixes_note.clone().map(|n| div().text_size(px(13.)).text_color(t.muted).child(sel(t, "review-fixes-note", n))));
-    fixes = fixes.children(
-        v.suggestions.iter().enumerate().map(|(n, (title, detail))| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(sel(t, SharedString::from(format!("review-sugg-title-{n}")), title.clone())))
-                .child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, SharedString::from(format!("review-sugg-detail-{n}")), detail.clone())))
-        }),
-    );
-    let has_fixes = !v.fixes.is_empty() || v.fixes_note.is_some() || !v.suggestions.is_empty();
-
-    let left = div()
+/// A review's cards under the header: its key numbers, the suggested fixes, where the time went
+/// (with waiting on you and projects in the rail), then the commands.
+fn body(m: &MainWindow, t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Div {
+    let accent = t.accent;
+    let projects = (!v.projects.is_empty()).then(|| card(t).child(head(t, "By project", None)).child(lines(t, "proj", &v.projects, false, accent, cx)));
+    let slowest = (!v.slowest.is_empty()).then(|| card(t).child(head(t, "Slowest tasks", None)).child(lines(t, "slow", &v.slowest, false, accent, cx)));
+    let left = div().flex().flex_col().gap(px(16.)).flex_1().min_w(px(420.)).children(categories_el(t, v)).children(slowest);
+    let rail = div().flex().flex_col().gap(px(16.)).w(px(340.)).flex_none().children(wait_el(t, v, cx)).children(projects);
+    div()
         .flex()
         .flex_col()
         .gap(px(16.))
-        .flex_1()
-        .min_w(px(420.))
-        .children(cats)
-        .children(lines(t, "slow", "Slowest tasks", &v.slowest, false, cx))
-        .children(lines(t, "rep", "Slowest repeated commands", &v.repeated, true, cx))
-        .children(lines(t, "to", "Timeouts", &v.timeouts, true, cx))
-        .children(lines(t, "rerun", "Failed, then rerun", &v.reruns, true, cx));
-    let rail = div()
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .w(px(340.))
-        .flex_none()
-        .when(has_fixes, |d| d.child(fixes))
-        .children(wait)
-        .children(lines(t, "proj", "By project", &v.projects, false, cx));
-    div().flex().flex_wrap().items_start().gap(px(16.)).child(left).child(rail)
+        .child(kpis_el(t, v))
+        .children(fixes_el(t, v, cx))
+        .child(div().flex().flex_wrap().items_start().gap(px(16.)).child(left).child(rail))
+        .children(commands_el(m, t, v, cx))
 }
 
 fn page(header: Div) -> Div {
-    div().flex().flex_col().gap(px(16.)).w_full().px(px(28.)).py(px(22.)).child(header)
+    div().flex().flex_col().gap(px(16.)).w_full().max_w(px(1180.)).px(px(28.)).py(px(22.)).child(header)
 }
 
-fn header(t: &Theme, title: String, sub: String, nav: Div) -> Div {
-    div()
+/// The week as the title, a muted line beside it ("vs Oct 5 – Oct 12"), and the nav at the right.
+fn header(t: &Theme, title: String, sub: Option<String>, nav: Div) -> Div {
+    let title = div()
         .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(14.))
-        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(sel(t, "review-period", title)))
-        .child(div().text_size(px(14.)).text_color(t.text_2).child(sel(t, "review-total", sub)))
-        .child(div().flex_1())
-        .child(nav)
+        .items_baseline()
+        .gap(px(10.))
+        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(sel(t, "review-period", title)))
+        .children(sub.map(|a| div().text_size(px(13.)).text_color(t.muted).child(sel(t, "review-sub", a))));
+    div().flex().flex_wrap().items_center().gap(px(14.)).child(title).child(div().flex_1()).child(nav)
 }
 
-/// Before the first review: when it comes, and this week so far with the review's own sections.
+/// Before the first review: when it comes, and this week so far with the review's own cards.
 fn first_week(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     let list = m.data.reviews.as_ref();
     let next = list.and_then(|l| first_review(s(l, "next"), chrono::Utc::now()));
     let week = list.map(|l| &l["this_week"]).filter(|w| w["data"].is_object());
-    let v = week.map(view);
+    let v = week.map(|w| view(w, &[]));
     let tracked = v.as_ref().is_some_and(|v| !v.categories.is_empty());
-    let sub = match &v {
-        Some(v) if tracked => format!("{} of agent time so far", v.total),
-        _ => String::new(),
-    };
+    let sub = v.as_ref().filter(|_| tracked).and_then(|v| v.kpis.first()).map(|k| format!("{} of agent time so far", k.value));
     let title = v.as_ref().filter(|_| tracked).map_or("This week".to_string(), |v| v.period.clone());
 
     // ---- when the first review comes: the week's days up to it, today and the review day marked
@@ -430,7 +582,7 @@ fn first_week(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
         }))
     };
     let next_at = list.and_then(|l| fmt::parse(s(l, "next"))).map(|t| fmt::local(t).date_naive());
-    let callout = kit::card(t).flex_row().flex_wrap().px(px(20.)).py(px(16.)).items_center().justify_between().gap(px(16.)).child(match &next {
+    let callout = card(t).flex_row().flex_wrap().px(px(20.)).items_center().justify_between().gap(px(16.)).child(match &next {
         Some((when, away)) => div()
             .flex()
             .flex_col()
@@ -442,8 +594,12 @@ fn first_week(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     let callout = callout.children(next_at.map(strip));
 
     let content = match v.filter(|_| tracked) {
-        Some(v) => body(t, &v, cx),
-        None => kit::card(t).flex().flex_col().items_center().gap(px(6.)).py(px(36.)).child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("No agent time this week yet"))
+        Some(v) => body(m, t, &v, cx),
+        None => card(t)
+            .items_center()
+            .gap(px(6.))
+            .py(px(36.))
+            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("No agent time this week yet"))
             .children(m.data.errs.review.clone().map(|e| div().text_size(px(13.)).text_color(t.muted).child(e))),
     };
     page(header(t, title, sub, day_week(t, true, cx))).child(callout).child(content)
@@ -461,12 +617,12 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     let Some(r) = shown else {
         let msg = m.data.errs.review.clone().unwrap_or_else(|| "Loading…".into());
         let nav = div().flex().child(day_week(&t, true, cx));
-        return shell.child(page(header(&t, String::new(), String::new(), nav)).child(kit::empty(&t, msg))).into_any_element();
+        return shell.child(page(header(&t, String::new(), None, nav)).child(kit::empty(&t, msg))).into_any_element();
     };
     mark_seen(m, &r, cx);
-    let v = view(&r);
+    let v = view(&r, &list);
 
-    // ---- header: the week, earlier and later weeks, and a picker for any of them
+    // ---- header: the week, with earlier and later weeks around a picker for any of them
     let at = list.iter().position(|x| x["id"].as_i64() == Some(v.id));
     let older = at.and_then(|i| list.get(i + 1)).and_then(|x| x["id"].as_i64());
     let newer = at.and_then(|i| i.checked_sub(1)).and_then(|i| list.get(i)).and_then(|x| x["id"].as_i64());
@@ -479,17 +635,17 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
                 pick(m, id, cx)
             }
         })))
+        .child(kit::btn(&t, "review-week-btn", "All weeks  ▾").on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+            let p = e.position();
+            m.toggle_menu(MENU_WEEK, point(p.x - px(160.), p.y + px(14.)), cx);
+        })))
         .child(kit::btn(&t, "review-newer", "›").w(px(36.)).when(newer.is_none(), kit::disabled).tooltip(kit::tip("Later week")).on_click(cx.listener(move |m, _, _, cx| {
             if let Some(id) = newer {
                 pick(m, id, cx)
             }
         })))
-        .child(kit::btn(&t, "review-week-btn", "Weeks  ▾").on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
-            let p = e.position();
-            m.toggle_menu(MENU_WEEK, point(p.x - px(160.), p.y + px(14.)), cx);
-        })))
+        .child(div().w(px(6.)))
         .child(day_week(&t, true, cx));
-    let header = header(&t, v.period.clone(), format!("{} of agent time", v.total), nav);
 
     let mut menus: Vec<AnyElement> = vec![];
     if let Some(at) = m.menu_open(MENU_WEEK) {
@@ -502,10 +658,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         menus.push(kit::popover(at, menu.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
     }
 
-    shell
-        .child(page(header).children(v.change.clone().map(|c| div().text_size(px(13.)).text_color(t.text_2).child(c))).child(body(&t, &v, cx)))
-        .children(menus)
-        .into_any_element()
+    shell.child(page(header(&t, v.period.clone(), v.against.clone(), nav)).child(body(m, &t, &v, cx))).children(menus).into_any_element()
 }
 
 #[cfg(test)]
@@ -530,7 +683,7 @@ mod tests {
             },
             "fix_issues": [
                 {"id": 12, "ref": "B12", "title": "Cap concurrent builds", "kind_label": "Gap", "state": "open", "goal": null, "linked": false},
-                {"id": 13, "ref": "B13", "title": "Warm caches", "kind_label": "Follow-up", "state": "open", "goal": "G40", "linked": false},
+                {"id": 13, "ref": "B13", "title": "Warm caches", "kind_label": "Follow-up", "state": "open", "goal": {"id": 40, "ref": "G40", "name": "Faster builds"}, "linked": false},
                 {"id": 9, "ref": "B9", "title": "Long test timeouts", "kind_label": "Bug", "state": "done", "goal": null, "linked": true}
             ]
         })
@@ -538,18 +691,44 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn a_review_reads_as_tb_review_does() {
-        let v = view(&review());
+        let v = view(&review(), &[]);
         assert_eq!(v.period, "Oct 5 – Oct 12");
-        assert_eq!(v.total, "10.0 h");
-        assert_eq!(v.change.as_deref(), Some("Since review 3: -30 min agent time, +10 min waiting on you, -2 timeouts, +1 reruns"));
-        assert_eq!(v.categories[0], ("build".into(), "5.0 h".into(), 0.5));
+        assert_eq!(v.kpis.iter().map(|k| k.value.as_str()).collect::<Vec<_>>(), ["10.0 h", "1.5 h", "2", "1"]);
+        assert_eq!(v.categories[0], Category { name: "build".into(), took: "5.0 h".into(), share: 0.5, delta: None });
         assert_eq!(v.projects[0].sub, "mostly build");
-        assert_eq!(v.slowest[0], Line { task: Some("T12".into()), name: "T12 Make it fast".into(), took: "2.0 h".into(), sub: "mostly test".into() });
+        assert_eq!(v.slowest[0], Line { task: Some("T12".into()), name: "Make it fast".into(), took: "2.0 h".into(), sub: "mostly test".into(), share: 1.0 });
         assert_eq!(v.repeated[0].took, "5 min");
         assert_eq!(v.repeated[0].sub, "median · p90 9 min · 9 runs");
         assert_eq!(v.timeouts[0].sub, "2 timeouts");
         assert_eq!(v.reruns[0].sub, "T12 · 3 runs, then passed");
-        assert_eq!(v.wait, Some(("1.5 h".into(), "question 1.0 h, review 30 min".into())));
+        let reasons: Vec<(&str, &str, f32)> = v.wait_reasons.iter().map(|l| (l.name.as_str(), l.took.as_str(), l.share)).collect();
+        assert_eq!(reasons, [("Question", "1.0 h", 1.0), ("Review", "30 min", 0.5)]);
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_key_numbers_compare_with_the_review_before() {
+        let mut r = review();
+        r["data"]["change"]["categories"] = json!([{"name": "build", "seconds": 900.0}, {"name": "test", "seconds": 20.0}]);
+        let list = [json!({"id": 3, "period_start": "2026-09-28T00:00:00Z", "period_end": "2026-10-05T00:00:00Z"})];
+        let v = view(&r, &list);
+        assert_eq!(v.against.as_deref(), Some("vs Sep 28 – Oct 5"));
+        let deltas: Vec<Option<Delta>> = v.kpis.iter().map(|k| k.delta.clone()).collect();
+        assert_eq!(
+            deltas,
+            [
+                Some(Delta { text: "30 min less".into(), better: true }),
+                Some(Delta { text: "10 min more".into(), better: false }),
+                Some(Delta { text: "2 fewer".into(), better: true }),
+                Some(Delta { text: "1 more".into(), better: false }),
+            ]
+        );
+        // A category that barely moved shows no change.
+        assert_eq!(v.categories[0].delta, Some(Delta { text: "15 min more".into(), better: false }));
+        assert_eq!(v.categories[1].delta, None);
+        // The first review has nothing to compare with.
+        r["data"]["change"] = Value::Null;
+        let v = view(&r, &list);
+        assert!(v.against.is_none() && v.kpis.iter().all(|k| k.delta.is_none()));
     }
 
     #[::core::prelude::v1::test]
@@ -565,7 +744,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn plan_a_goal_checks_only_the_fixes_still_on_the_backlog() {
-        let v = view(&review());
+        let v = view(&review(), &[]);
         let went: Vec<&str> = v.fixes.iter().map(|f| f.went.as_str()).collect();
         assert_eq!(went, ["", "In G40", "Done"]);
         assert_eq!(v.plan(), ["B12"]);
@@ -578,11 +757,11 @@ mod tests {
         let mut r = review();
         r["fix_issues"] = json!([]);
         r["fixes"] = json!({"state": "failed", "error": "Claude timed out"});
-        let v = view(&r);
+        let v = view(&r, &[]);
         assert_eq!(v.fixes_note.as_deref(), Some("Couldn’t file these as backlog issues: Claude timed out"));
         assert_eq!(v.suggestions, [("Cap builds".to_string(), "Too many at once".to_string())]);
         assert!(v.plan().is_empty());
         r["fixes"] = json!({"state": "none"});
-        assert_eq!(view(&r).fixes_note, None);
+        assert_eq!(view(&r, &[]).fixes_note, None);
     }
 }
