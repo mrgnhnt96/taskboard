@@ -191,6 +191,8 @@ fn goal_status(g: &Value) -> Value {
         status("Needs you", "warn")
     } else if n("review") > 0 {
         status("In review", "busy")
+    } else if total > 0 && done >= total && n("misses") > 0 {
+        status("Outcome not met", "warn")
     } else if total > 0 && done >= total {
         status("Done", "ok")
     } else if n("blocked") > 0 {
@@ -437,6 +439,7 @@ mod tests {
         assert_eq!(pill(with(json!({"needs": 1}))), json!({"label": "Needs you", "tone": "warn"}));
         assert_eq!(pill(with(json!({"failed": 1}))), json!({"label": "Failed", "tone": "err"}));
         assert_eq!(pill(with(json!({"done": 4}))), json!({"label": "Done", "tone": "ok"}));
+        assert_eq!(pill(with(json!({"done": 4, "misses": 2}))), json!({"label": "Outcome not met", "tone": "warn"}));
         assert_eq!(pill(with(json!({"done": 3, "review": 1}))), json!({"label": "In review", "tone": "busy"}));
         assert_eq!(pill(with(json!({"failed": 2, "review": 1}))), json!({"label": "In review", "tone": "busy"}));
         assert_eq!(pill(with(json!({"blocked": 1}))), json!({"label": "Blocked", "tone": "warn"}));
