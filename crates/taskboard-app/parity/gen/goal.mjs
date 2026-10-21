@@ -61,6 +61,7 @@ const GOALS = {
   'needs': G({ tasks: [T(1, { status: 'needs' }), T(2, { status: 'working' })] }),
   'working': G({ tasks: [T(1, { status: 'working' }), T(2, { status: 'planned' })] }),
   'queued': G({ tasks: [T(1, { status: 'working' }), T(2, { status: 'queued' })] }),
+  'queued and planned': G({ tasks: [T(1, { status: 'queued' }), T(2, { status: 'planned' })] }),
   'queued, started now': G({ hours_until: '2026-10-08T06:00', tasks: [T(1, { status: 'queued' })] }),
   'queued, started now before': G({ hours_until: '2026-10-07T06:00', tasks: [T(1, { status: 'queued' })] }),
   'blocked': G({ tasks: [T(1, { status: 'queued', blocked: true }), T(2, { status: 'queued' })] }),
@@ -268,7 +269,7 @@ const buttons = html => [...html.matchAll(/<button type="button" class="btn ([^"
   .map(m => ({ act: attr(m[2], /data-act="([^"]*)"/), label: vis(m[3]), title: attr(m[2], /title="([^"]*)"/) }));
 for (const [hn, hours] of Object.entries(HOURS)) {
   for (const [n, g] of Object.entries(GOALS)) {
-    if (hn !== 'open' && !['planned only', 'working', 'rich', 'deprioritized', 'paused', 'queued', 'queued, started now', 'queued, started now before'].includes(n)) continue;
+    if (hn !== 'open' && !['planned only', 'working', 'rich', 'deprioritized', 'paused', 'queued', 'queued and planned', 'queued, started now', 'queued, started now before'].includes(n)) continue;
     setState({ hours });
     w.run('S.startMenu = null');
     const html = w.call('goalRunButtons', g);
@@ -279,9 +280,11 @@ for (const [hn, hours] of Object.entries(HOURS)) {
   if (hn === 'open' || hn === 'off') continue;
   setState({ hours });
   w.run("S.startMenu = 'G1'");
-  const html = w.call('startLater', GOALS['planned only'], '');
-  const menu = html.match(/<div class="ctxmenu[\s\S]*?<\/div>/)[0];
-  add('startMenu', hn, { hours }, [...menu.matchAll(/data-act="([^"]*)"[^>]*><b>([\s\S]*?)<\/b><span>([\s\S]*?)<\/span>/g)].map(m => ({ act: m[1], title: vis(m[2]), sub: vis(m[3]) })));
+  for (const gn of ['planned only', 'queued and planned']) {
+    const html = w.call('startLater', GOALS[gn], '');
+    const menu = html.match(/<div class="ctxmenu[\s\S]*?<\/div>/)[0];
+    add('startMenu', `${gn} / ${hn}`, { goal: GOALS[gn], hours }, [...menu.matchAll(/data-act="([^"]*)"[^>]*><b>([\s\S]*?)<\/b><span>([\s\S]*?)<\/span>/g)].map(m => ({ act: m[1], title: vis(m[2]), sub: vis(m[3]) })));
+  }
   add('opensAt', hn, { hours }, w.run('opensAt()'));
   w.run("S.waitMenu = 'G1'");
   const wait = w.call('waitingFor', GOALS['queued']).match(/<div class="ctxmenu[\s\S]*?<\/div>/)[0];
