@@ -427,3 +427,34 @@ fn a_pending_cut_is_hidden_and_held_while_releases_are_off() {
     releases_on(&app, "webapp");
     assert_eq!(pending(&app, "webapp")["name"], "v1.5");
 }
+
+#[test]
+fn a_long_release_list_comes_a_page_at_a_time() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    for k in 0..340 {
+        app.db.insert("releases", vec![("project", json!("webapp")), ("name", json!(format!("v{k}"))), ("cut_at", json!("2026-10-15T10:00:00Z"))]).unwrap();
+    }
+    let whole = get(&app, "/releases", "webapp");
+    assert_eq!(whole["releases"].as_array().unwrap().len(), 340, "no limit: every release, as tb release list reads it");
+    assert_eq!((whole["total"].as_i64(), whole["more"].as_bool()), (Some(340), Some(false)));
+
+    let (mut seen, mut before) = (Vec::new(), None::<String>);
+    loop {
+        let mut q = vec![("project", "webapp"), ("limit", "100")];
+        if let Some(b) = &before {
+            q.push(("before", b.as_str()));
+        }
+        let page = try_call(&app, "GET", "/releases", &q, json!({})).unwrap();
+        assert_eq!(page["total"], 340);
+        let rels = page["releases"].as_array().unwrap();
+        assert!(rels.len() <= 100);
+        seen.extend(rels.iter().map(|r| r["id"].as_i64().unwrap()));
+        before = rels.last().map(|r| r["ref"].as_str().unwrap().to_string());
+        if page["more"] != true {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 340, "paging back walks every release");
+    assert!(seen.windows(2).all(|p| p[0] > p[1]), "newest first, each once");
+}
