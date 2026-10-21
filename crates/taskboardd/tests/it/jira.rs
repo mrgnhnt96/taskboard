@@ -371,6 +371,21 @@ fn pr_tasks_wait_for_their_ticket() {
 }
 
 #[test]
+fn human_tasks_get_a_ticket_only_when_asked() {
+    let b = board_with(|c, _| {
+        c.jira.auto_ticket = true;
+        c.jira.keychain_item = String::new();
+    });
+    let h = b.new_task(json!({"title": "Sign the contract", "detail": "1. Open the link and sign.", "kind": "human"}));
+    assert!(!jira::ticket_blocker(&b.app, &b.task(h)).unwrap());
+    b.app.db.tx(|| jira::ensure_tickets(&b.app)).unwrap();
+    assert!(b.jobs("kind = 'jira'").is_empty(), "no PR, so no ticket");
+
+    b.post(&format!("/tasks/H{h}"), json!({"jira_key": "new"}));
+    assert_eq!(b.jobs("kind = 'jira' AND state = 'pending'").len(), 1, "asked for explicitly");
+}
+
+#[test]
 fn no_ticket_for_projects_without_prs_or_with_the_switch_off() {
     let b = board_with(|c, _| c.jira.auto_ticket = true);
     projects::set_pr_flow(&b.app, "webapp", "off").unwrap();
