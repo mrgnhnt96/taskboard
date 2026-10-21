@@ -304,21 +304,49 @@ pub fn wait_menu_view() -> Vec<(&'static str, &'static str, &'static str)> {
 
 /// The toast after `goal-run`.
 pub fn run_toast(v: &Value, hours: &Value) -> String {
-    let n = i(v, "queued_now");
-    if n == 0 {
+    let (n, r) = (i(v, "queued_now"), i(v, "resumed_now"));
+    let said = if n == 0 && r == 0 {
         "Going again".into()
     } else if after_hours(hours) {
         let (day, at) = opens_at(hours);
         let when = [day, at].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" at ");
-        format!("{} queued. They start {when}.", fmt::plural(n, "task", "tasks"))
+        format!("{}. They start {when}.", run_counts(n, r))
     } else {
-        format!("Started: {} queued", fmt::plural(n, "task", "tasks"))
-    }
+        format!("Started: {}", run_counts(n, r))
+    };
+    with_waits(said, v)
 }
 
 /// The toast after `goal-run-now`.
 pub fn run_now_toast(v: &Value) -> String {
-    format!("Started now: {} queued. The goal runs until work hours open.", fmt::plural(i(v, "queued_now"), "task", "tasks"))
+    let said = format!("Started now: {}. The goal runs until work hours open.", run_counts(i(v, "queued_now"), i(v, "resumed_now")));
+    with_waits(said, v)
+}
+
+/// "2 tasks queued", "1 parked task resumed", or both.
+fn run_counts(queued: i64, resumed: i64) -> String {
+    let mut parts = vec![];
+    if queued > 0 || resumed == 0 {
+        parts.push(format!("{} queued", fmt::plural(queued, "task", "tasks")));
+    }
+    if resumed > 0 {
+        parts.push(format!("{} resumed", fmt::plural(resumed, "parked task", "parked tasks")));
+    }
+    parts.join(", ")
+}
+
+/// A run's toast with why the tasks that still can't start wait ("T192 waits for you to do H197").
+fn with_waits(said: String, v: &Value) -> String {
+    let waits: Vec<&str> = arr(v, "waiting").iter().filter_map(|w| w.as_str()).collect();
+    if waits.is_empty() {
+        return said;
+    }
+    let mut out = vec![said.trim_end_matches('.').to_string()];
+    out.extend(waits.iter().take(2).map(|w| w.to_string()));
+    if waits.len() > 2 {
+        out.push(format!("{} more wait", waits.len() - 2));
+    }
+    format!("{}.", out.join(". "))
 }
 
 /// A paused or deprioritized goal's banner: (label, text, (act, button)).
@@ -1277,6 +1305,24 @@ mod tests {
         assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 0}), &open)}), find("run, nothing queued")["feedback"]);
         assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 3}), &closed)}), find("run after hours")["feedback"]);
         assert_eq!(json!({"toast": run_now_toast(&json!({"queued_now": 2}))}), find("run now")["feedback"]);
+    }
+
+    #[test]
+    fn run_toast_says_what_it_resumed_and_why_the_rest_wait() {
+        let open = json!({"on": true, "open": true});
+        assert_eq!(run_toast(&json!({"queued_now": 0, "resumed_now": 1}), &open), "Started: 1 parked task resumed");
+        assert_eq!(
+            run_toast(&json!({"queued_now": 0, "resumed_now": 1, "waiting": ["T192 waits for you to do H197"]}), &open),
+            "Started: 1 parked task resumed. T192 waits for you to do H197."
+        );
+        assert_eq!(
+            run_toast(&json!({"queued_now": 2, "waiting": ["T1 waits for you to do H2", "T3 is blocked by T4", "T5 waits for T6"]}), &open),
+            "Started: 2 tasks queued. T1 waits for you to do H2. T3 is blocked by T4. 1 more wait."
+        );
+        assert_eq!(
+            run_now_toast(&json!({"queued_now": 1, "resumed_now": 2})),
+            "Started now: 1 task queued, 2 parked tasks resumed. The goal runs until work hours open."
+        );
     }
 
     #[test]
