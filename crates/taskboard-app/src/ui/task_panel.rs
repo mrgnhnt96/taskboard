@@ -1460,7 +1460,7 @@ impl Draw<'_> {
             .p(px(6.))
             .rounded(px(7.))
             .hover(move |d| d.bg(tint))
-            .hoverable_tooltip(att_card(cx.entity().downgrade(), title.clone(), summary, kind, rows))
+            .hoverable_tooltip(att_card(cx.entity().downgrade(), title.clone(), summary, kind, icon, rows))
             .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(icon, fg)))
             .child(
                 div()
@@ -2365,6 +2365,7 @@ struct AttCard {
     title: SharedString,
     summary: Option<String>,
     kind: &'static str,
+    icon: &'static str,
     rows: Vec<(String, String)>,
     copied: bool,
 }
@@ -2463,7 +2464,14 @@ impl Render for AttCard {
             .shadow_lg()
             .text_size(px(12.))
             .font_family(t.ui_font.clone())
-            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().flex_none().size(px(22.)).rounded(px(6.)).bg(bg).flex().items_center().justify_center().child(att_icon(self.icon, fg)))
+                    .child(div().flex_1().min_w_0().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone())),
+            )
             .children(self.summary.clone().map(|s| div().text_color(t.text_2).child(s)))
             .child(pills)
             .children(rows)
@@ -2475,11 +2483,12 @@ fn att_card(
     title: String,
     summary: Option<String>,
     kind: &'static str,
+    icon: &'static str,
     rows: Vec<(String, String)>,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let title = SharedString::from(title);
     move |_, cx| {
-        let card = AttCard { m: m.clone(), title: title.clone(), summary: summary.clone(), kind, rows: rows.clone(), copied: false };
+        let card = AttCard { m: m.clone(), title: title.clone(), summary: summary.clone(), kind, icon, rows: rows.clone(), copied: false };
         cx.new(|_| card).into()
     }
 }
