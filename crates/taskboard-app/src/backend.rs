@@ -167,6 +167,9 @@ impl Fake {
         }
         seed_sessions(&board);
         seed_attachments(&board, &dir);
+        if std::env::var("TASKBOARD_FAKE_RELEASES").is_ok() {
+            seed_releases(&board);
+        }
         Fake { board, dir }
     }
 }
@@ -264,6 +267,74 @@ fn seed_sessions(board: &Board) {
         if let Some(t) = task {
             let _ = board.db.x("UPDATE tasks SET session_id = ?, session_name = ? WHERE id = ?", taskboardd::p![id, name, t]);
         }
+    }
+}
+
+/// Dev (`TASKBOARD_FAKE_RELEASES=1`): releases on for both projects, two months of webapp releases
+/// (one failed), work waiting in Unreleased and a pending cut, for the Releases pages.
+fn seed_releases(board: &Board) {
+    use taskboardd::board::update_task;
+    use taskboardd::util::{iso, now_ts};
+    let post = |path: &str, body: Value| api::dispatch(board, "POST", path, &Query::new(), &body).ok();
+    let day = 86400.0;
+    let goal = |name: &str| post("/goals", json!({"name": name, "project": "webapp"})).and_then(|g| g["id"].as_i64());
+    let done = |title: &str, goal: Option<i64>, pr: Option<i64>, ago: f64| -> Option<i64> {
+        let id = post("/tasks", json!({"title": title, "detail": "Sample.", "project": "webapp", "goal_id": goal, "pickup": {"mode": "manual"}}))?["id"].as_i64()?;
+        let mut f = vec![("status", json!("done")), ("finished_at", json!(iso(now_ts() - ago)))];
+        if let Some(n) = pr {
+            f.extend([("pr_num", json!(n)), ("pr_url", json!(format!("https://github.com/acme/webapp/pull/{n}"))), ("pr_phase", json!("merged"))]);
+        }
+        update_task(board, id, f).ok()?;
+        Some(id)
+    };
+    for p in ["webapp", "api"] {
+        post(&format!("/projects/{p}"), json!({"releases": "on"}));
+    }
+    // The seed's own done task (T1) goes out in the oldest release.
+    let speed = goal("Faster pages");
+    let releases: [(&str, &str, f64, &[(&str, bool)]); 9] = [
+        ("v0.9.0", "First public build", 58.0, &[("Ship the landing page", false), ("Add sign-up", true)]),
+        ("v0.9.1", "Fix sign-up on Safari", 52.0, &[("Fix the Safari date input", false)]),
+        ("v0.10.0", "Teams, invites", 44.0, &[("Invite a teammate by email", true), ("Team settings page", true), ("Seat limits", false)]),
+        ("v0.10.1", "Invite link expiry", 37.0, &[("Expire invite links after a week", false)]),
+        ("v0.11.0", "Faster dashboard", 21.0, &[("Cache the dashboard query", true), ("Lazy-load the charts", true)]),
+        ("v0.11.1", "Hotfix for chart colors", 16.0, &[("Fix the chart palette in dark mode", false)]),
+        ("v0.11.2", "Retry the color fix", 15.0, &[("Pin the palette tokens", false)]),
+        ("v0.12.0", "Search, keyboard shortcuts", 6.0, &[("Search across projects", true), ("Keyboard shortcuts sheet", false), ("Remember the last filter", false)]),
+        ("v0.13.0", "Passkey registration and faster first paint\nAlso trims the bundle.", 0.2, &[("Inline the critical CSS", true), ("Drop the unused icon font", true)]),
+    ];
+    let mut pr = 400;
+    for (ix, (name, notes, ago, work)) in releases.iter().enumerate() {
+        for (title, on_goal) in work.iter() {
+            pr += 1;
+            done(title, on_goal.then_some(speed).flatten(), Some(pr), ago + 0.5);
+        }
+        let Some(r) = post("/releases", json!({"name": name, "project": "webapp", "notes": notes, "no_script": true})) else { continue };
+        let Some(id) = r["id"].as_i64() else { continue };
+        let _ = board.db.update("releases", &json!(id), vec![("cut_at", json!(iso(now_ts() - ago * day)))]);
+        if ix == 5 {
+            post(&format!("/releases/{}/fail", r["ref"].as_str().unwrap_or("")), json!({"reason": "Notarizing timed out."}));
+        }
+    }
+    // Unreleased work and a cut that waits for a running task and a goal still going.
+    let next = goal("Releases page");
+    done("Group releases by month", next, Some(431), 3600.0);
+    done("Keep the newest release open", next, Some(432), 1800.0);
+    done("Fix the ack button focus ring", None, Some(433), 900.0);
+    let running = post("/tasks", json!({"title": "Link Releases from the phone app", "detail": "Sample.", "project": "webapp", "goal_id": next, "pickup": {"mode": "manual"}}))
+        .and_then(|t| t["id"].as_i64());
+    if let Some(t) = running {
+        let _ = update_task(board, t, vec![("status", json!("working"))]);
+    }
+    let mut after: Vec<String> = vec!["T1".into()];
+    after.extend(running.map(|t| format!("T{t}")));
+    after.extend(next.map(|g| format!("G{g}")));
+    post("/releases", json!({"name": "v0.14.0", "project": "webapp", "after": after, "no_script": true}));
+    // api: one release and nothing waiting.
+    let api_done = post("/tasks", json!({"title": "Rate-limit the login route", "detail": "Sample.", "project": "api", "pickup": {"mode": "manual"}})).and_then(|t| t["id"].as_i64());
+    if let Some(t) = api_done {
+        let _ = update_task(board, t, vec![("status", json!("done")), ("finished_at", json!(iso(now_ts() - 9.0 * day)))]);
+        post("/releases", json!({"name": "v2.3.0", "project": "api", "no_script": true}));
     }
 }
 
