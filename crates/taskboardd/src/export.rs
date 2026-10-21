@@ -63,7 +63,7 @@ const COMMON_PARTS: &[&str] = &[
     "projects", "repos", "tasks", "main", "master", "src", "crates", "target", "debug", "release",
 ];
 /// Data-folder entries never opened, not even listed: they're only for the app.
-const NEVER: &[&str] = &[crate::apptoken::FILE, crate::apporigin::SOCKET];
+const NEVER: &[&str] = &[crate::apptoken::DIR, crate::apptoken::FILE, crate::apporigin::SOCKET];
 
 static SAFE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
@@ -909,7 +909,8 @@ mod tests {
         std::fs::write(cfg.data.join("tasks/T7.md"), "Rewrite the zebra-quartz billing flow").unwrap();
         std::fs::create_dir_all(&cfg.statusline_dir).unwrap();
         std::fs::write(cfg.statusline_dir.join("s1.json"), r#"{"cwd": "/Users/alice/Projects/zebra-quartz", "model": {"id": "claude"}}"#).unwrap();
-        std::fs::write(cfg.data.join(crate::apptoken::FILE), APP_TOKEN).unwrap();
+        crate::apptoken::write(&crate::apptoken::path(&cfg), APP_TOKEN).unwrap();
+        std::fs::write(crate::apptoken::old_path(&cfg), APP_TOKEN).unwrap();
         cfg
     }
 

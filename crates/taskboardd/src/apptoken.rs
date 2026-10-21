@@ -1,13 +1,13 @@
 //! The app's token: what makes a request the owner's own click in Taskboard.app. The daemon makes a
-//! fresh random token at each launch and writes it to `app-token` in its data folder, readable by this
-//! user only; the app reads it and sends it with each request (`X-Task-Board-Token`), and the server
-//! takes `X-Task-Board-From: app` only with the matching token. A request that just says it's the app
-//! (curl with the header) is refused.
+//! fresh random token at each launch and writes it to [`FILE`] in a folder of its own ([`DIR`]) in the
+//! data folder, readable by this user only; the app reads it and sends it with each request
+//! (`X-Task-Board-Token`), and the server takes `X-Task-Board-From: app` only with the matching token.
+//! A request that just says it's the app (curl with the header) is refused.
 //!
 //! Only a daemon with no team signature (`cargo run`, `scripts/dev-app.sh`, tests) writes or takes the
 //! token; a signed one checks the app's code signature on the app socket instead (`apporigin`).
 //! Agents run as the same user, so they could read the file; `tb hook PreToolUse` refuses tool calls
-//! that reach it, however they spell it, but a guard on what a call says can't be complete.
+//! that reach into its folder, however they spell it, but a guard on what a call says can't be complete.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,12 +16,20 @@ use rand::RngCore;
 
 use crate::config::Config;
 
-/// The token's file in the data folder.
+/// The token's folder in the data folder: the token's alone, so the rest of the data folder is anyone's
+/// to read and search. Hidden, so a shell's `*` and `rg` pass it by.
+pub const DIR: &str = ".app-only";
+/// The token's file in [`DIR`].
 pub const FILE: &str = "app-token";
 /// The header the app sends it in.
 pub const HEADER: &str = "x-task-board-token";
 
 pub fn path(cfg: &Config) -> PathBuf {
+    cfg.data.join(DIR).join(FILE)
+}
+
+/// Where the token was before it had a folder of its own, removed at launch.
+pub fn old_path(cfg: &Config) -> PathBuf {
     cfg.data.join(FILE)
 }
 
@@ -32,11 +40,13 @@ pub fn fresh() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Writes `token` to `path`, readable and writable by this user only (0600), replacing what was there.
+/// Writes `token` to `path`, readable and writable by this user only (0600, its folder 0700), replacing
+/// what was there.
 pub fn write(path: &Path, token: &str) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
@@ -59,23 +69,6 @@ pub fn matches(given: Option<&str>, token: &str) -> bool {
         return false;
     }
     given.bytes().zip(token.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
-}
-
-/// Names a glob for the token's name could just as well be aimed at: a glob that matches one of these
-/// too (`*token*`, or a letter and a star) is someone's search of their own files.
-const DECOYS: &[&str] = &["token", "app"];
-
-/// The ways a tool call can spell `dir`: as is, from `~`, from `$HOME`.
-fn spellings(dir: &Path) -> Vec<String> {
-    let abs = dir.to_string_lossy().trim_end_matches('/').to_string();
-    let mut out = vec![abs.clone()];
-    if let Some(home) = dirs::home_dir() {
-        let home = home.to_string_lossy().trim_end_matches('/').to_string();
-        if let Some(rest) = abs.strip_prefix(&home).filter(|_| !home.is_empty()) {
-            out.extend(["~", "$HOME", "${HOME}"].iter().map(|h| format!("{h}{rest}")));
-        }
-    }
-    out
 }
 
 /// Shell variables (`$X`, `${X}`) and a word-leading `~`.
@@ -119,8 +112,12 @@ fn shell_word(w: &str, dir: &Path) -> String {
     }
 }
 
-/// Whether glob `pat` (`*`, `?`, `[…]`, `{a,b}`) matches `name`, ignoring case.
+/// Whether glob `pat` (`*`, `?`, `[…]`, `{a,b}`) matches `name`, ignoring case. As in the shell, a
+/// leading `*`, `?` or `[…]` doesn't match a dot file's dot.
 fn glob_matches(pat: &str, name: &str) -> bool {
+    if name.starts_with('.') && pat.starts_with(['*', '?', '[']) {
+        return false;
+    }
     let mut re = String::from("(?i)^");
     let mut chars = pat.chars().peekable();
     let mut braces = 0;
@@ -195,12 +192,11 @@ fn resolve(p: &str, cwd: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// A Bash command as the shell runs it: its simple commands, each a list of words with the quotes
-/// gone (a quoted sentence is one word), and its heredoc bodies, which are data for the command they
-/// feed, not paths. Command substitutions (`$(…)`, backquotes) and `sh -c '…'` are commands too.
+/// gone (a quoted sentence is one word). Heredoc bodies are left out: they're data for the command
+/// they feed, not paths. Command substitutions (`$(…)`, backquotes) and `sh -c '…'` are commands too.
 #[derive(Default)]
 struct Script {
     commands: Vec<Vec<String>>,
-    bodies: Vec<String>,
 }
 
 static HEREDOC_RE: once_cell::sync::Lazy<regex::Regex> =
@@ -300,7 +296,7 @@ impl Script {
         self.commands.push(cmd);
     }
 
-    /// `src` without its heredoc bodies (the lines after `<<EOF` up to `EOF`), which go to `bodies`.
+    /// `src` without its heredoc bodies (the lines after `<<EOF` up to `EOF`).
     fn take_heredocs(&mut self, src: &str) -> String {
         let mut code = String::new();
         let mut lines = src.split('\n');
@@ -317,15 +313,11 @@ impl Script {
                 .map(|c| (&c[1] == "-", c.get(2).or(c.get(3)).or(c.get(4)).unwrap().as_str().to_string()))
                 .collect();
             for (tabs, end) in ends {
-                let mut body = String::new();
                 for l in lines.by_ref() {
                     if (if tabs { l.trim_start_matches('\t') } else { l }) == end {
                         break;
                     }
-                    body.push_str(l);
-                    body.push('\n');
                 }
-                self.bodies.push(body);
             }
         }
         code
@@ -352,100 +344,41 @@ fn command_word(cmd: &[String]) -> Option<(&str, &[String])> {
     None
 }
 
-/// Whether a simple command walks the folders it's given: `find`, `rg`, `tar`, `grep -r`, `ls -R`, ….
-fn walks(cmd: &[String]) -> bool {
-    let Some((name, args)) = command_word(cmd) else { return false };
-    let flag = |set: &str| {
-        args.iter().any(|a| a == "--recursive" || a.strip_prefix('-').is_some_and(|f| !f.starts_with('-') && f.contains(|c| set.contains(c))))
-    };
-    match name {
-        "find" | "rg" | "ag" | "ack" | "fd" | "tar" | "zip" | "rsync" | "du" | "tree" | "ditto" => true,
-        "grep" | "egrep" | "fgrep" => flag("rR"),
-        "ls" | "chmod" | "chown" => flag("R"),
-        "cp" => flag("rRa"),
-        _ => false,
-    }
-}
-
-/// Whether a walking command searches its working folder because it's given no folder: `rg x`,
-/// `grep -r x`, `find -name x`, `du`. Flags' values count as names, so this can miss one.
-fn walks_cwd(cmd: &[String]) -> bool {
-    let Some((name, args)) = command_word(cmd) else { return false };
-    let names = args.iter().filter(|a| !a.starts_with('-')).count();
-    match name {
-        "rg" | "ag" | "ack" | "fd" | "grep" | "egrep" | "fgrep" => names <= 1,
-        "find" => args.first().is_none_or(|a| a.starts_with('-')),
-        "du" | "tree" => names == 0,
-        _ => false,
-    }
-}
-
-/// Commands that run a script handed to them as an argument (`python3 -c '…'`, `node -e '…'`).
-fn interprets(cmd: &[String]) -> bool {
-    command_word(cmd).is_some_and(|(n, _)| {
-        n.starts_with("python") || matches!(n, "node" | "perl" | "ruby" | "php" | "osascript" | "deno" | "bun" | "swift" | "lua")
-    })
-}
-
-/// Whether script text spells the folder `dir` as a whole, or a glob or variable in it, rather than
-/// one named file in it (`…/config.toml`).
-fn spells_folder(text: &str, dir: &Path) -> bool {
-    let text = as_shell_reads(text, dir).to_lowercase();
-    spellings(dir).iter().map(|d| d.to_lowercase()).any(|d| {
-        text.match_indices(&d).any(|(at, _)| {
-            let rest = &text[at + d.len()..];
-            let Some(r) = rest.strip_prefix('/') else { return true };
-            let name = r.find(|c: char| !(c.is_ascii_alphanumeric() || "_.-".contains(c))).unwrap_or(r.len());
-            name == 0 || r[name..].starts_with(['*', '?', '[', '{', '$'])
-        })
-    })
-}
-
-/// Whether a glob's segments past a folder (`pattern`) reach the token, whose path below that folder
-/// is `target` (`[…, "taskboard", "<file>"]`): they match the file, the folder it's in (unless the
-/// command only lists names), or, for a command that walks, any folder above it. `**` matches any
-/// number of folders; a segment with a variable the hook can't fill in matches anything.
-fn glob_reaches(pattern: &[&str], target: &[String], walks: bool, lists: bool) -> bool {
+/// Whether glob `pattern`'s segments past a folder reach the token, whose path below that folder is
+/// `target` (`[…, DIR, FILE]`): a segment matches the token's folder, or they end at the token. `**`
+/// matches any number of folders; a segment with a variable the hook can't fill in matches anything.
+fn glob_reaches(pattern: &[&str], target: &[String]) -> bool {
     match (pattern.first(), target.first()) {
-        (None, _) => target.is_empty() || (target.len() == 1 && !lists) || walks,
-        (Some(&"**"), _) => glob_reaches(&pattern[1..], target, walks, lists) || (!target.is_empty() && glob_reaches(pattern, &target[1..], walks, lists)),
+        (None, _) => target.len() <= 1,
+        (Some(&"**"), _) => glob_reaches(&pattern[1..], target) || (!target.is_empty() && glob_reaches(pattern, &target[1..])),
         (Some(_), None) => false,
-        (Some(p), Some(t)) => (p.contains('$') || glob_matches(p, t)) && glob_reaches(&pattern[1..], &target[1..], walks, lists),
+        (Some(p), Some(t)) => (p.contains('$') || glob_matches(p, t)) && (target.len() == 2 || glob_reaches(&pattern[1..], &target[1..])),
     }
 }
 
-/// Whether a simple command's `words` reach the token in `real_dir` (resolved): a word that is the
-/// folder itself (fine for a plain `ls`), a glob or variable that can match the token or its folder,
-/// or, when the command walks, a folder above it.
-fn words_reach(words: &[String], walks: bool, lists: bool, dir: &Path, real_dir: &Path, cwd: Option<&Path>) -> bool {
-    let token = real_dir.join(FILE);
+/// Whether a simple command's `words` reach the token's folder `private` (resolved): a path in it
+/// (through a symlink too), or a glob or variable that can match it or the token.
+fn words_reach(words: &[String], dir: &Path, private: &Path, cwd: Option<&Path>) -> bool {
+    let token = private.join(FILE);
     for word in words {
         // `--path=/x` and `X=/x` hand over the part after `=`.
         let after = word.split_once('=').map(|(_, v)| v).filter(|_| word.starts_with('-') || ASSIGN_RE.is_match(word));
         for w in std::iter::once(word.as_str()).chain(after).map(|w| shell_word(w, dir)) {
-            // A walking command's bare names are folders too (`cd ~/.config && tar c taskboard`).
-            if !(walks || w.starts_with('/') || w.starts_with('.') || w.contains('/')) {
-                continue;
-            }
             let segs: Vec<&str> = w.split('/').collect();
             let plain: Vec<&str> = segs.iter().take_while(|s| !has_glob(s) && !s.contains('$')).copied().collect();
-            let pattern = &segs[plain.len()..];
             let base = match plain.as_slice() {
                 [] => ".".to_string(),
                 [""] => "/".to_string(),
                 _ => plain.join("/"),
             };
             let Some(p) = resolve(&base, cwd) else { continue };
-            if pattern.iter().all(|s| s.is_empty()) {
-                if (p == real_dir && !lists) || (walks && real_dir.starts_with(&p)) {
-                    return true;
-                }
-                continue;
+            if p.starts_with(private) {
+                return true;
             }
+            let pattern: Vec<&str> = segs[plain.len()..].iter().copied().filter(|s| !s.is_empty()).collect();
             if let Ok(below) = token.strip_prefix(&p) {
                 let target: Vec<String> = below.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-                let pattern: Vec<&str> = pattern.iter().copied().filter(|s| !s.is_empty()).collect();
-                if glob_reaches(&pattern, &target, walks, lists) {
+                if !pattern.is_empty() && glob_reaches(&pattern, &target) {
                     return true;
                 }
             }
@@ -454,74 +387,69 @@ fn words_reach(words: &[String], walks: bool, lists: bool, dir: &Path, real_dir:
     false
 }
 
-/// Whether an agent's tool call (`tool`, `input`, run in `cwd`) reads the app token in data folder
-/// `dir`. It does when it names the file (quoted in pieces or not, or by a glob aimed at its name),
-/// or when a command's path arguments reach it: the folder itself (except to `ls` it), a glob or
-/// variable that can match the token (`$D/*`), or a folder above it handed to a command that walks
-/// folders (`find ~`, `grep -r . /`, Grep or Glob from `~`). Paths are spelled any way that resolves:
-/// `/tmp` for `/private/tmp`, `./`, `..`, a symlink, `$HOME`, `$TASKBOARD_DATA`. Naming another file there
-/// (`config.toml`) is fine.
+/// Whether `text` names the token's folder: [`DIR`] as a whole path segment, however it's quoted.
+fn names_dir(text: &str, dir: &Path) -> bool {
+    let text = as_shell_reads(text, dir).to_lowercase();
+    let part = |c: char| c.is_alphanumeric() || "_-.".contains(c);
+    text.match_indices(DIR).any(|(at, _)| !text[..at].chars().next_back().is_some_and(part) && !text[at + DIR.len()..].chars().next().is_some_and(part))
+}
+
+/// Whether an agent's tool call (`tool`, `input`, run in `cwd`) reaches the token's folder ([`DIR`] in
+/// data folder `dir`). It does when it names the folder (quoted in pieces or not), or when a path
+/// argument lands in it: the folder or a file in it however it's spelled (`/tmp` for `/private/tmp`,
+/// `./`, `..`, a symlink, `$HOME`, the data folder's variable), a glob that can match the folder or the
+/// token (`.*/*`), or any path from a working folder inside it.
+///
+/// The rest of the data folder is the agent's to read, and so is a search of it: `config.toml`,
+/// `find ~ -name config.toml`, `grep -r x` over the data folder. A shell's `*` doesn't match the
+/// folder's leading dot, and `rg` and Grep skip it unless asked for hidden files; `grep -r` and `find`
+/// do walk into it.
 ///
 /// Commands are read as a shell reads them, so text that isn't a path argument doesn't count: a
-/// quoted sentence, a sed or regex pattern, a URL, a heredoc's body (unless it spells the folder),
-/// a `grep -r` in another command on the same line.
+/// quoted sentence, a sed or regex pattern, a URL, a heredoc's body (unless it names the folder).
 ///
 /// A guard on what a call says can't be complete: a script can build the path at run time. It only
 /// matters for a daemon without a team signature, which is the only one that writes the token
 /// (`apporigin`).
 pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Option<&Path>) -> bool {
-    fn strings(v: &serde_json::Value, skip: Option<&str>, out: &mut Vec<String>) {
+    fn strings(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::String(s) => out.push(s.clone()),
-            serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, None, out)),
-            serde_json::Value::Object(o) => o.iter().filter(|(k, _)| Some(k.as_str()) != skip).for_each(|(_, x)| strings(x, None, out)),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| strings(x, out)),
             _ => {}
         }
     }
     let mut all = vec![];
-    strings(input, None, &mut all);
-    let raw = all.join("\n");
-    let text = as_shell_reads(&raw, dir);
-    if text.to_lowercase().contains(FILE) || raw.to_lowercase().contains(FILE) || text.contains("TASKBOARD_DATA") {
+    strings(input, &mut all);
+    if all.iter().any(|s| names_dir(s, dir)) {
         return true;
     }
-    // A glob for the token's name, anywhere (the name's first letters and a `*`): one that matches it
-    // and none of the decoys. `*` alone is judged by its folder.
-    let named = |s: &str| has_glob(s) && glob_matches(s, FILE) && !DECOYS.iter().any(|d| glob_matches(s, d));
-    if text.split(|c: char| c.is_whitespace() || ";|&()<>=,:".contains(c)).any(|w| w.split('/').any(named)) {
-        return true;
-    }
-    let real_dir = resolve(&dir.to_string_lossy(), None).unwrap_or_else(|| dir.to_path_buf());
-    let script = match tool {
-        "Bash" => Script::parse(input["command"].as_str().unwrap_or("")),
-        // Grep's pattern is a regex, not a path.
+    let commands = match tool {
+        "Bash" => Script::parse(input["command"].as_str().unwrap_or("")).commands,
         "Read" | "Grep" | "Glob" | "LS" => {
-            let mut words = vec![];
-            strings(input, (tool == "Grep").then_some("pattern"), &mut words);
-            Script { commands: vec![words], bodies: vec![] }
+            // The path read or searched (Glob's pattern below it); Grep and Glob with none search the
+            // working folder.
+            let path = ["file_path", "path"].iter().find_map(|k| input[*k].as_str()).unwrap_or("");
+            let word = match input["pattern"].as_str().filter(|_| tool == "Glob") {
+                Some(p) if p.starts_with('/') || path.is_empty() => p.to_string(),
+                Some(p) => format!("{path}/{p}"),
+                None if path.is_empty() => ".".to_string(),
+                None => path.to_string(),
+            };
+            vec![vec![word]]
         }
         _ => return false,
     };
-    // Resolved like `real_dir` (lowercase, symlinks followed), so the two compare.
+    let private = resolve(&dir.join(DIR).to_string_lossy(), None).unwrap_or_else(|| dir.join(DIR));
+    // Resolved like `private` (lowercase, symlinks followed), so the two compare.
     let mut at = cwd.and_then(|c| resolve(&c.to_string_lossy(), None));
-    for cmd in &script.commands {
-        let (walks, lists) = match tool {
-            "Bash" => (walks(cmd), command_word(cmd).is_some_and(|(n, _)| n == "ls") && !walks(cmd)),
-            _ => (matches!(tool, "Grep" | "Glob"), tool == "LS"),
-        };
-        if words_reach(cmd, walks, lists, dir, &real_dir, at.as_deref()) {
+    for cmd in &commands {
+        if words_reach(cmd, dir, &private, at.as_deref()) {
             return true;
         }
-        if tool == "Bash" {
-            if walks && walks_cwd(cmd) && at.as_deref().is_some_and(|c| real_dir.starts_with(c)) {
-                return true;
-            }
-            if interprets(cmd) && cmd.iter().skip(1).any(|a| spells_folder(a, dir)) {
-                return true;
-            }
-        }
-        // A `cd` moves where the next commands' relative paths start (`cd x && grep -r . ../..`).
-        // One the hook can't follow (`cd $X`, `cd -`) leaves it where it was.
+        // A `cd` moves where the next commands' relative paths start (`cd x && cat ../y`). One the hook
+        // can't follow (`cd $X`, `cd -`) leaves it where it was.
         if let Some(("cd", args)) = command_word(cmd) {
             let to = match args.iter().find(|a| !a.starts_with('-') || a.as_str() == "-") {
                 Some(a) => Some(shell_word(a, dir)).filter(|a| !a.contains('$') && !has_glob(a) && a != "-"),
@@ -532,17 +460,7 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
             }
         }
     }
-    // Grep and Glob with no path search the working folder.
-    if matches!(tool, "Grep" | "Glob") && input.get("path").and_then(|v| v.as_str()).is_none_or(str::is_empty) {
-        if let Some(c) = cwd.and_then(|c| resolve(&c.to_string_lossy(), None)) {
-            if real_dir.starts_with(&c) {
-                return true;
-            }
-        }
-    }
-    // A heredoc feeding a script (`python3 - <<EOF`) that spells the folder as a whole, not one file
-    // in it.
-    script.bodies.iter().any(|b| spells_folder(b, dir))
+    false
 }
 
 /// What the hook tells an agent whose tool call reaches the app token.
@@ -555,133 +473,133 @@ pub fn refusal() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// The data folder's variable, spelled so this file doesn't name it.
+    fn data_var() -> String {
+        ["$TASKBOARD", "DATA"].join("_")
+    }
 
     #[test]
-    fn a_tool_call_that_reaches_the_token_is_caught() {
-        let dir = dirs::home_dir().unwrap().join(".config/taskboard");
-        let bash = |c: &str| tool_reaches("Bash", &serde_json::json!({"command": c}), &dir, None);
+    fn a_tool_call_into_the_tokens_folder_is_caught() {
+        let home = dirs::home_dir().unwrap();
+        let dir = home.join(".config/taskboard");
+        let d = dir.display().to_string();
+        let var = data_var();
+        let (head, tail) = DIR.split_at(3);
+        let bash = |c: &str| tool_reaches("Bash", &json!({"command": c}), &dir, Some(&home));
         for yes in [
-            "cat ~/.config/taskboard/app-token",
-            "cat $HOME/.config/taskboard/app-token",
-            "cat ~/.config/taskboard/APP-TOKEN",
-            "cat ~/.config/taskboard/app-tok*",
-            "cat ~/.config/taskboard/*",
-            "grep -r . ~/.config/taskboard",
-            "python3 -c 'print(open(\"/x/app-token\").read())'",
-            "curl -H \"X-Task-Board-Token: $(cat ~/.config/taskboard/app-token)\" localhost:8792",
-            "f=~/.config/taskboard; head -c 64 $f/app-to?en",
-            &format!("cat {}/app-token", dir.display()),
-            &format!("tar c {}", dir.display()),
+            format!("cat ~/.config/taskboard/{DIR}/{FILE}"),
+            format!("cat $HOME/.config/taskboard/{DIR}/{FILE}"),
+            format!("cat {var}/{DIR}/{FILE}"),
+            format!("cat {var}/.*/*"),
+            format!("cat ~/.config/taskboard/{}/*", DIR.to_uppercase()),
+            format!("cat ~/.config/taskboard/'{head}'\"{tail}\"/*"),
+            format!("cat ~/.config/taskboard/{head}\\{tail}/*"),
+            format!("ls ~/.config/taskboard/{DIR}"),
+            format!("grep -r . ~/.config/taskboard/{DIR}"),
+            format!("cd ~/.config/taskboard && cat {DIR}/*"),
+            format!("cat ~/.config/taskboard/{head}*/*"),
+            "cat ~/.config/taskboard/.*/*".into(),
+            "cat ~/.config/taskboard/**/*".into(),
+            "cd ~/.config/taskboard && cat .*/*".into(),
+            format!("python3 -c 'print(open(\"{d}/{DIR}/x\").read())'"),
+            format!("python3 - <<'EOF'\nimport os; print(os.listdir('{d}/{DIR}'))\nEOF"),
         ] {
-            assert!(bash(yes), "{yes}");
+            assert!(bash(&yes), "{yes}");
         }
-        assert!(tool_reaches("Read", &serde_json::json!({"file_path": dir.join(FILE).to_string_lossy()}), &dir, None));
-        assert!(tool_reaches("Grep", &serde_json::json!({"pattern": ".", "path": dir.to_string_lossy()}), &dir, None));
-        assert!(tool_reaches("Glob", &serde_json::json!({"pattern": "*", "path": dir.to_string_lossy()}), &dir, None));
-        for no in ["cargo test", "tb start T8", "git status", "cat README.md", "ls ~/.config", "ls ~/.config/taskboard/", "cat ~/.config/taskboard/config.toml", "tail ~/.config/taskboard/server.log"] {
-            assert!(!bash(no), "{no}");
+        let private = dir.join(DIR).display().to_string();
+        for (tool, input) in [
+            ("Read", json!({"file_path": format!("{private}/{FILE}")})),
+            ("Glob", json!({"pattern": "*", "path": private})),
+            ("Glob", json!({"pattern": "**/*", "path": d})),
+            ("Grep", json!({"pattern": ".", "path": private})),
+            ("Write", json!({"file_path": "/repo/x.sh", "content": format!("#!/bin/sh\ncat {d}/{DIR}/*\n")})),
+        ] {
+            assert!(tool_reaches(tool, &input, &dir, Some(&home)), "{tool} {input}");
         }
-        assert!(!tool_reaches("Read", &serde_json::json!({"file_path": "/repo/src/main.rs"}), &dir, None));
+
+        // Everything else in the data folder, and searches for it.
+        for no in [
+            "cat ~/.config/taskboard/config.toml".to_string(),
+            format!("cat {var}/config.toml"),
+            "ls ~/.config/taskboard".into(),
+            "ls -la ~/.config/taskboard/".into(),
+            "find ~ -name config.toml -path '*taskboard*'".into(),
+            "find ~/.config -name config.toml".into(),
+            "find ~/.config/taskboard -name '*.toml'".into(),
+            "grep -r lens ~/.config/taskboard".into(),
+            "grep -rn lens ~/.config".into(),
+            "cat ~/.config/taskboard/*".into(),
+            "cat ~/.config/taskboard/*/*".into(),
+            format!("sqlite3 -readonly {d}/tasks.db 'select 1'"),
+            format!("cat {FILE}"),
+            "git commit -m 'keep the app token out of reach'".into(),
+            "tb task new x --detail 'GET tasks/{id}, and a lone / in prose'".into(),
+            "T=$(sed -n '/^{/,$p' tok.json | jq -r .token); echo $T".into(),
+            "grep -rn x src; python3 - <<'EOF'\ns = s.replace('\"/tasks/{t}/pr\"', '\"/\"')\nEOF".into(),
+            "cargo test -p taskboardd".into(),
+        ] {
+            assert!(!bash(&no), "{no}");
+        }
+        for (tool, input) in [
+            ("Read", json!({"file_path": format!("{d}/config.toml")})),
+            ("Glob", json!({"pattern": "**/config.toml", "path": home.join(".config").display().to_string()})),
+            ("Glob", json!({"pattern": "*.toml", "path": d})),
+            ("Grep", json!({"pattern": "lens", "path": d})),
+            ("Grep", json!({"pattern": "fn main"})),
+            ("Edit", json!({"file_path": "/repo/SKILL.md", "old_string": format!("never read {FILE}"), "new_string": "x"})),
+        ] {
+            assert!(!tool_reaches(tool, &input, &dir, Some(&home)), "{tool} {input}");
+        }
+    }
+
+    #[test]
+    fn symlinks_tmp_and_a_working_folder_inside_are_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Under /tmp, as `/private/tmp` (what it resolves to) or `/tmp`.
+        let real = std::fs::canonicalize(tmp.path()).unwrap();
+        let dir = real.join("board");
+        let private = dir.join(DIR);
+        std::fs::create_dir_all(&private).unwrap();
+        let link = real.join("link");
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        let (d, l, r) = (dir.display(), link.display(), real.display());
+        let bash = |c: &str, cwd: &Path| tool_reaches("Bash", &json!({"command": c}), &dir, Some(cwd));
+        for yes in [format!("cat {l}/*"), format!("cat {l}/{FILE}"), "cd link && cat x".into(), format!("cat {d}/.[a]{}/x", &DIR[2..]), format!("cat board/.?{}/*", &DIR[2..])] {
+            assert!(bash(&yes, &real), "{yes}");
+        }
+        if let Some(t) = d.to_string().strip_prefix("/private") {
+            assert!(bash(&format!("cat {t}/.*/*"), &real));
+        }
+        assert!(tool_reaches("Read", &json!({"file_path": format!("{l}/{FILE}")}), &dir, None));
+        // From a working folder inside it, any path is in it.
+        assert!(bash("cat x", &private));
+        assert!(bash("grep -r x", &private));
+        assert!(tool_reaches("Grep", &json!({"pattern": "x"}), &dir, Some(&private)));
+
+        for no in [format!("cat {d}/*"), format!("grep -r . {r}"), format!("find {r} -type f"), "cat board/config.toml".into(), "cat x".into()] {
+            assert!(!bash(&no, &real), "{no}");
+        }
     }
 
     #[test]
     fn a_custom_data_folder_is_watched_too() {
         let dir = std::path::PathBuf::from("/srv/board-data");
-        assert!(tool_reaches("Bash", &serde_json::json!({"command": "cat /srv/board-data/*"}), &dir, None));
-        assert!(tool_reaches("Read", &serde_json::json!({"file_path": "/srv/board-data/app-token"}), &dir, None));
-        assert!(!tool_reaches("Bash", &serde_json::json!({"command": "cat /srv/other/x"}), &dir, None));
-    }
-
-    /// The spellings that got through in beta.14 (#116).
-    #[test]
-    fn quoting_globs_and_other_spellings_are_resolved() {
-        let tmp = tempfile::tempdir().unwrap();
-        // A data folder under /tmp, as `/private/tmp` (what it resolves to) or `/tmp`.
-        let real = std::fs::canonicalize(tmp.path()).unwrap();
-        let dir = real.join("board");
-        std::fs::create_dir_all(&dir).unwrap();
-        let repo = real.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let link = real.join("link");
-        std::os::unix::fs::symlink(&dir, &link).unwrap();
-        let d = dir.display().to_string();
-        let parent = real.display().to_string();
-        let tmp_spelling = d.strip_prefix("/private").map(str::to_string);
-        let bash = |c: &str| tool_reaches("Bash", &serde_json::json!({"command": c}), &dir, Some(&repo));
-        let mut yes = vec![
-            "cat $DATA/./app-to''ken".to_string(),
-            "cat \"$TASKBOARD_DATA\"/app-to\"ken\"".into(),
-            "cat $TASKBOARD_DATA/*".into(),
-            "cat ${TASKBOARD_DATA}".into(),
-            "python3 -c 'import os; print(open(os.environ[\"TASKBOARD_DATA\"] + \"/x\").read())'".into(),
-            format!("find {parent} -name 'app-*' -exec cat {{}} +"),
-            format!("find {parent} -type f -exec cat {{}} +"),
-            format!("grep -r . {parent}"),
-            format!("rg . {parent}"),
-            format!("cat {parent}/*/*"),
-            format!("cat {d}/./x/../app-tok\\en"),
-            format!("cat {d}/../board/*"),
-            format!("cat {d}/a[p]p-t?ken"),
-            format!("cat {d}/app-{{tok,x}}en"),
-            format!("cat {}/*", link.display()),
-            "cat ../board/*".into(),
-            "cd .. && cat board/app-*".into(),
-            "cat x/app-*".into(),
-            "find / -name 'app*' -print".into(),
-        ];
-        if let Some(t) = &tmp_spelling {
-            yes.push(format!("cat {t}/*"));
-            yes.push(format!("grep -r . {t}"));
-        }
-        for c in &yes {
-            assert!(bash(c), "{c}");
-        }
-        for (tool, input) in [
-            ("Grep", serde_json::json!({"pattern": ".", "path": parent, "glob": "app-*"})),
-            ("Grep", serde_json::json!({"pattern": "[0-9a-f]{64}", "path": parent})),
-            ("Glob", serde_json::json!({"pattern": "**/app-*", "path": parent})),
-            ("Glob", serde_json::json!({"pattern": "*/*", "path": parent})),
-            ("Read", serde_json::json!({"file_path": format!("{}/app-token", link.display())})),
-            ("Write", serde_json::json!({"file_path": "/repo/x.sh", "content": format!("#!/bin/sh\ncat {d}/app-to''ken\n")})),
-            ("Write", serde_json::json!({"file_path": "/repo/x.py", "content": "print(open(os.environ['TASKBOARD_DATA'] + '/app-tok' + 'en').read())"})),
-        ] {
-            assert!(tool_reaches(tool, &input, &dir, Some(&repo)), "{tool} {input}");
-        }
-        // Grep or Glob with no path searches the working folder: a folder above the board's is out.
-        assert!(tool_reaches("Grep", &serde_json::json!({"pattern": "x"}), &dir, Some(&real)));
-
-        // Everyday work in the repo is fine.
-        for c in [
-            "find . -name '*.rs' -path '*/src/*'",
-            "grep -rn token src",
-            "rg -n 'app_token' crates",
-            "find . -name '*token*'",
-            "ls *",
-            "cat src/*.rs",
-            "cargo test -p taskboardd",
-            "sed -i '' 's/a/b/' src/main.rs",
-            "curl -s https://example.com/x",
-        ] {
-            assert!(!bash(c), "{c}");
-        }
-        for (tool, input) in [
-            ("Grep", serde_json::json!({"pattern": "fn main", "path": repo.display().to_string()})),
-            ("Grep", serde_json::json!({"pattern": "fn main"})),
-            ("Glob", serde_json::json!({"pattern": "**/*.rs"})),
-            ("Glob", serde_json::json!({"pattern": "**/*token*.rs"})),
-            ("Write", serde_json::json!({"file_path": "/repo/src/x.rs", "content": "/* find / -type f */\nfn main() {}"})),
-            ("Read", serde_json::json!({"file_path": format!("{d}/config.toml")})),
-        ] {
-            assert!(!tool_reaches(tool, &input, &dir, Some(&repo)), "{tool} {input}");
-        }
+        let bash = |c: &str| tool_reaches("Bash", &json!({"command": c}), &dir, None);
+        assert!(bash("cat /srv/board-data/.*/*"));
+        assert!(bash(&format!("cat /srv/board-data/{DIR}/{FILE}")));
+        assert!(!bash("cat /srv/board-data/*"));
+        assert!(!bash("cat /srv/other/x"));
     }
 
     #[test]
     fn globs_match_like_the_shell() {
-        for (pat, name) in [("app-*", "app-token"), ("a?p-t[o]ken", "app-token"), ("app-{x,tok}en", "app-token"), ("[!b]pp-*", "app-token"), ("*", "x")] {
+        for (pat, name) in [("ab-*", "ab-cd"), ("a?-c[d]", "ab-cd"), ("ab-{x,cd}", "ab-cd"), ("[!x]b-*", "ab-cd"), ("*", "x"), (".*", ".x"), (".[a]b", ".ab")] {
             assert!(glob_matches(pat, name), "{pat} {name}");
         }
-        for (pat, name) in [("app-*", "token"), ("*.rs", "app-token"), ("[b]pp-*", "app-token"), ("app-{x,y}", "app-token")] {
+        // A leading `*`, `?` or `[…]` doesn't match a dot file.
+        for (pat, name) in [("ab-*", "cd"), ("*.rs", "ab-cd"), ("[x]b-*", "ab-cd"), ("ab-{x,y}", "ab-cd"), ("*", ".x"), ("?x", ".x"), ("[.]x", ".x")] {
             assert!(!glob_matches(pat, name), "{pat} {name}");
         }
     }
@@ -692,12 +610,13 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join(FILE);
+        let p = dir.path().join(DIR).join(FILE);
         write(&p, &a).unwrap();
         write(&p, &b).unwrap();
         assert_eq!(read(&p).as_deref(), Some(b.as_str()));
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     #[test]
@@ -709,80 +628,5 @@ mod tests {
         assert!(!matches(Some(&t[..63]), &t));
         assert!(!matches(Some(&fresh()), &t));
         assert!(!matches(Some(""), ""), "no token, no match");
-    }
-
-    /// A lone `/` in a tb command's prose read as the root folder, and `zip` or `tree` in the same
-    /// prose read as a command walking it.
-    #[test]
-    fn a_tree_walking_word_in_prose_is_not_a_command() {
-        let dir = std::path::PathBuf::from("/srv/board-data");
-        let bash = |c: &str| tool_reaches("Bash", &serde_json::json!({"command": c}), &dir, None);
-        for no in [
-            "tb task new x --detail 'what happened / what was expected; attach the export zip (T113)'",
-            "tb task new \"tree-walking words\" --detail \"a lone slash / between words\"",
-            "git commit -m 'find / and grep -r / in prose'",
-        ] {
-            assert!(!bash(no), "{no}");
-        }
-        for yes in [
-            "find / -name x",
-            "/usr/bin/find / -type f",
-            "sudo find / -type f",
-            "echo x | xargs -0 grep -r tok /",
-            "sh -c 'tar c /'",
-            "X=1 rg . /",
-            "echo $(find / -type f)",
-            "echo `find / -type f`",
-            "cd /tmp && ls -R /",
-            "if find / -type f; then :; fi",
-        ] {
-            assert!(bash(yes), "{yes}");
-        }
-    }
-
-    /// Commands agents were refused for although they reach nowhere near the token: a `/` or a glob
-    /// in a sed pattern, a URL or a heredoc read as a path from the root, a `grep -r` elsewhere on the
-    /// line, another file in the folder named next to the word "token".
-    #[test]
-    fn commands_are_read_as_a_shell_reads_them() {
-        let home = dirs::home_dir().unwrap();
-        let dir = home.join(".config/taskboard");
-        let d = dir.display().to_string();
-        let bash = |c: &str| tool_reaches("Bash", &serde_json::json!({"command": c}), &dir, Some(&home));
-        for no in [
-            "T=$(sed -n '/^{/,$p' tok.json | jq -r .token); curl -s -X POST localhost:8090/db -H \"Authorization: Bearer $T\" -d '{\"table\":\"households\"}'".to_string(),
-            "l=$(curl -sI http://x.com | grep -i '^location:'); case \"$l\" in *https://x.com*) echo live;; esac".into(),
-            "grep -rn 'a\\|b' --include='*.rs' crates; sed -i '' 's/screen: false,/screen: true,/' src/config.rs".into(),
-            "grep -rn x src; python3 - <<'EOF'\ns = s.replace('\"/tasks/{t}/pr\"', '\"/\"')\nEOF".into(),
-            "grep -rln x --include='*.rs' crates/*app*".into(),
-            "cd /tmp/a/b && grep -rn x . ../..".into(),
-            format!("sqlite3 -readonly {d}/tasks.db \"select token_count from usage\""),
-            format!("grep -n '^\\[questions\\]' {d}/config.toml"),
-            format!("ls -la {d}/"),
-            format!("python3 -c \"print(open('{d}/config.toml').read())\""),
-            "cd ~/Development/x && grep -rn foo src".into(),
-            "git commit -m 'find / and grep -r ~ in prose'".into(),
-        ] {
-            assert!(!bash(&no), "{no}");
-        }
-        for yes in [
-            "cd ~ && grep -r . .config".to_string(),
-            format!("D={d}; cat $D/*"),
-            "echo \"$(find / -type f)\"".into(),
-            "cat ~/.config/*/*".into(),
-            format!("cd {d} && cat x"),
-            format!("ls -R {d}"),
-            "cd ~/.config && tar czf /tmp/b.tgz taskboard".into(),
-            "cd ~ && rg -l secret".into(),
-            "rg -l secret".into(),
-            "grep -r x".into(),
-            "cd ~/.config && grep -r x *".into(),
-            format!("python3 -c \"import os; print(os.listdir('{d}'))\""),
-            format!("node -e \"require('fs').readdirSync('{d}/')\""),
-            format!("python3 -c \"import glob; print(glob.glob('{d}/x*'))\""),
-            format!("python3 - <<'EOF'\nimport os; print(os.listdir('{d}'))\nEOF"),
-        ] {
-            assert!(bash(&yes), "{yes}");
-        }
     }
 }
