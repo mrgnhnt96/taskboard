@@ -2482,6 +2482,17 @@ impl Ctx {
     }
 }
 
+/// What `tb pr addressed` says. A retaken task (`tb take`, still working) only finishes with `tb submit`,
+/// so it isn't told to stop.
+fn addressed_line(t: &str, asked: &[&str], status: &str) -> String {
+    let did = if asked.is_empty() { format!("Recorded {t}'s review as addressed.") } else { format!("Asked {} to review {t}'s PR again.", asked.join(", ")) };
+    if matches!(status, "working" | "needs") {
+        format!("{did} {t} is still taken: push your changes, then run tb submit \"<summary>\" to finish it.")
+    } else {
+        format!("{did} The board watches the PR and brings this conversation back when it needs you. You can stop here.")
+    }
+}
+
 /// Longest title a terminal may give a task or backlog issue: a card shows it whole.
 const TITLE_MAX: usize = 80;
 
@@ -6361,11 +6372,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let t = c.pr_task(task)?;
                 let v = c.call_progress("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({})))?;
                 let asked: Vec<&str> = v["asked"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-                if asked.is_empty() {
-                    out(&format!("Recorded {t}'s review as addressed. The board watches the PR and brings this conversation back when it needs you. You can stop here."));
-                } else {
-                    out(&format!("Asked {} to review {t}'s PR again. The board watches it and brings this conversation back when it needs you. You can stop here.", asked.join(", ")));
-                }
+                let status = c.call("GET", &format!("/tasks/{t}"), None).ok().and_then(|d| d["status"].as_str().map(str::to_string)).unwrap_or_default();
+                out(&addressed_line(&t, &asked, &status));
                 Ok(0)
             }
             PrCmd::Reviewers { task, ask, replace, with, drop, count, dry_run } => {
@@ -7560,6 +7568,16 @@ mod tests {
         assert_eq!(start_said("T4", false, &json!({"status": "queued", "starting": true})), "Opening T4 in a new terminal now.");
         assert_eq!(start_said("T4", true, &json!({"status": "queued", "starting": false})), "T4 starts in a new terminal once its project has a free terminal.");
         assert_eq!(start_said("T4", false, &json!({"status": "working", "who": "Term", "starting": false})), "T4 is on Term.");
+    }
+
+    #[test]
+    fn pr_addressed_on_a_retaken_task_points_to_submit() {
+        let visit = addressed_line("T4", &["Pat"], "done");
+        assert_eq!(visit, "Asked Pat to review T4's PR again. The board watches the PR and brings this conversation back when it needs you. You can stop here.");
+        let retaken = addressed_line("T4", &[], "working");
+        assert_eq!(retaken, "Recorded T4's review as addressed. T4 is still taken: push your changes, then run tb submit \"<summary>\" to finish it.");
+        assert!(!retaken.contains("stop here"));
+        assert!(addressed_line("T4", &[], "needs").contains("tb submit"));
     }
 
     #[test]
