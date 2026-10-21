@@ -84,7 +84,7 @@ fi
 ./scripts/set-version.sh "$version"
 git add Cargo.toml Cargo.lock plugin/task-board/.claude-plugin/plugin.json
 # A replaced release usually has its version commit already.
-git diff --cached --quiet || git commit -m "chore: release $tag"
+git diff --cached --quiet || TB_RELEASE_COMMIT=1 git commit -m "chore: release $tag"
 git tag -a "$tag" -m "Taskboard $version"
 # Runs created from here on are this push's, so a failed run on the same commit isn't picked up.
 pushed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
