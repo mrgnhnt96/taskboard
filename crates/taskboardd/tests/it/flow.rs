@@ -755,6 +755,25 @@ fn an_attachment_keeps_a_summary_set_when_attached_or_edited() {
 }
 
 #[test]
+fn an_artifact_link_needs_its_title_and_keeps_it_when_attached_again() {
+    let b = new_board();
+    b.post("/goals", json!({"name": "Docs", "project": "webapp"}));
+    let url = "https://claude.ai/artifact/JEqgDZwKUeGWGYYBcAWj4F";
+    let mut body = json!({"event": "tb.attach", "session": "s1", "url": url, "kind": "results", "goal": "G1"});
+    body["cwd"] = json!("");
+    let e = reports::handle(&b.app, body, false).expect_err("no title");
+    assert_eq!(e.status, 400);
+    assert!(e.to_string().contains("--title"), "{e}");
+    b.report("tb.attach", "s1", json!({"url": url, "title": "Quill Taps Everywhere", "kind": "results", "goal": "G1"}));
+    b.report("tb.attach", "s1", json!({"url": url, "kind": "results", "summary": "Every device", "goal": "G1"}));
+    let a = b.get("/goals/G1")["attachments"][0].clone();
+    assert_eq!((a["title"].as_str(), a["summary"].as_str()), (Some("Quill Taps Everywhere"), Some("Every device")));
+    // Any other link still falls back to its last part.
+    b.report("tb.attach", "s1", json!({"url": "https://example.com/spec", "goal": "G1"}));
+    assert_eq!(b.get("/goals/G1")["attachments"][1]["title"], "spec");
+}
+
+#[test]
 fn the_goal_lists_every_task_attachment_next_to_its_own() {
     let b = new_board();
     let g = b.post("/goals", json!({"name": "Docs", "project": "webapp"}))["id"].as_i64().unwrap();

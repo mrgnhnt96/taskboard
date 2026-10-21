@@ -945,6 +945,12 @@ pub fn attachment_dict(a: &Row) -> Value {
            "task": rf_opt("task", a.i("task_id")), "goal": rf_opt("goal", a.i("goal_id"))})
 }
 
+/// A claude.ai artifact link, whose page needs a sign-in and whose last part is only an id.
+fn is_artifact_link(url: &str) -> bool {
+    let l = url.to_ascii_lowercase();
+    ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"].iter().any(|p| l.starts_with(p))
+}
+
 static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^https?://\S+$").unwrap());
 
 /// The refused extension (as configured) a file path ends with. Links aren't files, so they pass.
@@ -979,13 +985,20 @@ pub fn add_attachment(
         return err(400, app.cfg.attachments.refuse_message.replace("{ext}", &ext));
     }
     let kind = if ATTACH_KINDS.contains(&kind) { kind } else { "other" };
-    let title = attachment_title(title, url);
     let summary = attachment_summary(summary);
     let (col, val) = if let Some(t) = task_id { ("task_id", t) } else { ("goal_id", goal_id.unwrap_or(-1)) };
     let cur = app.db.q1(
         &format!("SELECT * FROM attachments WHERE {col} = ? AND url = ? AND removed_at IS NULL"),
         p![val, url],
     )?;
+    // Attaching it again without a title keeps the one it has.
+    let title = match &cur {
+        Some(cur) if attachment_title(title, "").is_empty() => attachment_title(&cur.st("title"), url),
+        _ => attachment_title(title, url),
+    };
+    if title == attachment_title("", url) && is_artifact_link(url) {
+        return err(400, "Give it --title: the artifact's own title. The board can't open a private artifact to read it.");
+    }
     let aid = if let Some(cur) = cur {
         // Attaching it again without a summary keeps the one it has.
         app.db.x(
