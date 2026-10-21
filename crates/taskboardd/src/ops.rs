@@ -344,6 +344,9 @@ pub fn clean_setup(body: &Value) -> Value {
     }
 }
 
+/// How many of a task's newest log entries its detail carries.
+pub const LOG_PAGE: i64 = 200;
+
 pub fn task_detail(app: &App, id: i64) -> Result<Value> {
     let t = board::get_task(app, id)?;
     let d = board::task_card(app, &t)?;
@@ -367,12 +370,15 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
         (None, Some(sid)) => json!({"id": sid, "name": t.v("session_name"), "status": "gone"}),
         _ => Value::Null,
     };
+    // Only the newest page; `GET /tasks/:id/log?before=` pages back through the rest.
     let log: Vec<Value> = app
         .db
-        .q("SELECT * FROM events WHERE task_id = ? ORDER BY at DESC, id DESC", p![id])?
+        .q("SELECT * FROM events WHERE task_id = ? ORDER BY at DESC, id DESC LIMIT ?", p![id, LOG_PAGE])?
         .iter()
-        .map(|e| json!({"at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text")}))
+        .map(|e| json!({"id": e.v("id"), "at": e.v("at"), "who": e.v("who"), "kind": e.v("kind"), "text": e.v("text")}))
         .collect();
+    let log_total = app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ?", p![id])?;
+    let last_commit_at = app.db.val("SELECT MAX(at) FROM events WHERE task_id = ? AND kind = 'commit'", p![id])?;
     let found: Vec<Value> = app
         .db
         .q("SELECT id, title FROM issues WHERE found_by_task = ? ORDER BY created_at", p![id])?
@@ -404,7 +410,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "ctx_version": t.v("ctx_version"), "created_at": t.v("created_at"), "updated_at": t.v("updated_at"),
             "started_at": t.v("started_at"), "finished_at": t.v("finished_at"),
             "origin": Some(jloads_obj(t.s("origin"))).filter(|o| !o.is_empty()).map(Value::Object).unwrap_or(Value::Null),
-            "log": log, "goal": gd,
+            "log": log, "log_total": log_total, "last_commit_at": last_commit_at, "goal": gd,
             "blocked_by": waitsfor::blocked_by(app, &t)?, "attachable": attachable, "found": found,
             "from_issue": fi.map(|b| json!({"id": b.id(), "ref": rf("issue", b.id()), "title": b.v("title")})).unwrap_or(Value::Null),
             "jobs": jobs_now,

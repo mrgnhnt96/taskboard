@@ -17,6 +17,7 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::Duration;
 pub use view::{Act, Go, Node};
 pub(crate) use view::{ATT_KINDS, att_file_type};
@@ -55,6 +56,187 @@ pub struct State {
     subs: Vec<Subscription>,
     /// The field that had focus at the last draw.
     focused: Option<FocusHandle>,
+    /// The Full log entries fetched so far under the current filter.
+    log: RefCell<LogCache>,
+    /// The Full log's list, which draws only the entries in view.
+    log_list: Option<LogList>,
+}
+
+// ------------------------------------------------------------------ the Full log
+
+/// How many older entries one fetch asks for (the task itself carries the newest 200).
+const LOG_PAGE: usize = 200;
+/// Fetch the next page once the list is scrolled within this many entries of its end.
+const LOG_AHEAD: usize = 100;
+
+#[derive(Default)]
+struct LogCache {
+    filter: String,
+    /// The task page last merged in, so an unchanged one isn't merged again.
+    stamp: String,
+    rows: Rc<Vec<Value>>,
+    keys: HashSet<String>,
+    /// The board has nothing older under this filter.
+    done: bool,
+    loading: bool,
+}
+
+impl LogCache {
+    /// Add entries not already held, keeping newest first (the board's `at DESC, id DESC`).
+    fn add(&mut self, new: impl IntoIterator<Item = Value>) {
+        let rows = Rc::make_mut(&mut self.rows);
+        for e in new {
+            if self.keys.insert(log_key(&e)) {
+                rows.push(e);
+            }
+        }
+        rows.sort_by(|a, b| s(b, "at").cmp(s(a, "at")).then(b["id"].as_i64().cmp(&a["id"].as_i64())));
+    }
+}
+
+fn log_key(e: &Value) -> String {
+    match e["id"].as_i64() {
+        Some(id) => id.to_string(),
+        None => format!("{}|{}|{}", s(e, "at"), s(e, "kind"), s(e, "text")),
+    }
+}
+
+/// The Full log under filter `f`: the task's own page merged into what's been fetched before it.
+fn log_rows(m: &MainWindow, t: Option<&Value>, f: &str) -> view::LogRows {
+    let Some(t) = t else { return view::LogRows::default() };
+    let mut c = m.task_panel.log.borrow_mut();
+    if c.filter != f {
+        *c = LogCache { filter: f.to_string(), ..Default::default() };
+    }
+    let page = fmt::arr(t, "log");
+    let stamp = format!("{}|{}|{}", page.first().map(log_key).unwrap_or_default(), page.len(), t["log_total"]);
+    if c.stamp != stamp {
+        c.stamp = stamp;
+        let new: Vec<Value> = page.iter().filter(|e| f == "all" || view::log_group(s(e, "kind")) == f).filter(|e| !c.keys.contains(&log_key(e))).cloned().collect();
+        if !new.is_empty() {
+            c.add(new);
+        }
+    }
+    let whole = t["log_total"].as_u64().is_none_or(|n| n as usize <= page.len());
+    view::LogRows { rows: c.rows.clone(), more: !whole && !c.done }
+}
+
+/// Fetch the next older page of the log when the list nears its end.
+fn load_older_log(m: &MainWindow, cx: &mut Context<MainWindow>) {
+    let Some(Panel::Task { r, tab: TaskTab::Log }) = &m.panel else { return };
+    let Some(l) = &m.task_panel.log_list else { return };
+    let f = ui(|u| u.log_filter().to_string());
+    let rows = log_rows(m, m.data.task.as_ref(), &f);
+    let mut c = m.task_panel.log.borrow_mut();
+    if !rows.more || c.loading || l.filter != f || rows.rows.len() > l.state.logical_scroll_top().item_ix + LOG_AHEAD {
+        return;
+    }
+    c.loading = true;
+    let mut query = vec![("kind", view::log_kinds(&f)), ("limit", LOG_PAGE.to_string())];
+    if let Some(id) = rows.rows.last().and_then(|e| e["id"].as_i64()) {
+        query.push(("before", id.to_string()));
+    }
+    let (r, backend, path) = (r.clone(), m.backend.clone(), format!("tasks/{r}/log"));
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get(&path, &query) }).await;
+        let _ = this.update(cx, |m, cx| {
+            if m.task_panel.r != r {
+                return;
+            }
+            let mut c = m.task_panel.log.borrow_mut();
+            // Another filter since: its cache started over and isn't waiting on this.
+            if c.filter != f {
+                return;
+            }
+            c.loading = false;
+            match got {
+                Ok(v) => {
+                    c.done = !v["more"].as_bool().unwrap_or(false);
+                    c.add(fmt::arr(&v, "log").iter().cloned());
+                }
+                // Stop asking; the entries already here stay.
+                Err(_) => c.done = true,
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+struct LogList {
+    state: ListState,
+    filter: String,
+    /// The entries the list was last told about.
+    rows: Rc<Vec<Value>>,
+    more: bool,
+}
+
+/// The Full log node in the panel's tree, if the Log tab shows one.
+fn find_log(n: &Node) -> Option<(&Rc<Vec<Value>>, bool)> {
+    match n {
+        Node::Log { rows, more } => Some((rows, *more)),
+        Node::El { kids, .. } => kids.iter().find_map(find_log),
+        _ => None,
+    }
+}
+
+/// Keep the list's items (the sheet above, each entry, the end below) in step with the entries:
+/// new ones come in on top and older pages at the bottom, so the place scrolled to stays put.
+fn sync_log_list(m: &mut MainWindow, rows: &Rc<Vec<Value>>, more: bool) {
+    let f = ui(|u| u.log_filter().to_string());
+    let count = rows.len() + 2;
+    let l = match &mut m.task_panel.log_list {
+        Some(l) if l.filter == f => l,
+        slot => slot.insert(LogList { state: ListState::new(count, ListAlignment::Top, px(800.)), filter: f, rows: rows.clone(), more }),
+    };
+    if !Rc::ptr_eq(&l.rows, rows) {
+        let old = &l.rows;
+        let key = |e: Option<&Value>| e.map(log_key);
+        let top = old.first().and_then(|o| rows.iter().position(|e| log_key(e) == log_key(o)));
+        match top {
+            Some(k) if rows.len() >= k + old.len() && key(rows.get(k + old.len() - 1)) == key(old.last()) => {
+                l.state.splice(1..1, k);
+                let at = 1 + k + old.len();
+                l.state.splice(at..at, rows.len() - k - old.len());
+            }
+            _ => l.state.reset(count),
+        }
+        l.rows = rows.clone();
+    }
+    l.more = more;
+    // The sheet and the end change with the task; the entries don't.
+    l.state.remeasure_items(0..1);
+    l.state.remeasure_items(count - 1..count);
+}
+
+/// One item of the Full log's list: 0 is the sheet above the entries, the last the end below.
+fn log_list_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    let Some(l) = &m.task_panel.log_list else { return div().into_any_element() };
+    let (rows, more) = (l.rows.clone(), l.more);
+    let mut d = Draw { t: &t, window, path: Vec::new(), within: Vec::new() };
+    if ix == 0 {
+        return match build(m) {
+            Some(tree) => d.sheet(m, &tree, false, cx).0.into_any_element(),
+            None => div().into_any_element(),
+        };
+    }
+    let row = div().px(px(24.)).line_height(relative(1.5));
+    d.within = vec![K::Col, K::Body];
+    match rows.get(ix - 1) {
+        Some(e) => {
+            d.path = vec![usize::MAX - 1, ix];
+            row.child(d.node(m, &view::log_item(e), None, cx)).into_any_element()
+        }
+        None => {
+            let line = |s: &str, st| Node::Text { s: s.to_string(), st, tip: None };
+            let mut end = row.flex().flex_col().gap(px(18.)).pt(px(6.)).pb(px(32.));
+            if more {
+                end = end.child(d.node(m, &line("Loading…", St::Muted), None, cx));
+            }
+            end.child(d.node(m, &line(view::LOG_HELP, St::Help), None, cx)).into_any_element()
+        }
+    }
 }
 
 // ------------------------------------------------------------------ building the view
@@ -85,9 +267,11 @@ pub fn build(m: &MainWindow) -> Option<Node> {
     let folds = folds();
     let u = UI.with(|u| u.borrow().clone());
     let null = Value::Null;
+    let task = m.data.task.as_ref().filter(|t| fmt::ref_of(t, "T") == *r);
+    let log = log_rows(m, task, u.log_filter());
     let c = view::Ctx {
         state: m.data.state.as_ref().unwrap_or(&null),
-        task: m.data.task.as_ref().filter(|t| fmt::ref_of(t, "T") == *r),
+        task,
         card: m.data.task_card.as_ref().filter(|t| fmt::ref_of(t, "T") == *r),
         r,
         tab: tab_name(*tab),
@@ -95,6 +279,7 @@ pub fn build(m: &MainWindow) -> Option<Node> {
         err: m.data.errs.task.as_deref(),
         ui: &u,
         folds: &folds,
+        log: &log,
     };
     Some(view::panel(&c))
 }
@@ -706,6 +891,10 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     load_handoff(m, cx);
     let tree = build(m)?;
     sync_fields(m, &tree, window, cx);
+    if let Some((rows, more)) = find_log(&tree) {
+        sync_log_list(m, rows, more);
+        load_older_log(m, cx);
+    }
     m.task_panel.focused = m.task_panel.fields.values().find(|i| i.focus.is_focused(window)).map(|i| i.focus.clone());
     let mut d = Draw { t, window, path: Vec::new(), within: Vec::new() };
     Some(d.panel(m, &tree, cx))
@@ -751,12 +940,43 @@ impl Draw<'_> {
     /// The whole sheet scrolls as one (`.panel { overflow-y: auto; gap: 18px; padding: 16px 24px 32px }`),
     /// the header (breadcrumb, title, chips) packed closer above it.
     fn panel(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
-        let Node::El { kids, .. } = tree else { return div().into_any_element() };
-        let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(16.)).pb(px(32.)).line_height(relative(1.5));
+        let r = m.task_panel.r.clone();
+        let panel = div().size_full().flex().flex_col().text_size(px(14.));
+        // The Full log: a list that draws only what's in view, the sheet above as its first item.
+        if let (Some(l), Some(_)) = (&m.task_panel.log_list, find_log(tree)) {
+            let foot = self.foot(m, tree, cx);
+            let items = list(l.state.clone(), cx.processor(log_list_item)).flex_1().min_h_0();
+            return panel.child(items).children(foot).into_any_element();
+        }
+        let (col, foot) = self.sheet(m, tree, true, cx);
+        // `.panel-foot { position: sticky; bottom: 0 }`: pinned under the scrolling sheet.
+        let body = div().id(SharedString::from(format!("task-body-{r}"))).flex_1().min_h_0().overflow_y_scroll().child(col.pb(px(32.)));
+        panel.child(body).children(foot).into_any_element()
+    }
+
+    /// The footer tabs, drawn on their own.
+    fn foot(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+        let Node::El { kids, .. } = tree else { return None };
+        let i = kids.iter().position(|k| matches!(k, Node::El { k: K::Foot, .. }))?;
+        self.within.push(K::Col);
+        self.path.push(i);
+        let e = self.node(m, &kids[i], None, cx);
+        self.path.pop();
+        self.within.pop();
+        Some(e)
+    }
+
+    /// The sheet and (when `with_foot`) the footer under it.
+    fn sheet(&mut self, m: &MainWindow, tree: &Node, with_foot: bool, cx: &mut Context<MainWindow>) -> (Div, Option<AnyElement>) {
+        let Node::El { kids, .. } = tree else { return (div(), None) };
+        let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(16.)).line_height(relative(1.5));
         let mut head = Some(div().flex().flex_col().min_w_0());
         let mut foot = None;
         self.within.push(K::Col);
         for (i, k) in kids.iter().enumerate() {
+            if !with_foot && matches!(k, Node::El { k: K::Foot, .. }) {
+                continue;
+            }
             self.path.push(i);
             let e = self.node(m, k, None, cx);
             if let Node::El { k: K::Foot, .. } = k {
@@ -779,11 +999,7 @@ impl Draw<'_> {
             }
         }
         self.within.pop();
-        col = col.children(head);
-        let r = m.task_panel.r.clone();
-        // `.panel-foot { position: sticky; bottom: 0 }`: pinned under the scrolling sheet.
-        let body = div().id(SharedString::from(format!("task-body-{r}"))).flex_1().min_h_0().overflow_y_scroll().child(col);
-        div().size_full().flex().flex_col().text_size(px(14.)).child(body).children(foot).into_any_element()
+        (col.children(head), foot)
     }
 
     fn kids(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
@@ -823,6 +1039,8 @@ impl Draw<'_> {
             Node::Field { key, multi, mono, .. } => self.leaf_field(m, key, *multi, *mono, boxed, cx),
             Node::Note { s, err } => self.leaf_note(s, *err),
             Node::Dot(d) => self.leaf_dot(*d),
+            // Its entries are the list's own items (`log_list_item`); in the sheet it holds their place.
+            Node::Log { .. } => div().into_any_element(),
             Node::El { k, tip, .. } => {
                 let el = self.container(m, n, *k, boxed, cx);
                 match tip {
@@ -1077,11 +1295,9 @@ impl Draw<'_> {
             K::Det => div().flex().flex_col().mt(px(8.)).px(px(12.)).py(px(4.)).rounded(px(9.)).bg(t.col).border_1().border_color(t.border).text_size(px(13.)),
             // `.meta-row`: 140px name, value, 32px remove.
             K::MetaRow => div().flex().items_center().gap(px(8.)),
-            // `.log`
-            K::Log => div().flex().flex_col(),
             // `.note-body p`: lines joined by line breaks.
             K::MdP => div().flex().flex_col().min_w_0(),
-            // Linked, Log, MdP
+            // Linked, MdP
             _ => div().flex().flex_col().min_w_0(),
         };
         let d = match k {

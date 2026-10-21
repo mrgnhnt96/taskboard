@@ -171,6 +171,14 @@ impl Fake {
     }
 }
 
+#[cfg(test)]
+impl Fake {
+    /// The board itself, for setting up what the API can't (a long log).
+    pub fn app(&self) -> &Board {
+        &self.board
+    }
+}
+
 impl Drop for Fake {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
