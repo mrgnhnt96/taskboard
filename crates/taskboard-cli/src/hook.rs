@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::client::{self, CallError};
 use taskboardd::comments;
 use taskboardd::config::Config;
+use taskboardd::hunks::{self, Hunk, Marks};
 use taskboardd::steps::{from_listing, Before, Step};
 
 const CONTEXT_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit"];
@@ -283,8 +284,9 @@ fn tidy(p: &Path) -> String {
 }
 
 /// The files the commit at `at` in `cmd` (run in `dir`) takes: what's staged, what its own `git add`s
-/// before it add, and with `-a` every tracked change.
-fn committed(cmd: &str, at: usize, dir: &Path, top: &Path, list: &[Change]) -> Vec<String> {
+/// before it add, and with `-a` every tracked change. Each says whether its working copy goes in whole
+/// (added by the command) or only what's staged now.
+fn committed(cmd: &str, at: usize, dir: &Path, top: &Path, list: &[Change]) -> Vec<(String, bool)> {
     let rest = &cmd[at..];
     let args = &rest[..rest.find([';', '&', '|']).unwrap_or(rest.len())];
     let all_tracked = args.split_whitespace().any(|a| COMMIT_ALL_RE.is_match(a));
@@ -303,7 +305,12 @@ fn committed(cmd: &str, at: usize, dir: &Path, top: &Path, list: &[Change]) -> V
             }
         }
     }
-    list.iter().filter(|c| c.staged || everything || (tracked && c.tracked) || covered(&covers, &c.path)).map(|c| c.path.clone()).collect()
+    list.iter()
+        .filter_map(|c| {
+            let whole = everything || (tracked && c.tracked) || covered(&covers, &c.path);
+            (whole || c.staged).then(|| (c.path.clone(), whole))
+        })
+        .collect()
 }
 
 /// A path a git command names, from the checkout's top folder.
@@ -331,10 +338,84 @@ fn carried(cmd: &str, at: usize, dir: &Path, top: &Path, list: &[Change]) -> Vec
     all.filter(|p| covered(&covers, p)).collect()
 }
 
+/// `git` in `top`, its output as text; None when it fails.
+fn git_text(top: &Path, args: &[&str]) -> Option<String> {
+    let o = std::process::Command::new("git").arg("-C").arg(top).args(args).output().ok().filter(|o| o.status.success())?;
+    String::from_utf8(o.stdout).ok()
+}
+
+/// `git` in `top` with `input` on its stdin, its output as text; None when it fails.
+fn git_in(top: &Path, args: &[&str], input: &[u8]) -> Option<String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("git").arg("-C").arg(top).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    child.stdin.take()?.write_all(input).ok()?;
+    let o = child.wait_with_output().ok().filter(|o| o.status.success())?;
+    String::from_utf8(o.stdout).ok()
+}
+
+/// A file's uncommitted hunks against HEAD in the checkout at `top`: HEAD's text, the working copy's
+/// and the hunks. None for a file HEAD doesn't have, a binary one, or one that's gone.
+struct Split {
+    head: String,
+    work: String,
+    hunks: Vec<Hunk>,
+}
+
+fn split_of(top: &Path, rel: &str) -> Option<Split> {
+    let head = git_text(top, &["show", &format!("HEAD:{rel}")])?;
+    let diff = git_text(top, &["diff", "--no-ext-diff", "--no-color", "--no-textconv", "-U0", "HEAD", "--", rel])?;
+    if diff.lines().any(|l| l.starts_with("Binary files")) {
+        return None;
+    }
+    let work = std::fs::read_to_string(top.join(rel)).ok()?;
+    let hunks = hunks::parse(rel, &hunks::lines(&head), &hunks::lines(&work), &diff);
+    Some(Split { head, work, hunks })
+}
+
+/// Where `task`'s recorded edits (`hunks/<task>`) sit in `rel`'s working copy `work`; None when its
+/// log has none for the file.
+fn marks_of(data: &Path, task: &str, top: &Path, rel: &str, work: &[&str]) -> Option<Marks> {
+    let log = std::fs::read_to_string(data.join("hunks").join(task)).unwrap_or_default();
+    Marks::of(&log, &top.join(rel).to_string_lossy(), work)
+}
+
+/// Whether two line ranges of HEAD, as (first line's index, count), touch: a range of none (an
+/// insertion) touches the lines on either side of it.
+fn overlaps(a: (usize, usize), b: (usize, usize)) -> bool {
+    let (a_end, b_end) = (a.0 + a.1, b.0 + b.1);
+    if a.1 == 0 || b.1 == 0 {
+        a.0 <= b_end && b.0 <= a_end
+    } else {
+        a.0 < b_end && b.0 < a_end
+    }
+}
+
+/// Whether a commit of `rel`, a file `other` edited too, takes hunks `other` made: of the working
+/// copy when the command stages it `whole`, else of what's staged now. A file whose hunks can't be
+/// told apart (HEAD hasn't it, it's binary, `other`'s edits weren't logged by patch) takes them.
+fn takes_hunks_of(data: &Path, top: &Path, rel: &str, other: &str, whole: bool) -> bool {
+    let Some(s) = split_of(top, rel) else { return true };
+    let work = hunks::lines(&s.work);
+    let Some(marks) = marks_of(data, other, top, rel, &work) else { return true };
+    let theirs: Vec<&Hunk> = s.hunks.iter().filter(|h| marks.made(h)).collect();
+    if theirs.is_empty() {
+        return false;
+    }
+    if whole {
+        return true;
+    }
+    // A staged deletion takes everything.
+    let Some(index) = git_text(top, &["show", &format!(":{rel}")]) else { return true };
+    let Some(diff) = git_text(top, &["diff", "--cached", "--no-ext-diff", "--no-color", "--no-textconv", "-U0", "--", rel]) else { return true };
+    let staged = hunks::parse(rel, &hunks::lines(&s.head), &hunks::lines(&index), &diff);
+    staged.iter().any(|x| theirs.iter().any(|t| t.id == x.id || overlaps(t.old, x.old)))
+}
+
 /// What a git command in a checkout would do to other tasks' uncommitted edits there: its verb, the
 /// checkout's top folder and, by the task that made them (and its terminal), the files it would take
 /// (a commit) or carry off (a switch, checkout, rebase, stash or reset). None for any other command, or
-/// when it touches no one else's edits. Edits `own` (this terminal's task) made too are its own to commit.
+/// when it touches no one else's edits. A file `own` (this terminal's task) edited too it may commit
+/// while none of the other task's hunks of it go in.
 fn shared_conflicts(cmd: &str, cwd: &str, data: &Path, own: Option<&str>) -> Option<(String, PathBuf, Vec<(String, String, Vec<String>)>)> {
     let c = SHARED_GIT_RE.captures(cmd)?;
     if c.get(2).is_some() {
@@ -349,16 +430,19 @@ fn shared_conflicts(cmd: &str, cwd: &str, data: &Path, own: Option<&str>) -> Opt
     }
     let list = changes(&top)?;
     let mine: Vec<String> = edits.iter().filter(|e| Some(e.task.as_str()) == own).filter_map(|e| rel_to(&e.file, &top)).collect();
-    let taken = if verb == "commit" { committed(cmd, m.end(), &dir, &top, &list) } else { carried(cmd, m.end(), &dir, &top, &list) };
+    let taken = if verb == "commit" { committed(cmd, m.end(), &dir, &top, &list) } else { carried(cmd, m.end(), &dir, &top, &list).into_iter().map(|p| (p, true)).collect() };
     let mut by: Vec<(String, String, Vec<String>)> = vec![];
     for e in edits.iter().filter(|e| Some(e.task.as_str()) != own) {
         let Some(rel) = rel_to(&e.file, &top) else { continue };
-        if !taken.contains(&rel) || (verb == "commit" && mine.contains(&rel)) {
+        let Some(&(_, whole)) = taken.iter().find(|(p, _)| *p == rel) else { continue };
+        if by.iter().any(|(t, _, files)| *t == e.task && files.contains(&rel)) {
+            continue;
+        }
+        if verb == "commit" && mine.contains(&rel) && !takes_hunks_of(data, &top, &rel, &e.task, whole) {
             continue;
         }
         match by.iter_mut().find(|(t, _, _)| *t == e.task) {
-            Some((_, _, files)) if !files.contains(&rel) => files.push(rel),
-            Some(_) => {}
+            Some((_, _, files)) => files.push(rel),
             None => by.push((e.task.clone(), e.session.clone(), vec![rel])),
         }
     }
@@ -374,8 +458,9 @@ fn shared_refusal(own: Option<&str>, verb: &str, top: &Path, theirs: &[(String, 
     if verb == "commit" {
         return format!(
             "{who} can't commit files another task edited in {} and hasn't committed: {named}. They're {tasks}'s work, not {who}'s. \
-             Unstage them (git restore --staged <file>) and commit only the files {who} edited, by name (git add <file> … && git commit), \
-             or move {who}'s own edits into a worktree slot and work there: tb slot claim --bring <its files>.",
+             Unstage them (git restore --staged <file>) and commit only the files {who} edited, by name (git add <file> … && git commit). \
+             In a file {who} edited too, only {who}'s own hunks can go in: tb stage <file> stages just those, from {who}'s recorded edits; \
+             then git commit, without -a or a git add of that file. Or move {who}'s own edits into a worktree slot and work there: tb slot claim --bring <its files>.",
             top.display()
         );
     }
@@ -385,6 +470,107 @@ fn shared_refusal(own: Option<&str>, verb: &str, top: &Path, theirs: &[(String, 
          (git add <file> … && git commit), or move {who}'s own edits into a worktree slot and work there: tb slot claim --bring <its files>.",
         top.display()
     )
+}
+
+/// `tb stage`: stages only `own`'s hunks of `files` (named from `cwd`; none named, every uncommitted
+/// file it edited in this checkout), found from its recorded edits, so a commit in a checkout other
+/// tasks share takes none of theirs. A file no other task edited goes in whole. A hunk another task
+/// made too, or a shared file whose hunks can't be told apart, is refused with nothing staged. What
+/// it staged and what it left out.
+pub(crate) fn stage_own(data: &Path, own: &str, cwd: &Path, files: &[String]) -> Result<String, String> {
+    let Some((_, top)) = repo_of(cwd) else { return Err(format!("{} isn't in a git checkout.", cwd.display())) };
+    let list = changes(&top).ok_or_else(|| format!("git status failed in {}.", top.display()))?;
+    let edits = ledger(data);
+    let rel_of = |e: &Edit| rel_to(&e.file, &top);
+    let targets: Vec<String> = if files.is_empty() {
+        let mut mine: Vec<String> = edits.iter().filter(|e| e.task == own).filter_map(rel_of).filter(|r| list.iter().any(|c| c.path == *r)).collect();
+        mine.sort();
+        mine.dedup();
+        mine
+    } else {
+        let dir = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let named: Vec<String> = files.iter().map(|f| from_top(f, &dir, &top)).collect();
+        let idle: Vec<&String> = named.iter().filter(|r| !list.iter().any(|c| c.path == **r)).collect();
+        if !idle.is_empty() {
+            return Err(format!("{own} can't stage {}: nothing in {} is uncommitted there. Nothing was staged.", idle.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(", "), top.display()));
+        }
+        named
+    };
+    if targets.is_empty() {
+        return Err(format!("{own} has no uncommitted edits in {} to stage.", top.display()));
+    }
+    let (mut whole, mut parts, mut clash, mut left, mut none) = (vec![], vec![], vec![], vec![], vec![]);
+    for f in &targets {
+        let mut others: Vec<&str> = edits.iter().filter(|e| e.task != own && rel_of(e).as_deref() == Some(f)).map(|e| e.task.as_str()).collect();
+        others.sort();
+        others.dedup();
+        if others.is_empty() {
+            whole.push(f.as_str());
+            continue;
+        }
+        let names = others.join(" and ");
+        let Some(s) = split_of(&top, f) else {
+            clash.push(format!("{f} ({names} edits it too, and only a text file HEAD has can be split by hunk)"));
+            continue;
+        };
+        let work = hunks::lines(&s.work);
+        let mine = marks_of(data, own, &top, f, &work).unwrap_or_default();
+        let mut theirs = vec![];
+        for o in &others {
+            match marks_of(data, o, &top, f, &work) {
+                Some(m) => theirs.push((*o, m)),
+                None => clash.push(format!("{f} ({o} edits it too, and its edits can't be told apart from {own}'s)")),
+            }
+        }
+        let mut take = vec![];
+        for h in &s.hunks {
+            let by: Vec<&str> = theirs.iter().filter(|(_, m)| m.made(h)).map(|(t, _)| *t).collect();
+            match (mine.made(h), by.is_empty()) {
+                (true, true) => take.push(h.id.clone()),
+                (true, false) => clash.push(format!("{f} ({} changed the same lines as {own}, at line {})", by.join(" and "), h.line())),
+                (false, true) => left.push(format!("{f} line {}", h.line())),
+                (false, false) => {}
+            }
+        }
+        if take.is_empty() {
+            none.push(f.as_str());
+            continue;
+        }
+        let content = hunks::build(&hunks::lines(&s.head), &work, &s.hunks, |h| take.contains(&h.id));
+        parts.push((f.as_str(), content, take.len(), s.hunks.len()));
+    }
+    if !clash.is_empty() {
+        return Err(format!("{own} can't stage {}. Nothing was staged.", clash.join(", ")));
+    }
+    let failed = |f: &str| format!("Staging {f} in {} failed.", top.display());
+    for (f, content, _, _) in &parts {
+        let mode = git_text(&top, &["ls-tree", "HEAD", "--", f]).and_then(|t| t.split_whitespace().next().map(str::to_string)).unwrap_or_else(|| "100644".into());
+        let blob = git_in(&top, &["hash-object", "-w", "--stdin"], content.as_bytes()).ok_or_else(|| failed(f))?;
+        git_text(&top, &["update-index", "--add", "--cacheinfo", &format!("{mode},{},{f}", blob.trim())]).ok_or_else(|| failed(f))?;
+    }
+    if !whole.is_empty() {
+        let mut args = vec!["add", "-A", "--"];
+        args.extend(whole.iter());
+        git_text(&top, &args).ok_or_else(|| failed(&whole.join(", ")))?;
+    }
+    let mut lines = vec![];
+    if !parts.is_empty() {
+        let each = parts.iter().map(|(f, _, n, of)| format!("{f} ({n} of {of} hunks)")).collect::<Vec<_>>().join(", ");
+        lines.push(format!("Staged only {own}'s hunks of {each}; the other tasks' stay unstaged."));
+    }
+    if !whole.is_empty() {
+        lines.push(format!("Staged whole (no other task edits them): {}.", whole.join(", ")));
+    }
+    if !none.is_empty() {
+        lines.push(format!("Nothing of {own}'s to stage in {}.", none.join(", ")));
+    }
+    if !left.is_empty() {
+        lines.push(format!("Left unstaged, in no task's edit log (shell edits?): {}. Stage one by hand with git add -p if it's {own}'s.", left.join(", ")));
+    }
+    if !parts.is_empty() || !whole.is_empty() {
+        lines.push("Commit with git commit, without -a or a git add of these files.".into());
+    }
+    Ok(lines.join("\n"))
 }
 
 /// `PreToolUse`: in a checkout tasks share, refuses a commit that takes files another task still on its
@@ -1384,7 +1570,7 @@ mod tests {
         ];
         let take = |cmd: &str, dir: &str| {
             let at = SHARED_GIT_RE.find(cmd).unwrap().end();
-            let mut t = committed(cmd, at, Path::new(dir), top, &list);
+            let mut t: Vec<String> = committed(cmd, at, Path::new(dir), top, &list).into_iter().map(|(p, _)| p).collect();
             t.sort();
             t
         };
@@ -1397,6 +1583,9 @@ mod tests {
         assert_eq!(take("git add -A && git commit -m x", "/r"), vec!["a.rs", "b.rs", "new.rs", "src/c.rs"]);
         assert_eq!(take("git add . && git commit -m x", "/r"), vec!["a.rs", "b.rs", "new.rs", "src/c.rs"]);
         assert_eq!(take("git commit -m x && git add b.rs", "/r"), vec!["a.rs"], "an add after the commit isn't in it");
+        let whole = |cmd: &str| committed(cmd, SHARED_GIT_RE.find(cmd).unwrap().end(), top, top, &list).into_iter().filter(|(_, w)| *w).map(|(p, _)| p).collect::<Vec<_>>();
+        assert!(whole("git commit -m x").is_empty(), "only what's staged");
+        assert_eq!(whole("git add a.rs && git commit -m x"), vec!["a.rs"], "an add stages its working copy");
     }
 
     #[test]
@@ -1416,15 +1605,78 @@ mod tests {
         let why = shared_refusal(Some("T1"), &verb, &top, &theirs);
         assert!(why.contains("T2 (b.rs)") && why.contains("git restore --staged") && why.contains("tb slot claim --bring <its files>"), "{why}");
 
-        // A file both tasks edited is this one's to commit too; a file no task edited isn't the hook's call.
+        // A file both tasks edited whose hunks can't be told apart (no patch log) is still T2's; a file
+        // no task edited isn't the hook's call.
         note_edit(&data, "T1", "s1", &repo.join("b.rs"));
         std::fs::write(repo.join("src/c.rs"), "sed\n").unwrap();
+        assert!(shared_conflicts("git commit -am x", &cwd, &data, Some("T1")).is_some());
+        std::process::Command::new("git").arg("-C").arg(&repo).args(["checkout", "-q", "--", "b.rs"]).output().unwrap();
         assert!(shared_conflicts("git commit -am x", &cwd, &data, Some("T1")).is_none());
         // Committed edits are no one's any more.
         std::fs::remove_dir_all(ledger_dir(&data)).unwrap();
         note_edit(&data, "T2", "s2", &repo.join("b.rs"));
         std::process::Command::new("git").arg("-C").arg(&repo).args(["checkout", "-q", "--", "b.rs"]).output().unwrap();
         assert!(shared_conflicts("git commit -am x", &cwd, &data, Some("T1")).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `b.rs` in a shared checkout with T1's edit at line 2 and T2's at line 7, each with its patch
+    /// logged; T1 also edited `a.rs` alone.
+    fn two_tasks_in_one_file(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let (root, repo, data) = shared_checkout(name);
+        std::fs::write(repo.join("b.rs"), "1\n2\n3\n4\n5\n6\n7\n8\n").unwrap();
+        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+        git(&["commit", "-qam", "eight"]);
+        std::fs::write(repo.join("b.rs"), "1\ntwo\n3\n4\n5\n6\nseven\n8\n").unwrap();
+        std::fs::write(repo.join("a.rs"), "mine\n").unwrap();
+        note_edit(&data, "T1", "s1", &repo.join("a.rs"));
+        note_edit(&data, "T1", "s1", &repo.join("b.rs"));
+        note_edit(&data, "T2", "s2", &repo.join("b.rs"));
+        let patch = |start: u64, lines: &[&str]| json!({"structuredPatch": [{"newStart": start, "lines": lines}]});
+        note_patch(&data, "T1", &repo.join("b.rs"), &patch(1, &[" 1", "-2", "+two", " 3", " 4"]));
+        note_patch(&data, "T2", &repo.join("b.rs"), &patch(5, &[" 5", " 6", "-7", "+seven", " 8"]));
+        (root, repo, data)
+    }
+
+    #[test]
+    fn a_commit_in_a_shared_file_may_take_only_this_tasks_hunks() {
+        let (root, repo, data) = two_tasks_in_one_file("hunks");
+        let cwd = repo.to_string_lossy().to_string();
+        let t2_b = vec![("T2".to_string(), "s2".to_string(), vec!["b.rs".to_string()])];
+        for cmd in ["git add b.rs && git commit -m x", "git commit -am x", "git add -A && git commit -m x"] {
+            let (verb, top, theirs) = shared_conflicts(cmd, &cwd, &data, Some("T1")).unwrap_or_else(|| panic!("{cmd}"));
+            assert_eq!(theirs, t2_b, "{cmd}");
+            let why = shared_refusal(Some("T1"), &verb, &top, &theirs);
+            assert!(why.contains("T2 (b.rs)") && why.contains("tb stage <file>"), "{why}");
+        }
+        assert!(shared_conflicts("git add a.rs && git commit -m x", &cwd, &data, Some("T1")).is_none(), "a file only T1 edited");
+
+        let said = stage_own(&data, "T1", &repo, &[]).unwrap();
+        assert!(said.contains("b.rs (1 of 2 hunks)") && said.contains("Staged whole (no other task edits them): a.rs"), "{said}");
+        let index = git_text(&repo, &["show", ":b.rs"]).unwrap();
+        assert_eq!(index, "1\ntwo\n3\n4\n5\n6\n7\n8\n", "T2's line stays unstaged");
+        assert_eq!(std::fs::read_to_string(repo.join("b.rs")).unwrap(), "1\ntwo\n3\n4\n5\n6\nseven\n8\n", "the working copy is untouched");
+        assert!(shared_conflicts("git commit -m x", &cwd, &data, Some("T1")).is_none(), "only T1's hunks are staged");
+        assert_eq!(shared_conflicts("git commit -am x", &cwd, &data, Some("T1")).map(|(_, _, t)| t), Some(t2_b.clone()), "-a stages T2's too");
+
+        // A hand-staged hunk of T2's is caught even when it isn't one of the working copy's hunks.
+        let both = "1\ntwo\n3\n4\n5\n6\nSEVEN\n8\n";
+        let blob = git_in(&repo, &["hash-object", "-w", "--stdin"], both.as_bytes()).unwrap();
+        git_text(&repo, &["update-index", "--cacheinfo", &format!("100644,{},b.rs", blob.trim())]).unwrap();
+        assert_eq!(shared_conflicts("git commit -m x", &cwd, &data, Some("T1")).map(|(_, _, t)| t), Some(t2_b));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staging_own_hunks_refuses_a_hunk_both_tasks_changed() {
+        let (root, repo, data) = two_tasks_in_one_file("stage-clash");
+        let patch = json!({"structuredPatch": [{"newStart": 1, "lines": [" 1", " two", " 3", " 4", " 5", " 6", "-7", "+seven", " 8"]}]});
+        note_patch(&data, "T1", &repo.join("b.rs"), &patch);
+        let why = stage_own(&data, "T1", &repo, &["b.rs".to_string()]).unwrap_err();
+        assert!(why.contains("b.rs (T2 changed the same lines as T1, at line 7)") && why.contains("Nothing was staged"), "{why}");
+        assert_eq!(git_text(&repo, &["diff", "--cached", "--name-only"]).unwrap(), "", "nothing staged");
+        let why = stage_own(&data, "T1", &repo, &["src/c.rs".to_string()]).unwrap_err();
+        assert!(why.contains("nothing in") && why.contains("src/c.rs"), "{why}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
