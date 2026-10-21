@@ -1137,9 +1137,10 @@ fn failure(j: Option<&Row>) -> Option<String> {
     Some(jloads_obj(j.s("result")).s("message").filter(|m| !m.is_empty()).unwrap_or("no reason given").to_string())
 }
 
-/// With `auto_ticket` on, a queued or working task in a project that ships PRs gets a ticket.
+/// With `auto_ticket` on, a queued or working task in a project that ships PRs gets a ticket. A human
+/// task never has a PR, so it gets one only when asked for with `--jira new` or a key.
 pub fn wants_ticket(app: &App, t: &Row) -> Result<bool> {
-    if !app.cfg.jira_on() || !app.cfg.jira.auto_ticket || has(t.s("jira_key")) || t.b("jira_none") {
+    if !app.cfg.jira_on() || !app.cfg.jira.auto_ticket || has(t.s("jira_key")) || t.b("jira_none") || crate::human::is(t) {
         return Ok(false);
     }
     if !matches!(t.s("status"), Some("queued") | Some("working") | Some("needs")) {
