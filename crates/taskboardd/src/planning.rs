@@ -48,7 +48,8 @@ pub const LANE_RULES: &str = "\
 
 /// The built-in rule for each task's model, added to [`BUILT_IN`] while `[models]` is on.
 pub const MODEL_RULE: &str = "\
-- Give each task a model: --model small (or \"::model=small\" on a --task) for mechanical, single-file or copy work; --model large for design, cross-crate or risky work. Unsure: large.";
+- Give every task a tier and say why in one line of its detail: --model small (or \"::model=small\" on a --task) runs sonnet at medium effort, for fully specified, few-file, mechanical, copy or test work; --model large runs opus at high effort, for design, cross-crate, concurrency, daemon or GPUI rendering, release or signing work, or a vague spec. If the detail names the files and the behaviour, it's small.
+- Set --effort (or \"::effort=high\") only when a task needs more or less than its tier's: --effort xhigh for gnarly debugging, --effort low for trivial copy edits.";
 
 /// The built-in rules, with the model rule while the board picks models (`[models] enabled`).
 fn built_in(app: &App) -> String {
