@@ -65,6 +65,18 @@ pub fn seed(app: &App) -> Result<()> {
     })
 }
 
+/// The sample reviews alone, for a board seeded before they existed. They point at its first three tasks.
+pub fn seed_reviews_only(app: &App) -> Result<()> {
+    if app.db.count("SELECT COUNT(*) FROM reviews", p![])? > 0 {
+        return err(409, "That board already has reviews.");
+    }
+    let ids: Vec<i64> = app.db.q("SELECT id FROM tasks ORDER BY id LIMIT 3", p![])?.iter().map(|r| r["id"].as_i64().unwrap_or(0)).collect();
+    let [t1, t2, t3] = ids[..] else {
+        return err(409, "Seed the reviews into a board with at least three tasks.");
+    };
+    app.db.tx(|| seed_reviews(app, t1, t2, t3))
+}
+
 /// Two weekly reviews: last week's, unseen, with three filed fixes (one already in a goal), and the
 /// one before it to compare against.
 fn seed_reviews(app: &App, t1: i64, t2: i64, t3: i64) -> Result<()> {

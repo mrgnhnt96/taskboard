@@ -33,6 +33,9 @@ enum Cmd {
     Seed {
         #[arg(long)]
         data: PathBuf,
+        /// Only add the sample weekly reviews, to a board that has tasks but no reviews yet
+        #[arg(long)]
+        reviews: bool,
     },
     /// Write the plain-text copy of every task again
     Md,
@@ -255,10 +258,11 @@ fn main() {
     let code = match cli.cmd.unwrap_or(Cmd::Serve { data: None, port: None, runner: false }) {
         Cmd::Serve { data, port, runner } => serve(load(data, port, runner)),
         Cmd::Init => init(),
-        Cmd::Seed { data } => {
+        Cmd::Seed { data, reviews } => {
             let mut cfg = load(Some(data), None, false);
             cfg.runner = false;
-            match App::new(cfg, false).and_then(|a| taskboardd::seed::seed(&a).map(|_| a)) {
+            let run = if reviews { taskboardd::seed::seed_reviews_only } else { taskboardd::seed::seed };
+            match App::new(cfg, false).and_then(|a| run(&a).map(|_| a)) {
                 Ok(a) => {
                     for t in a.db.q("SELECT id FROM tasks", taskboardd::p![]).unwrap_or_default() {
                         let _ = taskboardd::mdcopy::write(&a, t["id"].as_i64().unwrap_or(0));

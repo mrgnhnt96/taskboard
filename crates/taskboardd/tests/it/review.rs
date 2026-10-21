@@ -163,3 +163,16 @@ fn the_schedule_keeps_one_review_per_week_and_compares_with_the_last() {
     assert_eq!(review::tick(&app, local(23, 17).naive_local()).unwrap(), None);
     assert_eq!(get(&app, "reviews")["reviews"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn a_board_seeded_before_the_sample_reviews_gets_just_those() {
+    let (app, _dir) = board();
+    taskboardd::seed::seed(&app).unwrap();
+    app.db.x("DELETE FROM issues WHERE review_id IS NOT NULL", taskboardd::p![]).unwrap();
+    app.db.x("DELETE FROM reviews", taskboardd::p![]).unwrap();
+    let tasks = app.db.count("SELECT COUNT(*) FROM tasks", taskboardd::p![]).unwrap();
+    taskboardd::seed::seed_reviews_only(&app).unwrap();
+    assert_eq!(app.db.count("SELECT COUNT(*) FROM tasks", taskboardd::p![]).unwrap(), tasks);
+    assert_eq!(get(&app, "/reviews")["reviews"].as_array().unwrap().len(), 2);
+    assert!(taskboardd::seed::seed_reviews_only(&app).is_err(), "seeding them twice is refused");
+}
