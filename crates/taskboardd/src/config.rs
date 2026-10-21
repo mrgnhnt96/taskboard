@@ -41,6 +41,7 @@ pub struct FileConfig {
     pub builds: crate::builds::BuildsConfig,
     pub worktrees: crate::slots::WorktreesConfig,
     pub comments: CommentsConfig,
+    pub default_branch: DefaultBranchConfig,
     pub devices: crate::devices::DevicesConfig,
     pub app_origin: crate::apporigin::AppOriginConfig,
     pub bits: crate::bits::BitsConfig,
@@ -679,6 +680,20 @@ impl Default for CommentsConfig {
     }
 }
 
+/// The default-branch guard: agents don't commit on a repository's default branch or push to it, so work
+/// lands there through PRs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DefaultBranchConfig {
+    pub guard: bool,
+}
+
+impl Default for DefaultBranchConfig {
+    fn default() -> Self {
+        DefaultBranchConfig { guard: true }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub owner: String,
@@ -715,6 +730,7 @@ pub struct Config {
     pub builds: crate::builds::BuildsConfig,
     pub worktrees: crate::slots::WorktreesConfig,
     pub comments: CommentsConfig,
+    pub default_branch: DefaultBranchConfig,
     pub devices: crate::devices::DevicesConfig,
     pub app_origin: crate::apporigin::AppOriginConfig,
     pub bits: crate::bits::BitsConfig,
@@ -888,6 +904,7 @@ impl Config {
             builds: f.builds,
             worktrees: f.worktrees,
             comments: f.comments,
+            default_branch: f.default_branch,
             devices: f.devices,
             app_origin: f.app_origin,
             bits: f.bits,
