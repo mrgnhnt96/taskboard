@@ -55,7 +55,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
 }
 
 /// What runs once a goal finishes: its hook, the goals chained after it, its quality and retro.
-fn on_goal_finished(app: &App, goal_id: i64, task: Option<&Row>) -> Result<()> {
+pub fn on_goal_finished(app: &App, goal_id: i64, task: Option<&Row>) -> Result<()> {
     app.db.update("goals", &json!(goal_id), fields!["ran_at" => null])?;
     let goal = get_goal(app, goal_id)?;
     hooks::fire_goal(app, "goal.finished", &goal, task);
@@ -104,13 +104,21 @@ pub fn joining_status(app: &App, goal_id: i64, planned: bool) -> Result<(&'stati
     })
 }
 
-/// Every task in the goal is done, none failed, no PR of theirs is still open and no miss on its done-when is
-/// open (`goal_counts`' finished_at, cheaply).
+/// Every task in the goal is done, none failed (unless the owner accepted the goal without it), no PR of
+/// theirs is still open and no miss on its done-when is open (`goal_counts`' finished_at, cheaply).
 pub fn goal_finished(app: &App, goal_id: i64) -> Result<bool> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
+    let accepted = find_goal(app, Some(goal_id))?.map(|g| accepted_failed(&g)).unwrap_or_default();
     Ok(!rows.is_empty()
-        && rows.iter().all(|r| r.s("status") == Some("done") && !r.b("failed") && !pr_still_open(r))
+        && rows.iter().all(|r| r.s("status") == Some("done") && (!r.b("failed") || accepted.contains(&r.id())) && !pr_still_open(r))
         && open_misses(app, goal_id)? == 0)
+}
+
+/// The failed tasks the owner finished the goal without (`tb goal done G<n> --why`). They still count as
+/// failed; they only stop holding the goal open. A task that fails after the owner's word isn't one of them.
+pub fn accepted_failed(g: &Row) -> Vec<i64> {
+    let a = jloads_obj(g.s("accepted"));
+    a.get("tasks").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_i64).collect()
 }
 
 /// The alert key of a miss on a goal's done-when (`tb found --misses-goal`).
@@ -702,11 +710,14 @@ pub fn is_held(app: &App, t: &Row) -> Result<bool> {
 
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
+    let accepted = find_goal(app, Some(goal_id))?.map(|g| accepted_failed(&g)).unwrap_or_default();
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
     // A submitted task whose PR is still open is in review, not done, until the PR merges.
     let in_review = |r: &Row| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r);
-    // A failed task isn't done either: the goal's outcome isn't met while one is in it.
+    // A failed task isn't done either: the goal's outcome isn't met while one is in it, unless the owner
+    // finished the goal without it.
     let failed = n(&|r| r.s("status") == Some("done") && r.b("failed"));
+    let failed_accepted = n(&|r| r.s("status") == Some("done") && r.b("failed") && !pr_still_open(r) && accepted.contains(&r.id()));
     let done = n(&|r| r.s("status") == Some("done") && !r.b("failed") && !in_review(r));
     let misses = open_misses(app, goal_id)?;
     let mut blocked = 0;
@@ -730,7 +741,7 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
     let last_update = last_update(app, &rows)?;
-    let finished_at = if total > 0 && done == total && bits_waiting == 0 && misses == 0 {
+    let finished_at = if total > 0 && done + failed_accepted == total && bits_waiting == 0 && misses == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
         Value::Null
@@ -747,6 +758,7 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         "bits_waiting": bits_waiting,
         "planned": n(&|r| r.s("status") == Some("planned")),
         "failed": failed,
+        "failed_accepted": failed_accepted,
         "misses": misses,
         "prs_open": prs_open,
         "prs": n(&|r| r.i("pr_num").is_some()),
@@ -780,10 +792,11 @@ pub fn goal_state_line(c: &Value) -> String {
     let total = c["total"].as_i64().unwrap_or(0);
     let done = c["done"].as_i64().unwrap_or(0);
     let open = c["prs_open"].as_array().cloned().unwrap_or_default();
-    let failed = c["failed"].as_i64().unwrap_or(0);
+    let accepted = c["failed_accepted"].as_i64().unwrap_or(0);
+    let failed = c["failed"].as_i64().unwrap_or(0) - accepted;
     let misses = c["misses"].as_i64().unwrap_or(0);
     // Every task has had its turn, but one failed or a miss on the done-when is open.
-    if total > 0 && done + open.len() as i64 + failed == total && failed + misses > 0 {
+    if total > 0 && done + open.len() as i64 + accepted + failed == total && failed + misses > 0 {
         let mut why = vec![];
         if failed > 0 {
             why.push(format!("{failed} failed"));
@@ -793,10 +806,11 @@ pub fn goal_state_line(c: &Value) -> String {
         }
         return format!("Outcome not met: {}", why.join(", "));
     }
-    if total > 0 && done + open.len() as i64 == total {
+    if total > 0 && done + open.len() as i64 + accepted == total {
         let bits = c["bits_waiting"].as_i64().unwrap_or(0);
         return match open.len() {
             0 if bits > 0 => format!("Waiting on {}", plural(bits, "bit")),
+            0 if accepted > 0 => format!("Done · {accepted} failed (accepted)"),
             0 => "Done".into(),
             1 => format!("Waits for PR #{} to merge", open[0]),
             n => format!("Waits for {n} PRs to merge"),
@@ -821,7 +835,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "jira_off": g.b("jira_off"), "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
+        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
         "lane": crate::worklane::goal_lane(g),
         "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
         "after_blocker": crate::chain::blocker(app, g)?,
@@ -836,6 +850,16 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         }
     }
     Ok(d)
+}
+
+/// The owner's word to finish the goal with failed tasks in it, for the app and `tb goal show`.
+fn accepted_dict(g: &Row) -> Value {
+    let a = jloads_obj(g.s("accepted"));
+    if a.is_empty() {
+        return Value::Null;
+    }
+    let tasks: Vec<String> = accepted_failed(g).into_iter().map(|id| rf("task", id)).collect();
+    json!({"at": a.get("at"), "why": a.get("why"), "tasks": tasks})
 }
 
 fn peek_order(s: &str) -> u8 {
