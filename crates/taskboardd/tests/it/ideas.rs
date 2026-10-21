@@ -144,6 +144,39 @@ fn the_list_shows_the_newest_reports_verdict() {
 }
 
 #[test]
+fn answering_a_rounds_question_keeps_one_note_per_question() {
+    let (_d, app) = new_board();
+    let r = idea(&app, "webapp", "Offline mode", "");
+    let id: i64 = r[1..].parse().unwrap();
+    let report = json!({"verdict": "partly", "why": "Mostly", "blocks": [
+        {"type": "question", "id": "relay", "text": "Which relay?", "choices": ["Host", "Push"]},
+        {"type": "question", "id": "open", "text": "Anything else?", "choices": []}]});
+    let round = app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => report.to_string(), "sha" => "abc1234"]).unwrap();
+    let path = format!("/ideas/{r}/answer");
+    let answer = |q: &str, a: &str| try_call(&app, "POST", &path, &[], json!({"round": round, "question": q, "answer": a}));
+
+    let v = answer("relay", "Host").unwrap();
+    assert_eq!(v["rounds"][0]["answers"], json!({"relay": "Host"}));
+    assert_eq!(v["notes"][0]["text"], "Answered “Which relay?”: Host", "kept as a note the next dig and the planner read");
+    let v = answer("relay", "Push").unwrap();
+    assert_eq!(v["rounds"][0]["answers"], json!({"relay": "Push"}), "a change replaces the answer");
+    assert_eq!(v["notes"].as_array().unwrap().len(), 1, "and its note");
+    assert_eq!(v["notes"][0]["text"], "Answered “Which relay?”: Push");
+
+    assert_eq!(answer("relay", "Carrier pigeon").unwrap_err().0, 400, "only one of its choices");
+    assert_eq!(answer("open", "Yes").unwrap_err().0, 400, "a question without choices isn't tapped");
+    assert_eq!(answer("nope", "Host").unwrap_err().0, 404);
+    assert_eq!(try_call(&app, "POST", &path, &[], json!({"round": round + 1, "question": "relay", "answer": "Host"})).unwrap_err().0, 404);
+    assert_eq!(try_call(&app, "POST", &path, &[], json!({"question": "relay", "answer": "Host"})).unwrap_err().0, 400);
+
+    app.shared.lock().idea_planning.insert(id);
+    assert_eq!(answer("relay", "Host").unwrap_err().0, 409, "not while it's being planned");
+    app.shared.lock().idea_planning.remove(&id);
+    app.db.update("ideas", &json!(id), taskboardd::fields!["state" => "planned", "goal_id" => 7]).unwrap();
+    assert_eq!(answer("relay", "Host").unwrap_err().0, 409, "nor once it's a goal");
+}
+
+#[test]
 fn search_finds_ideas_by_their_words() {
     let (_d, app) = new_board();
     let r = idea(&app, "webapp", "Offline mode", "Queue writes while the network is down.");
