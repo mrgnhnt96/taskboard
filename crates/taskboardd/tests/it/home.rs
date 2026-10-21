@@ -130,6 +130,7 @@ fn a_miss_on_the_done_when_alerts_the_owner_and_keeps_the_goal_open_until_its_se
     let c = b.get(&format!("goals/G{g}"));
     assert_eq!((&c["done"], &c["misses"], &c["state"]), (&json!(5), &json!(1), &json!("Outcome not met: 1 miss")));
     assert!(c["finished_at"].is_null());
+    assert_eq!(c["backlog"][0]["misses_goal"], true, "the goal page marks the miss");
     assert!(!board::goal_finished(&b.app, g).unwrap());
     assert_eq!(b.get("summary")["goals"][0]["done"], 5, "it's still listed with the goals in progress");
     assert!(b.get("/state")["alerts"].as_array().unwrap().iter().any(|a| a["text"].as_str().unwrap().contains("misses its done-when")), "finishing the task doesn't clear it");

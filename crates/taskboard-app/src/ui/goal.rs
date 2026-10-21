@@ -118,6 +118,9 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
         if !open.is_empty() {
             return (if open.len() > 1 { format!("{} PRs awaiting merge", open.len()) } else { "Awaiting merge".into() }, "accent");
         }
+        if i(g, "misses") > 0 {
+            return ("Outcome not met".into(), "warn");
+        }
         // A backend flag not made yet holds back a finished goal.
         let bits = i(g, "bits_waiting");
         if bits > 0 {
@@ -464,13 +467,29 @@ fn num_text(v: &Value) -> String {
     }
 }
 
-/// The open backlog: (ref, title), in the goal's order.
-pub fn open_issues(g: &Value) -> Vec<(String, String)> {
-    arr(g, "backlog")
+#[derive(Clone, Debug, PartialEq)]
+pub struct Issue {
+    pub r: String,
+    pub title: String,
+    /// Reported as a miss on the goal's done-when: the goal stays open until it's settled.
+    pub misses_goal: bool,
+}
+
+/// The open backlog, misses on the done-when first, otherwise in the goal's order.
+pub fn open_issues(g: &Value) -> Vec<Issue> {
+    let mut v: Vec<Issue> = arr(g, "backlog")
         .iter()
         .filter(|x| fmt::opt_s(x, "state").unwrap_or("open") == "open")
-        .map(|x| (fmt::ref_of(x, "B"), s(x, "title").to_string()))
-        .collect()
+        .map(|x| Issue { r: fmt::ref_of(x, "B"), title: s(x, "title").to_string(), misses_goal: b(x, "misses_goal") })
+        .collect();
+    v.sort_by_key(|x| !x.misses_goal);
+    v
+}
+
+/// Why a goal with every task done is still open, when it's an open miss on its done-when.
+pub fn outcome_not_met(g: &Value) -> Option<String> {
+    let misses = i(g, "misses");
+    (misses > 0).then(|| format!("Outcome not met · {}", fmt::plural(misses, "miss", "misses")))
 }
 
 // ------------------------------------------------------------------ note text (links and code)
@@ -974,6 +993,7 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
             .when_some(fmt::opt_s(g, "repo_path").map(str::to_string), |d, r| d.tooltip(kit::tip(r)))
     });
     let (parts, lead, tail) = progress(g);
+    let not_met = outcome_not_met(g);
     div()
         .flex()
         .flex_col()
@@ -1020,7 +1040,8 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                         .text_size(px(13.))
                         .text_color(t.text_2)
                         .child(div().font_weight(FontWeight::BOLD).text_color(t.text).child(lead))
-                        .child(tail),
+                        .child(tail)
+                        .when_some(not_met, |d, why| d.child(div().pl(px(10.)).text_color(t.warn_text).font_weight(FontWeight::SEMIBOLD).child(why))),
                 ),
         )
 }
@@ -1163,7 +1184,7 @@ fn backlog_head(t: &Theme, n: usize) -> Div {
 }
 
 /// One open issue of the Backlog section, the `ix`th.
-fn issue_piece(t: &Theme, (r, title): (String, String), ix: usize, last: bool, cx: &mut Context<MainWindow>) -> Div {
+fn issue_piece(t: &Theme, Issue { r, title, misses_goal }: Issue, ix: usize, last: bool, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.accent;
     let target = r.clone();
     let row = div()
@@ -1175,6 +1196,7 @@ fn issue_piece(t: &Theme, (r, title): (String, String), ix: usize, last: bool, c
         .hover(move |s| s.text_color(hover))
         .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).pt(px(2.)).child(r))
         .child(div().flex_1().min_w_0().truncate().child(title))
+        .when(misses_goal, |d| d.child(kit::pill(t.warn_text, t.warn_soft, "Misses goal")))
         .on_click(cx.listener(move |m, _, _, cx| m.open_issue(target.clone(), cx)));
     side_piece(t, false, last, if ix == 0 { 0. } else { 6. }, row)
 }
@@ -1414,7 +1436,28 @@ mod tests {
             {"ref": "B2", "title": "Two", "state": "closed"},
             {"ref": "B3", "title": "Three", "state": "open"},
         ]});
-        assert_eq!(open_issues(&g), vec![("B1".to_string(), "One".to_string()), ("B3".to_string(), "Three".to_string())]);
+        let refs: Vec<String> = open_issues(&g).into_iter().map(|x| x.r).collect();
+        assert_eq!(refs, ["B1", "B3"]);
+    }
+
+    #[test]
+    fn backlog_lists_misses_on_the_goal_first() {
+        let g = json!({"backlog": [
+            {"ref": "B1", "title": "One"},
+            {"ref": "B2", "title": "Two", "misses_goal": true},
+            {"ref": "B3", "title": "Three"},
+        ]});
+        let got = open_issues(&g);
+        assert_eq!(got.iter().map(|x| x.r.as_str()).collect::<Vec<_>>(), ["B2", "B1", "B3"]);
+        assert!(got[0].misses_goal && !got[1].misses_goal);
+    }
+
+    #[test]
+    fn says_the_outcome_is_not_met_while_a_miss_is_open() {
+        let g = json!({"tasks": [{"status": "done"}, {"status": "done"}], "misses": 2});
+        assert_eq!(outcome_not_met(&g).as_deref(), Some("Outcome not met · 2 misses"));
+        assert_eq!(goal_state(&g), ("Outcome not met".to_string(), "warn"));
+        assert_eq!(outcome_not_met(&json!({"tasks": [{"status": "done"}]})), None);
     }
 
     #[test]

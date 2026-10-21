@@ -19,7 +19,7 @@ pub struct Lists {
     cards: Rc<Vec<waves::Card>>,
     wave_items: Rc<Vec<WItem>>,
     aside_items: Rc<Vec<AItem>>,
-    issues: Rc<Vec<(String, String)>>,
+    issues: Rc<Vec<Issue>>,
     notes: Notes,
     cache: NoteCache,
 }
@@ -194,7 +194,7 @@ pub fn sync(m: &mut MainWindow, g: &Value, cx: &mut Context<MainWindow>) {
         ai.push(AItem::BacklogHead);
         ak.push(format!("backlog:{}", issues.len()));
         let shown = if m.goal_page.backlog_view { issues.len() } else { issues.len().min(BACKLOG_SHOWN) };
-        for (k, (r, _)) in issues.iter().take(shown).enumerate() {
+        for (k, Issue { r, .. }) in issues.iter().take(shown).enumerate() {
             ai.push(AItem::Issue(k));
             ak.push(format!("issue:{r}"));
         }
