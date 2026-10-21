@@ -310,6 +310,7 @@ fn aside_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Ma
     // The aside's card, drawn a slice per item: its sides on each, its top and bottom on the ends.
     let last = ix + 2 == items.len();
     div()
+        .w_full()
         .flex()
         .flex_col()
         .bg(t.card)

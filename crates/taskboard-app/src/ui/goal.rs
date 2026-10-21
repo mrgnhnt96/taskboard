@@ -25,6 +25,7 @@ mod waves;
 
 const START_MENU: &str = "goal-start";
 const WAIT_MENU: &str = "goal-wait";
+const MISSES_MENU: &str = "goal-misses";
 /// How many open issues the Backlog section lists before "N more".
 const BACKLOG_SHOWN: usize = 5;
 
@@ -484,6 +485,25 @@ pub fn open_issues(g: &Value) -> Vec<Issue> {
         .collect();
     v.sort_by_key(|x| !x.misses_goal);
     v
+}
+
+/// The misses holding the goal open: in the backlog, or made into a task that isn't done yet.
+pub fn open_misses(g: &Value) -> Vec<Issue> {
+    let done: HashSet<String> = arr(g, "tasks")
+        .iter()
+        .filter(|t| s(t, "status") == "done" && !b(t, "failed"))
+        .map(|t| fmt::ref_of(t, "T"))
+        .collect();
+    arr(g, "backlog")
+        .iter()
+        .filter(|x| b(x, "misses_goal"))
+        .filter(|x| match fmt::opt_s(x, "state").unwrap_or("open") {
+            "open" => true,
+            "task" => fmt::opt_s(x, "task_ref").is_none_or(|r| !done.contains(r)),
+            _ => false,
+        })
+        .map(|x| Issue { r: fmt::ref_of(x, "B"), title: s(x, "title").to_string(), misses_goal: true })
+        .collect()
 }
 
 /// Why a goal with every task done is still open, when it's an open miss on its done-when.
@@ -965,6 +985,36 @@ fn wait_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
     Some(kit::popover(at, menu))
 }
 
+/// The misses behind "Outcome not met": each opens its issue.
+fn misses_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let at = m.menu_open(MISSES_MENU)?;
+    let mut menu = kit::menu_box(t, 380.).id("goal-misses-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for Issue { r, title, .. } in open_misses(g) {
+        let hover = t.panel_2;
+        let target = r.clone();
+        menu = menu.child(
+            div()
+                .id(SharedString::from(format!("goal-miss-{r}")))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(6.))
+                .text_size(px(13.))
+                .cursor_pointer()
+                .hover(move |d| d.bg(hover))
+                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r))
+                .child(div().flex_1().min_w_0().truncate().child(title))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    m.menu = None;
+                    m.open_issue(target.clone(), cx)
+                })),
+        );
+    }
+    Some(kit::popover(at, menu))
+}
+
 fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let epic: Option<AnyElement> = fmt::opt_s(g, "epic_key").map(|key| {
@@ -1041,7 +1091,22 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                         .text_color(t.text_2)
                         .child(div().font_weight(FontWeight::BOLD).text_color(t.text).child(lead))
                         .child(tail)
-                        .when_some(not_met, |d, why| d.child(div().pl(px(10.)).text_color(t.warn_text).font_weight(FontWeight::SEMIBOLD).child(why))),
+                        .when_some(not_met, |d, why| {
+                            d.child(
+                                div()
+                                    .id("goal-not-met")
+                                    .pl(px(10.))
+                                    .text_color(t.warn_text)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .cursor_pointer()
+                                    .hover(|s| s.underline())
+                                    .child(why)
+                                    .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+                                        let p = e.position();
+                                        m.toggle_menu(MISSES_MENU, point(p.x - px(300.), p.y + px(14.)), cx);
+                                    })),
+                            )
+                        }),
                 ),
         )
 }
@@ -1256,6 +1321,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
         .child(lists::body(m, cx))
         .children(start_menu(m, &t, &g, cx))
         .children(wait_menu(m, &t, &g, cx))
+        .children(misses_menu(m, &t, &g, cx))
         .into_any_element()
 }
 
@@ -1438,6 +1504,22 @@ mod tests {
         ]});
         let refs: Vec<String> = open_issues(&g).into_iter().map(|x| x.r).collect();
         assert_eq!(refs, ["B1", "B3"]);
+    }
+
+    #[test]
+    fn open_misses_skip_settled_ones() {
+        let g = json!({
+            "tasks": [{"ref": "T1", "status": "done"}, {"ref": "T2", "status": "working"}],
+            "backlog": [
+                {"ref": "B1", "title": "Open", "state": "open", "misses_goal": true},
+                {"ref": "B2", "title": "Not a miss", "state": "open"},
+                {"ref": "B3", "title": "Task done", "state": "task", "task_ref": "T1", "misses_goal": true},
+                {"ref": "B4", "title": "Task working", "state": "task", "task_ref": "T2", "misses_goal": true},
+                {"ref": "B5", "title": "Closed", "state": "closed", "misses_goal": true},
+            ],
+        });
+        let got: Vec<String> = open_misses(&g).into_iter().map(|x| x.r).collect();
+        assert_eq!(got, ["B1", "B4"]);
     }
 
     #[test]
