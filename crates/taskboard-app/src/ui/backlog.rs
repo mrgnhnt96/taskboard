@@ -467,10 +467,9 @@ fn bulk(m: &mut MainWindow, action: &str, extra: Value, cx: &mut Context<MainWin
             let text = match what.as_str() {
                 "defer" => format!("Deferred {issues}"),
                 "drop" => format!("Dropped {issues}"),
-                "goal" => format!("Moved {issues} into the goal as planned tasks"),
+                "goal" => moved_note(&issues, &v),
                 _ => format!("Priority set on {issues}"),
             };
-            let _ = v;
             m.toast(text, false, cx);
             resync(m, cx);
         },
@@ -479,6 +478,17 @@ fn bulk(m: &mut MainWindow, action: &str, extra: Value, cx: &mut Context<MainWin
             m.toast(e.message, true, cx);
         },
     );
+}
+
+/// The toast once issues move into a goal: its tasks are planned, or queued when the goal is running.
+fn moved_note(issues: &str, v: &Value) -> String {
+    let tasks = v["tasks"].as_array().cloned().unwrap_or_default();
+    let queued = tasks.iter().filter(|t| s(t, "status") == "queued").count();
+    match (queued, tasks.len() - queued) {
+        (0, _) => format!("Moved {issues} into the goal as planned tasks"),
+        (_, 0) => format!("Moved {issues} into the goal. It’s running, so they’re queued"),
+        (q, p) => format!("Moved {issues} into the goal: {q} queued, {p} planned"),
+    }
 }
 
 fn plan_waves(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -1114,7 +1124,7 @@ fn item_el(t: &Theme, it: &Item, prefix: &str, cx: &mut Context<MainWindow>) -> 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Check, Item, Lens, Line, MENU_PROJECT, PAGE, create, draft, goal_waves, groups, issues, on_key, plan_waves, sync, toggle, bulk};
+    use super::{Check, Item, Lens, Line, MENU_PROJECT, PAGE, create, draft, goal_waves, groups, issues, moved_note, on_key, plan_waves, sync, toggle, bulk};
     use crate::app::Page;
     use crate::backend::Backend;
     use crate::fmt;
@@ -1296,5 +1306,13 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         assert_eq!(rec.last("backlog/bulk"), None, "the d went to the search, not to defer");
+    }
+
+    #[test]
+    fn moving_issues_into_a_running_goal_says_they_are_queued() {
+        let tasks = |st: &[&str]| json!({"tasks": st.iter().map(|s| json!({"status": s})).collect::<Vec<_>>()});
+        assert_eq!(moved_note("2 issues", &tasks(&["planned", "planned"])), "Moved 2 issues into the goal as planned tasks");
+        assert_eq!(moved_note("2 issues", &tasks(&["queued", "queued"])), "Moved 2 issues into the goal. It’s running, so they’re queued");
+        assert_eq!(moved_note("3 issues", &tasks(&["queued", "planned", "queued"])), "Moved 3 issues into the goal: 2 queued, 1 planned");
     }
 }
