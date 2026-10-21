@@ -284,7 +284,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["tasks", id, "delete"]) => delete_task(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
-        ("POST", ["tasks", id, "slot", "claim"]) => slot_claim(app, tid(id)?),
+        ("POST", ["tasks", id, "slot", "claim"]) => slot_claim(app, tid(id)?, body),
         ("POST", ["tasks", id, "slot", "release"]) => slot_release(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
@@ -3150,18 +3150,77 @@ fn pr_wait(app: &App, id: i64) -> Result<Value> {
     get_pr(app, id)
 }
 
-/// `tb slot claim`: a slot for the task's work, its own again when free, on its pushed branch.
-fn slot_claim(app: &App, id: i64) -> Result<Value> {
+/// `tb slot claim`: a slot for the task's work, its own again when free, on its pushed branch. A task
+/// that doesn't work in a slot yet takes one and moves to the slot lane, once the slot is there. With
+/// `bring` (files; empty for its own uncommitted ones) its edits in the shared checkout go with it.
+fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
+    let me = rf("task", id);
+    if crate::worklane::picked(app, &t)?.0 == "alone" {
+        return err(
+            409,
+            format!("{me} is on the alone lane: it runs with nothing else in its goal, in the shared checkout, so it takes no slot. To work in one, put it on the slot lane first: tb task set {me} --lane slot."),
+        );
+    }
+    let bring = match crate::bring::asked(body)? {
+        Some(files) => Some(crate::bring::plan(app, &t, &files)?),
+        None => None,
+    };
+    let held = app.db.q1("SELECT id FROM worktree_slots WHERE task_id = ?", p![id])?.is_some();
+    let before = board::task_context(&t);
+    let start = if held { None } else { crate::bring::start_at(app, &t)? };
     let path = match crate::slots::reclaim(app, &t)? {
         Some(p) => p,
-        None => match crate::worktrees::ensure(app, &t)? {
-            Some(p) => p,
-            None => return err(409, format!("{} doesn't work in a worktree, so it has no slot to claim.", rf("task", id))),
+        None => match &start {
+            Some((sha, _)) => crate::worktrees::make(app, &t, Some(sha))?,
+            // The shared checkout itself, where a task on the slot lane last ran, is no worktree of its own.
+            None => match crate::worktrees::ensure(app, &t)?.filter(|p| !shared_checkout(app, &t, p)) {
+                Some(p) => p,
+                None => crate::worktrees::make(app, &t, None)?,
+            },
         },
     };
+    let fresh = !held && crate::slots::is_slot(&path);
     let slot = path.rsplit('/').next().unwrap_or_default().to_string();
-    Ok(json!({"ok": true, "task": rf("task", id), "path": path, "slot": slot}))
+    let mut out = json!({"ok": true, "task": me, "path": path, "slot": slot, "brought": [], "left": []});
+    if let Some(b) = &bring {
+        let mut patch = String::new();
+        if !b.files.is_empty() {
+            match crate::bring::carry(app, &t, b, &path) {
+                Ok(p) => patch = p,
+                Err(e) => {
+                    if fresh {
+                        crate::slots::give_back(app, &t)?;
+                        board::save_context(app, id, &before, false)?;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        out["brought"] = json!(b.files);
+        out["left"] = json!(b.left);
+        if !patch.is_empty() {
+            out["patch"] = json!(patch);
+        }
+    }
+    if let Some((sha, branch)) = &start {
+        out["detached_at"] = json!(sha);
+        out["branch"] = json!(branch);
+    }
+    if crate::worklane::own_lane(&board::get_task(app, id)?) != "slot" {
+        board::update_task(app, id, vec![("lane", json!("slot"))])?;
+        crate::worklane::unpin(app, id)?;
+        let what = match &bring {
+            Some(b) if !b.files.is_empty() => format!(", bringing {} from the shared checkout", b.files.join(", ")),
+            _ => String::new(),
+        };
+        board::log_event(app, id, board::BOARD, "note", &format!("{}: claimed {slot}{what}", crate::worklane::text("slot")))?;
+    }
+    Ok(out)
+}
+
+fn shared_checkout(app: &App, t: &Row, path: &str) -> bool {
+    crate::worktrees::repo_of(app, t).ok().flatten().is_some_and(|r| crate::worktrees::real(&r) == crate::worktrees::real(path))
 }
 
 /// `tb slot release`: gives the task's slot back, refused while something there isn't pushed.

@@ -345,14 +345,14 @@ fn shared_refusal(own: Option<&str>, verb: &str, top: &Path, theirs: &[(String, 
         return format!(
             "{who} can't commit files another task edited in {} and hasn't committed: {named}. They're {tasks}'s work, not {who}'s. \
              Unstage them (git restore --staged <file>) and commit only the files {who} edited, by name (git add <file> … && git commit), \
-             or claim a worktree slot for {who} (tb slot claim) and work there.",
+             or move {who}'s own edits into a worktree slot and work there: tb slot claim --bring <its files>.",
             top.display()
         );
     }
     format!(
         "{who} can't git {verb} in {}: {tasks} works in this checkout too and hasn't committed its edits there yet: {named}. A git {verb} \
          would carry them to another branch or throw them away. Leave the checkout's branch alone: commit {who}'s own files by name \
-         (git add <file> … && git commit), or claim a worktree slot for {who} (tb slot claim) and work there.",
+         (git add <file> … && git commit), or move {who}'s own edits into a worktree slot and work there: tb slot claim --bring <its files>.",
         top.display()
     )
 }
@@ -455,10 +455,10 @@ fn stray_worktree(tool: &str, input: &Value, cwd: &str, own: Option<&str>) -> Op
 fn stray_refusal(task: &str, what: &str, tb: &str) -> String {
     format!(
         "{task} can't make or enter a worktree of its own ({what}): every worktree a task uses comes from the board's slot pool, \
-         so they're reused and cleaned up instead of piling up on the disk. Claim one with {tb} slot claim: it gives {task} a free slot \
-         (its own again when it had one) and prints its path; work there (cd <path>, or EnterWorktree with that path). If it says \
-         {task} doesn't work in a worktree, work in this checkout and commit only your own files, by name. Subagents run without \
-         isolation: worktree; give each its own files instead."
+         so they're reused and cleaned up instead of piling up on the disk. Claim one with {tb} slot claim --bring <files>: it gives \
+         {task} a free slot (its own again when it had one), moves {task}'s uncommitted edits in those files there from this \
+         checkout (on its own, --bring takes the files {task} edited) and prints its path; work there (cd <path>, or EnterWorktree \
+         with that path). Subagents run without isolation: worktree; give each its own files instead."
     )
 }
 
@@ -1364,7 +1364,7 @@ mod tests {
         assert_eq!((verb.as_str(), top.clone()), ("commit", repo.canonicalize().unwrap()));
         assert_eq!(theirs, vec![("T2".to_string(), "s2".to_string(), vec!["b.rs".to_string()])]);
         let why = shared_refusal(Some("T1"), &verb, &top, &theirs);
-        assert!(why.contains("T2 (b.rs)") && why.contains("git restore --staged") && why.contains("worktree"), "{why}");
+        assert!(why.contains("T2 (b.rs)") && why.contains("git restore --staged") && why.contains("tb slot claim --bring <its files>"), "{why}");
 
         // A file both tasks edited is this one's to commit too; a file no task edited isn't the hook's call.
         note_edit(&data, "T1", "s1", &repo.join("b.rs"));
@@ -1388,7 +1388,7 @@ mod tests {
             let (verb, _, theirs) = shared_conflicts(cmd, "/tmp", &data, Some("T1")).or_else(|| shared_conflicts(cmd, &cwd, &data, Some("T1"))).unwrap_or_else(|| panic!("{cmd}"));
             assert_eq!(theirs[0].0, "T2", "{cmd}");
             let why = shared_refusal(Some("T1"), &verb, &repo, &theirs);
-            assert!(why.contains(&format!("can't git {verb}")) && why.contains("T2 (b.rs)") && why.contains("by name") && why.contains("worktree"), "{why}");
+            assert!(why.contains(&format!("can't git {verb}")) && why.contains("T2 (b.rs)") && why.contains("by name") && why.contains("tb slot claim --bring <its files>"), "{why}");
         }
         for cmd in ["git stash list", "git stash show -p", "git log --oneline", "git branch -a"] {
             assert!(shared_conflicts(cmd, &cwd, &data, Some("T1")).is_none(), "{cmd}");
@@ -1459,7 +1459,8 @@ mod tests {
         assert_eq!(stray_worktree("Read", &json!({"file_path": "/w/b/.claude/worktrees/x"}), "/w/b", None), None);
 
         let why = stray_refusal("T5", "a subagent with isolation: worktree", "tb");
-        assert!(why.contains("T5") && why.contains("tb slot claim") && why.contains("isolation: worktree"), "{why}");
+        assert!(why.contains("T5") && why.contains("tb slot claim --bring <files>") && why.contains("isolation: worktree"), "{why}");
+        assert!(!why.contains("doesn't work in a worktree"), "any task can claim a slot now: {why}");
     }
 
     #[test]

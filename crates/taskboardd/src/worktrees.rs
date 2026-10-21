@@ -140,6 +140,13 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(have) = existing(app, t)? {
         return Ok(Some(have));
     }
+    make(app, t, None).map(Some)
+}
+
+/// Makes the task a worktree whatever its lane: a slot from the pool at `start` when given, else at
+/// its goal's base (a stacked task: its parent's branch). A 409 when the folder is unknown, git
+/// fails or the pool is full (`slots::WAIT`).
+pub fn make(app: &App, t: &Row, start: Option<&str>) -> Result<String> {
     let Some(repo) = repo_of(app, t)?.filter(|r| Path::new(r).is_dir()) else {
         return err(409, format!("The board doesn't know the folder for the project “{}”, so it can't make a worktree.", t.st("project")));
     };
@@ -147,7 +154,10 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     let path = folder(&repo, t);
     if Path::new(&path).is_dir() {
         record(app, t, &path)?;
-        return Ok(Some(path));
+        return Ok(path);
+    }
+    if let Some(start) = start {
+        return crate::slots::claim(app, t, &repo, start);
     }
     let remote = git(&repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0;
     if remote {
@@ -163,7 +173,7 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
         Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),
         None => base,
     };
-    crate::slots::claim(app, t, &repo, &start).map(Some)
+    crate::slots::claim(app, t, &repo, &start)
 }
 
 /// Where a stacked task starts: its parent's branch on the remote, else the local one; None when

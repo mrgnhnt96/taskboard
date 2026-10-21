@@ -658,6 +658,10 @@ enum SlotCmd {
     Claim {
         #[arg(long)]
         task: Option<String>,
+        /// Move the task's uncommitted edits in these files from the shared checkout into the slot; on
+        /// its own, the files the task edited there. Refused for a file another task is editing too
+        #[arg(long, num_args = 0.., value_name = "FILE")]
+        bring: Option<Vec<String>>,
     },
     /// Give the slot back; refused while it has uncommitted changes or unpushed commits
     Release {
@@ -1414,6 +1418,10 @@ enum TaskCmd {
         /// Where it works: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks; `tb planning` lists the rules)
         #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
         lane: Option<String>,
+        /// With --here --lane slot: claim its slot now and move the uncommitted edits in these files from the
+        /// shared checkout into it (on its own, none)
+        #[arg(long, num_args = 0.., value_name = "FILE", requires = "here")]
+        bring: Option<Vec<String>>,
         /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
@@ -3162,10 +3170,9 @@ fn bit_line(b: &Value, tool: &str) -> String {
 
 fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
     match action {
-        SlotCmd::Claim { task } => {
+        SlotCmd::Claim { task, bring } => {
             let t = c.pr_task(task)?;
-            let v = c.call("POST", &format!("/tasks/{t}/slot/claim"), Some(json!({})))?;
-            out(&format!("{t} works in {} ({}).", v["slot"].as_str().unwrap_or(""), v["path"].as_str().unwrap_or("")));
+            slot_claim(c, &t, bring)?;
         }
         SlotCmd::Release { task } => {
             let t = c.pr_task(task)?;
@@ -3174,6 +3181,35 @@ fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
         }
     }
     Ok(0)
+}
+
+/// Claims `t` a slot, bringing `bring`'s files (relative to here) from the shared checkout, and says
+/// where it works now and what came along.
+fn slot_claim(c: &Ctx, t: &str, bring: Option<Vec<String>>) -> Result<(), String> {
+    let mut body = json!({});
+    if let Some(files) = bring {
+        let here = std::env::current_dir().unwrap_or_default();
+        body["bring"] = json!(files.iter().map(|f| here.join(f).to_string_lossy().to_string()).collect::<Vec<_>>());
+    }
+    let v = c.call("POST", &format!("/tasks/{t}/slot/claim"), Some(body))?;
+    out(&slot_claimed(t, &v));
+    Ok(())
+}
+
+fn slot_claimed(t: &str, v: &Value) -> String {
+    let path = v["path"].as_str().unwrap_or("");
+    let mut lines = vec![format!("{t} works in {} ({path}). Work there from now on: cd {path}", v["slot"].as_str().unwrap_or(""))];
+    let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+    if !list("brought").is_empty() {
+        lines.push(format!("Brought from the shared checkout: {} (the patch is kept at {}).", list("brought"), v["patch"].as_str().unwrap_or("")));
+    }
+    if !list("left").is_empty() {
+        lines.push(format!("Left behind in the shared checkout, still uncommitted: {}. Bring them too with tb slot claim --bring <files>, or commit them there by name.", list("left")));
+    }
+    if let (Some(sha), Some(b)) = (v["detached_at"].as_str(), v["branch"].as_str()) {
+        lines.push(format!("The slot is detached at the tip of {b} ({}), which the shared checkout has checked out. Make a new branch there: git switch -c <new branch>.", &sha[..sha.len().min(10)]));
+    }
+    lines.join("\n")
 }
 
 fn disk_size(kb: i64) -> String {
@@ -5810,7 +5846,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -5865,7 +5901,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(a) = alone {
                     body["alone"] = json!(a);
                 }
-                if let Some(l) = lane {
+                if bring.is_some() && lane.as_deref() != Some("slot") {
+                    return Err("--bring needs --lane slot: it claims the task's worktree slot".into());
+                }
+                if let Some(l) = &lane {
                     body["lane"] = json!(l);
                 }
                 if let Some(m) = model {
@@ -5905,6 +5944,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
                         midna_pin(&r, v["title"].as_str().unwrap_or(&title));
+                        if lane.as_deref() == Some("slot") {
+                            slot_claim(c, &r, bring)?;
+                        }
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
