@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// How much of the detail the page renders.
 const DETAIL_MAX: usize = 20_000;
@@ -27,6 +27,19 @@ const CLOSE_MENU: &str = "idea-close";
 pub struct State {
     /// The requests running, by `dig::I3` / `plan::I3` / `close::I3`.
     busy: HashSet<String>,
+    /// Rounds opened or closed by hand, by `I3::<round id>`; the rest follow [`starts_open`].
+    open: HashMap<String, bool>,
+    /// Points showing their detail, by `I3::<round id>::<block>::<item>`.
+    more: HashSet<String>,
+}
+
+/// The newest round starts open, the older ones collapsed.
+pub fn starts_open(n: usize) -> bool {
+    n == 0
+}
+
+fn round_open(m: &MainWindow, key: &str, n: usize) -> bool {
+    m.idea.open.get(key).copied().unwrap_or(starts_open(n))
 }
 
 /// Open an idea's page.
@@ -136,46 +149,177 @@ pub fn close_menu_view(i: &Value) -> Vec<(&'static str, &'static str)> {
     if is_closed(i) { vec![("reopen", "Reopen")] } else { vec![("shelve", "Shelve for later"), ("drop", "Won’t do")] }
 }
 
+/// A point: its short line, the detail it opens to, and its kind (security, privacy, …).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Point {
+    pub short: String,
+    pub detail: String,
+    pub tag: Option<String>,
+}
+
+/// One option of a comparison.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Opt {
+    pub name: String,
+    pub pros: Vec<String>,
+    pub cons: Vec<String>,
+}
+
+/// A report block as the page draws it. Blocks of a type the page doesn't know are left out.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Block {
+    Gist(String),
+    /// (label, value, tone) per cell: Fit, then Size and Risk when set.
+    Scorecard(Vec<(&'static str, &'static str, &'static str)>),
+    /// (step, whether it's new).
+    Flow(Vec<(String, bool)>),
+    /// (what, its files): "Builds on".
+    Code(Vec<(String, Vec<String>)>),
+    Points { title: String, items: Vec<Point> },
+    Question { text: String, choices: Vec<String> },
+    Compare { lean: String, options: Vec<Opt> },
+    Related(Vec<String>),
+}
+
 /// One report round as the page shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoundView {
+    /// The round's id, which keys its open state.
+    pub id: String,
     /// "Round 2": counted from the first.
     pub title: String,
     pub focus: String,
     pub verdict: Option<(&'static str, &'static str)>,
-    pub why: String,
-    /// (what, its files).
-    pub builds_on: Vec<(String, Vec<String>)>,
-    pub extend: Vec<String>,
-    /// (kind, risk).
-    pub risks: Vec<(String, String)>,
-    pub pitfalls: Vec<String>,
-    pub questions: Vec<String>,
-    pub related: Vec<String>,
-    /// The commit it read, short.
-    pub sha: String,
-    /// "3 commits behind", "Stale", or empty while current.
-    pub drift: String,
+    /// The report's one line: its gist, else its why.
+    pub gist: String,
+    pub stale: bool,
     pub when: String,
     /// "Digging… 4m" while it runs.
     pub running: Option<String>,
     pub error: Option<String>,
     /// It read the web too.
     pub web: bool,
+    pub blocks: Vec<Block>,
+}
+
+impl RoundView {
+    /// The line beside the title: the focus while open; collapsed, "focus — gist".
+    pub fn line(&self, open: bool) -> String {
+        let tail = if self.gist.is_empty() { self.error.clone().unwrap_or_default() } else { self.gist.clone() };
+        if open || tail.is_empty() {
+            return self.focus.clone();
+        }
+        if self.focus.is_empty() { tail } else { format!("{} — {tail}", self.focus) }
+    }
 }
 
 fn strings(v: &Value) -> Vec<String> {
-    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect()).unwrap_or_default()
+    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default()
 }
 
-fn drift(r: &Value) -> String {
-    if b(r, "stale") {
-        return "Stale".into();
+fn scorecard(b: &Value) -> Block {
+    let mut cells = vec![];
+    let fit = match s(b, "fit") {
+        "fits" => Some(("Fits", "")),
+        "partly" => Some(("Partly", "warn")),
+        "doesnt_fit" => Some(("Doesn’t fit", "down")),
+        _ => None,
+    };
+    let size = match s(b, "size") {
+        "s" => Some(("Small", "")),
+        "m" => Some(("Medium", "")),
+        "l" => Some(("Large", "")),
+        _ => None,
+    };
+    let risk = match s(b, "risk") {
+        "low" => Some(("Low", "")),
+        "medium" => Some(("Medium", "warn")),
+        "high" => Some(("High", "down")),
+        _ => None,
+    };
+    for (label, cell) in [("Fit", fit), ("Size", size), ("Risk", risk)] {
+        if let Some((value, tone)) = cell {
+            cells.push((label, value, tone));
+        }
     }
-    match r["behind"].as_i64() {
-        Some(n) if n > 0 => format!("{} behind", fmt::plural(n, "commit", "commits")),
-        _ => String::new(),
+    Block::Scorecard(cells)
+}
+
+fn points(title: &str, items: Vec<Point>) -> Option<Block> {
+    (!items.is_empty()).then(|| Block::Points { title: title.to_string(), items })
+}
+
+fn block(v: &Value) -> Option<Block> {
+    let named = |list: &[Value], k: &str| list.iter().filter(|x| !s(x, k).is_empty()).cloned().collect::<Vec<_>>();
+    let block = match s(v, "type") {
+        "gist" => Block::Gist(s(v, "text").trim().to_string()),
+        "scorecard" => scorecard(v),
+        "flow" => Block::Flow(named(arr(v, "steps"), "name").iter().map(|x| (s(x, "name").to_string(), b(x, "new"))).collect()),
+        "code" => Block::Code(named(arr(v, "items"), "what").iter().map(|x| (s(x, "what").to_string(), fmt::opt_s(x, "file").filter(|f| !f.is_empty()).map(str::to_string).into_iter().collect())).collect()),
+        "points" => Block::Points {
+            title: s(v, "title").to_string(),
+            items: named(arr(v, "items"), "short")
+                .iter()
+                .map(|x| Point { short: s(x, "short").to_string(), detail: s(x, "detail").trim().to_string(), tag: fmt::opt_s(x, "tag").map(str::to_string) })
+                .collect(),
+        },
+        "question" => Block::Question { text: s(v, "text").trim().to_string(), choices: strings(&v["choices"]) },
+        "compare" => Block::Compare {
+            lean: s(v, "lean").to_string(),
+            options: named(arr(v, "options"), "name").iter().map(|x| Opt { name: s(x, "name").to_string(), pros: strings(&x["pros"]), cons: strings(&x["cons"]) }).collect(),
+        },
+        "related" => Block::Related(strings(&v["refs"])),
+        _ => return None,
+    };
+    let empty = match &block {
+        Block::Gist(x) | Block::Question { text: x, .. } => x.is_empty(),
+        Block::Scorecard(x) => x.is_empty(),
+        Block::Flow(x) => x.is_empty(),
+        Block::Code(x) => x.is_empty(),
+        Block::Points { items, .. } => items.is_empty(),
+        Block::Compare { options, .. } => options.is_empty(),
+        Block::Related(x) => x.is_empty(),
+    };
+    (!empty).then_some(block)
+}
+
+/// A report from before blocks: its lists drawn as the blocks that hold the same things.
+fn old_blocks(rep: &Value) -> Vec<Block> {
+    let mut out = vec![];
+    let code: Vec<_> = arr(rep, "builds_on").iter().filter(|x| !s(x, "what").is_empty()).map(|x| (s(x, "what").to_string(), strings(&x["files"]))).collect();
+    if !code.is_empty() {
+        out.push(Block::Code(code));
     }
+    let short = |x: String| Point { short: x, ..Point::default() };
+    let mut watch: Vec<Point> = arr(rep, "risks")
+        .iter()
+        .filter(|x| !s(x, "risk").is_empty())
+        .map(|x| Point { short: s(x, "risk").to_string(), detail: String::new(), tag: fmt::opt_s(x, "kind").filter(|k| !k.is_empty()).map(str::to_string) })
+        .collect();
+    watch.extend(strings(&rep["pitfalls"]).into_iter().map(short));
+    out.extend(points("Watch out", watch));
+    out.extend(points("Could grow into", strings(&rep["ways_to_extend"]).into_iter().map(short).collect()));
+    out.extend(strings(&rep["open_questions"]).into_iter().map(|text| Block::Question { text, choices: vec![] }));
+    let related = strings(&rep["related"]);
+    if !related.is_empty() {
+        out.push(Block::Related(related));
+    }
+    out
+}
+
+/// A report's blocks, its gist first: the why stands in when it has none.
+fn report_blocks(rep: &Value) -> Vec<Block> {
+    let mut out: Vec<Block> = match rep["blocks"].as_array() {
+        Some(list) => list.iter().filter_map(block).collect(),
+        None => old_blocks(rep),
+    };
+    if !out.iter().any(|x| matches!(x, Block::Gist(_))) {
+        let why = s(rep, "why").trim();
+        if !why.is_empty() {
+            out.insert(0, Block::Gist(why.to_string()));
+        }
+    }
+    out
 }
 
 pub fn rounds(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
@@ -186,26 +330,29 @@ pub fn rounds(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
         .map(|(n, r)| {
             let rep = &r["report"];
             let at = fmt::opt_s(r, "finished_at").or(fmt::opt_s(r, "started_at")).unwrap_or("");
+            let blocks = if rep.is_object() { report_blocks(rep) } else { vec![] };
+            let gist = blocks.iter().find_map(|x| if let Block::Gist(g) = x { Some(g.clone()) } else { None }).unwrap_or_default();
             RoundView {
+                id: r["id"].to_string(),
                 title: format!("Round {}", all.len() - n),
                 focus: s(r, "focus").to_string(),
                 verdict: verdict_pill(&rep["verdict"]),
-                why: s(rep, "why").to_string(),
-                builds_on: arr(rep, "builds_on").iter().map(|x| (s(x, "what").to_string(), strings(&x["files"]))).collect(),
-                extend: strings(&rep["ways_to_extend"]),
-                risks: arr(rep, "risks").iter().map(|x| (s(x, "kind").to_string(), s(x, "risk").to_string())).collect(),
-                pitfalls: strings(&rep["pitfalls"]),
-                questions: strings(&rep["open_questions"]),
-                related: strings(&rep["related"]),
-                sha: s(r, "sha").chars().take(7).collect(),
-                drift: drift(r),
+                gist,
+                stale: b(r, "stale"),
                 when: fmt::parse(at).map(|t| cut_at(t, now)).unwrap_or_default(),
                 running: (open.as_ref() == Some(&r["id"])).then(|| digging_label(s(r, "started_at"), now)),
                 error: fmt::opt_s(r, "error").filter(|e| !e.is_empty()).map(str::to_string),
                 web: b(r, "web"),
+                blocks,
             }
         })
         .collect()
+}
+
+/// A file chip's name: the file's last part without its line.
+pub fn file_name(path: &str) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.split(':').next().unwrap_or(name).to_string()
 }
 
 /// A note's byline: who left it and when.
@@ -401,19 +548,13 @@ fn notes(t: &Theme, i: &Value) -> Option<Div> {
     Some(section(t, "Notes").child(card))
 }
 
-fn list_block(t: &Theme, title: &str, items: &[String]) -> Option<Div> {
-    if items.is_empty() {
-        return None;
-    }
-    let mut col = div().flex().flex_col().gap(px(4.)).child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child(title.to_string()));
-    for x in items {
-        col = col.child(div().flex().gap(px(8.)).text_size(px(13.)).child(div().flex_none().text_color(t.faint).child("•")).child(div().min_w_0().flex_1().child(x.clone())));
-    }
-    Some(col)
+/// `.h3` inside a report: 12px bold.
+fn label(t: &Theme, text: &str) -> Div {
+    div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child(text.to_string())
 }
 
-fn related_link(t: &Theme, n: usize, r: &str, cx: &mut Context<MainWindow>) -> AnyElement {
-    let id = SharedString::from(format!("idea-related-{n}-{r}"));
+fn related_link(t: &Theme, key: &str, r: &str, cx: &mut Context<MainWindow>) -> AnyElement {
+    let id = SharedString::from(format!("idea-related-{key}-{r}"));
     let el = kit::link(t, id, r.to_string()).font_family(t.mono_font.clone()).text_size(px(12.));
     let r = r.to_string();
     match r.chars().next() {
@@ -425,64 +566,262 @@ fn related_link(t: &Theme, n: usize, r: &str, cx: &mut Context<MainWindow>) -> A
     }
 }
 
-fn round_card(t: &Theme, n: usize, rv: &RoundView, cx: &mut Context<MainWindow>) -> Div {
-    let meta = [rv.sha.clone(), rv.drift.clone(), rv.when.clone()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+fn tone_color(t: &Theme, tone: &str) -> Hsla {
+    match tone {
+        "warn" => t.warn_fg,
+        "down" => t.down,
+        _ => t.text,
+    }
+}
+
+fn scorecard_el(t: &Theme, cells: &[(&'static str, &'static str, &'static str)]) -> Div {
+    div().flex().gap(px(8.)).max_w(px(520.)).children(cells.iter().map(|(label, value, tone)| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.border)
+            .child(div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(t.muted).child(*label))
+            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(tone_color(t, tone)).child(*value))
+    }))
+}
+
+/// The steps in order: the first in the accent, new ones dashed.
+fn flow_el(t: &Theme, steps: &[(String, bool)]) -> Div {
+    let mut row = div().flex().flex_wrap().items_center().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD);
+    for (n, (name, new)) in steps.iter().enumerate() {
+        if n > 0 {
+            row = row.child(div().px(px(6.)).text_color(t.muted).child("→"));
+        }
+        let step = div().px(px(10.)).py(px(6.)).rounded(px(7.)).border_1();
+        row = row.child(if *new {
+            step.border_dashed().border_color(t.warn_line).bg(t.warn_soft).text_color(t.warn_fg).child(format!("{name} (new)"))
+        } else if n == 0 {
+            step.border_color(t.accent_line).bg(t.accent_soft).text_color(t.accent_fg).child(name.clone())
+        } else {
+            step.border_color(t.border).bg(t.panel_2).text_color(t.text).child(name.clone())
+        });
+    }
+    row
+}
+
+/// "Builds on": what, with its file's name; the whole path shows on hover.
+fn code_el(t: &Theme, key: &str, items: &[(String, Vec<String>)]) -> Div {
+    let chips = items.iter().enumerate().map(|(n, (what, files))| {
+        let chip = div()
+            .id(SharedString::from(format!("idea-code-{key}-{n}")))
+            .flex()
+            .items_baseline()
+            .gap(px(6.))
+            .px(px(9.))
+            .py(px(4.))
+            .rounded(px(7.))
+            .bg(t.panel_2)
+            .text_size(px(12.5))
+            .child(what.clone())
+            .children(files.first().map(|f| div().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(file_name(f))));
+        if files.is_empty() { chip } else { chip.tooltip(kit::tip(files.join("\n"))) }
+    });
+    div().flex().flex_col().gap(px(6.)).child(label(t, "Builds on")).child(div().flex().flex_wrap().gap(px(6.)).children(chips))
+}
+
+fn tag_pill(t: &Theme, tag: &str) -> Div {
+    let tone = if tag == "security" || tag == "privacy" { "down" } else { "warn" };
+    let (fg, bg) = kit::tone(t, tone);
+    div().flex_none().mt(px(2.)).px(px(7.)).rounded(px(8.)).bg(bg).text_color(fg).text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).line_height(px(18.)).child(tag.to_string())
+}
+
+/// A points list: each point's short line, opening to its detail with More.
+fn points_el(m: &MainWindow, t: &Theme, key: &str, title: &str, items: &[Point], cx: &mut Context<MainWindow>) -> Div {
+    let mut col = div().flex().flex_col().flex_1().min_w_0().gap(px(6.)).when(!title.is_empty(), |d| d.child(label(t, title)));
+    for (n, p) in items.iter().enumerate() {
+        let id = format!("{key}::{n}");
+        let open = m.idea.more.contains(&id);
+        let mark = match &p.tag {
+            Some(tag) => tag_pill(t, tag),
+            None => div().flex_none().text_color(t.muted).child("•"),
+        };
+        let more = !p.detail.is_empty();
+        let line = div()
+            .id(SharedString::from(format!("idea-point-{id}")))
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .text_size(px(13.5))
+            .line_height(relative(1.45))
+            .child(mark)
+            .child(div().flex_1().min_w_0().child(p.short.clone()))
+            .when(more, |d| {
+                let id = id.clone();
+                d.cursor_pointer()
+                    .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(if open { "Less" } else { "More" }))
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        if !m.idea.more.remove(&id) {
+                            m.idea.more.insert(id.clone());
+                        }
+                        cx.notify();
+                    }))
+            });
+        col = col.child(
+            div().flex().flex_col().gap(px(4.)).child(line).when(open && more, |d| {
+                d.child(
+                    div()
+                        .mb(px(4.))
+                        .pl(px(10.))
+                        .border_l_2()
+                        .border_color(t.border)
+                        .text_size(px(13.))
+                        .line_height(relative(1.5))
+                        .text_color(t.text_2)
+                        .child(sel(t, SharedString::from(format!("idea-detail-{id}")), p.detail.clone())),
+                )
+            }),
+        );
+    }
+    col
+}
+
+/// "To decide": each question with its choices. Answering them is still `tb idea`'s.
+fn questions_el(t: &Theme, qs: &[(&String, &Vec<String>)]) -> Div {
+    let cards = qs.iter().map(|(text, choices)| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(12.))
+            .rounded(px(9.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.panel_2)
+            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child((*text).clone()))
+            .when(!choices.is_empty(), |d| {
+                d.child(div().flex().flex_wrap().gap(px(6.)).children(choices.iter().map(|c| {
+                    div().flex().items_center().min_h(px(32.)).px(px(12.)).rounded(px(16.)).border_1().border_color(t.border_2).bg(t.card).text_size(px(13.)).child(c.clone())
+                })))
+            })
+    });
+    div().flex().flex_col().gap(px(8.)).child(label(t, "To decide")).children(cards)
+}
+
+/// Options side by side, the one it leans to outlined in the accent.
+fn compare_el(t: &Theme, lean: &str, options: &[Opt]) -> Div {
+    div().flex().gap(px(8.)).children(options.iter().map(|o| {
+        let leaning = !lean.is_empty() && o.name == lean;
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .gap(px(6.))
+            .px(px(12.))
+            .py(px(10.))
+            .rounded(px(9.))
+            .border_1()
+            .border_color(if leaning { t.accent } else { t.border })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().text_size(px(13.5)).font_weight(FontWeight::BOLD).child(o.name.clone()))
+                    .when(leaning, |d| d.child(kit::tone_pill(t, "accent", "Leaning"))),
+            )
+            .children(o.pros.iter().map(|x| div().text_size(px(12.5)).text_color(t.up_fg).child(format!("+ {x}"))))
+            .children(o.cons.iter().map(|x| div().text_size(px(12.5)).text_color(t.warn_fg).child(format!("− {x}"))))
+    }))
+}
+
+fn related_el(t: &Theme, key: &str, refs: &[String], cx: &mut Context<MainWindow>) -> Div {
+    div().flex().flex_wrap().items_center().gap(px(10.)).text_size(px(12.)).child(label(t, "Related")).children(refs.iter().map(|r| related_link(t, key, r, cx)))
+}
+
+/// A round's blocks in order: points lists side by side in twos, questions under one heading.
+fn blocks_el(m: &MainWindow, t: &Theme, key: &str, blocks: &[Block], cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
+    let mut out = vec![];
+    let mut k = 0;
+    while k < blocks.len() {
+        let bkey = format!("{key}::{k}");
+        match &blocks[k] {
+            Block::Gist(g) => out.push(
+                div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.45)).child(sel(t, SharedString::from(format!("idea-gist-{bkey}")), g.clone())).into_any_element(),
+            ),
+            Block::Scorecard(cells) => out.push(scorecard_el(t, cells).into_any_element()),
+            Block::Flow(steps) => out.push(flow_el(t, steps).into_any_element()),
+            Block::Code(items) => out.push(code_el(t, &bkey, items).into_any_element()),
+            Block::Points { title, items } => {
+                let mut row = div().flex().items_start().gap(px(18.)).child(points_el(m, t, &bkey, title, items, cx));
+                if let Some(Block::Points { title, items }) = blocks.get(k + 1) {
+                    k += 1;
+                    row = row.child(points_el(m, t, &format!("{key}::{k}"), title, items, cx));
+                }
+                out.push(row.into_any_element());
+            }
+            Block::Question { .. } => {
+                let mut qs = vec![];
+                while let Some(Block::Question { text, choices }) = blocks.get(k) {
+                    qs.push((text, choices));
+                    k += 1;
+                }
+                k -= 1;
+                out.push(questions_el(t, &qs).into_any_element());
+            }
+            Block::Compare { lean, options } => out.push(compare_el(t, lean, options).into_any_element()),
+            Block::Related(refs) => out.push(related_el(t, &bkey, refs, cx).into_any_element()),
+        }
+        k += 1;
+    }
+    out
+}
+
+/// A round: its header line always, its report while open.
+fn round_card(m: &MainWindow, t: &Theme, idea: &str, n: usize, rv: &RoundView, cx: &mut Context<MainWindow>) -> Div {
+    let key = format!("{idea}::{}", rv.id);
+    let open = round_open(m, &key, n);
+    let k2 = key.clone();
+    let hover = t.panel_2;
+    let chev = div().flex_none().size(px(14.)).child(kit::icon(if open { kit::Icon::Chev } else { kit::Icon::ChevRight }, 14., t.muted));
     let head = div()
+        .id(SharedString::from(format!("idea-round-{key}")))
         .flex()
         .items_center()
         .gap(px(10.))
+        .px(px(16.))
+        .py(px(12.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .on_click(cx.listener(move |m, _, _, cx| {
+            let was = round_open(m, &k2, n);
+            m.idea.open.insert(k2.clone(), !was);
+            cx.notify();
+        }))
+        .child(chev)
         .child(div().flex_none().text_size(px(14.)).font_weight(FontWeight::BOLD).child(rv.title.clone()))
         .children(rv.verdict.map(|(label, tone)| kit::tone_pill(t, tone, label)))
         .children(rv.running.clone().map(|l| kit::tone_pill(t, "accent", l)))
         .when(rv.web, |d| d.child(kit::chip(t, "Web")))
-        .child(div().flex_1())
-        .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).text_color(if rv.drift == "Stale" { t.warn_fg } else { t.muted }).child(meta));
-    let mut body = div().flex().flex_col().gap(px(12.)).px(px(18.)).py(px(14.)).child(head);
-    if !rv.focus.is_empty() {
-        body = body.child(div().text_size(px(13.)).text_color(t.text_2).child(format!("Focus: {}", rv.focus)));
-    }
-    if let Some(e) = &rv.error {
-        body = body.child(div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e.clone()));
-    }
-    if !rv.why.is_empty() {
-        body = body.child(div().text_size(px(14.)).line_height(relative(1.5)).child(sel(t, SharedString::from(format!("idea-why-{n}")), rv.why.clone())));
-    }
-    if !rv.builds_on.is_empty() {
-        let mut col = div().flex().flex_col().gap(px(6.)).child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child("Builds on"));
-        for (what, files) in &rv.builds_on {
-            col = col.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().flex().gap(px(8.)).text_size(px(13.)).child(div().flex_none().text_color(t.faint).child("•")).child(div().min_w_0().flex_1().child(what.clone())))
-                    .when(!files.is_empty(), |d| d.child(div().pl(px(16.)).flex().flex_wrap().gap(px(6.)).children(files.iter().map(|f| kit::mono(t, f.clone()).text_size(px(11.5)).text_color(t.muted))))),
-            );
-        }
-        body = body.child(col);
-    }
-    body = body.children(list_block(t, "Ways to extend", &rv.extend));
-    if !rv.risks.is_empty() {
-        let mut col = div().flex().flex_col().gap(px(4.)).child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child("Risks"));
-        for (kind, risk) in &rv.risks {
-            let tone = if kind == "security" || kind == "privacy" { "down" } else { "warn" };
-            col = col.child(div().flex().items_start().gap(px(8.)).text_size(px(13.)).child(kit::tone_pill(t, tone, kind.clone())).child(div().min_w_0().flex_1().child(risk.clone())));
-        }
-        body = body.child(col);
-    }
-    body = body.children(list_block(t, "Pitfalls", &rv.pitfalls)).children(list_block(t, "Open questions", &rv.questions));
-    if !rv.related.is_empty() {
-        body = body.child(
+        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(t.text_2).child(rv.line(open)))
+        .when(rv.stale, |d| d.child(kit::tone_pill(t, "warn", "Stale")))
+        .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(rv.when.clone()));
+    let mut card = kit::card(t).overflow_hidden().child(head);
+    if open && (rv.error.is_some() || !rv.blocks.is_empty()) {
+        card = card.child(
             div()
                 .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(10.))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child("Related"))
-                .children(rv.related.iter().map(|r| related_link(t, n, r, cx))),
+                .flex_col()
+                .gap(px(18.))
+                .pt(px(4.))
+                .pr(px(18.))
+                .pb(px(18.))
+                .pl(px(40.))
+                .children(rv.error.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e)))
+                .children(blocks_el(m, t, &key, &rv.blocks, cx)),
         );
     }
-    kit::card(t).child(body)
+    card
 }
 
 pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -506,9 +845,10 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     let detail = s(&i, "detail").trim().to_string();
     let views = rounds(&i, fmt::now());
     let menu = close_menu(m, &t, &i, cx);
+    let r = fmt::ref_of(&i, "I");
     let mut reports = section(&t, "Reports");
     for (n, rv) in views.iter().enumerate() {
-        reports = reports.child(round_card(&t, n, rv, cx));
+        reports = reports.child(round_card(m, &t, &r, n, rv, cx));
     }
     div()
         .id("idea-page")
@@ -587,15 +927,13 @@ mod tests {
     }
 
     #[test]
-    fn rounds_read_newest_first_with_their_report_commit_and_time() {
+    fn rounds_read_newest_first_and_only_the_newest_starts_open() {
         let now = at(2026, 10, 15, 16);
         let rounds = json!([
             {"id": 3, "focus": "", "report": null, "sha": "", "web": false, "started_at": (now - Duration::minutes(2)).to_rfc3339(), "finished_at": null, "error": null, "behind": null, "stale": false},
             {"id": 2, "focus": "offline sync", "sha": "abc1234def", "web": true, "started_at": at(2026, 10, 15, 9).to_rfc3339(),
              "finished_at": at(2026, 10, 15, 10).to_rfc3339(), "error": null, "behind": 3, "stale": false,
-             "report": {"verdict": "partly", "why": "Needs a queue.", "builds_on": [{"what": "The lens thread", "files": ["src/lens.rs:40"]}],
-                        "ways_to_extend": ["Sync settings"], "risks": [{"kind": "security", "risk": "Tokens on disk"}],
-                        "pitfalls": ["Clock skew"], "open_questions": ["Which store?"], "related": ["G2", "T9"]}},
+             "report": {"verdict": "partly", "why": "Needs a queue.", "blocks": [{"type": "gist", "text": "A queue makes it work offline."}]}},
             {"id": 1, "focus": "", "report": null, "sha": "0011223344", "web": false, "started_at": at(2026, 10, 7, 9).to_rfc3339(),
              "finished_at": at(2026, 10, 7, 9).to_rfc3339(), "error": "claude timed out", "behind": null, "stale": true},
         ]);
@@ -605,25 +943,72 @@ mod tests {
         assert_eq!(
             v[1],
             RoundView {
+                id: "2".into(),
                 title: "Round 2".into(),
                 focus: "offline sync".into(),
                 verdict: Some(("Partly fits", "warn")),
-                why: "Needs a queue.".into(),
-                builds_on: vec![("The lens thread".into(), vec!["src/lens.rs:40".into()])],
-                extend: vec!["Sync settings".into()],
-                risks: vec![("security".into(), "Tokens on disk".into())],
-                pitfalls: vec!["Clock skew".into()],
-                questions: vec!["Which store?".into()],
-                related: vec!["G2".into(), "T9".into()],
-                sha: "abc1234".into(),
-                drift: "3 commits behind".into(),
+                gist: "A queue makes it work offline.".into(),
+                stale: false,
                 when: "Today, 10:05 AM".into(),
                 running: None,
                 error: None,
                 web: true,
+                blocks: vec![Block::Gist("A queue makes it work offline.".into())],
             }
         );
-        assert_eq!((v[2].error.as_deref(), v[2].drift.as_str(), v[2].running.clone()), (Some("claude timed out"), "Stale", None));
+        assert_eq!(v[1].line(true), "offline sync");
+        assert_eq!(v[1].line(false), "offline sync — A queue makes it work offline.");
+        assert!((v[2].stale, v[2].error.as_deref()) == (true, Some("claude timed out")));
+        assert_eq!(v[2].line(false), "claude timed out");
+        assert!(starts_open(0) && !starts_open(1));
+    }
+
+    #[test]
+    fn report_blocks_draw_in_order_skipping_unknown_and_empty_ones() {
+        let rep = json!({"verdict": "fits", "why": "Small change.", "blocks": [
+            {"type": "scorecard", "fit": "partly", "size": "m", "risk": null},
+            {"type": "chart", "data": [1, 2]},
+            {"type": "flow", "steps": [{"name": "Dig", "new": false}, {"name": "Queue", "new": true}]},
+            {"type": "code", "items": [{"what": "The lens thread", "file": "src/lens.rs:40"}, {"what": "", "file": "x.rs"}]},
+            {"type": "points", "title": "Risks", "items": [{"short": "Tokens on disk", "detail": "They sit in plain text.", "tag": "security"}]},
+            {"type": "points", "title": "Empty", "items": []},
+            {"type": "question", "id": "q1", "text": "Which store?", "choices": ["SQLite", "Files"]},
+            {"type": "compare", "lean": "SQLite", "options": [{"name": "SQLite", "pros": ["Fast"], "cons": []}]},
+            {"type": "related", "refs": ["G2", "T9"]},
+        ]});
+        assert_eq!(
+            report_blocks(&rep),
+            vec![
+                Block::Gist("Small change.".into()),
+                Block::Scorecard(vec![("Fit", "Partly", "warn"), ("Size", "Medium", "")]),
+                Block::Flow(vec![("Dig".into(), false), ("Queue".into(), true)]),
+                Block::Code(vec![("The lens thread".into(), vec!["src/lens.rs:40".into()])]),
+                Block::Points { title: "Risks".into(), items: vec![Point { short: "Tokens on disk".into(), detail: "They sit in plain text.".into(), tag: Some("security".into()) }] },
+                Block::Question { text: "Which store?".into(), choices: vec!["SQLite".into(), "Files".into()] },
+                Block::Compare { lean: "SQLite".into(), options: vec![Opt { name: "SQLite".into(), pros: vec!["Fast".into()], cons: vec![] }] },
+                Block::Related(vec!["G2".into(), "T9".into()]),
+            ]
+        );
+        assert_eq!(file_name("crates/app/src/lens.rs:40"), "lens.rs");
+    }
+
+    #[test]
+    fn an_old_report_draws_its_lists_as_blocks() {
+        let rep = json!({"verdict": "partly", "why": "Needs a queue.", "builds_on": [{"what": "The lens thread", "files": ["src/lens.rs:40"]}],
+                         "ways_to_extend": ["Sync settings"], "risks": [{"kind": "security", "risk": "Tokens on disk"}],
+                         "pitfalls": ["Clock skew"], "open_questions": ["Which store?"], "related": ["G2", "T9"]});
+        let short = |x: &str| Point { short: x.into(), ..Point::default() };
+        assert_eq!(
+            report_blocks(&rep),
+            vec![
+                Block::Gist("Needs a queue.".into()),
+                Block::Code(vec![("The lens thread".into(), vec!["src/lens.rs:40".into()])]),
+                Block::Points { title: "Watch out".into(), items: vec![Point { tag: Some("security".into()), ..short("Tokens on disk") }, short("Clock skew")] },
+                Block::Points { title: "Could grow into".into(), items: vec![short("Sync settings")] },
+                Block::Question { text: "Which store?".into(), choices: vec![] },
+                Block::Related(vec!["G2".into(), "T9".into()]),
+            ]
+        );
     }
 
     fn rounds_of(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
