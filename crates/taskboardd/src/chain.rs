@@ -87,12 +87,17 @@ pub fn finished(app: &App, g: &Row) -> Result<()> {
 }
 
 /// Queues the goal's planned tasks, and those whose start failed again; returns how many were planned.
+/// A planned task that waited for Start before it joined the goal runs with the goal now.
 pub fn queue_planned(app: &App, id: i64, who: &str, queued: &str, again: &str) -> Result<i64> {
     let mut n = 0;
     app.db.update("goals", &json!(id), fields!["ran_at" => now_iso()])?;
     for t in board::goal_tasks(app, id)? {
         if t.s("status") == Some("planned") {
-            board::update_task(app, t.id(), fields!["status" => "queued"])?;
+            let mut f = fields!["status" => "queued"];
+            if t.s("pickup") == Some("manual") && t.s("line_session").is_none() {
+                f.extend(fields!["pickup" => "queue"]);
+            }
+            board::update_task(app, t.id(), f)?;
             board::log_event(app, t.id(), who, "status", queued)?;
             n += 1;
         } else if t.s("status") == Some("needs") && t.s("needs_reason") == Some("start_failed") {

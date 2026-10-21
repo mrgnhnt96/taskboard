@@ -98,3 +98,22 @@ fn a_chain_refuses_itself_and_a_loop_and_clears_with_none() {
     b.post(&format!("goals/G{g2}"), json!({"after": "none"})).unwrap();
     assert_eq!(b.get(&format!("goals/G{g2}"))["after"], json!([]));
 }
+
+#[test]
+fn a_task_that_waited_for_start_runs_with_the_chained_goal_it_joined() {
+    let b = new_board();
+    let (g1, t1) = b.goal("First");
+    let (g2, _) = b.goal("Second");
+    b.post(&format!("goals/G{g2}"), json!({"after": format!("G{g1}")})).unwrap();
+    let id = b.post("/tasks", json!({"title": "Turn reviews back on", "detail": "Do it.", "project": "webapp", "pickup": "manual"})).unwrap()["id"].as_i64().unwrap();
+    b.post(&format!("tasks/T{id}"), json!({"goal_id": g2})).unwrap();
+    assert_eq!(b.status(id), "planned");
+
+    b.run(g1);
+    b.done(t1[0]);
+    b.done(t1[1]);
+    let t = board::get_task(&b.app, id).unwrap();
+    assert_eq!((t.s("status"), t.s("pickup")), (Some("queued"), Some("queue")), "it runs with its goal, not on a Start");
+    let why = waitsfor::waiting_line(&b.app, &t).unwrap();
+    assert!(!why.as_str().unwrap_or("").contains("press Start"), "{why}");
+}
