@@ -747,6 +747,16 @@ fn without_a_bar_the_review_step_waits_short_of_the_approvals_needed() {
 }
 
 #[::core::prelude::v1::test]
+fn checks_and_review_say_when_the_open_pr_was_last_read() {
+    let at = (chrono::Utc::now() - chrono::Duration::minutes(4)).to_rfc3339();
+    let mut task = with_bar(json!({}), Value::Null, "pending");
+    task["pr"]["checked_at"] = json!(at);
+    assert!(panel_text(task.clone(), json!({})).contains("Checks and review Updated 4m ago"));
+    task["pr"]["state"] = json!("MERGED");
+    assert!(!panel_text(task, json!({})).contains("Updated"), "a merged PR isn't read any more");
+}
+
+#[::core::prelude::v1::test]
 fn checks_say_when_they_arent_needed_or_this_prs() {
     let text = panel_text(with_bar(json!({"checks": "not_needed"}), Value::Null, "none"), json!({}));
     assert!(text.contains("Checks Not needed") && text.contains("You Review Not asked"), "{text}");

@@ -1979,9 +1979,16 @@ enum Ic {
     Check,
     Clock,
     Comment,
-    /// `.s-now`: a ring with its right quarter open.
-    Spinner,
+    /// `.s-now`: a ring with its right quarter open, turned this many degrees.
+    Spinner(f32),
     Att(&'static str),
+}
+
+/// The spinner turning once a second (still while the system asks for reduced motion).
+fn spinner(size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
+    div().size(px(size)).with_animation("spinner", Animation::new(Duration::from_secs(1)).repeat(), move |d, turn| {
+        d.child(paint(Ic::Spinner(turn * 360.), size, stroke, color))
+    })
 }
 
 /// A stroked icon on the web's 24-unit (attachments: 16-unit) viewbox, `size` px square.
@@ -2052,7 +2059,7 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
                     line(&[(8.4, 19.1), (4., 20.), (5., 15.9)], window);
                     arc((12., 12.), 8., 151., 360., window);
                 }
-                Ic::Spinner => arc((12., 12.), 11., 45., 315., window),
+                Ic::Spinner(turn) => arc((12., 12.), 11., 45. + turn, 315. + turn, window),
                 Ic::Att(kind) => match kind {
                     "design" => {
                         line(&[(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5), (2.5, 2.5)], window);
@@ -2180,7 +2187,7 @@ fn step_dot(t: &Theme, st: StepSt) -> AnyElement {
         StepSt::Fail => ring(t.down, d.bg(t.down_soft).child(paint(Ic::X, 11., 3., t.down))),
         StepSt::Ask => ring(t.warn, d.bg(t.warn_soft).child(paint(Ic::Comment, 11., 2.6, t.warn))),
         StepSt::Wait => d.border_1().border_color(t.accent).child(paint(Ic::Clock, 12., 2.6, t.accent_fg)).into_any_element(),
-        StepSt::Now => d.child(paint(Ic::Spinner, 22., 2., t.accent)).into_any_element(),
+        StepSt::Now => d.child(spinner(22., 2., t.accent)).into_any_element(),
         StepSt::Todo => d.border_1().border_color(t.border_2).into_any_element(),
     }
 }

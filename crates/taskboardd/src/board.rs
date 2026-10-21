@@ -301,6 +301,8 @@ pub fn pr_card(app: &App, t: &Row) -> Value {
         "host": t.st("pr_host"), "repo": short_repo, "full_repo": repo, "num": t.i0("pr_num"), "url": t.st("pr_url"),
         "state": state, "title": t.v("pr_title"), "checks": checks, "review": review,
         "approvals": approvals, "stage": stage,
+        // When the board last read the PR (a poll or a feed event): how fresh its checks and review are.
+        "checked_at": flow.get("checked_at").cloned().unwrap_or(Value::Null),
     })
 }
 
