@@ -179,6 +179,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
                             .flex()
                             .items_center()
                             .gap(px(8.))
+                            .child(div().flex_none().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).child(r.clone()))
                             .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(text).truncate().child(s(g, "name").to_string()))
                             .when(i(g, "needs") > 0, |d| d.child(kit::dot(t.warn, 7.))),
                     )
