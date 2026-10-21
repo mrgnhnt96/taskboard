@@ -394,9 +394,11 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         // Whether Focus shows a terminal or opens a new one.
         o.insert("terminal_open".into(), json!(live_session(app, t)?.is_some()));
         o.insert("no_evidence".into(), t.v("no_evidence"));
-        // The task's model and what its terminal runs with [models].
+        // The task's model and effort and what its terminal runs with [models].
         o.insert("model".into(), t.v("model"));
         o.insert("model_runs".into(), json!(app.cfg.models.resolve(t.s("model"))));
+        o.insert("effort".into(), t.v("effort"));
+        o.insert("effort_runs".into(), json!(app.cfg.models.resolve_effort(t.s("model"), t.s("effort"))));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);

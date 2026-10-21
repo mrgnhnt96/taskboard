@@ -295,6 +295,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The owner's word to finish the goal with failed tasks in it (`tb goal done G<n> --why`):
     // {at, why, tasks: [ids]}. Only those failed tasks stop holding it open (`board::accepted_failed`).
     ("goals", "accepted", "TEXT"),
+    // The effort the task's terminal starts with (`tb task new --effort`): low, medium, high, xhigh or
+    // max; null for its model's tier's (`[models] small_effort`, …).
+    ("tasks", "effort", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

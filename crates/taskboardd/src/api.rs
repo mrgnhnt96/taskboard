@@ -1210,6 +1210,12 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push(("model", json!(m)));
             }
         }
+        if has_key("effort") {
+            let e = crate::runner::clean_effort(body.get("effort"))?;
+            if e.as_deref() != t.s("effort") {
+                f.push(("effort", json!(e)));
+            }
+        }
         // The ticket's own text: what a ticket made after this gets (a linked one keeps its own).
         let mut t = t;
         for (k, limit) in [("ticket_summary", 250), ("ticket_text", 20_000)] {

@@ -2518,7 +2518,7 @@ static PLANNED_WITH_FILES: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s
 static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
 static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
-static PLANNED_PART: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(model|project|lane)\s*=\s*([^:\s]*)\s*$").unwrap());
+static PLANNED_PART: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(model|effort|project|lane)\s*=\s*([^:\s]*)\s*$").unwrap());
 
 /// The project a planned task goes in: the one it names, in the board's spelling, or its goal's.
 fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
@@ -2528,19 +2528,19 @@ fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
     }
 }
 
-/// A `--task` item's named parts at the very end ("::model=small", "::project=api", "::lane=slot", in any
-/// order), taken off before the rest is read: the rest, then the model, project and lane.
-fn planned_parts(item: &str) -> (String, Value, Value, Value) {
-    let (mut rest, mut parts) = (item.to_string(), [Value::Null, Value::Null, Value::Null]);
+/// A `--task` item's named parts at the very end ("::model=small", "::effort=high", "::project=api",
+/// "::lane=slot", in any order), taken off before the rest is read: the rest, then the model, effort, project and lane.
+fn planned_parts(item: &str) -> (String, Value, Value, Value, Value) {
+    let (mut rest, mut parts) = (item.to_string(), [Value::Null, Value::Null, Value::Null, Value::Null]);
     while let Some(c) = PLANNED_PART.captures(&rest).filter(|c| !c[1].trim().is_empty()) {
-        let k = ["model", "project", "lane"].iter().position(|k| *k == &c[2]).unwrap_or(0);
+        let k = ["model", "effort", "project", "lane"].iter().position(|k| *k == &c[2]).unwrap_or(0);
         if parts[k].is_null() {
             parts[k] = json!(&c[3]);
         }
         rest = c[1].to_string();
     }
-    let [model, project, lane] = parts;
-    (rest, model, project, lane)
+    let [model, effort, project, lane] = parts;
+    (rest, model, effort, project, lane)
 }
 
 /// "title::detail", "title::detail::2" (its wave) or "title::detail::<wave or nothing>::T14 #1" (what it
@@ -2617,14 +2617,15 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     let log = if status == "planned" { format!("Planned by {}", r.name()) } else { format!("Added by {} and queued: {} is running", r.name(), rf("goal", g.id())) };
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
-        let (item, files, model, project, lane) = match &item {
+        let (item, files, model, effort, project, lane) = match &item {
             Value::String(s) => {
-                let (s, model, project, lane) = planned_parts(s);
+                let (s, model, effort, project, lane) = planned_parts(s);
                 let (rest, files) = planned_files(&s);
-                (Value::String(rest), files, model, project, lane)
+                (Value::String(rest), files, model, effort, project, lane)
             }
             v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null), v.get("model").cloned().unwrap_or(Value::Null),
-                  v.get("project").cloned().unwrap_or(Value::Null), v.get("lane").cloned().unwrap_or(Value::Null)),
+                  v.get("effort").cloned().unwrap_or(Value::Null), v.get("project").cloned().unwrap_or(Value::Null),
+                  v.get("lane").cloned().unwrap_or(Value::Null)),
         };
         let project = planned_in(r, g, &project)?;
         let (title, detail, wave, waits) = match &item {
@@ -2648,7 +2649,7 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"), "lane": lane,
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
-                    "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model,
+                    "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model, "effort": effort,
                     "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"), "kind": item.get("kind"),
                     "not_backlog": item.get("not_backlog").filter(|v| !v.is_null()).or(r.body.get("not_backlog")),
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
