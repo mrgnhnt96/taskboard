@@ -8,7 +8,8 @@
 //! the reason and proof), `head_base` (head → the base's commit when that push was first seen),
 //! `swapped_off` (reviewers taken off the PR, whose requests for changes no longer hold),
 //! `addressed` (the last `tb pr addressed`), `asked` (who was last asked to review, when and by
-//! whom: `asks.rs`; the `ask` stage waits for it) and `lens` (the lens review of a new PR: `lens_pr.rs`;
+//! whom: `asks.rs`; the `ask` stage waits for it), `waiting_since` (reviewer → when the board first saw
+//! the PR waiting on them, for reviewers it didn't ask itself: `prbar.rs`) and `lens` (the lens review of a new PR: `lens_pr.rs`;
 //! the `lens` stage shows it running).
 //!
 //! The `ask` stage (`[reviewers] ask_stage`): once the owner has looked at a green PR ("I reviewed
@@ -1073,6 +1074,18 @@ pub fn rebase_policy(app: &App, t: &Row) -> RebasePolicy {
 }
 
 /// Reviewers taken off the PR: a request for changes from one of them no longer holds.
+/// `waiting_since` updated by a read: a reviewer on the PR who hasn't approved keeps the time the board
+/// first saw them waiting; anyone else drops out, so asking them again starts a new wait. None when unchanged.
+fn waiting_since(f: &Row, rec: &Value) -> Option<Value> {
+    let had = f.get("waiting_since").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let mut since = serde_json::Map::new();
+    for r in rec["reviewers"].as_array().into_iter().flatten().filter(|r| r["requested"] == true && r["state"] != "approved") {
+        let Some(user) = r["user"].as_str().filter(|u| !u.is_empty()) else { continue };
+        since.insert(user.to_lowercase(), had.get(&user.to_lowercase()).cloned().unwrap_or_else(|| json!(now_iso())));
+    }
+    (since != had).then_some(Value::Object(since))
+}
+
 pub fn swapped_off(f: &Row) -> Vec<String> {
     str_list(f.get("swapped_off").unwrap_or(&Value::Null))
 }
@@ -1460,6 +1473,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     if let Some(heads) = heads {
         changes.push(("head_at", heads));
+    }
+    if let Some(since) = waiting_since(&f, rec) {
+        changes.push(("waiting_since", since));
     }
     if !head.is_empty() {
         changes.push(("head", json!(head)));

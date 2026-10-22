@@ -1776,7 +1776,8 @@ fn comments_line(p: &Value, bar: &Value) -> Option<Node> {
     }]))
 }
 
-/// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them.
+/// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them. A
+/// reviewer the PR still waits on says for how long.
 fn reviewer_rows(bar: &Value) -> Vec<Node> {
     arr(bar, "reviewer_rows")
         .iter()
@@ -1792,7 +1793,9 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
                     "commented" => ("Commented", Tone::Neutral),
                     other => (other, Tone::Neutral),
                 };
-                kids.push(pill(label, tone));
+                // How long the PR has waited on them, by when they were asked.
+                let waited = opt_s(r, "asked_at").and_then(fmt::minutes_since).filter(|m| *m >= 1 && matches!(st, "waiting" | "rereview"));
+                kids.push(pill(waited.map_or(label.to_string(), |m| format!("{label} {}", fmt::span(m))), tone));
             }
             if let Some(n) = r["swaps"].as_i64().filter(|n| *n > 0) {
                 kids.push(txt(format!("Swapped {}", if n == 1 { "once".to_string() } else { format!("{n} times") }), St::Small));
