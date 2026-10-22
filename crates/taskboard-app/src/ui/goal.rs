@@ -37,6 +37,8 @@ pub struct State {
     pub backlog_view: bool,
     /// The Notes section is expanded, and the one kind it lists (`None`: every kind).
     notes_open: bool,
+    /// The Devices section is expanded; folded by default.
+    devices_open: bool,
     note_filter: Option<&'static str>,
     /// The kind of file the Attached card narrows to.
     att_filter: attached::Filter,
@@ -57,6 +59,7 @@ impl State {
         // Dev: `TASKBOARD_GOAL_NOTES=open|Decision|Finding|Reference` expands Notes, filtered to that kind (screenshots).
         let notes = std::env::var("TASKBOARD_GOAL_NOTES").unwrap_or_default();
         self.notes_open = !notes.is_empty();
+        self.devices_open = false;
         self.note_filter = ["Decision", "Finding", "Reference"].into_iter().find(|k| *k == notes);
         self.att_filter = attached::Filter::All;
         // Dev: `TASKBOARD_GOAL_ATT_CLOSED=w1,T5` folds those waves and tasks in Attached (screenshots).
@@ -1181,25 +1184,29 @@ fn jira_row(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
         .child(div().flex_1().min_w_0().child(control))
 }
 
+/// An aside head's Show or Hide, flipping the section's open flag.
+fn fold_toggle(t: &Theme, id: &'static str, open: bool, cx: &mut Context<MainWindow>, flag: fn(&mut MainWindow) -> &mut bool) -> Stateful<Div> {
+    let hover = t.accent;
+    div()
+        .id(id)
+        .text_size(px(12.))
+        .font_weight(FontWeight::NORMAL)
+        .text_color(t.accent)
+        .cursor_pointer()
+        .hover(move |s| s.text_color(hover).underline())
+        .child(if open { "Hide" } else { "Show" })
+        .on_click(cx.listener(move |m, _, _, cx| {
+            let f = flag(m);
+            *f = !*f;
+            cx.notify();
+        }))
+}
+
 /// The Notes head: the count and Show or Hide; open, the kind filter under it.
 fn notes_head(m: &MainWindow, t: &Theme, v: &lists::Notes, cx: &mut Context<MainWindow>) -> Div {
     let open = m.goal_page.notes_open;
     let count = if v.filter.is_some() { format!("{} of {}", v.shown.len(), v.total) } else { v.total.to_string() };
-    let hover = t.accent;
-    let head = side_head(t, "Notes", Some(count)).child(div().flex_1()).child(
-        div()
-            .id("goal-notes-toggle")
-            .text_size(px(12.))
-            .font_weight(FontWeight::NORMAL)
-            .text_color(t.accent)
-            .cursor_pointer()
-            .hover(move |s| s.text_color(hover).underline())
-            .child(if open { "Hide" } else { "Show" })
-            .on_click(cx.listener(|m, _, _, cx| {
-                m.goal_page.notes_open = !m.goal_page.notes_open;
-                cx.notify();
-            })),
-    );
+    let head = side_head(t, "Notes", Some(count)).child(div().flex_1()).child(fold_toggle(t, "goal-notes-toggle", open, cx, |m| &mut m.goal_page.notes_open));
     if !open {
         return side_box(t).child(head);
     }

@@ -113,6 +113,12 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
         return None;
     }
     let rows = device_rows(g);
+    let n = rows.len();
+    let open = m.goal_page.devices_open;
+    let head = side_head(t, "Devices", (n > 0).then(|| n.to_string())).child(div().flex_1()).child(fold_toggle(t, "goal-devices-toggle", open, cx, |m| &mut m.goal_page.devices_open));
+    if !open {
+        return Some(side_box(t).child(head));
+    }
     let mut list = div().flex().flex_col().gap(px(8.)).text_size(px(13.));
     if let Some(n) = fmt::opt_s(&g["devices"], "needs_text") {
         list = list.child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}")));
@@ -120,7 +126,6 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
     if let Some(why) = fmt::opt_s(&g["devices"], "empty_why") {
         list = list.child(div().text_size(px(12.)).text_color(t.muted).child(why.to_string()));
     }
-    let n = rows.len();
     for (ix, d) in rows.into_iter().enumerate() {
         let holder: AnyElement = match d.held_by.clone() {
             Some(r) => {
@@ -158,7 +163,7 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                 }),
         );
     }
-    Some(side(t, "Devices", (n > 0).then(|| n.to_string()), list))
+    Some(side_box(t).child(head.pb(px(8.))).child(list))
 }
 
 pub fn bits_aside(t: &Theme, g: &Value) -> Option<Div> {

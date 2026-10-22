@@ -183,7 +183,7 @@ pub fn sync(m: &mut MainWindow, g: &Value, cx: &mut Context<MainWindow>) {
     }
     if g["devices"].is_object() {
         ai.push(AItem::Devices);
-        ak.push("devices".into());
+        ak.push(format!("devices:{}", m.goal_page.devices_open));
     }
     if !pool::bit_rows(g).is_empty() {
         ai.push(AItem::Bits);
