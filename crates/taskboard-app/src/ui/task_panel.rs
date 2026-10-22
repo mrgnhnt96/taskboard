@@ -269,12 +269,12 @@ pub fn build(m: &MainWindow) -> Option<Node> {
     let folds = folds();
     let u = UI.with(|u| u.borrow().clone());
     let null = Value::Null;
-    let task = m.data.task.as_ref().filter(|t| fmt::ref_of(t, "T") == *r);
+    let task = m.data.task.as_ref().filter(|t| fmt::same_task(&fmt::ref_of(t, "T"), r));
     let log = log_rows(m, task, u.log_filter());
     let c = view::Ctx {
         state: m.data.state.as_ref().unwrap_or(&null),
         task,
-        card: m.data.task_card.as_ref().filter(|t| fmt::ref_of(t, "T") == *r),
+        card: m.data.task_card.as_ref().filter(|t| fmt::same_task(&fmt::ref_of(t, "T"), r)),
         r,
         tab: tab_name(*tab),
         trail: &trail,
@@ -2248,6 +2248,8 @@ fn link(t: &Theme, id: SharedString, s: &str, look: LinkLook) -> Stateful<Div> {
     let a = div().id(id).flex_none().cursor_pointer();
     match look {
         // `<a>`: accent, underlined.
+        // A bare URL can't wrap, so it ends in an ellipsis instead of running past the box.
+        LinkLook::Plain if !text.contains(char::is_whitespace) => a.flex_shrink(1.).min_w_0().max_w_full().truncate().text_color(t.accent).underline().child(text),
         LinkLook::Plain => a.flex_shrink(1.).text_color(t.accent).underline().child(text),
         LinkLook::Small => a.text_size(px(12.5)).text_color(t.accent).underline().child(text),
         LinkLook::Jkey => a.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).underline().child(text),

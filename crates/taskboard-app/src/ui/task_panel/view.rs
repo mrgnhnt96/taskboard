@@ -829,7 +829,7 @@ pub fn panel(c: &Ctx) -> Node {
         return el(K::Col, vec![top_row(c, None), msg]);
     };
     let r = rf(t, "T");
-    let alert = arr(c.state, "alerts").iter().find(|a| s(a, "task") == r);
+    let alert = arr(c.state, "alerts").iter().find(|a| fmt::same_task(s(a, "task"), &r));
     let tab = if matches!(c.tab, "what" | "context" | "log") { c.tab } else { "overview" };
 
     let mut kids = vec![top_row(c, Some(t))];
@@ -2693,7 +2693,7 @@ fn inline_text(line: &str) -> Vec<Node> {
                 out.push(txt(std::mem::take(&mut plain), St::Plain));
             }
             out.push(match kind {
-                b'u' => Node::Link { s: text.clone(), go: Go::Url(text), tip: None, look: LinkLook::Plain },
+                b'u' => Node::Link { s: text.clone(), go: Go::Url(text.clone()), tip: Some(text), look: LinkLook::Plain },
                 b'b' => txt(text, St::Strong),
                 _ => txt(text, St::Code),
             });

@@ -191,7 +191,8 @@ pub fn looks_finished(card: &Value) -> Option<String> {
 
 pub fn ask_vm(a: &Value) -> Ask {
     let card = &a["card"];
-    let r = opt_s(a, "task").map(str::to_string);
+    // The card's ref says H<n> for a human task, where the alert's says T<n>.
+    let r = opt_s(card, "ref").or(opt_s(a, "task")).map(str::to_string);
     let has_card = card.is_object();
     let reason = s(card, "needs_reason");
     // A task found the goal's done-when unmet: the backlog item it filed holds the goal open.
@@ -218,6 +219,9 @@ pub fn ask_vm(a: &Value) -> Ask {
         (Sev::Ok, "Review the PR", pr_url(card).map(Act::OpenPr))
     } else if has_card && phase(card) == "merge" {
         (Sev::Ok, "Ready to merge", pr_url(card).map(Act::OpenPr))
+    } else if has_card && reason == "human" {
+        // A human task has no terminal: you do it and press Done on its page.
+        (Sev::Warn, "Needs you", r.clone().map(Act::OpenTask))
     } else if has_card && s(card, "status") == "needs" && reason == "question" {
         (Sev::Warn, "Question", r.clone().map(focus))
     } else if has_card && s(card, "status") == "needs" {
@@ -1175,6 +1179,16 @@ mod tests {
         assert_eq!(gone.act, Some(Act::AskAgain("T5".into())));
         assert_eq!(gone.act.as_ref().map(Act::label), Some("Open new terminal"));
         assert_eq!(ask_vm(&q(true)).act, Some(Act::Focus("T5".into())));
+    }
+
+    #[test]
+    fn a_human_task_shows_its_h_ref_and_opens_its_page() {
+        let h = json!({"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "H218: Reconnect", "task": "T218",
+            "card": card(json!({"ref": "H218", "status": "needs", "needs_reason": "human", "question": "Your task: Reconnect.", "terminal_open": false}))});
+        let a = ask_vm(&h);
+        assert_eq!(a.task.as_ref().map(|t| t.0.as_str()), Some("H218"));
+        assert_eq!(a.act, Some(Act::OpenTask("H218".into())));
+        assert_eq!(a.act.as_ref().map(Act::label), Some("Open task"));
     }
 
     #[test]
