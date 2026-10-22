@@ -1206,8 +1206,9 @@ impl Draw<'_> {
             // Inherits the container's size and colour.
             St::Plain => d.min_w_0(),
             St::Title => d.text_size(px(20.)).font_weight(FontWeight::BOLD).line_height(px(26.)),
-            St::Small if boxed.is_some() && self.parent() != Some(K::Lrow) => d.text_size(px(13.)).text_color(t.text_2),
-            St::Small | St::Help => d.text_size(px(12.5)).text_color(t.muted),
+            // Shrinks in a `.row` so a long line (a question option's description) wraps, not overflows.
+            St::Small if boxed.is_some() && self.parent() != Some(K::Lrow) => d.min_w_0().text_size(px(13.)).text_color(t.text_2),
+            St::Small | St::Help => d.min_w_0().text_size(px(12.5)).text_color(t.muted),
             St::Muted => d.text_color(t.muted).when(self.parent() == Some(K::Body), |d| d.text_size(px(13.))),
             St::WarnHelp => d.text_size(px(12.5)).text_color(t.warn_fg),
             St::BoxLabel => div().min_w_0().child(s.to_uppercase()).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(match boxed {
