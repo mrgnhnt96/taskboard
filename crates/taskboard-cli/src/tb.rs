@@ -184,6 +184,13 @@ enum Cmd {
         #[arg(long)]
         port: Option<u16>,
     },
+    /// Bring a task's terminal to the front (a link menu's Go to its terminal)
+    Focus {
+        task: String,
+        /// The board's port, when it isn't the usual one
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Wait for another task's work before carrying on (or `none`)
     WaitFor {
         tasks: Vec<String>,
@@ -5370,6 +5377,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Preview { url, port } => crate::preview::run(&url, port),
+        Cmd::Focus { task, port } => crate::preview::focus(&task_ref(&task)?, port),
         Cmd::Export { out: dir } => {
             let path = taskboardd::export::run(&c.cfg, "tb", &dir.unwrap_or_else(taskboardd::export::default_dir))?;
             out(&path.display().to_string());
