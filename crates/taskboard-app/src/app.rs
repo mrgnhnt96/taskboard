@@ -890,7 +890,7 @@ fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, hel
         .flatten()
         .chain(held)
         .chain(needs)
-        .find(|t| t["ref"].as_str() == Some(r) && t["title"].is_string())
+        .find(|t| t["ref"].as_str().is_some_and(|x| crate::fmt::same_task(x, r)) && t["title"].is_string())
         .cloned()
 }
 

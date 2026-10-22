@@ -247,6 +247,12 @@ pub fn cap(s: &str) -> String {
 }
 
 /// `T12` for a task object or id, `G3` for a goal, `B7` for an issue.
+/// Whether two task refs name the same task: a human task's H<n> is also its T<n>.
+pub fn same_task(a: &str, b: &str) -> bool {
+    let num = |r: &str| r.strip_prefix(['T', 'H', 't', 'h']).unwrap_or(r).to_string();
+    !a.is_empty() && num(a) == num(b)
+}
+
 pub fn ref_of(v: &Value, prefix: &str) -> String {
     if let Some(r) = v.get("ref").and_then(Value::as_str) {
         return r.to_string();
@@ -309,6 +315,14 @@ pub fn device_now() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_human_tasks_h_ref_is_its_t_ref() {
+        assert!(same_task("H218", "T218"));
+        assert!(same_task("T218", "T218"));
+        assert!(!same_task("T218", "T21"));
+        assert!(!same_task("", ""));
+    }
 
     #[test]
     fn short_path_puts_a_tilde_for_the_home_folder() {
