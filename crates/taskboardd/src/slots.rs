@@ -130,6 +130,59 @@ fn slot_path(repo: &str, n: i64) -> String {
     format!("{}/.claude/worktrees/slot-{n}", repo.trim_end_matches('/'))
 }
 
+/// Is `path` a worktree git knows, with its own `.git`? A folder without one (its worktree removed
+/// under it, then made again by a tool writing there) or one git has pruned walks up to the shared
+/// checkout, so every git command run in it would hit that instead.
+pub(crate) fn live(path: &str) -> bool {
+    if !Path::new(path).join(".git").exists() {
+        return false;
+    }
+    let r = git(path, &["rev-parse", "--show-toplevel"], GIT_SECS);
+    r.code == 0 && crate::worktrees::real(r.out.trim()) == crate::worktrees::real(path)
+}
+
+/// Leftovers a tool writes into a slot it runs in, safe to drop when the worktree under them is gone.
+const LEFTOVERS: [&str; 1] = [".review"];
+
+/// A slot folder holding nothing but `LEFTOVERS`.
+fn only_leftovers(path: &str) -> bool {
+    std::fs::read_dir(path).is_ok_and(|d| d.flatten().all(|e| LEFTOVERS.contains(&e.file_name().to_string_lossy().as_ref())))
+}
+
+/// Adds the worktree at `path`, detached at `start`, and checks git sees it as one.
+fn add(repo: &str, path: &str, start: &str) -> Result<()> {
+    let r = crate::progress::waiting("git worktree add", crate::progress::WAITING_EVERY, || git(repo, &["worktree", "add", "--detach", path, start], GIT_SECS));
+    if r.code != 0 {
+        return err(409, format!("Couldn't make its worktree from {start}: {}", last_line(&r.err)));
+    }
+    if !live(path) {
+        return err(409, format!("Made its worktree at {path}, but git doesn't see it as a worktree of {repo}; run git worktree list there."));
+    }
+    Ok(())
+}
+
+/// A slot whose folder isn't a live worktree: made again in place when it's gone or holds only
+/// leftovers, else dropped from the pool with its folder left for a look. True when it's live again.
+fn repair(app: &App, t: &Row, s: &Row, repo: &str, start: &str) -> Result<bool> {
+    let (path, n) = (s.st("path"), s.i("n").unwrap_or(0));
+    git(repo, &["worktree", "prune"], GIT_SECS);
+    let gone = !Path::new(&path).exists();
+    if !gone && !only_leftovers(&path) {
+        app.db.x("DELETE FROM worktree_slots WHERE id = ?", p![s.id()])?;
+        let why = format!("Dropped worktree slot-{n} from the pool: {path} isn't a git worktree any more and holds more than leftovers, so it's left as it is");
+        app.info(format!("worktrees: {why}"));
+        board::log_event(app, t.id(), board::BOARD, "midna", &why)?;
+        return Ok(false);
+    }
+    if !gone {
+        std::fs::remove_dir_all(&path).map_err(|e| ApiError::new(409, format!("Couldn't clear the broken worktree slot-{n} at {path}: {e}")))?;
+    }
+    add(repo, &path, start)?;
+    crate::progress::stage(&format!("Made slot-{n} again from {start}"));
+    board::log_event(app, t.id(), board::BOARD, "midna", &format!("Made worktree slot-{n} again at {path}: it wasn't a git worktree any more"))?;
+    Ok(true)
+}
+
 /// A repo's slots, the last taken first (`seq` counts takes; `used_at` is only to the second).
 fn rows(app: &App, repo: &str) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM worktree_slots WHERE repo = ? ORDER BY seq DESC, n", p![repo])
@@ -211,8 +264,7 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
             continue;
         }
         let path = s.st("path");
-        if !Path::new(&path).is_dir() {
-            app.db.x("DELETE FROM worktree_slots WHERE id = ?", p![s.id()])?;
+        if !live(&path) && !repair(app, t, &s, repo, start)? {
             continue;
         }
         let status = git(&path, &["status", "--porcelain"], GIT_SECS);
@@ -233,10 +285,7 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     let taken: Vec<i64> = have.iter().filter_map(|s| s.i("n")).collect();
     let n = (1..).find(|n| !taken.contains(n) && !Path::new(&slot_path(repo, *n)).exists()).unwrap_or(1);
     let path = slot_path(repo, n);
-    let r = crate::progress::waiting("git worktree add", crate::progress::WAITING_EVERY, || git(repo, &["worktree", "add", "--detach", &path, start], GIT_SECS));
-    if r.code != 0 {
-        return err(409, format!("Couldn't make its worktree from {start}: {}", last_line(&r.err)));
-    }
+    add(repo, &path, start)?;
     crate::progress::stage(&format!("Made slot-{n} from {start}"));
     let now = now_iso();
     let id = app.db.insert(
@@ -282,7 +331,7 @@ fn check_out(path: &str, start: &str, branch: Option<&str>) -> Result<String> {
 pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
     let ctx = board::task_context(t);
     let Some(before) = ctx.s("worktree_slot").filter(|p| is_slot(p)) else { return Ok(None) };
-    if let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])?.filter(|s| Path::new(s.st("path").as_str()).is_dir()) {
+    if let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])?.filter(|s| live(s.st("path").as_str())) {
         return Ok(Some(s.st("path")));
     }
     let Some((repo, _)) = before.rsplit_once("/.claude/worktrees/") else { return Ok(None) };
@@ -299,7 +348,7 @@ pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
 pub fn release_refusal(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])? else { return Ok(None) };
     let path = s.st("path");
-    if !Path::new(&path).is_dir() {
+    if !live(&path) {
         return Ok(None);
     }
     let me = rf("task", t.id());
@@ -363,7 +412,8 @@ pub(crate) fn give_back(app: &App, t: &Row) -> Result<bool> {
     let (path, n) = (s.st("path"), s.i("n").unwrap_or(0));
     let ctx = board::task_context(&board::get_task(app, t.id())?);
     let mut branch = None;
-    if Path::new(&path).is_dir() {
+    // A dead slot's git commands would switch the shared checkout instead.
+    if live(&path) {
         branch = branch_of(&path);
         let base = ctx.s("worktree_base").unwrap_or("HEAD");
         // Off its branch either way, so a reclaimed slot elsewhere can check it out.

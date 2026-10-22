@@ -79,6 +79,7 @@ mod review_fixes;
 mod reviewers;
 mod setup_gaps;
 mod sleep;
+mod slot_close;
 mod spans;
 mod start_asks;
 mod start_item;

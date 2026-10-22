@@ -900,6 +900,74 @@ fn review_fixes_reclaim_a_slot_on_the_pushed_branch() {
     assert!(b.card(one)["log"].to_string().contains(&format!("Made worktree slot-2 at {}, on its branch feature/one", slot(&b, 2))), "{}", b.card(one)["log"]);
 }
 
+/// A slot folder whose worktree was removed under it, then made again by a tool writing its output there.
+fn lose_worktree(b: &Board, n: i64) {
+    git(Path::new(&b.repo()), &["worktree", "remove", "--force", &slot(&b, n)]);
+    std::fs::create_dir_all(Path::new(&slot(&b, n)).join(".review/pr-1/agents")).unwrap();
+}
+
+fn top_level(folder: &str) -> String {
+    git(Path::new(folder), &["rev-parse", "--show-toplevel"])
+}
+
+fn real(folder: &str) -> String {
+    std::fs::canonicalize(folder).unwrap().to_string_lossy().to_string()
+}
+
+#[test]
+fn a_slot_that_lost_its_worktree_is_made_again_and_never_moves_the_shared_checkout() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    commit_in(&slot(&b, 1), "feature/one", true);
+    b.run_to_done(one, "s1");
+    lose_worktree(&b, 1);
+    assert_eq!(top_level(&slot(&b, 1)), real(&b.repo()), "git there walks up to the shared checkout");
+
+    let out = b.post(&format!("tasks/T{one}/slot/claim"), json!({}));
+    assert_eq!((out["slot"].clone(), out["path"].clone()), (json!("slot-1"), json!(slot(&b, 1))));
+    assert_eq!(top_level(&slot(&b, 1)), real(&slot(&b, 1)), "a worktree of its own again");
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/one");
+    assert!(!Path::new(&slot(&b, 1)).join(".review").exists());
+    assert_eq!(git(Path::new(&b.repo()), &["rev-parse", "--abbrev-ref", "HEAD"]), "main", "the shared checkout stays on main");
+    assert!(b.card(one)["log"].to_string().contains("Made worktree slot-1 again"), "{}", b.card(one)["log"]);
+
+    lose_worktree(&b, 1);
+    assert_eq!(b.post(&format!("tasks/T{one}/slot/release"), json!({}))["released"], true);
+    assert_eq!(git(Path::new(&b.repo()), &["rev-parse", "--abbrev-ref", "HEAD"]), "main", "giving back a dead slot switches nothing");
+    let next = b.task("Next", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(next).st("cwd"), slot(&b, 1));
+    assert_eq!(top_level(&slot(&b, 1)), real(&slot(&b, 1)), "a new task never gets the plain folder");
+}
+
+#[test]
+fn a_slot_git_no_longer_lists_is_left_with_its_files_and_the_task_gets_another() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    finish(&b, one);
+    std::fs::write(Path::new(&slot(&b, 1)).join("notes"), "mine\n").unwrap();
+    std::fs::remove_dir_all(Path::new(&b.repo()).join(".git/worktrees/slot-1")).unwrap();
+    assert!(!git(Path::new(&b.repo()), &["worktree", "list"]).contains("slot-1"));
+
+    let next = b.task("Next", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(next).st("cwd"), slot(&b, 2), "a broken slot with files in it is passed over");
+    assert_eq!(top_level(&slot(&b, 2)), real(&slot(&b, 2)));
+    assert!(Path::new(&slot(&b, 1)).join("notes").exists(), "its files are left for a look");
+    assert!(b.app.db.q1("SELECT * FROM worktree_slots WHERE n = 1", p![]).unwrap().is_none(), "and it's out of the pool");
+    let log = b.card(next)["log"].to_string();
+    assert!(log.contains("Dropped worktree slot-1 from the pool"), "{log}");
+    assert_eq!(git(Path::new(&b.repo()), &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+}
+
 fn lane(b: &Board, t: i64) -> (String, String) {
     let l = &b.card(t)["lane"];
     (l["lane"].as_str().unwrap().to_string(), l["from"].as_str().unwrap().to_string())

@@ -98,13 +98,13 @@ fn default_base(repo: &str, remote: bool) -> String {
     names.iter().find(|b| has(b)).copied().unwrap_or("HEAD").to_string()
 }
 
-/// The task's recorded worktree that's there; a slot only while the task still holds it.
+/// The task's recorded worktree that's there; a slot only while the task still holds it and it has its `.git`.
 fn existing(app: &App, t: &Row) -> Result<Option<String>> {
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let made = ctx.s("worktree_made").map(|s| s.to_string());
     for p in [wt, made].into_iter().flatten().filter(|p| Path::new(p).is_dir()) {
-        if !crate::slots::is_slot(&p) || crate::slots::holds(app, t, &p)? {
+        if !crate::slots::is_slot(&p) || (crate::slots::holds(app, t, &p)? && Path::new(&p).join(".git").exists()) {
             return Ok(Some(p));
         }
     }

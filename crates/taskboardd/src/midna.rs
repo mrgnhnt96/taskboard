@@ -328,9 +328,11 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     let (agent_args, resume) = claude_args(&a)?;
     let cold = resume.as_deref().and_then(|cid| cold_resume(app, j, &cwd, cid)).is_some();
     let prompt = a.s("prompt").filter(|p| !p.is_empty());
+    // A slot's terminal is left for the board to `close`: closing itself on exit runs Midna's cleanup.
     let mut params = json!({"kind": "agent", "agent": "claude", "cwd": cwd,
                             "name": tab_title(a.s("title").unwrap_or("Claude"), j.i("task_id")),
-                            "background": as_bool(a.get("background"), false) || opens_in_background(app, j), "close_on_exit": true, "agent_args": agent_args});
+                            "background": as_bool(a.get("background"), false) || opens_in_background(app, j),
+                            "close_on_exit": !crate::slots::is_slot(&cwd), "agent_args": agent_args});
     if let Some(r) = &resume {
         params["resume"] = json!(r);
     }
@@ -368,6 +370,16 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     Ok(format!("Opened {sid}"))
 }
 
+/// Closes a terminal. One in a pool slot skips Midna's close cleanup, which would remove the slot's
+/// worktree and branch from under the pool.
+fn close(app: &App, sid: &str, cwd: Option<&str>, force: bool) -> MResult<Value> {
+    let mut params = json!({"id": sid, "force": force});
+    if cwd.is_some_and(crate::slots::is_slot) {
+        params["cleanup"] = json!(false);
+    }
+    call(app, "session.close", params)
+}
+
 fn run_handler(app: &App, j: &Row) -> MResult<String> {
     let a = board::job_args(j);
     match j.st("kind").as_str() {
@@ -384,7 +396,8 @@ fn run_handler(app: &App, j: &Row) -> MResult<String> {
             if !has(a.s("session")) {
                 return Err(MidnaError::Refused("a close job needs a terminal".into()));
             }
-            call(app, "session.close", json!({"id": a.st("session"), "force": as_bool(a.get("force"), false)}))?;
+            let cwd = call(app, "session.get", json!({"id": a.st("session")})).ok().and_then(|s| s.get("cwd").and_then(|c| c.as_str()).map(|c| c.to_string()));
+            close(app, &a.st("session"), cwd.as_deref(), as_bool(a.get("force"), false))?;
             Ok(format!("Closed {}", a.st("session")))
         }
         "focus" => {
@@ -901,7 +914,8 @@ pub fn sync_once(app: &App) -> MResult<()> {
     register_links(app);
     crate::statusbar::offer(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
-        if let Err(e) = call(app, "session.close", json!({"id": sid})) {
+        let cwd = sessions.as_array().and_then(|all| all.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(sid.as_str()))).and_then(|s| s.get("cwd")).and_then(|c| c.as_str());
+        if let Err(e) = close(app, &sid, cwd, false) {
             app.info(format!("midna: couldn't close {sid} after Claude exited: {e}"));
         }
     }
