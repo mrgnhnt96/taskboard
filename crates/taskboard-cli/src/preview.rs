@@ -2,8 +2,12 @@
 //!
 //! Midna runs the command the app's Info.plist names (`MidnaLinkPreview`) with the URL and reads one
 //! JSON object: {title, subtitle?, status?: {label, tone: ok|warn|err|busy|idle}, fields?: [[label,
-//! value]] (≤6), lines?: [str] (≤4), progress?: {done, total}, open_label?}. A non-zero exit (unknown
-//! ref, board down) makes Midna fall back to "Opens in Taskboard". It only reads.
+//! value]] (≤6), lines?: [str] (≤4), progress?: {done, total}, open_label?, actions?: [item]}. A
+//! non-zero exit (unknown ref, board down) makes Midna fall back to "Opens in Taskboard". It only reads.
+//!
+//! `actions` is the link menu for this ref as it stands now, in place of the static one the board
+//! registers (`taskboardd::midna::link_menus`). Midna runs a `run` item only when its program is one
+//! the registered menus use, so `tb focus` names this tb exactly as the board does.
 
 use chrono::{DateTime, TimeZone};
 use serde_json::{json, Value};
@@ -60,6 +64,7 @@ pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
     if let Some(p) = port {
         cfg.port = p;
     }
+    let tb = std::env::current_exe().and_then(std::fs::canonicalize).map(|p| p.display().to_string()).unwrap_or_else(|_| "tb".into());
     let path = match target {
         Target::Task(n) => format!("/tasks/T{n}"),
         Target::Goal(n) => format!("/goals/G{n}"),
@@ -68,13 +73,73 @@ pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
     let v = client::request(&cfg, "GET", &path, None, BOARD_TIMEOUT).map_err(|e| match e {
         CallError::Refused(m) | CallError::Unreachable(m) | CallError::TimedOut(m) => m,
     })?;
-    let card = match target {
-        Target::Task(_) => task_preview(&v, &chrono::Local::now()),
-        Target::Goal(_) => goal_preview(&v),
-        Target::Issue(_) => issue_preview(&v),
+    let (mut card, actions) = match target {
+        Target::Task(_) => (task_preview(&v, &chrono::Local::now()), task_actions(&v, &tb, cfg.port)),
+        Target::Goal(_) => (goal_preview(&v), goal_actions(&v, url)),
+        Target::Issue(_) => (issue_preview(&v), issue_actions(&v, url)),
     };
+    card["actions"] = json!(actions);
     println!("{card}");
     Ok(0)
+}
+
+/// `tb focus T<n>`: brings the task's terminal to the front (a link menu's Go to its terminal).
+pub fn focus(task: &str, port: Option<u16>) -> Result<i32, String> {
+    let mut cfg = client::config();
+    if let Some(p) = port {
+        cfg.port = p;
+    }
+    client::request(&cfg, "POST", &format!("/tasks/{task}/focus"), Some(&json!({})), 5.0).map_err(|e| match e {
+        CallError::Refused(m) | CallError::Unreachable(m) | CallError::TimedOut(m) => m,
+    })?;
+    Ok(0)
+}
+
+fn copy(r: &str) -> Value {
+    json!({"label": format!("Copy {r}"), "copy": r})
+}
+
+/// The link's own scheme and board, for links to other pages: `taskboard-dev://task/T6` → `taskboard-dev://`.
+fn scheme(url: &str) -> String {
+    url.split_once("://").map(|(s, _)| format!("{s}://")).unwrap_or_else(|| "taskboard://".into())
+}
+
+/// Copy its ref; Go to its terminal while it has one; Open its PR once it has one.
+pub fn task_actions(t: &Value, tb: &str, port: u16) -> Vec<Value> {
+    let r = s(t, "ref");
+    let mut items = vec![copy(r)];
+    let live = t["session"].is_object() && s(&t["session"], "status") != "gone";
+    let pr = &t["pr"];
+    if live || !s(pr, "url").is_empty() {
+        items.push(json!({"divider": true}));
+    }
+    if live {
+        items.push(json!({"label": "Go to its terminal", "run": [tb, "focus", r, "--port", port.to_string()]}));
+    }
+    if !s(pr, "url").is_empty() {
+        let mut open = json!({"label": "Open its PR", "open": s(pr, "url")});
+        if let Some(num) = pr["num"].as_i64().filter(|n| *n > 0) {
+            open["detail"] = json!(format!("#{num}"));
+        }
+        items.push(open);
+    }
+    items
+}
+
+/// Copy its ref; Open its backlog.
+pub fn goal_actions(g: &Value, url: &str) -> Vec<Value> {
+    let r = s(g, "ref");
+    vec![copy(r), json!({"divider": true}), json!({"label": "Open its backlog", "open": format!("{}#/goal/{r}?view=backlog", scheme(url))})]
+}
+
+/// Copy its ref; Open its task once it's one.
+pub fn issue_actions(b: &Value, url: &str) -> Vec<Value> {
+    let mut items = vec![copy(s(b, "ref"))];
+    if let Some(t) = b["task_ref"].as_str().filter(|t| !t.is_empty()) {
+        items.push(json!({"divider": true}));
+        items.push(json!({"label": format!("Open {t}"), "open": format!("{}task/{t}", scheme(url))}));
+    }
+    items
 }
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -98,6 +163,7 @@ fn task_status(t: &Value) -> Value {
         return status("Failed", "err");
     }
     match s(t, "status") {
+        "done" if s(&t["pr"], "state") == "OPEN" => status("In review", "warn"),
         "done" => status("Done", "ok"),
         "needs" => status("Needs you", "warn"),
         "working" => status("Working", "busy"),
@@ -279,6 +345,42 @@ pub fn issue_preview(b: &Value) -> Value {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn task_actions_follow_its_terminal_and_pr() {
+        let none = json!({"ref": "T6", "session": null, "pr": null});
+        assert_eq!(task_actions(&none, "/Apps/tb", 7), vec![copy("T6")]);
+        let gone = json!({"ref": "T6", "session": {"id": "s1", "status": "gone"}, "pr": null});
+        assert_eq!(task_actions(&gone, "/Apps/tb", 7), vec![copy("T6")]);
+        let live = json!({"ref": "T6", "session": {"id": "s1", "status": "working"}, "pr": {"url": "https://github.com/o/r/pull/9", "num": 9, "state": "OPEN"}});
+        assert_eq!(
+            task_actions(&live, "/Apps/tb", 7),
+            vec![
+                json!({"label": "Copy T6", "copy": "T6"}),
+                json!({"divider": true}),
+                json!({"label": "Go to its terminal", "run": ["/Apps/tb", "focus", "T6", "--port", "7"]}),
+                json!({"label": "Open its PR", "open": "https://github.com/o/r/pull/9", "detail": "#9"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn goal_and_issue_actions_keep_the_links_scheme() {
+        let g = goal_actions(&json!({"ref": "G5"}), "taskboard-dev://goal/G5");
+        assert_eq!(g[0], json!({"label": "Copy G5", "copy": "G5"}));
+        assert_eq!(g[2]["open"], "taskboard-dev://#/goal/G5?view=backlog");
+        assert_eq!(issue_actions(&json!({"ref": "B4", "task_ref": null}), "taskboard://issue/B4"), vec![copy("B4")]);
+        let b = issue_actions(&json!({"ref": "B4", "task_ref": "T9"}), "taskboard://issue/B4");
+        assert_eq!(b[2], json!({"label": "Open T9", "open": "taskboard://task/T9"}));
+    }
+
+    #[test]
+    fn done_with_an_open_pr_is_in_review() {
+        let t = json!({"status": "done", "pr": {"state": "OPEN"}});
+        assert_eq!(task_status(&t)["label"], "In review");
+        let t = json!({"status": "done", "pr": {"state": "MERGED"}});
+        assert_eq!(task_status(&t)["label"], "Done");
+    }
 
     #[test]
     fn reads_every_link_shape() {

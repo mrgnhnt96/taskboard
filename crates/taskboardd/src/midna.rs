@@ -641,6 +641,57 @@ pub fn link_patterns(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// Midna's caps on one owner's menus.
+const MAX_MENUS: usize = 32;
+const DETAIL_CHARS: usize = 40;
+
+/// The `tb` beside this daemon, so a menu's run item names the same program as the `tb preview`
+/// Midna runs (its `actions` only pass when the programs match).
+fn menu_tb(app: &App) -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("tb")))
+        .and_then(|tb| std::fs::canonicalize(tb).ok())
+        .map(|tb| tb.display().to_string())
+        .unwrap_or_else(|| board::tb_program(app))
+}
+
+/// The board's menus for its own links (T, G and B pages) and a "Taskboard" section on each open
+/// task PR's link. The task menu's items are what Midna shows when `tb preview` gives no actions.
+pub fn link_menus(app: &App, tb: &str) -> Vec<Value> {
+    let own = |page: &str, letter: &str, icon: &str, more: Vec<Value>| {
+        let links = format!(r"^{}({letter}\d+)(?:[/?#]|$)", regex::escape(&dispatch::page_link(app, page)));
+        let items: Vec<Value> = [json!({"label": "Copy $1", "copy": "$1"})].into_iter().chain(more).collect();
+        json!({"links": links, "own": true, "icon": icon, "title": "$1", "subtitle": links_owner(app), "items": items})
+    };
+    let focus = json!({"label": "Go to its terminal", "run": [tb, "focus", "$1", "--port", app.cfg.port.to_string()]});
+    let backlog = json!({"label": "Open its backlog", "open": format!("{}#/goal/$1?view=backlog", dispatch::page_link(app, ""))});
+    let mut menus = vec![
+        own("task/", "T", "checklist", vec![json!({"divider": true}), focus]),
+        own("goal/", "G", "tag", vec![json!({"divider": true}), backlog]),
+        own("issue/", "B", "issue", vec![]),
+    ];
+    let rows = app
+        .db
+        .q(
+            "SELECT id, title, pr_url FROM tasks WHERE COALESCE(pr_url, '') != '' AND COALESCE(pr_state, '') NOT IN ('MERGED', 'DECLINED') ORDER BY id DESC LIMIT ?",
+            p![(MAX_MENUS - menus.len()) as i64],
+        )
+        .unwrap_or_default();
+    let mut prs: Vec<(String, Vec<Value>)> = Vec::new();
+    for r in &rows {
+        let item = json!({"label": format!("Open T{}", r.id()), "detail": one_line(&r.st("title"), DETAIL_CHARS), "open": dispatch::page_link(app, &format!("task/T{}", r.id()))});
+        match prs.iter_mut().find(|(url, _)| *url == r.st("pr_url")) {
+            Some((_, items)) => items.push(item),
+            None => prs.push((r.st("pr_url"), vec![item])),
+        }
+    }
+    menus.extend(prs.into_iter().map(|(url, items)| {
+        json!({"links": format!(r"^{}(?:[/?#]|$)", regex::escape(url.trim_end_matches('/'))), "section": links_owner(app), "items": items})
+    }));
+    menus
+}
+
 /// Registers the board's link patterns with each Midna it meets: once per Midna run, checked every
 /// `LINKS_EVERY`. A Midna too old to know `links.patterns.register` is logged once and left be.
 fn register_links(app: &App) {
@@ -668,10 +719,30 @@ fn register_links(app: &App) {
             }
         }
     };
+    register_menus(app, &run);
     if app.cfg.runner {
         remove_old_triggers(app, &run);
     }
     app.shared.lock().midna_links = Some((Instant::now(), if has { Some(run) } else { last }));
+}
+
+/// Gives Midna the board's link menus when it's a new Midna run or the menus changed (a task's PR
+/// opened or merged). A Midna too old to know `links.actions.register` is logged once a run.
+fn register_menus(app: &App, run: &str) {
+    let menus = link_menus(app, &menu_tb(app));
+    let sent = Value::Array(menus.clone()).to_string();
+    if app.shared.lock().midna_menus.as_ref().is_some_and(|(r, m)| r == run && (m.is_empty() || *m == sent)) {
+        return;
+    }
+    let sent = match call_timeout(app, "links.actions.register", json!({"owner": links_owner(app), "menus": menus}), 5.0) {
+        Ok(_) => sent,
+        Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
+            app.info("midna: it doesn't take link menus yet (links.actions.register); its own menu shows on T, G and B links");
+            String::new()
+        }
+        Err(e) => return app.info(format!("midna: couldn't register link menus: {e}")),
+    };
+    app.shared.lock().midna_menus = Some((run.to_string(), sent));
 }
 
 /// The tab statuses the board gives a task's terminal: what it sends, the label, its color and the
@@ -977,6 +1048,62 @@ mod tests {
         let app = App::for_tests(cfg);
         assert_eq!(links_owner(&app), "Taskboard Dev");
         assert_eq!(link_patterns(&app)[3], r"\b(B\d+)\b = taskboard-dev://issue/$1 agents");
+    }
+
+    #[test]
+    fn link_menus_own_pages_and_open_prs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.page_url = "taskboard-dev://".into();
+        let app = App::for_tests(cfg);
+        let pr = "https://github.com/o/r/pull/7";
+        let a = app.db.insert("tasks", vec![("title", json!("Fix the login page when the token expires overnight")), ("pr_url", json!(pr)), ("pr_state", json!("OPEN"))]).unwrap();
+        let b = app.db.insert("tasks", vec![("title", json!("Stacked")), ("pr_url", json!(pr))]).unwrap();
+        app.db.insert("tasks", vec![("title", json!("Merged")), ("pr_url", json!("https://github.com/o/r/pull/3")), ("pr_state", json!("MERGED"))]).unwrap();
+        app.db.insert("tasks", vec![("title", json!("No PR"))]).unwrap();
+
+        let menus = link_menus(&app, "/Apps/tb");
+        assert_eq!(menus.len(), 4);
+        let task = &menus[0];
+        assert_eq!(task["own"], true);
+        assert_eq!(task["icon"], "checklist");
+        assert_eq!(task["subtitle"], "Taskboard Dev");
+        let links = Regex::new(task["links"].as_str().unwrap()).unwrap();
+        assert_eq!(&links.captures("taskboard-dev://task/T42").unwrap()[1], "T42");
+        assert!(links.is_match("taskboard-dev://task/T42?tab=notes"));
+        assert!(!links.is_match("taskboard://task/T42"));
+        assert!(!links.is_match("taskboard-dev://task/T42x"));
+        assert_eq!(task["items"][0], json!({"label": "Copy $1", "copy": "$1"}));
+        assert_eq!(task["items"][2]["run"], json!(["/Apps/tb", "focus", "$1", "--port", app.cfg.port.to_string()]));
+        assert_eq!(menus[1]["icon"], "tag");
+        assert_eq!(menus[1]["items"][2]["open"], "taskboard-dev://#/goal/$1?view=backlog");
+        assert!(Regex::new(menus[1]["links"].as_str().unwrap()).unwrap().is_match("taskboard-dev://goal/G5"));
+        assert_eq!(menus[2]["icon"], "issue");
+        assert!(Regex::new(menus[2]["links"].as_str().unwrap()).unwrap().is_match("taskboard-dev://issue/B4"));
+
+        let section = &menus[3];
+        assert_eq!(section["section"], "Taskboard Dev");
+        assert!(section.get("own").is_none());
+        let links = Regex::new(section["links"].as_str().unwrap()).unwrap();
+        assert!(links.is_match(pr));
+        assert!(links.is_match(&format!("{pr}/files")));
+        assert!(!links.is_match(&format!("{pr}1")));
+        let items = section["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["label"], format!("Open T{b}"));
+        assert_eq!(items[1]["label"], format!("Open T{a}"));
+        assert_eq!(items[1]["open"], format!("taskboard-dev://task/T{a}"));
+        assert!(items[1]["detail"].as_str().unwrap().chars().count() <= DETAIL_CHARS);
+    }
+
+    #[test]
+    fn link_menus_stay_under_midnas_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        for n in 0..40 {
+            app.db.insert("tasks", vec![("title", json!("t")), ("pr_url", json!(format!("https://github.com/o/r/pull/{n}")))]).unwrap();
+        }
+        assert_eq!(link_menus(&app, "tb").len(), MAX_MENUS);
     }
 
     #[test]

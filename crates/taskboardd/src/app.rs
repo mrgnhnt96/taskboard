@@ -31,6 +31,9 @@ pub struct Shared {
     pub midna_resumes_network: Option<(Instant, bool)>,
     /// When the board last checked its link patterns in Midna, and the Midna (pid and start) that has them.
     pub midna_links: Option<(Instant, Option<String>)>,
+    /// The Midna run that has the board's link menus and the menus it was given (empty when that
+    /// Midna doesn't take menus).
+    pub midna_menus: Option<(String, String)>,
     /// The Midna run (pid and start) rid of the tab-status triggers older boards kept there.
     pub midna_old_triggers: Option<String>,
     /// Tab statuses waiting to go to Midna: each terminal, what its tab shows and what it's waiting
