@@ -609,6 +609,25 @@ fn log_texts(b: &Board, id: i64, has: &str) -> usize {
 }
 
 #[test]
+fn a_reviewer_asked_on_the_host_waits_from_when_the_board_first_saw_them() {
+    let b = board_with(|_| {});
+    let mut rec = green();
+    rec.reviewers.push(Reviewer { user: "{jo}".into(), name: "Jo".into(), state: "pending".into(), requested: true, ..Default::default() });
+    let h = fake(&b, rec);
+    let id = b.pr_task(BB);
+    poll(&b);
+    let row = |b: &Board| taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap()["reviewer_rows"][0].clone();
+    let first = row(&b)["asked_at"].clone();
+    assert!(first.is_string(), "{}", row(&b));
+    poll(&b);
+    assert_eq!(row(&b)["asked_at"], first, "a later read keeps the first sighting");
+
+    set_state(&h, "{jo}", "approved");
+    poll(&b);
+    assert!(b.flow(id)["waiting_since"].as_object().unwrap().is_empty(), "an approval ends the wait");
+}
+
+#[test]
 fn a_refused_swap_is_noted_and_tried_again_after_a_wait() {
     let b = board_with(|c| c.reviewers.swap = true);
     let h = fake(&b, green());

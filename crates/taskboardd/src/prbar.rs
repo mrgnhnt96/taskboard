@@ -81,11 +81,16 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     let review = prflow::review_of(&f, &rec);
     let approvals = review.approvals;
     let mut rows = reviewer_rows(&f, &rec);
-    // Swaps and when each was asked come from the ask ledger (`asks.rs`).
+    // Swaps and when each was asked come from the ask ledger (`asks.rs`); someone asked on the host
+    // goes by when the board first saw the PR waiting on them.
     let info = crate::asks::pill_info(app, t.id())?;
+    let since = f.get("waiting_since").cloned().unwrap_or(Value::Null);
     for r in rows.iter_mut() {
-        if let Some((swaps, at)) = r["user"].as_str().and_then(|u| info.get(&u.to_lowercase())) {
+        let user = r["user"].as_str().unwrap_or("").to_lowercase();
+        if let Some((swaps, at)) = info.get(&user) {
             r["swaps"] = json!(swaps);
+            r["asked_at"] = at.clone();
+        } else if let Some(at) = since.get(&user).filter(|a| a.is_string()) {
             r["asked_at"] = at.clone();
         }
     }

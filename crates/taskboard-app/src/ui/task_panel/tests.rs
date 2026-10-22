@@ -914,6 +914,19 @@ fn reviewer_pills_say_when_each_was_asked_and_the_ask_stage_shows_its_bar() {
 }
 
 #[::core::prelude::v1::test]
+fn a_waiting_reviewer_says_how_long_the_pr_has_waited_on_them() {
+    let at = (crate::fmt::now() - chrono::Duration::minutes(125)).to_rfc3339();
+    let rows = json!([{"name": "Ana", "user": "ana", "state": "waiting", "swaps": 0, "asked_at": at},
+                      {"name": "Bo", "user": "bo", "state": "approved", "swaps": 0, "asked_at": at},
+                      {"name": "Cy", "user": "cy", "state": "waiting", "swaps": 0}]);
+    let bar = json!({"approvals": 1, "reviewers": 3, "new_comments": 0, "reviewer_rows": rows});
+    let text = panel_text(with_bar(bar, json!({"phase": "review", "label": "Awaiting reviews"}), "pending"), json!({}));
+    assert!(text.contains("Ana Waiting 2h 5m"), "{text}");
+    assert!(text.contains("Bo Approved") && !text.contains("Approved 2h"), "an answered reviewer isn't waited on: {text}");
+    assert!(text.contains("Cy Waiting") && !text.contains("Cy Waiting 2h"), "{text}");
+}
+
+#[::core::prelude::v1::test]
 fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
     let t = |note: Value| json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": note});
     let text = panel_text(t(json!({"text": "What changed: the login page", "waiting": false})), json!({}));
