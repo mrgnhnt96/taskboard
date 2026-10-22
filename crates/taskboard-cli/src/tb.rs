@@ -1278,6 +1278,7 @@ enum GoalCmd {
         tldr: Option<String>,
         #[arg(long, value_parser = ["on", "off"])]
         paused: Option<String>,
+        /// Run tasks one after another; only in a goal without waves (waves set the start order otherwise)
         #[arg(long, value_parser = ["on", "off"])]
         in_order: Option<String>,
         #[arg(long)]
@@ -1328,7 +1329,7 @@ enum GoalCmd {
         #[arg(long, num_args = 0..=1, default_missing_value = "on", value_parser = ["on", "off"])]
         hold: Option<String>,
     },
-    /// Let the goal go on past a wave it stopped at (a review stop or a failed task), when the owner says so; or let a held wave start
+    /// Go on past any wave (a review stop, a failed task, or one that hasn't finished), when the owner says so; or let a held wave start
     Continue { goal: String, wave: i64 },
     /// The goal's own devices: its tasks get only those (`[devices] goal_pool_only`, else those first),
     /// a reserved one goes to no other goal's tasks (goals that reserve one share it), and a device's
@@ -4401,7 +4402,13 @@ fn goal_lines(g: &Value) -> Vec<String> {
     }
     lines.push(format!(
         "Runs {}, at most {} at a time.",
-        if g["run_in_order"] == true { "in order" } else { "in any order" },
+        if g["tasks"].as_array().is_some_and(|ts| ts.iter().any(|t| t["wave"].is_i64())) {
+            "in waves"
+        } else if g["run_in_order"] == true {
+            "in order"
+        } else {
+            "in any order"
+        },
         g["max_terminals"]
     ));
     if let Some(l) = lane_text(g["lane"].as_str().unwrap_or("auto")) {
