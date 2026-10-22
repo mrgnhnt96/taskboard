@@ -1511,7 +1511,8 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     } else {
         build_label(rec)
     };
-    let mut task_fields = fields!["pr_state" => rec["state"].as_str().unwrap_or("OPEN").to_uppercase(),
+    let state = if phase == "merged" { "MERGED".to_string() } else { rec["state"].as_str().unwrap_or("OPEN").to_uppercase() };
+    let mut task_fields = fields!["pr_state" => state,
                                   "pr_build" => build, "pr_review" => review_label(&review_of(&f, rec), approvals_needed(app, t))];
     if let Some(title) = rec["title"].as_str() {
         task_fields.push(("pr_title", json!(title)));

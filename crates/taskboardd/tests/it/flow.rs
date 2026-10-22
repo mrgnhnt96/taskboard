@@ -422,6 +422,25 @@ fn a_github_pr_moves_through_its_stages_and_wakes_the_task() {
 }
 
 #[test]
+fn a_merged_pr_stays_merged_when_stepped_with_the_record_from_before_the_merge() {
+    let b = board_with(|c| c.pr.watch = true);
+    let id = new_task(&b, "Ship it", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("tb.done", "s1", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/9"}));
+    let open = json!({"state": "OPEN", "head": "h1", "checks": [{"name": "ci", "state": "passed"}], "failed": [], "running": 0, "comments": 0, "approvals": 1, "review_decision": "APPROVED"});
+    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &open)).unwrap();
+    b.post("/tasks/T1/pr/merged", json!({}));
+    assert_eq!(b.task(id).s("pr_state"), Some("MERGED"));
+
+    // A lens review finishing re-steps the PR with the cached record, which still reads open.
+    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &open)).unwrap();
+    let t = b.task(id);
+    assert_eq!(t.s("pr_phase"), Some("merged"));
+    assert_eq!(t.s("pr_state"), Some("MERGED"));
+}
+
+#[test]
 fn a_pr_wake_starts_fresh_when_claude_never_saved_the_conversation() {
     let b = board_with(|c| {
         c.pr.watch = true;
