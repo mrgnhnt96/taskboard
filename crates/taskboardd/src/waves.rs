@@ -1,8 +1,12 @@
-//! Waves: a goal's tasks grouped into steps that run side by side. A wave starts once every wave
-//! before it has passed: all its tasks done (none failed), or the owner let the goal go on past it
-//! ("Continue to wave N"). A wave can stop the goal after it for the owner's review (`stop_after`,
-//! set only from the app: it's the owner's word). Anyone can hold a wave (`held_at`): its tasks
-//! don't start, nor anything after it, until it's continued.
+//! Waves: a goal's tasks grouped into steps that run side by side. Waves set the order work starts
+//! in, not a finish line: a wave starts once every wave before it has passed, which is when nothing
+//! in it could start right now (each task started, done, or held back by its own waits, stack, lock,
+//! device or ticket) and none failed, or the owner let the goal go on past it ("Continue to wave N").
+//! A task held back only by the goal's terminal limit could start, so it holds later waves and gets
+//! the next free terminal. Human tasks don't hold the next wave. A wave can stop the goal after it
+//! for the owner's review (`stop_after`, set only from the app: it's the owner's word), which holds
+//! until the wave is done and continued. Anyone can hold a wave (`held_at`): its tasks don't start,
+//! nor anything after it, until it's continued.
 //! Names, stop points and holds live in `goal_waves`; the wave of each task is `tasks.wave`.
 
 use std::collections::HashMap;
@@ -21,9 +25,31 @@ pub fn uses_waves(tasks: &[Row]) -> bool {
     tasks.iter().any(|t| t.i("wave").is_some())
 }
 
+/// Whether a queued task is held back by its own waits, stack, merge wait, lock, device or ticket
+/// (not its goal, nor the goal's terminal limit).
+fn held_back(app: &App, t: &Row) -> Result<bool> {
+    Ok(crate::jira::ticket_blocker(app, t)?
+        || crate::waitsfor::blocker(app, t)?.is_some()
+        || crate::locks::blocker_now(app, t)?.is_some()
+        || crate::devices::blocker(app, t)?.is_some())
+}
+
+/// Whether the board could start this task right now, but for its goal: not started, done, a
+/// human's, or held back by its own blockers. A planned task that isn't queued could.
+fn could_start(app: &App, t: &Row) -> Result<bool> {
+    if crate::human::is(t) {
+        return Ok(false);
+    }
+    Ok(match t.s("status") {
+        Some("done") | Some("working") | Some("needs") => false,
+        Some("queued") => t.i("start_job").is_none() && !held_back(app, t)?,
+        _ => true,
+    })
+}
+
 /// The goal's waves in order, each with its state: done, stopped (done, waiting for the owner's
-/// review), failed, running, held (held before it started), ready (may start) or waiting (an
-/// earlier wave holds it).
+/// review), failed, running (something in it started), held (held before it started), ready (may
+/// start) or waiting (an earlier wave holds it); and `to_start`, its tasks that could start now.
 pub fn waves(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<Value>> {
     let set = settings(app, g.id())?;
     let mut nums: Vec<i64> = tasks.iter().filter_map(|t| t.i("wave")).collect();
@@ -38,11 +64,17 @@ pub fn waves(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<Value>> {
         let failed: Vec<String> = done.iter().filter(|t| t.b("failed")).map(|t| rf("task", t.id())).collect();
         let starting = ts.iter().filter(|t| t.s("status") == Some("queued") && t.i("start_job").is_some()).count();
         let active = ts.iter().filter(|t| matches!(t.s("status"), Some("working") | Some("needs"))).count() + starting;
+        let mut to_start: Vec<String> = vec![];
+        for t in &ts {
+            if could_start(app, t)? {
+                to_start.push(rf("task", t.id()));
+            }
+        }
         let all_done = done.len() == ts.len();
         let stop = w.b("stop_after");
         let released = w.s("released_at").is_some();
         let held = w.s("held_at").is_some() && !all_done;
-        let passed = !held && (released || (all_done && failed.is_empty() && !stop));
+        let passed = !held && (released || (to_start.is_empty() && failed.is_empty() && !stop));
         let state = if all_done && failed.is_empty() {
             if stop && !released { "stopped" } else { "done" }
         } else if all_done {
@@ -53,6 +85,8 @@ pub fn waves(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<Value>> {
             "held"
         } else if holding.is_some() {
             "waiting"
+        } else if !done.is_empty() {
+            "running"
         } else {
             "ready"
         };
@@ -63,7 +97,7 @@ pub fn waves(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<Value>> {
             "held_by": holding.as_ref().map(|h| h["state"].clone()).unwrap_or(Value::Null),
             "hold": holding.as_ref().map(|h| json!(hold_reason(h))).unwrap_or(Value::Null),
             "tasks": ts.iter().map(|t| rf("task", t.id())).collect::<Vec<_>>(), "total": ts.len(), "done": done.len(),
-            "failed": failed, "active": active, "starting": starting,
+            "failed": failed, "active": active, "starting": starting, "to_start": to_start,
             "planned": ts.iter().filter(|t| t.s("status") == Some("planned")).count(),
         });
         if !passed && holding.is_none() {
@@ -88,6 +122,11 @@ pub fn hold_reason(w: &Value) -> String {
         format!("{} is held until it's continued", capital(&wave_label(w)))
     } else if !failed.is_empty() {
         format!("{} in {} failed. Try again, or continue past it", failed.join(", "), wave_label(w))
+    } else if let Some(refs) = w["to_start"].as_array().filter(|a| !a.is_empty()) {
+        let refs: Vec<&str> = refs.iter().filter_map(|x| x.as_str()).collect();
+        format!("Waits for {} to start {}", wave_label(w), refs.join(", "))
+    } else if w["stop_after"] == true {
+        format!("Waits for {} to finish, then your review", wave_label(w))
     } else {
         format!("Waits for {}", wave_label(w))
     }
@@ -98,30 +137,13 @@ fn capital(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-/// The earlier wave that holds this task back, or its own wave when that's held. `wanted_elsewhere`: a
-/// task in another goal waits on this one, so a running earlier wave doesn't hold it, unless it's the
-/// goal's first wave, stopped for the owner's review or has a failed task.
-pub fn holding_wave(t: &Row, wl: &[Value], wanted_elsewhere: bool) -> Option<Value> {
+/// The earlier wave that holds this task back, or its own wave when that's held.
+pub fn holding_wave(t: &Row, wl: &[Value]) -> Option<Value> {
     let n = t.i("wave")?;
     wl.iter()
-        .enumerate()
-        .take_while(|(_, w)| w["wave"].as_i64().unwrap_or(0) <= n)
-        .find(|(i, w)| {
-            if w["wave"].as_i64() == Some(n) {
-                return w["held"] == true;
-            }
-            if w["passed"] == true {
-                return false;
-            }
-            let failed = w["failed"].as_array().is_some_and(|a| !a.is_empty());
-            w["state"] == "stopped" || failed || *i == 0 || !wanted_elsewhere
-        })
-        .map(|(_, w)| w.clone())
-}
-
-/// An open task in another goal waits on this one (`tb wait-for`, or stacked on its PR).
-pub fn wanted_by_another_goal(app: &App, t: &Row) -> Result<bool> {
-    Ok(crate::waitsfor::waiting_on(app, t)?.iter().any(|o| o.i("goal_id") != t.i("goal_id")))
+        .take_while(|w| w["wave"].as_i64().unwrap_or(0) <= n)
+        .find(|w| if w["wave"].as_i64() == Some(n) { w["held"] == true } else { w["passed"] != true })
+        .cloned()
 }
 
 /// Why a goal's waves hold this queued task back.
@@ -130,7 +152,7 @@ pub fn wave_block(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
         return Ok(None);
     }
     let tasks = board::goal_tasks(app, g.id())?;
-    Ok(holding_wave(t, &waves(app, g, &tasks)?, wanted_by_another_goal(app, t)?).map(|w| hold_reason(&w)))
+    Ok(holding_wave(t, &waves(app, g, &tasks)?).map(|w| hold_reason(&w)))
 }
 
 /// The goal is stopped at a wave for the owner (review stop or a failed task): one line, or None.

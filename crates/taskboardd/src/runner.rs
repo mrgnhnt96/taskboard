@@ -249,6 +249,24 @@ pub fn goal_order_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>>
     Ok(None)
 }
 
+/// Each goal's queued tasks in wave order, in the places its tasks hold in `queued`: a later wave's
+/// task never takes a terminal, lock, device or worktree slot ahead of an earlier wave's.
+fn in_wave_order(queued: Vec<Row>) -> Vec<Row> {
+    let mut by_goal: std::collections::HashMap<i64, std::collections::VecDeque<Row>> = Default::default();
+    let mut waved: Vec<&Row> = queued.iter().filter(|t| t.i("wave").is_some()).collect();
+    waved.sort_by_key(|t| t.i("wave"));
+    for t in waved {
+        by_goal.entry(t.i0("goal_id")).or_default().push_back(t.clone());
+    }
+    queued
+        .into_iter()
+        .map(|t| match t.i("wave") {
+            Some(_) => by_goal.get_mut(&t.i0("goal_id")).and_then(|q| q.pop_front()).unwrap_or(t),
+            None => t,
+        })
+        .collect()
+}
+
 pub fn start_queued(app: &App) -> Result<Vec<i64>> {
     let mut started = vec![];
     let in_hours = hours::may_start(app);
@@ -256,7 +274,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND line_session IS NULL ORDER BY priority = 'high' DESC, created_at, id",
         p![],
     )?;
-    for t in queued {
+    for t in in_wave_order(queued) {
         if crate::waitsfor::waits_for_start(app, &t)? {
             continue;
         }
