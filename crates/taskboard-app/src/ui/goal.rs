@@ -1181,7 +1181,7 @@ fn jira_row(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
         .flex()
         .items_center()
         .child(div().flex_none().w(px(96.)).text_color(t.muted).child("Jira tickets"))
-        .child(div().flex_1().min_w_0().child(control))
+        .child(div().flex_1().min_w_0().flex().child(control))
 }
 
 /// An aside head's Show or Hide, flipping the section's open flag.
