@@ -74,7 +74,7 @@ pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
         CallError::Refused(m) | CallError::Unreachable(m) | CallError::TimedOut(m) => m,
     })?;
     let (mut card, actions) = match target {
-        Target::Task(_) => (task_preview(&v, &chrono::Local::now()), task_actions(&v, &tb, cfg.port)),
+        Target::Task(_) => (task_preview(&v, &chrono::Local::now()), task_actions(&v, url, &tb, cfg.port)),
         Target::Goal(_) => (goal_preview(&v), goal_actions(&v, url)),
         Target::Issue(_) => (issue_preview(&v), issue_actions(&v, url)),
     };
@@ -104,8 +104,9 @@ fn scheme(url: &str) -> String {
     url.split_once("://").map(|(s, _)| format!("{s}://")).unwrap_or_else(|| "taskboard://".into())
 }
 
-/// Copy its ref; Go to its terminal while it has one; Open its PR once it has one.
-pub fn task_actions(t: &Value, tb: &str, port: u16) -> Vec<Value> {
+/// Copy its ref; Go to its terminal while it has one; Open its PR once it has one;
+/// Mark done and Cancel task… while it's open, which the app confirms and does as the owner.
+pub fn task_actions(t: &Value, url: &str, tb: &str, port: u16) -> Vec<Value> {
     let r = s(t, "ref");
     let mut items = vec![copy(r)];
     let live = t["session"].is_object() && s(&t["session"], "status") != "gone";
@@ -122,6 +123,12 @@ pub fn task_actions(t: &Value, tb: &str, port: u16) -> Vec<Value> {
             open["detail"] = json!(format!("#{num}"));
         }
         items.push(open);
+    }
+    if s(t, "status") != "done" && t["failed"] != true {
+        let page = format!("{}task/{r}", scheme(url));
+        items.push(json!({"divider": true}));
+        items.push(json!({"label": "Mark done", "open": format!("{page}?do=done")}));
+        items.push(json!({"label": "Cancel task…", "open": format!("{page}?do=cancel"), "style": "danger"}));
     }
     items
 }
@@ -348,13 +355,13 @@ mod tests {
 
     #[test]
     fn task_actions_follow_its_terminal_and_pr() {
-        let none = json!({"ref": "T6", "session": null, "pr": null});
-        assert_eq!(task_actions(&none, "/Apps/tb", 7), vec![copy("T6")]);
-        let gone = json!({"ref": "T6", "session": {"id": "s1", "status": "gone"}, "pr": null});
-        assert_eq!(task_actions(&gone, "/Apps/tb", 7), vec![copy("T6")]);
-        let live = json!({"ref": "T6", "session": {"id": "s1", "status": "working"}, "pr": {"url": "https://github.com/o/r/pull/9", "num": 9, "state": "OPEN"}});
+        let none = json!({"ref": "T6", "status": "done", "session": null, "pr": null});
+        assert_eq!(task_actions(&none, "taskboard://task/T6", "/Apps/tb", 7), vec![copy("T6")]);
+        let gone = json!({"ref": "T6", "status": "done", "session": {"id": "s1", "status": "gone"}, "pr": null});
+        assert_eq!(task_actions(&gone, "taskboard://task/T6", "/Apps/tb", 7), vec![copy("T6")]);
+        let live = json!({"ref": "T6", "status": "done", "session": {"id": "s1", "status": "working"}, "pr": {"url": "https://github.com/o/r/pull/9", "num": 9, "state": "OPEN"}});
         assert_eq!(
-            task_actions(&live, "/Apps/tb", 7),
+            task_actions(&live, "taskboard://task/T6", "/Apps/tb", 7),
             vec![
                 json!({"label": "Copy T6", "copy": "T6"}),
                 json!({"divider": true}),
@@ -362,6 +369,25 @@ mod tests {
                 json!({"label": "Open its PR", "open": "https://github.com/o/r/pull/9", "detail": "#9"}),
             ]
         );
+    }
+
+    #[test]
+    fn an_open_task_can_be_marked_done_or_cancelled_through_the_app() {
+        let t = json!({"ref": "T6", "status": "working", "failed": false, "session": null, "pr": null});
+        assert_eq!(
+            task_actions(&t, "taskboard://#/?task=T6", "/Apps/tb", 7),
+            vec![
+                json!({"label": "Copy T6", "copy": "T6"}),
+                json!({"divider": true}),
+                json!({"label": "Mark done", "open": "taskboard://task/T6?do=done"}),
+                json!({"label": "Cancel task…", "open": "taskboard://task/T6?do=cancel", "style": "danger"}),
+            ]
+        );
+        let dev = task_actions(&json!({"ref": "T6", "status": "queued", "session": null, "pr": null}), "taskboard-dev://task/T6", "/Apps/tb", 7);
+        assert_eq!(dev[2]["open"], "taskboard-dev://task/T6?do=done");
+        assert_eq!(dev[3]["open"], "taskboard-dev://task/T6?do=cancel");
+        let failed = json!({"ref": "T6", "status": "done", "failed": true, "session": null, "pr": null});
+        assert_eq!(task_actions(&failed, "taskboard://task/T6", "/Apps/tb", 7), vec![copy("T6")]);
     }
 
     #[test]
