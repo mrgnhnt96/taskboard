@@ -165,6 +165,21 @@ impl BitbucketHost {
     }
 
     /// Sets the PR's reviewers to exactly these.
+    /// Whether the PR merges cleanly into its base, as a bool: Bitbucket has no such flag, but its diffstat
+    /// marks each conflicting file. Null when the diffstat can't be read whole.
+    fn mergeable(&self, pr: &PrRef) -> Value {
+        let mut next = Some(format!("{}/diffstat?pagelen=100", self.pr_url(pr)));
+        for _ in 0..DIFFSTAT_PAGES {
+            let Some(u) = next.take() else { break };
+            let Ok(v) = self.get(&u) else { return Value::Null };
+            if v["values"].as_array().is_some_and(|a| a.iter().any(|d| conflicted(&d["status"]))) {
+                return Value::Bool(false);
+            }
+            next = v["next"].as_str().map(|s| s.to_string());
+        }
+        if next.is_some() { Value::Null } else { Value::Bool(true) }
+    }
+
     fn put_reviewers(&self, pr: &PrRef, p: &Value, reviewers: Vec<Value>) -> HostResult<()> {
         self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "reviewers": reviewers}))).map(|_| ())
     }
@@ -223,6 +238,7 @@ impl PrHost for BitbucketHost {
         let statuses = if head.is_empty() { vec![] } else { self.statuses(&pr.repo, head)? };
         let mut r = summarize(&p, &comments, tasks.as_deref().unwrap_or(&[]), &statuses);
         r.tasks_error = tasks.err();
+        r.mergeable = self.mergeable(pr);
         r.viewer = self.viewer();
         r.leave_out_viewer();
         Ok(r)
@@ -434,6 +450,14 @@ impl PrHost for BitbucketHost {
 }
 
 /// A build status's newest time: updated, else created. Bitbucket lists them unsorted.
+/// Diffstat pages read for conflicts; a bigger PR's are unknown.
+const DIFFSTAT_PAGES: usize = 5;
+
+/// A diffstat status for a file that doesn't merge: both sides changed it, or one deleted what the other changed.
+fn conflicted(status: &Value) -> bool {
+    matches!(status.as_str(), Some("merge conflict" | "local deleted" | "remote deleted"))
+}
+
 fn status_at(s: &Value) -> Option<String> {
     ["updated_on", "created_on"].iter().filter_map(|k| s[*k].as_str()).find(|t| !t.is_empty()).map(|t| t.to_string())
 }
@@ -714,6 +738,10 @@ pub(crate) mod tests {
                     {"key": "test", "name": "Tests", "state": "FAILED", "url": "https://bitbucket.org/ws/repo/pipelines/results/41", "created_on": "2026-10-02T08:00:00.000000+00:00", "updated_on": "2026-10-02T08:10:00.000000+00:00"},
                     {"key": "e2e", "name": "", "state": "INPROGRESS", "created_on": "2026-10-02T08:20:00.000000+00:00"}
                 ]})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7/diffstat", json!({"values": [
+                    {"status": "modified", "new": {"path": "a.rs"}},
+                    {"status": "merge conflict", "new": {"path": "b.rs"}, "old": {"path": "b.rs"}}
+                ]})),
                 ("GET https://api/repositories/ws/repo/pullrequests/7", pr_json()),
                 ("PUT https://api/repositories/ws/repo/pullrequests/7", json!({})),
                 ("POST https://api/repositories/ws/repo/pullrequests/7/", json!({})),
@@ -797,6 +825,34 @@ pub(crate) mod tests {
         assert_eq!(r.tasks_open, 1);
         assert_eq!(r.comments, 5, "every live comment from someone else, drafts aside");
         assert!(calls.lock().iter().any(|(_, u, _)| u.contains("comments?page=2")), "follows the next page");
+        assert_eq!(r.mergeable, json!(false), "a file in merge conflict");
+    }
+
+    #[test]
+    fn reads_whether_a_pr_conflicts_from_its_diffstat() {
+        let mergeable = |diffstat: Vec<(&'static str, Value)>| {
+            let mut answers = diffstat;
+            answers.extend([
+                ("GET https://api/repositories/ws/repo/pullrequests/7/comments", json!({"values": []})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7/tasks", json!({"values": []})),
+                ("GET https://api/repositories/ws/repo/commit/abc123/statuses", json!({"values": []})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7", pr_json()),
+            ]);
+            let h = BitbucketHost::new(Box::new(FakeHttp { answers, calls: Arc::new(Mutex::new(vec![])) }), "https://api/");
+            h.read(&pr()).unwrap().mergeable
+        };
+        let page = |status: &str, next: Option<&str>| json!({"values": [{"status": status, "new": {"path": "a.rs"}}], "next": next});
+        assert_eq!(mergeable(vec![("/diffstat", page("modified", None))]), json!(true), "every file merges");
+        for status in ["local deleted", "remote deleted"] {
+            assert_eq!(mergeable(vec![("/diffstat", page(status, None))]), json!(false), "{status}");
+        }
+        assert_eq!(
+            mergeable(vec![("diffstat?page=2", page("merge conflict", None)), ("/diffstat", page("added", Some("https://api/repositories/ws/repo/pullrequests/7/diffstat?page=2")))]),
+            json!(false),
+            "a conflict on a later page"
+        );
+        assert_eq!(mergeable(vec![("/diffstat", page("modified", Some("https://api/repositories/ws/repo/pullrequests/7/diffstat")))]), Value::Null, "too many pages to read whole");
+        assert_eq!(mergeable(vec![("/diffstat", json!({"error": "Bitbucket answered 500"}))]), Value::Null, "an unreadable diffstat");
     }
 
     #[test]
