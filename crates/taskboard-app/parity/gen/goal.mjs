@@ -166,7 +166,7 @@ w.set('S.route', { page: 'goal', id: 'G1', q: {} });
 
 // ---------------------------------------------------------------- the wave rail (waves.js)
 const W = (wave, o) => ({ wave, name: '', stop_after: false, released_at: null, passed: false, state: 'waiting', blocked: false, held_by: null, hold: null,
-  tasks: [], total: 0, done: 0, failed: [], active: 0, starting: 0, planned: 0, ...o });
+  tasks: [], total: 0, done: 0, failed: [], active: 0, starting: 0, planned: 0, to_start: [], ...o });
 const g3 = { id: 3, ref: 'G3', name: 'Auth client' };
 const WAVE_GOALS = {
   'waves running': G({
@@ -176,13 +176,14 @@ const WAVE_GOALS = {
       T(3, { status: 'working', wave: 2, who: 'T3 Wire', session_id: 's3', started_at: at(65), when: at(15), jira: { key: 'PROJ-3', status: 'In Progress', url: 'https://acme.atlassian.net/browse/PROJ-3' } }),
       T(4, { status: 'queued', wave: 2, starting: true }),
       T(5, { status: 'needs', wave: 2, who: 'T5 Copy', session_id: 's5', question: 'Which wording?', started_at: at(30), when: at(3) }),
-      T(6, { status: 'queued', wave: 3, waiting: 'Waits for wave 2' }),
+      T(6, { status: 'queued', wave: 3, waiting: 'Waits for wave 2 to start T9' }),
       T(7, { status: 'planned', wave: 3, priority: 'high', also: [{ id: 2, ref: 'G2', name: 'Sign-up' }] }),
-      T(8, { status: 'queued', waiting: 'Waits for wave 2', blocked: true }),
+      T(8, { status: 'queued', waiting: 'Waits for wave 2 to start T9', blocked: true }),
+      T(9, { status: 'queued', wave: 2, waiting: 'Waits for a free slot: its goal runs 3 terminals at a time' }),
     ],
     waves: [W(1, { name: 'Basics', state: 'done', stop_after: true, released_at: at(40), passed: true, total: 2, done: 2 }),
-      W(2, { state: 'running', total: 3, active: 3, starting: 1 }),
-      W(3, { name: 'Polish', state: 'waiting', blocked: true, held_by: 'running', hold: 'Waits for wave 2', stop_after: true, total: 2, planned: 1 })],
+      W(2, { state: 'running', total: 4, active: 3, starting: 1, to_start: ['T9'] }),
+      W(3, { name: 'Polish', state: 'waiting', blocked: true, held_by: 'running', hold: 'Waits for wave 2 to start T9', stop_after: true, total: 2, planned: 1 })],
   }),
   'waves plan facts': G({
     tasks: [

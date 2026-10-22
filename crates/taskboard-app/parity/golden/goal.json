@@ -11059,7 +11059,7 @@
               "jira": null,
               "pr": null,
               "starting": false,
-              "waiting": "Waits for wave 2",
+              "waiting": "Waits for wave 2 to start T9",
               "blocked": false,
               "wave": 3
             },
@@ -11122,8 +11122,36 @@
               "jira": null,
               "pr": null,
               "starting": false,
-              "waiting": "Waits for wave 2",
+              "waiting": "Waits for wave 2 to start T9",
               "blocked": true
+            },
+            {
+              "id": 9,
+              "ref": "T9",
+              "title": "Task 9",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for a free slot: its goal runs 3 terminals at a time",
+              "blocked": false,
+              "wave": 2
             }
           ],
           "notes": [],
@@ -11147,7 +11175,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             },
             {
               "wave": 2,
@@ -11160,12 +11189,15 @@
               "held_by": null,
               "hold": null,
               "tasks": [],
-              "total": 3,
+              "total": 4,
               "done": 0,
               "failed": [],
               "active": 3,
               "starting": 1,
-              "planned": 0
+              "planned": 0,
+              "to_start": [
+                "T9"
+              ]
             },
             {
               "wave": 3,
@@ -11176,14 +11208,15 @@
               "state": "waiting",
               "blocked": true,
               "held_by": "running",
-              "hold": "Waits for wave 2",
+              "hold": "Waits for wave 2 to start T9",
               "tasks": [],
               "total": 2,
               "done": 0,
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 1
+              "planned": 1,
+              "to_start": []
             }
           ]
         },
@@ -11292,6 +11325,21 @@
                   }
                 ],
                 "term": "#/sessions?s=s5"
+              },
+              {
+                "ref": "T9",
+                "title": "Task 9",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "quiet",
+                    "text": "Waits for a free slot: its goal runs 3 terminals at a time"
+                  }
+                ],
+                "term": null
               }
             ]
           },
@@ -11326,7 +11374,7 @@
                 "facts": [
                   {
                     "cls": "warn",
-                    "text": "Waits for wave 2"
+                    "text": "Waits for wave 2 to start T9"
                   }
                 ],
                 "term": null
@@ -11539,7 +11587,7 @@
               "jira": null,
               "pr": null,
               "starting": false,
-              "waiting": "Waits for wave 2",
+              "waiting": "Waits for wave 2 to start T9",
               "blocked": false,
               "wave": 3
             },
@@ -11602,8 +11650,36 @@
               "jira": null,
               "pr": null,
               "starting": false,
-              "waiting": "Waits for wave 2",
+              "waiting": "Waits for wave 2 to start T9",
               "blocked": true
+            },
+            {
+              "id": 9,
+              "ref": "T9",
+              "title": "Task 9",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for a free slot: its goal runs 3 terminals at a time",
+              "blocked": false,
+              "wave": 2
             }
           ],
           "notes": [],
@@ -11627,7 +11703,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             },
             {
               "wave": 2,
@@ -11640,12 +11717,15 @@
               "held_by": null,
               "hold": null,
               "tasks": [],
-              "total": 3,
+              "total": 4,
               "done": 0,
               "failed": [],
               "active": 3,
               "starting": 1,
-              "planned": 0
+              "planned": 0,
+              "to_start": [
+                "T9"
+              ]
             },
             {
               "wave": 3,
@@ -11656,14 +11736,15 @@
               "state": "waiting",
               "blocked": true,
               "held_by": "running",
-              "hold": "Waits for wave 2",
+              "hold": "Waits for wave 2 to start T9",
               "tasks": [],
               "total": 2,
               "done": 0,
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 1
+              "planned": 1,
+              "to_start": []
             }
           ]
         },
@@ -11793,6 +11874,21 @@
                   }
                 ],
                 "term": "#/sessions?s=s5"
+              },
+              {
+                "ref": "T9",
+                "title": "Task 9",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "quiet",
+                    "text": "Waits for a free slot: its goal runs 3 terminals at a time"
+                  }
+                ],
+                "term": null
               }
             ]
           },
@@ -11857,7 +11953,7 @@
                 "facts": [
                   {
                     "cls": "warn",
-                    "text": "Waits for wave 2"
+                    "text": "Waits for wave 2 to start T9"
                   }
                 ],
                 "term": null
@@ -12084,7 +12180,8 @@
               "failed": [],
               "active": 1,
               "starting": 0,
-              "planned": 1
+              "planned": 1,
+              "to_start": []
             }
           ]
         },
@@ -12429,7 +12526,8 @@
               "failed": [],
               "active": 1,
               "starting": 0,
-              "planned": 1
+              "planned": 1,
+              "to_start": []
             }
           ]
         },
@@ -12656,7 +12754,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             },
             {
               "wave": 2,
@@ -12674,7 +12773,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ]
         },
@@ -12836,7 +12936,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             },
             {
               "wave": 2,
@@ -12854,7 +12955,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ]
         },
@@ -13029,7 +13131,8 @@
               ],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ]
         },
@@ -13192,7 +13295,8 @@
               ],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ]
         },
@@ -13325,7 +13429,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -13569,7 +13674,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -13836,7 +13942,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -14000,7 +14107,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -14164,7 +14272,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -14317,7 +14426,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -14612,7 +14722,7 @@
               "jira": null,
               "pr": null,
               "starting": false,
-              "waiting": "Waits for wave 2",
+              "waiting": "Waits for wave 2 to start T9",
               "blocked": false,
               "wave": 3
             },
@@ -14675,8 +14785,36 @@
               "jira": null,
               "pr": null,
               "starting": false,
-              "waiting": "Waits for wave 2",
+              "waiting": "Waits for wave 2 to start T9",
               "blocked": true
+            },
+            {
+              "id": 9,
+              "ref": "T9",
+              "title": "Task 9",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for a free slot: its goal runs 3 terminals at a time",
+              "blocked": false,
+              "wave": 2
             }
           ],
           "notes": [],
@@ -14700,7 +14838,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             },
             {
               "wave": 2,
@@ -14713,12 +14852,15 @@
               "held_by": null,
               "hold": null,
               "tasks": [],
-              "total": 3,
+              "total": 4,
               "done": 0,
               "failed": [],
               "active": 3,
               "starting": 1,
-              "planned": 0
+              "planned": 0,
+              "to_start": [
+                "T9"
+              ]
             },
             {
               "wave": 3,
@@ -14729,14 +14871,15 @@
               "state": "waiting",
               "blocked": true,
               "held_by": "running",
-              "hold": "Waits for wave 2",
+              "hold": "Waits for wave 2 to start T9",
               "tasks": [],
               "total": 2,
               "done": 0,
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 1
+              "planned": 1,
+              "to_start": []
             }
           ]
         }
@@ -14960,7 +15103,8 @@
               "failed": [],
               "active": 1,
               "starting": 0,
-              "planned": 1
+              "planned": 1,
+              "to_start": []
             }
           ]
         }
@@ -15066,7 +15210,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             },
             {
               "wave": 2,
@@ -15084,7 +15229,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ]
         }
@@ -15192,7 +15338,8 @@
               ],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ]
         }
@@ -15270,7 +15417,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -15440,7 +15588,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [
@@ -15548,7 +15697,8 @@
               "failed": [],
               "active": 0,
               "starting": 0,
-              "planned": 0
+              "planned": 0,
+              "to_start": []
             }
           ],
           "shared": [

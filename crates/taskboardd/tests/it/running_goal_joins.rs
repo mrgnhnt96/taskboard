@@ -69,7 +69,7 @@ fn proposed_tasks_join_a_running_goal_queued_and_wait_for_their_wave() {
     let late = ids(&r)[0];
     assert_eq!(b.status(late), "queued");
     assert_eq!(b.task(late).st("pickup"), b.task(t[0]).st("pickup"), "picked up the way the run's own tasks are");
-    assert_eq!(waitsfor::waiting_line(&b.app, &b.task(late)).unwrap(), "Waits for wave 1", "queued, it still waits for its wave");
+    assert!(waitsfor::waiting_line(&b.app, &b.task(late)).unwrap().as_str().unwrap().starts_with("Waits for wave 1 to start "), "queued, it still waits for its wave");
 
     let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Later::next run"], "planned": true}));
     assert_eq!(r["why"], "planned (asked)");

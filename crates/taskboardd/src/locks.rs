@@ -131,6 +131,16 @@ const MAY_RUN_ALONE: &str = "(alone IS NOT NULL OR goal_id IN (SELECT id FROM go
 
 /// Why a lock or a task running alone holds this task back.
 pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
+    blocker_with(app, t, true)
+}
+
+/// `blocker` without a queued task waiting to run alone ahead of this one: whether that one is ready
+/// asks its goal's waves, which ask this.
+pub fn blocker_now(app: &App, t: &Row) -> Result<Option<String>> {
+    blocker_with(app, t, false)
+}
+
+fn blocker_with(app: &App, t: &Row, ahead: bool) -> Result<Option<String>> {
     let others = active(app, t.id())?.iter().map(|x| scoped(app, x)).collect::<Result<Vec<_>>>()?;
     let t = &scoped(app, t)?;
     let mine = names(t);
@@ -150,8 +160,10 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
             return Ok(Some(format!("Waits to run alone ({} {} working)", refs_text(&busy), if busy.len() == 1 { "is" } else { "are" })));
         }
     }
-    if let Some(first) = alone_ahead(app, t)? {
-        return Ok(Some(format!("Waits for {} to run alone first", rf("task", first.id()))));
+    if ahead {
+        if let Some(first) = alone_ahead(app, t)? {
+            return Ok(Some(format!("Waits for {} to run alone first", rf("task", first.id()))));
+        }
     }
     crate::slots::blocker(app, t)
 }
