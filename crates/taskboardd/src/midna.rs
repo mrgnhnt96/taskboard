@@ -797,11 +797,23 @@ pub fn tab_terminal(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(sid) = visit.filter(|_| t.s("status") == Some("done")).or(own).or(parked).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
+    Ok(still_on(app, t, &sid)?.then_some(sid))
+}
+
+/// The task's own terminal when a PR visit holds its tab: it still shows what the task was when the
+/// visit began, so it follows the task too. None when it's the visit's, or has moved on.
+fn own_terminal(app: &App, t: &Row, visit: &str) -> Result<Option<String>> {
+    let Some(own) = t.s("session_id").filter(|s| !s.is_empty() && *s != visit) else { return Ok(None) };
+    Ok(still_on(app, t, own)?.then(|| own.to_string()))
+}
+
+/// Whether terminal `sid` is still on task `t`: no other task there open, or finished since.
+fn still_on(app: &App, t: &Row, sid: &str) -> Result<bool> {
     let other = app.db.count(
         "SELECT COUNT(*) FROM tasks WHERE session_id = ? AND id != ? AND (status != 'done' OR (? != '' AND COALESCE(finished_at, '') > ?))",
         p![sid, t.id(), t.st("finished_at"), t.st("finished_at")],
     )?;
-    Ok((other == 0).then_some(sid))
+    Ok(other == 0)
 }
 
 /// Sets a task's terminal tab when its state moved from `before` to `after` changes what it shows.
@@ -810,8 +822,13 @@ pub fn task_changed(app: &App, before: &Row, after: &Row) -> Result<()> {
     if now == task_tab(before) || !app.cfg.runner {
         return Ok(());
     }
-    if let Some(sid) = tab_terminal(app, after)? {
-        set_tab(app, &sid, now.unwrap_or(TAB_CLEAR), now.and_then(|n| task_tab_detail(after, n)));
+    let Some(sid) = tab_terminal(app, after)? else { return Ok(()) };
+    set_tab(app, &sid, now.unwrap_or(TAB_CLEAR), now.and_then(|n| task_tab_detail(after, n)));
+    // The visit asks its questions itself; the task's own tab only follows what isn't one.
+    if now != Some("question") {
+        if let Some(own) = own_terminal(app, after, &sid)? {
+            set_tab(app, &own, now.unwrap_or(TAB_CLEAR), None);
+        }
     }
     Ok(())
 }

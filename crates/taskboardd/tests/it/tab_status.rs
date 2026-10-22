@@ -271,9 +271,33 @@ fn a_pr_visit_sets_the_visiting_terminal_and_a_stop_to_ask_is_a_question() {
     let id = b.task_on("s1", "Login");
     b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks",
                       "pr_flow" => json!({"session": "v1"}).to_string()]);
-    assert_eq!(b.tabs(), tab("v1", "in_review"));
+    assert_eq!(b.tabs(), [tab("v1", "in_review"), tab("s1", "in_review")].concat());
     b.set(id, fields!["pr_flow" => json!({"session": "v1", "stopped": {"asked": true}}).to_string()]);
-    assert_eq!(b.tabs(), tab("v1", "question"));
+    assert_eq!(b.tabs(), tab("v1", "question"), "the question is the visit's alone");
+}
+
+#[test]
+fn a_merge_during_a_visit_sets_the_task_s_own_terminal_too() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    b.set(id, fields!["status" => "done", "finished_at" => "2026-10-16T10:00:00Z", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks"]);
+    assert_eq!(b.tabs(), tab("s1", "in_review"));
+    b.set(id, fields!["pr_flow" => json!({"session": "v1"}).to_string()]);
+    b.tabs();
+    b.set(id, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
+    assert_eq!(b.tabs(), [tab("v1", "done"), tab("s1", "done")].concat());
+}
+
+#[test]
+fn a_merge_during_a_visit_leaves_an_own_terminal_that_moved_on() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    b.set(id, fields!["status" => "done", "finished_at" => "2026-10-16T10:00:00Z", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks",
+                      "pr_flow" => json!({"session": "v1"}).to_string()]);
+    b.tabs();
+    b.task_on("s1", "Signup");
+    b.set(id, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
+    assert_eq!(b.tabs(), tab("v1", "done"));
 }
 
 /// What the queued tab statuses are waiting on, in order.
@@ -297,7 +321,7 @@ fn a_needs_you_tab_says_what_it_waits_on() {
 
     b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks",
                       "pr_flow" => json!({"session": "v1"}).to_string()]);
-    assert_eq!(details(&b), vec![None], "in review needs nothing from you");
+    assert_eq!(details(&b), vec![None, None], "in review needs nothing from you, on the visit or the task's own tab");
     b.set(id, fields!["pr_flow" => json!({"session": "v1", "stopped": {"asked": true, "message": "Squash the commits?"}}).to_string()]);
     assert_eq!(details(&b), vec![Some(format!("T{id} · Login: asked on PR #9: Squash the commits?"))]);
 }
