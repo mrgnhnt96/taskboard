@@ -38,7 +38,7 @@ pub fn today() -> NaiveDate {
     local_now().date_naive()
 }
 
-fn start_of(d: NaiveDate) -> f64 {
+pub fn start_of(d: NaiveDate) -> f64 {
     let naive = d.and_hms_opt(0, 0, 0).unwrap_or_default();
     Local.from_local_datetime(&naive).earliest().map(|t| t.timestamp() as f64).unwrap_or(0.0)
 }

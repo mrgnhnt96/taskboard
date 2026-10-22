@@ -1554,3 +1554,72 @@ fn someone_on_the_pr_but_not_the_roster_is_found_by_name_or_prefix_and_a_login_i
     let v = b.post(&path, json!({"ask": ["@dan"], "dry_run": true}));
     assert_eq!(v["picks"][0]["name"], "dan");
 }
+
+#[test]
+fn a_reviewers_asks_list_their_open_prs_with_the_work_minute_wait() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.app.db.x("UPDATE tasks SET pr_phase = 'review', pr_title = 'Fix the footer' WHERE id = ?", vec![json!(id)]).unwrap();
+    ask_row(&b, id, "Ana", 30.0, "open", None);
+    ask_row(&b, id, "Ana", 120.0, "answered", Some(25.0));
+    ask_row(&b, id, "Bo", 10.0, "open", None);
+    let ana = b.roster().into_iter().find(|r| r["name"] == "Ana").unwrap();
+    b.app
+        .db
+        .x("UPDATE review_asks SET answered_at = ?, answer = 'approved' WHERE state = 'answered'", vec![json!(ago(60.0 * 60.0))])
+        .unwrap();
+    b.app
+        .db
+        .x("UPDATE review_asks SET (pr_host, pr_repo, pr_num) = (SELECT pr_host, pr_repo, pr_num FROM tasks WHERE id = task_id)", vec![])
+        .unwrap();
+
+    let v = b.get(&format!("/reviewers/{}/asks", ana["id"]), &[]);
+    assert_eq!((v["name"].clone(), v["user"].clone()), (json!("Ana"), json!("{ana}")));
+    let open = v["open"].as_array().unwrap();
+    assert_eq!(open.len(), 1, "only Ana's open ask: {v}");
+    let a = &open[0];
+    assert_eq!(a["task"], json!(format!("T{id}")));
+    assert_eq!(a["pr"]["url"], json!(BB));
+    assert_eq!((a["pr"]["repo"].clone(), a["pr"]["num"].clone(), a["pr"]["title"].clone()), (json!("webapp"), json!(9), json!("Fix the footer")));
+    assert_eq!(a["rereview"], json!(false));
+    // Hours off: every minute counts.
+    let wait = a["wait_work_mins"].as_f64().unwrap();
+    assert!((wait - 30.0).abs() < 1.0, "{wait}");
+    let swap = a["swap_in_mins"].as_f64().unwrap();
+    assert!((swap - (b.app.cfg.reviewers.swap_after_mins - 30.0)).abs() < 1.0, "{swap}");
+    let done = v["answered_this_week"].as_array().unwrap();
+    assert_eq!((done.len(), done[0]["answer"].clone(), done[0]["work_mins"].clone()), (1, json!("approved"), json!(25.0)));
+    assert!(v["last_review_at"].is_string() && v["median_work_mins"].is_number(), "{v}");
+
+    // Outside work hours the wait doesn't grow.
+    close_hours(&b);
+    let v = b.get(&format!("/reviewers/{}/asks", ana["id"]), &[]);
+    assert_eq!(v["open"][0]["wait_work_mins"], json!(0.0));
+}
+
+#[test]
+fn asks_by_host_user_cover_someone_off_the_roster_and_rereviews() {
+    let b = board_with(|_| {});
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    b.app
+        .db
+        .x(
+            "INSERT INTO review_asks(task_id, project, reviewer_id, host_user, name, why, state, asked_at) VALUES (?, 'webapp', NULL, '{zed}', 'Zed', 'rereview', 'open', ?)",
+            vec![json!(id), json!(ago(5.0 * 60.0))],
+        )
+        .unwrap();
+    let v = b.get("/reviewers/asks", &[("user", "{ZED}")]);
+    assert_eq!((v["id"].clone(), v["name"].clone()), (Value::Null, json!("Zed")));
+    let a = &v["open"][0];
+    assert_eq!((a["rereview"].clone(), a["task"].clone()), (json!(true), json!(format!("T{id}"))));
+    assert_eq!(a["swap_in_mins"], Value::Null, "swap is off");
+    assert_eq!(v["answered_this_week"], json!([]));
+
+    let v = b.get("/reviewers/asks", &[("user", "{nobody}")]);
+    assert_eq!((v["open"].clone(), v["last_review_at"].clone()), (json!([]), Value::Null));
+    let e = api::dispatch(&b.app, "GET", "/reviewers/asks", &Query::new(), &json!({})).unwrap_err();
+    assert_eq!(e.status, 400);
+}

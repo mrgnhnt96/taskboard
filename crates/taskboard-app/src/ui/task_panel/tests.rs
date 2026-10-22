@@ -38,6 +38,7 @@ fn ui_from(v: &Value) -> Ui {
         att_drop: v["att_drop"].as_bool().unwrap_or(false),
         term_menu: v["term_menu"].as_bool().unwrap_or(false),
         tl_open: v["tl_open"].as_array().map(|a| a.iter().filter_map(tl_step).collect()).unwrap_or_default(),
+        ..Default::default()
     }
 }
 
@@ -924,6 +925,148 @@ fn a_waiting_reviewer_says_how_long_the_pr_has_waited_on_them() {
     assert!(text.contains("Ana Waiting 2h 5m"), "{text}");
     assert!(text.contains("Bo Approved") && !text.contains("Approved 2h"), "an answered reviewer isn't waited on: {text}");
     assert!(text.contains("Cy Waiting") && !text.contains("Cy Waiting 2h"), "{text}");
+}
+
+/// The panel for T4 with `user`'s reviewer popover open, holding `asks` as the daemon sent them
+/// (`None` while they load).
+fn with_pop(user: &str, asks: Option<Result<Value, String>>) -> view::Node {
+    let rows = json!([{"name": "Ana Lee", "user": user, "state": "waiting", "swaps": 0}]);
+    let bar = json!({"approvals": 0, "reviewers": 1, "new_comments": 0, "reviewer_rows": rows});
+    let task = with_bar(bar, json!({"phase": "review", "label": "Awaiting reviews"}), "pending");
+    let mut ui = Ui { rev_pop: Some(user.to_string()), ..Default::default() };
+    if let Some(a) = asks {
+        ui.rev_asks.insert(user.to_string(), a);
+    }
+    let (state, folds, trail) = (json!({}), HashMap::new(), Vec::new());
+    let log = view::LogRows::of(&task, ui.log_filter());
+    let c = Ctx { state: &state, task: Some(&task), card: None, r: "T4", tab: "overview", trail: &trail, err: None, ui: &ui, folds: &folds, log: &log };
+    view::panel(&c)
+}
+
+/// The popover in the tree, if it's open.
+fn find_pop(n: &view::Node) -> Option<&view::Node> {
+    match n {
+        view::Node::El { k: view::K::RevPop, .. } => Some(n),
+        view::Node::El { kids, .. } => kids.iter().find_map(find_pop),
+        _ => None,
+    }
+}
+
+fn ask(task: &str, num: i64, wait: f64, swap_in: Value, rereview: bool, at: &str) -> Value {
+    json!({"id": num, "project": "webapp", "why": "picked", "asked_at": at, "task": task, "goal": "G7",
+           "pr": {"host": "github", "repo": "webapp", "num": num, "url": format!("https://github.com/acme/webapp/pull/{num}"), "title": format!("PR {num}")},
+           "rereview": rereview, "wait_work_mins": wait, "swap_in_mins": swap_in})
+}
+
+#[::core::prelude::v1::test]
+fn a_reviewers_name_opens_their_popover() {
+    let popped = with_pop("ana", None);
+    assert!(view::acts(&popped).contains(&"rev-pop:ana".to_string()), "{:?}", view::acts(&popped));
+    let pop = find_pop(&popped).expect("open");
+    assert_eq!(view::text(pop), "Ana Lee ana Loading…");
+    let rows = json!([{"name": "Ana Lee", "user": "ana", "state": "waiting", "swaps": 0}]);
+    let bar = json!({"approvals": 0, "reviewers": 1, "new_comments": 0, "reviewer_rows": rows});
+    let shut = tree(&json!({"task": with_bar(bar, json!({"phase": "review"}), "pending"), "state": {}, "ui": {}}));
+    assert!(find_pop(&shut).is_none(), "shut until the name is clicked");
+}
+
+#[::core::prelude::v1::test]
+fn the_reviewer_popover_lists_each_open_ask_with_its_wait_and_notes() {
+    let now = crate::fmt::now();
+    let at = (now - chrono::Duration::minutes(40)).to_rfc3339();
+    let answered = (now - chrono::Duration::minutes(10)).to_rfc3339();
+    let asks = json!({"id": 3, "name": "Ana Lee", "user": "ana", "median_work_mins": 24, "last_review_at": answered,
+        "open": [ask("T9", 21, 64., json!(20), false, &at), ask("T4", 13, 32., json!(150), true, &at), ask("T11", 30, 5., Value::Null, false, &at)],
+        "answered_this_week": [{"id": 8, "project": "webapp", "why": "picked", "asked_at": at, "task": "T2", "goal": null,
+            "pr": {"host": "github", "repo": "webapp", "num": 9, "url": "https://github.com/acme/webapp/pull/9", "title": "PR 9"},
+            "answer": "approved", "work_mins": 18, "answered_at": answered}]});
+    let tree = with_pop("ana", Some(Ok(asks)));
+    let pop = find_pop(&tree).expect("open");
+    let text = view::text(pop);
+    let (when, done) = (view::ask_when(&at), view::ask_when(&answered));
+    assert!(when.ends_with(" AM") || when.ends_with(" PM"), "12-hour: {when}");
+    assert!(text.starts_with(&format!("Ana Lee ana 3 open · reviews in about 25m · last review {done}")), "{text}");
+    // Close to swapping: the wait and its note in orange.
+    assert!(text.contains(&format!("webapp#21 PR 21 1h 04m T9 G7 · Asked {when} Swaps in 20m")), "{text}");
+    // A re-review, for the task in the panel.
+    assert!(text.contains(&format!("webapp#13 PR 13 32m T4 G7 · Changes addressed {when} Re-review This task")), "{text}");
+    assert!(text.contains(&format!("webapp#30 PR 30 5m T11 G7 · Asked {when}")) && !text.contains("Swaps in 2h"), "{text}");
+    assert!(text.ends_with("Reviewed this week · 1"), "folded until opened: {text}");
+    let rows: Vec<&view::Node> = match pop {
+        view::Node::El { kids, .. } => kids.iter().filter(|k| matches!(k, view::Node::El { k: view::K::RevAsk { .. }, .. })).collect(),
+        _ => vec![],
+    };
+    let here: Vec<bool> = rows.iter().map(|r| matches!(r, view::Node::El { k: view::K::RevAsk { here: true }, .. })).collect();
+    assert_eq!(here, [false, true, false], "only this task's row is highlighted");
+    let late = |n: &view::Node| format!("{n:?}").contains("Wait { late: true }");
+    assert_eq!(rows.iter().map(|r| late(r)).collect::<Vec<_>>(), [true, false, false], "only the one about to swap is orange");
+    // Nothing to change: only links to the PRs, tasks and goals.
+    assert_eq!(view::acts(pop), ["open-task", "open-task", "open-task"]);
+}
+
+#[::core::prelude::v1::test]
+fn the_reviewed_this_week_fold_lists_each_answer_took_and_when() {
+    let at = crate::fmt::now().to_rfc3339();
+    let asks = json!({"id": null, "name": "ana", "user": "ana", "median_work_mins": null, "last_review_at": at, "open": [],
+        "answered_this_week": [{"id": 8, "project": "webapp", "asked_at": at, "task": "T2", "goal": null,
+            "pr": {"host": "github", "repo": "webapp", "num": 9, "url": "https://github.com/acme/webapp/pull/9", "title": "PR 9"},
+            "answer": "changes", "work_mins": 75, "answered_at": at}]});
+    let rows = json!([{"name": "ana", "user": "ana", "state": "waiting", "swaps": 0}]);
+    let bar = json!({"approvals": 0, "reviewers": 1, "new_comments": 0, "reviewer_rows": rows});
+    let task = with_bar(bar, json!({"phase": "review"}), "pending");
+    let ui = Ui { rev_pop: Some("ana".into()), rev_asks: HashMap::from([("ana".to_string(), Ok(asks))]), ..Default::default() };
+    let (state, trail) = (json!({}), Vec::new());
+    let folds = HashMap::from([("tb.fold.reviewed".to_string(), "open".to_string())]);
+    let log = view::LogRows::of(&task, ui.log_filter());
+    let c = Ctx { state: &state, task: Some(&task), card: None, r: "T4", tab: "overview", trail: &trail, err: None, ui: &ui, folds: &folds, log: &log };
+    let tree = view::panel(&c);
+    let text = view::text(find_pop(&tree).expect("open"));
+    let when = view::ask_when(&at);
+    // Off the roster: the login is the name, shown once; no median yet.
+    assert_eq!(text, format!("ana 0 open · last review {when} No open reviews Reviewed this week · 1 webapp#9 Asked for changes · took 1h 15m · {when}"));
+}
+
+#[gpui_kit::test]
+fn a_reviewers_popover_loads_by_login_and_esc_or_their_name_closes_it(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    open(cx, &w, "T3");
+    let name = Act::new("rev-pop", "someone-new", "T3", "");
+    w.update(cx, |m, _, cx| act(m, &name, cx)).unwrap();
+    settle(cx);
+    // Not on the roster: the board still answers, by their login.
+    let (open, got) = ui(|u| (u.rev_pop.clone(), u.rev_asks.get("someone-new").cloned()));
+    assert_eq!(open.as_deref(), Some("someone-new"));
+    let got = got.expect("fetched").expect("loads");
+    assert_eq!((got["id"].clone(), got["user"].clone(), got["open"].clone()), (Value::Null, json!("someone-new"), json!([])));
+    assert!(rec.posts().is_empty(), "opening it changes nothing");
+    // Esc closes the popover, then the panel.
+    w.update(cx, |m, window, cx| m.escape(window, cx)).unwrap();
+    assert!(ui(|u| u.rev_pop.is_none()));
+    assert!(w.update(cx, |m, _, _| m.panel.is_some()).unwrap(), "the panel stays");
+    // Their name toggles it.
+    w.update(cx, |m, _, cx| act(m, &name, cx)).unwrap();
+    w.update(cx, |m, _, cx| act(m, &name, cx)).unwrap();
+    assert!(ui(|u| u.rev_pop.is_none()));
+    w.update(cx, |m, window, cx| m.escape(window, cx)).unwrap();
+    assert!(w.update(cx, |m, _, _| m.panel.is_none()).unwrap());
+}
+
+#[::core::prelude::v1::test]
+fn the_reviewer_popover_says_when_their_reviews_didnt_load() {
+    let tree = with_pop("ana", Some(Err("daemon down".into())));
+    assert_eq!(view::text(find_pop(&tree).expect("open")), "Ana Lee ana Couldn’t load their reviews: daemon down");
+}
+
+#[::core::prelude::v1::test]
+fn ask_times_are_12_hour_with_the_day_when_not_today() {
+    let now = crate::fmt::now();
+    let today = view::ask_when(&now.to_rfc3339());
+    assert!(today.ends_with(" AM") || today.ends_with(" PM"), "{today}");
+    let week = view::ask_when(&(now - chrono::Duration::days(3)).to_rfc3339());
+    assert!(["Mon ", "Tue ", "Wed ", "Thu ", "Fri ", "Sat ", "Sun "].iter().any(|d| week.starts_with(d)) && (week.ends_with(" AM") || week.ends_with(" PM")), "{week}");
+    let old = view::ask_when(&(now - chrono::Duration::days(30)).to_rfc3339());
+    assert!(old.contains(", ") && (old.ends_with(" AM") || old.ends_with(" PM")), "{old}");
+    assert_eq!((view::wait_span(32.), view::wait_span(64.), view::wait_span(1570.)), ("32m".into(), "1h 04m".into(), "26h 10m".into()));
 }
 
 #[::core::prelude::v1::test]

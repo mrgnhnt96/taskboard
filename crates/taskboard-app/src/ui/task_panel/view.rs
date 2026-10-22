@@ -163,6 +163,8 @@ pub enum St {
     TlHWarn,
     /// What the needs-you banner says (`.nb-q`): the question, or what went wrong.
     BannerText,
+    /// How long an ask has waited on its reviewer, in work time; orange once it's about to swap.
+    Wait { late: bool },
 }
 
 /// Containers (the web's layout elements).
@@ -231,6 +233,16 @@ pub enum K {
     MenuItem { danger: bool },
     /// The views at the panel's foot: What to do, Context, Full log.
     Foot,
+    /// A reviewer's name in the PR's Reviewers rows, then their popover while it's `open`.
+    RevName { open: bool },
+    /// The reviewer popover: its head, the open asks (or that there are none), the week's answered ones.
+    RevPop,
+    /// The popover's head: the name and host login, then the counts line.
+    RevHead,
+    /// An open ask: its PR line, then its task line; `here` for the task in the panel.
+    RevAsk { here: bool },
+    /// A line of an ask (PR, title and wait; or task, goal, when and notes).
+    RevLine,
 }
 
 /// A finished timeline stop that opens in place.
@@ -265,6 +277,8 @@ pub enum Fold {
     Findings,
     /// A stuck-looking terminal's last lines, under its check-in.
     Tail,
+    /// The reviews a reviewer gave this week, under their open asks.
+    Reviewed,
 }
 
 impl Fold {
@@ -273,6 +287,7 @@ impl Fold {
         match self {
             Fold::Findings => "tb.fold.findings",
             Fold::Tail => "tb.fold.tail",
+            Fold::Reviewed => "tb.fold.reviewed",
         }
     }
 }
@@ -353,6 +368,10 @@ pub struct Ui {
     pub term_menu: bool,
     /// The finished timeline stops opened in place.
     pub tl_open: HashSet<TlStep>,
+    /// Whose reviewer popover is open, by their host login.
+    pub rev_pop: Option<String>,
+    /// Each reviewer's asks as fetched (`GET /reviewers/asks?user=`), or why they didn't load.
+    pub rev_asks: HashMap<String, Result<Value, String>>,
 }
 
 impl Ui {
@@ -1778,12 +1797,18 @@ fn comments_line(p: &Value, bar: &Value) -> Option<Node> {
 
 /// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them. A
 /// reviewer the PR still waits on says for how long.
-fn reviewer_rows(bar: &Value) -> Vec<Node> {
+fn reviewer_rows(c: &Ctx, bar: &Value) -> Vec<Node> {
     arr(bar, "reviewer_rows")
         .iter()
         .filter_map(|r| {
             let name = opt_s(r, "name")?;
-            let mut kids = vec![txt(name, St::Plain)];
+            let user = opt_s(r, "user").unwrap_or(name);
+            let open = c.ui.rev_pop.as_deref() == Some(user);
+            let mut who = vec![c.btn(name, Act::new("rev-pop", user, c.r, ""), Look::Plain, false, None)];
+            if open {
+                who.push(reviewer_pop(c, name, user));
+            }
+            let mut kids = vec![el(K::RevName { open }, who)];
             if let Some(st) = opt_s(r, "state") {
                 let (label, tone) = match st {
                     "approved" => ("Approved", Tone::Done),
@@ -1809,6 +1834,154 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
             Some(el(K::Row, kids))
         })
         .collect()
+}
+
+/// An ask this close to being swapped (work minutes) shows its wait and note in orange.
+const SWAP_SOON_MINS: f64 = 30.;
+
+/// The popover from a reviewer's name: every PR they have an open ask on, oldest first, then
+/// the reviews they gave this week. Read-only: its links open the PR, the task or the goal.
+pub fn reviewer_pop(c: &Ctx, name: &str, user: &str) -> Node {
+    let got = c.ui.rev_asks.get(user);
+    let w = got.and_then(|g| g.as_ref().ok());
+    let name = w.and_then(|w| opt_s(w, "name")).unwrap_or(name);
+    let mut top = vec![txt(name, St::Plain)];
+    if !user.eq_ignore_ascii_case(name) {
+        top.push(txt(user, St::Mono));
+    }
+    let mut head = vec![el(K::Line, top)];
+    let mut kids = Vec::new();
+    match got {
+        None => kids.push(txt("Loading…", St::Empty)),
+        Some(Err(e)) => kids.push(txt(format!("Couldn’t load their reviews: {e}"), St::WarnHelp)),
+        Some(Ok(w)) => {
+            let open = arr(w, "open");
+            let mut line = vec![format!("{} open", open.len())];
+            if let Some(m) = w["median_work_mins"].as_f64() {
+                line.push(format!("reviews in about {}", about(m)));
+            }
+            if let Some(at) = opt_s(w, "last_review_at").map(ask_when).filter(|a| !a.is_empty()) {
+                line.push(format!("last review {at}"));
+            }
+            head.push(txt(line.join(" · "), St::Small));
+            if open.is_empty() {
+                kids.push(txt("No open reviews", St::Empty));
+            }
+            kids.extend(open.iter().map(|a| ask_row(c, a)));
+            let done = arr(w, "answered_this_week");
+            if !done.is_empty() {
+                let mut fold = vec![txt(format!("Reviewed this week · {}", done.len()), St::Plain)];
+                fold.extend(done.iter().map(answered_row));
+                kids.push(el(K::Fold(Fold::Reviewed, c.fold_open(Fold::Reviewed, true)), fold));
+            }
+        }
+    }
+    let mut out = vec![el(K::RevHead, head)];
+    out.extend(kids);
+    el(K::RevPop, out)
+}
+
+/// One open ask: repo#num (opens the PR), its title and how long it has waited in work time;
+/// then the task and goal (which open them), when it was asked (or the changes addressed) and its notes.
+fn ask_row(c: &Ctx, a: &Value) -> Node {
+    let pr = &a["pr"];
+    let here = opt_s(a, "task") == Some(c.r);
+    let swap_in = a["swap_in_mins"].as_f64();
+    let late = swap_in.is_some_and(|m| m <= SWAP_SOON_MINS);
+    let title = opt_s(pr, "title").unwrap_or("");
+    let mut top = Vec::new();
+    if let Some(n) = pr["num"].as_i64() {
+        let label = format!("{}#{n}", s(pr, "repo"));
+        top.push(match opt_s(pr, "url").filter(|u| is_web(u)) {
+            Some(u) => Node::Link { s: label, go: Go::Url(u.to_string()), tip: Some(title.to_string()).filter(|t| !t.is_empty()), look: LinkLook::Jkey },
+            None => txt(label, St::Jkey),
+        });
+    }
+    top.push(txt(title, St::Plain));
+    top.push(txt(wait_span(a["wait_work_mins"].as_f64().unwrap_or(0.)), St::Wait { late }));
+    let mut sub = Vec::new();
+    if let Some(t) = opt_s(a, "task") {
+        sub.push(c.btn(t, Act::new("open-task", "", t, ""), Look::Ref, false, Some(&format!("Open {t}"))));
+    }
+    if let Some(g) = opt_s(a, "goal") {
+        sub.push(Node::Link { s: g.to_string(), go: Go::Goal(g.to_string()), tip: Some(format!("Open {g}")), look: LinkLook::Crumb });
+    }
+    let rereview = b(a, "rereview");
+    if let Some(at) = opt_s(a, "asked_at").map(ask_when).filter(|a| !a.is_empty()) {
+        if !sub.is_empty() {
+            sub.push(txt("·", St::Small));
+        }
+        sub.push(txt(format!("{} {at}", if rereview { "Changes addressed" } else { "Asked" }), St::Small));
+    }
+    // Its notes, at the line's end.
+    let mut notes = Vec::new();
+    if late {
+        let m = swap_in.unwrap_or(0.).ceil() as i64;
+        notes.push(txt(if m < 1 { "Swaps now".to_string() } else { format!("Swaps in {}", fmt::span(m)) }, St::WarnHelp));
+    }
+    if rereview {
+        notes.push(txt("Re-review", St::Small));
+    }
+    if here {
+        notes.push(txt("This task", St::Small));
+    }
+    if !notes.is_empty() {
+        sub.push(el(K::Row, notes));
+    }
+    el(K::RevAsk { here }, vec![el(K::RevLine, top), el(K::RevLine, sub)])
+}
+
+/// A review given this week: the PR, the answer, how long it took in work time, and when.
+fn answered_row(a: &Value) -> Node {
+    let pr = &a["pr"];
+    let mut kids = Vec::new();
+    if let Some(n) = pr["num"].as_i64() {
+        let label = format!("{}#{n}", s(pr, "repo"));
+        kids.push(match opt_s(pr, "url").filter(|u| is_web(u)) {
+            Some(u) => Node::Link { s: label, go: Go::Url(u.to_string()), tip: opt_s(pr, "title").map(str::to_string), look: LinkLook::Jkey },
+            None => txt(label, St::Jkey),
+        });
+    }
+    let answer = match s(a, "answer") {
+        "approved" => "Approved",
+        "changes" => "Asked for changes",
+        "commented" => "Commented",
+        _ => "Reviewed",
+    };
+    let mut line = vec![answer.to_string()];
+    if let Some(m) = a["work_mins"].as_f64() {
+        line.push(format!("took {}", wait_span(m)));
+    }
+    if let Some(at) = opt_s(a, "answered_at").map(ask_when).filter(|a| !a.is_empty()) {
+        line.push(at);
+    }
+    kids.push(txt(line.join(" · "), St::Small));
+    el(K::Row, kids)
+}
+
+/// When an ask was made or answered, in 12-hour time: "9:40 AM" today, "Mon 2:10 PM" in the
+/// past week, "Oct 7, 2:10 PM" before that.
+pub fn ask_when(iso: &str) -> String {
+    let Some(t) = fmt::parse(iso) else { return String::new() };
+    let l = fmt::local(t);
+    let days = (fmt::local(fmt::now()).date_naive() - l.date_naive()).num_days();
+    match days {
+        0 => l.format("%-I:%M %p").to_string(),
+        1..=6 => l.format("%a %-I:%M %p").to_string(),
+        _ => l.format("%b %-d, %-I:%M %p").to_string(),
+    }
+}
+
+/// A work-time wait as the popover shows it: "32m", "1h 04m", "26h 10m".
+pub fn wait_span(mins: f64) -> String {
+    let m = mins.max(0.).round() as i64;
+    if m < 60 { format!("{m}m") } else { format!("{}h {:02}m", m / 60, m % 60) }
+}
+
+/// A typical review time, rounded for "reviews in about …": "25m", "2h".
+fn about(mins: f64) -> String {
+    let m = mins.max(0.);
+    if m < 55. { format!("{}m", ((m / 5.).round() as i64 * 5).max(5)) } else { format!("{}h", (m / 60.).round() as i64) }
 }
 
 /// A done task's reason, its task refs as buttons that open them and its ticket keys as links.
@@ -1965,7 +2138,7 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     if let Some(why) = bar.and_then(|bar| opt_s(bar, "waits_on_stack")).filter(|_| pr_open(p)) {
         body.push(el(K::Line, vec![txt(why, St::Small)]));
     }
-    body.extend(bar.map(reviewer_rows).unwrap_or_default());
+    body.extend(bar.map(|bar| reviewer_rows(c, bar)).unwrap_or_default());
     body.extend(bar.and_then(|bar| comments_line(p, bar)));
     // `prBar`
     if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "rebase" | "comments" | "merge" | "ask")) {

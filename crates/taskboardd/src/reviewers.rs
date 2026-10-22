@@ -506,11 +506,18 @@ pub fn speed_of(app: &App, id: i64) -> Result<f64> {
 
 /// The median of `median_work_mins`, and whether an open ask is past `swap_after_mins`.
 fn review_times(app: &App, id: i64) -> Result<(Option<f64>, bool)> {
+    review_times_of(app, "a.reviewer_id = ?", p![id])
+}
+
+/// `review_times` of the asks `who` (a condition on `review_asks a`, with its `params`) picks out.
+fn review_times_of(app: &App, who: &str, params: Vec<Value>) -> Result<(Option<f64>, bool)> {
     let cfg = &app.cfg.reviewers;
     let since = iso(now_ts() - cfg.speed_days * 86400.0);
+    let mut params = params;
+    params.push(json!(since));
     let rows = app.db.q(
-        "SELECT * FROM review_asks WHERE reviewer_id = ? AND asked_at >= ? AND (work_mins IS NOT NULL OR state IN ('swapped', 'open')) ORDER BY id DESC",
-        p![id, since],
+        &format!("SELECT * FROM review_asks a WHERE {who} AND a.asked_at >= ? AND (a.work_mins IS NOT NULL OR a.state IN ('swapped', 'open')) ORDER BY a.id DESC"),
+        params,
     )?;
     let n = cfg.speed_asks.max(1);
     let settled = |r: &Row| match (r.f("work_mins"), r.st("state").as_str()) {
@@ -738,11 +745,88 @@ pub fn last_pr(app: &App, project: &str) -> Result<Option<crate::prhost::PrRef>>
 pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, body: &Value) -> Result<Value> {
     match (method, rest) {
         ("GET", []) => list(app, query),
+        ("GET", ["asks"]) => workload(app, None, query.get("user").map(|u| u.trim()).unwrap_or_default()),
+        ("GET", [id, "asks"]) => workload(app, Some(id.parse().or_else(|_| err(404, "There's no such reviewer."))?), ""),
         ("POST", []) => app.db.tx(|| add(app, body)),
         ("POST", ["sync"]) => sync(app, body),
         ("POST", [action]) => app.db.tx(|| act(app, action, body)),
         _ => err(404, "There's nothing at that address."),
     }
+}
+
+/// Someone's asks on every project, for the app's reviewer popover: a roster row's (`id`; its host
+/// account's asks on other projects too) or a host account's (`user`; on the roster or not). Open
+/// asks, longest waiting first, with their wait in work minutes (the swap sweep's clock) and the
+/// work minutes left before the sweep swaps them (null when it won't), and this week's reviews.
+fn workload(app: &App, id: Option<i64>, user: &str) -> Result<Value> {
+    let r = id.map(|id| get(app, id)).transpose()?;
+    let user = r.as_ref().map(|r| r.st("host_user")).unwrap_or_else(|| user.to_string());
+    if r.is_none() && user.is_empty() {
+        return err(400, "Whose asks? Add ?user=<their host id>.");
+    }
+    let user = if user.is_empty() { Value::Null } else { json!(user) };
+    let who = "(a.reviewer_id = ? OR a.reviewer_id IN (SELECT id FROM reviewers WHERE lower(host_user) = lower(?)) OR lower(a.host_user) = lower(?))";
+    let params = || vec![json!(r.as_ref().map(|r| r.id())), user.clone(), user.clone()];
+    let asks = |state: &str, order: &str, extra: &str, more: Vec<Value>| {
+        let mut ps = params();
+        ps.extend(more);
+        app.db.q(
+            &format!(
+                "SELECT a.*, t.title AS task_title, t.pr_title, t.pr_url, t.goal_id, t.pr_phase FROM review_asks a LEFT JOIN tasks t ON t.id = a.task_id \
+                 WHERE {who} AND a.state {state}{extra} ORDER BY {order}"
+            ),
+            ps,
+        )
+    };
+    let cfg = &app.cfg.reviewers;
+    let now = now_ts();
+    let open: Vec<Value> = asks("= 'open'", "a.asked_at, a.id", "", vec![])?
+        .iter()
+        .map(|a| {
+            let at = a.s("asked_at").and_then(parse_iso).unwrap_or(now);
+            let wait = crate::picker::work_minutes(app, at, now);
+            let swaps = cfg.swap_after_mins > 0.0 && swap_on(app, a.s("project")) && matches!(a.s("pr_phase"), Some("review") | Some("rereview"));
+            let mut d = workload_row(a);
+            d["rereview"] = json!(a.s("why") == Some("rereview"));
+            d["wait_work_mins"] = json!(wait);
+            d["swap_in_mins"] = if swaps { json!((cfg.swap_after_mins - wait).max(0.0)) } else { Value::Null };
+            d
+        })
+        .collect();
+    let week = crate::days::start_of(crate::days::week_start(local_dt(now).date_naive(), app.cfg.first_weekday));
+    let answered: Vec<Value> = asks("IN ('answered', 'came_back')", "a.answered_at DESC, a.id DESC", " AND a.answered_at >= ?", p![iso(week)])?
+        .iter()
+        .map(|a| {
+            let mut d = workload_row(a);
+            d["answer"] = a.v("answer");
+            d["work_mins"] = a.v("work_mins");
+            d["answered_at"] = a.v("answered_at");
+            d
+        })
+        .collect();
+    let last = app.db.val(&format!("SELECT MAX(a.answered_at) FROM review_asks a WHERE {who} AND a.answered_at IS NOT NULL"), params())?;
+    let name = match &r {
+        Some(r) => json!(display(r)),
+        None => app.db.val(&format!("SELECT a.name FROM review_asks a WHERE {who} ORDER BY a.id DESC LIMIT 1"), params())?,
+    };
+    Ok(json!({
+        "id": r.as_ref().map(|r| r.id()), "name": name, "user": user,
+        "median_work_mins": review_times_of(app, who, params())?.0, "last_review_at": last,
+        "open": open, "answered_this_week": answered,
+    }))
+}
+
+/// What every row of `workload` has: the ask, its task and goal, and its PR.
+fn workload_row(a: &Row) -> Value {
+    let repo = a.st("pr_repo");
+    let num = a.i("pr_num");
+    let url = a.s("pr_url").filter(|u| !u.is_empty()).map(str::to_string).or_else(|| num.and_then(|n| crate::import::pr_page(&a.st("pr_host"), &repo, n)));
+    json!({
+        "id": a.id(), "project": a.v("project"), "why": a.v("why"), "asked_at": a.v("asked_at"),
+        "task": rf_opt("task", a.i("task_id")), "goal": rf_opt("goal", a.i("goal_id")),
+        "pr": {"host": a.v("pr_host"), "repo": repo.rsplit('/').next().unwrap_or(&repo), "num": num, "url": url,
+               "title": a.s("pr_title").filter(|t| !t.is_empty()).map(|t| json!(t)).unwrap_or_else(|| a.v("task_title"))},
+    })
 }
 
 /// Records that `user` was asked to review a task's PR. The ask's id.

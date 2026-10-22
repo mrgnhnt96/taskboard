@@ -673,6 +673,9 @@ impl MainWindow {
             self.set_modal(None, window, cx);
             return;
         }
+        if ui::task_panel::escape(cx) {
+            return;
+        }
         match &self.panel {
             Some(Panel::Task { .. }) => return self.close_panel(cx),
             Some(Panel::Issue { .. }) if matches!(self.page, Page::Board | Page::Backlog) => return self.close_panel(cx),

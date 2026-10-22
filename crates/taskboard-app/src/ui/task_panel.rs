@@ -42,6 +42,8 @@ thread_local! {
     static NOTE_GEN: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
     /// When a click outside last closed the terminal menu, so the same click on ⋯ doesn't reopen it.
     static MENU_CLOSED: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    /// The same for a reviewer's popover: when, and whose, so a click on their name doesn't reopen it.
+    static REV_CLOSED: RefCell<Option<(std::time::Instant, String)>> = const { RefCell::new(None) };
 }
 
 fn ui<R>(f: impl FnOnce(&mut view::Ui) -> R) -> R {
@@ -516,6 +518,19 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             ui(|u| u.term_menu = !u.term_menu && !just_closed);
             cx.notify();
         }
+        // A reviewer's name: open (and fetch) their popover, or close it.
+        "rev-pop" => {
+            let just_closed = REV_CLOSED.with(|c| c.take()).is_some_and(|(at, who)| who == a.arg && at.elapsed() < Duration::from_millis(300));
+            let open = ui(|u| {
+                let open = u.rev_pop.as_deref() != Some(a.arg.as_str()) && !just_closed;
+                u.rev_pop = open.then(|| a.arg.clone());
+                open
+            });
+            if open {
+                load_rev_asks(m, &a.arg, cx);
+            }
+            cx.notify();
+        }
         "detach" => {
             ui(|u| u.term_menu = false);
             run(m, a, tp("/detach"), json!({}), |_, _| "Detached. It’s back in the queue.".into(), cx)
@@ -725,6 +740,31 @@ fn handoff_stamp(t: &Value) -> String {
 
 /// `loadHandoff(r)`: fetch the handoff when the Context tab needs it and the task has none, or
 /// the task changed since it was fetched (the old one shows until the new one lands).
+/// A reviewer's open asks and the week's answered ones (`GET /reviewers/asks?user=`), by host login
+/// so someone not on the roster has them too. What was there stays until the new answer comes.
+fn load_rev_asks(m: &MainWindow, user: &str, cx: &mut Context<MainWindow>) {
+    let backend = m.backend.clone();
+    let user = user.to_string();
+    let query = vec![("user", user.clone())];
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get("reviewers/asks", &query) }).await;
+        let _ = this.update(cx, |_, cx| {
+            ui(|u| u.rev_asks.insert(user, got.map_err(|e| e.message)));
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Esc closes an open reviewer popover before the panel itself.
+pub fn escape(cx: &mut Context<MainWindow>) -> bool {
+    let open = ui(|u| u.rev_pop.take().is_some());
+    if open {
+        cx.notify();
+    }
+    open
+}
+
 fn load_handoff(m: &MainWindow, cx: &mut Context<MainWindow>) {
     let Some(Panel::Task { r, tab: TaskTab::Context }) = &m.panel else { return };
     let Some(task) = m.data.task.as_ref() else { return };
@@ -860,6 +900,7 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         ui(|u| {
             u.term_menu = false;
             u.tl_open.clear();
+            u.rev_pop = None;
         });
         // Dev: `TASKBOARD_TAB=what|context|log` opens the panel on that tab (screenshots).
         if let (Ok(want), Some(Panel::Task { tab: cur, .. })) = (std::env::var("TASKBOARD_TAB"), m.panel.as_mut()) {
@@ -1208,6 +1249,7 @@ impl Draw<'_> {
                 div().flex_none().child(chip(t, div().id(self.id("jira")), false).cursor_default().child(div().font_family(t.mono_font.clone()).text_color(t.jira).child(key)).children(rest))
             }
             St::Jkey => d.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg),
+            St::Wait { late } => d.flex_none().font_family(t.mono_font.clone()).text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(if late { t.warn_fg } else { t.text }),
             St::Glyph(dot) => div().child(s.to_string()).flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot)),
         }
     }
@@ -1240,6 +1282,11 @@ impl Draw<'_> {
             K::LogItem => self.c_log_item(m, n, boxed, cx),
             K::MdLi => self.c_md_li(m, n, boxed, cx),
             K::Li => self.c_li(m, n, boxed, cx),
+            K::RevName { open } => self.c_rev_name(m, n, open, boxed, cx),
+            K::RevPop => self.c_rev_pop(m, n, boxed, cx),
+            K::RevHead => self.c_rev_head(m, n, boxed, cx),
+            K::RevAsk { here } => self.c_rev_ask(m, n, here, boxed, cx),
+            K::RevLine => self.c_rev_line(m, n, boxed, cx),
             _ => self.c_simple(m, n, k, boxed, cx),
         }
     }
@@ -1312,15 +1359,16 @@ impl Draw<'_> {
         };
         let head = match f {
             // `.tl-more > summary`: 12.5px muted, the browser's disclosure triangle.
-            Fold::Findings | Fold::Tail => div()
+            // The popover's "Reviewed this week": 13px, a little brighter.
+            Fold::Findings | Fold::Tail | Fold::Reviewed => div()
                 .id(self.id("fold"))
                 .flex()
                 .items_center()
                 .gap(px(4.))
                 .self_start()
                 .cursor_pointer()
-                .text_size(px(12.5))
-                .text_color(t.muted)
+                .text_size(px(if f == Fold::Reviewed { 13. } else { 12.5 }))
+                .text_color(if f == Fold::Reviewed { t.text_2 } else { t.muted })
                 .hover(move |d| d.text_color(hover))
                 .child(div().text_size(px(9.)).child(if open { "▼" } else { "▶" }))
                 .child(label),
@@ -1713,6 +1761,149 @@ impl Draw<'_> {
             }))
             .children(kids)
             .into_any_element()
+    }
+
+    /// A reviewer's name in their Reviewers row: it opens their popover, which hangs to the left
+    /// of the panel level with the name. Tinted while it's open.
+    #[inline(never)]
+    fn c_rev_name(&mut self, m: &MainWindow, n: &Node, open: bool, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids, .. } = n else { return div().into_any_element() };
+        let Some(Node::Btn { label, act: a, .. }) = kids.first() else { return div().into_any_element() };
+        let a = a.clone();
+        let name = div()
+            .id(self.id("rev-name"))
+            .px(px(6.))
+            .mx(px(-6.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(if open { t.accent } else { transparent_black() })
+            .when(open, |d| d.bg(t.accent_soft))
+            .cursor_pointer()
+            .hover(|d| d.underline())
+            .child(label.clone())
+            .on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx)));
+        let mut d = div().relative().flex_none().child(name);
+        if let Some(pop) = self.kid(m, n, 1, boxed, cx) {
+            let at = anchored().anchor(Anchor::TopRight).position_mode(AnchoredPositionMode::Local).position(point(px(-18.), px(-24.))).snap_to_window_with_margin(px(8.));
+            d = d.child(deferred(at.child(pop)).with_priority(3));
+        }
+        d.into_any_element()
+    }
+
+    /// The reviewer popover: a 480px card, its asks scrolling under the head. A click outside or
+    /// esc closes it; it has nothing to change, only links.
+    #[inline(never)]
+    fn c_rev_pop(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
+        let kids = self.kids(m, n, boxed, cx);
+        let mut head = None;
+        let mut list = div().id(self.id("rev-list")).flex().flex_col().max_h(px(520.)).overflow_y_scroll();
+        for (kid, e) in nodes.iter().zip(kids) {
+            match kid {
+                Node::El { k: K::RevHead, .. } => head = Some(e),
+                Node::El { k: K::RevAsk { .. }, .. } => list = list.child(e),
+                Node::El { k: K::Fold(..), .. } => list = list.child(div().px(px(18.)).pt(px(10.)).pb(px(14.)).child(e)),
+                _ => list = list.child(div().px(px(18.)).py(px(10.)).child(e)),
+            }
+        }
+        div()
+            .id(self.id("rev-pop"))
+            .flex()
+            .flex_col()
+            .w(px(480.))
+            .rounded(px(14.))
+            .border_1()
+            .border_color(t.border_2)
+            .bg(t.panel_2)
+            .shadow_lg()
+            .overflow_hidden()
+            .text_size(px(14.))
+            .line_height(relative(1.4))
+            .text_color(t.text)
+            .cursor_default()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| {
+                // Their name toggles it itself: closing here first would reopen it.
+                if let Some(who) = ui(|u| u.rev_pop.take()) {
+                    REV_CLOSED.with(|c| *c.borrow_mut() = Some((std::time::Instant::now(), who)));
+                    cx.notify();
+                }
+            }))
+            .children(head)
+            .child(list)
+            .into_any_element()
+    }
+
+    /// The popover's head: the name in bold and the host login, then the counts line.
+    #[inline(never)]
+    fn c_rev_head(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
+        let mut col = div().flex().flex_col().gap(px(4.)).px(px(18.)).pt(px(16.)).pb(px(12.)).border_b_1().border_color(t.border);
+        for (i, kid) in nodes.iter().enumerate() {
+            col = col.child(match kid {
+                Node::El { kids, .. } => {
+                    let name = match kids.first() {
+                        Some(Node::Text { s, .. }) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let login = match kids.get(1) {
+                        Some(Node::Text { s, .. }) => Some(div().flex_none().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.muted).child(s.clone())),
+                        _ => None,
+                    };
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(10.))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(17.)).font_weight(FontWeight::BOLD).child(name))
+                        .children(login)
+                        .into_any_element()
+                }
+                Node::Text { s, .. } => div().text_size(px(13.)).text_color(t.text_2).child(s.clone()).into_any_element(),
+                _ => self.kid(m, n, i, boxed, cx).unwrap_or_else(|| div().into_any_element()),
+            });
+        }
+        col.into_any_element()
+    }
+
+    /// An open ask: its two lines, tinted when it's the task in the panel.
+    #[inline(never)]
+    fn c_rev_ask(&mut self, m: &MainWindow, n: &Node, here: bool, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let kids = self.kids(m, n, boxed, cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .px(px(18.))
+            .py(px(12.))
+            .border_b_1()
+            .border_color(t.border)
+            .when(here, |d| d.bg(t.accent_soft))
+            .children(kids)
+            .into_any_element()
+    }
+
+    /// An ask's line: the PR (title cut short, the wait at the end) at 14px, or the task line at
+    /// 12px muted with its notes pushed to the end.
+    #[inline(never)]
+    fn c_rev_line(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
+        let top = !matches!(self.path.last(), Some(i) if *i > 0);
+        let kids = self.kids(m, n, boxed, cx);
+        let mut row = div().flex().items_center().min_w_0().whitespace_nowrap();
+        row = if top { row.gap(px(10.)).text_size(px(14.)) } else { row.gap(px(8.)).text_size(px(12.)).text_color(t.muted) };
+        for (kid, e) in nodes.iter().zip(kids) {
+            row = row.child(match kid {
+                Node::Text { st: St::Plain, .. } => div().flex_1().min_w_0().truncate().child(e),
+                Node::El { k: K::Row, .. } => div().flex_none().ml_auto().child(e),
+                _ => div().flex_none().child(e),
+            });
+        }
+        row.into_any_element()
     }
 
     /// A `.term-menu` item: the action in bold (red for Close terminal), what it does below.
