@@ -342,6 +342,10 @@ impl MainWindow {
                 i.set_text(&q, cx);
             }
         }
+        // Dev: `TASKBOARD_LINK=taskboard://task/T2?do=cancel` follows that link at startup (screenshots).
+        if let Ok(u) = std::env::var("TASKBOARD_LINK") {
+            m.open_link(&u, cx);
+        }
         m
     }
 
@@ -545,11 +549,12 @@ impl MainWindow {
 
     /// A `taskboard://task/T12` / `goal/G3` / `release/R2` / `session/<id>` link (a clicked notification), or
     /// a web-board route after a `#` (`tasks#/goals/G3`, `#/?task=T6`), as `tb` prints them.
+    /// `task/T12?do=done|cancel` (a terminal link menu) opens the task with its confirm over it.
     pub fn open_link(&mut self, url: &str, cx: &mut Context<Self>) {
         let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
         let (path, query) = match rest.split_once('#') {
             Some((_, route)) => route.split_once('?').unwrap_or((route, "")),
-            None => (rest, ""),
+            None => rest.split_once('?').unwrap_or((rest, "")),
         };
         let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('='));
         let path = path.trim_matches('/');
@@ -559,7 +564,18 @@ impl MainWindow {
             return self.open_task(t.to_uppercase(), cx);
         }
         match (kind, arg) {
-            ("task", r) if !r.is_empty() => self.open_task(r.to_uppercase(), cx),
+            ("task", r) if !r.is_empty() => {
+                self.open_task(r.to_uppercase(), cx);
+                // A link menu's Mark done / Cancel task…: only asks; the dialog does it.
+                if let Some(cancel) = match param("do") {
+                    Some("done") => Some(false),
+                    Some("cancel") => Some(true),
+                    _ => None,
+                } {
+                    self.modal = Some(ui::modals::Modal::finish(r.to_uppercase(), cancel));
+                    cx.notify();
+                }
+            }
             ("issue", r) if !r.is_empty() => self.open_issue(r.to_uppercase(), cx),
             ("goal" | "goals", r) if !r.is_empty() => ui::goal::open(self, &r.to_uppercase(), param("view") == Some("backlog"), cx),
             ("goals", _) => self.open_goals(cx),
