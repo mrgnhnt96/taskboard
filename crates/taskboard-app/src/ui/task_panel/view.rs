@@ -1908,6 +1908,9 @@ fn ask_row(c: &Ctx, a: &Value) -> Node {
     }
     let rereview = b(a, "rereview");
     if let Some(at) = opt_s(a, "asked_at").map(ask_when).filter(|a| !a.is_empty()) {
+        if !sub.is_empty() {
+            sub.push(txt("·", St::Small));
+        }
         sub.push(txt(format!("{} {at}", if rereview { "Changes addressed" } else { "Asked" }), St::Small));
     }
     // Its notes, at the line's end.

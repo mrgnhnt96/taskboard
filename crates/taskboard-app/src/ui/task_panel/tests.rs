@@ -987,10 +987,10 @@ fn the_reviewer_popover_lists_each_open_ask_with_its_wait_and_notes() {
     assert!(when.ends_with(" AM") || when.ends_with(" PM"), "12-hour: {when}");
     assert!(text.starts_with(&format!("Ana Lee ana 3 open · reviews in about 25m · last review {done}")), "{text}");
     // Close to swapping: the wait and its note in orange.
-    assert!(text.contains(&format!("webapp#21 PR 21 1h 04m T9 G7 Asked {when} Swaps in 20m")), "{text}");
+    assert!(text.contains(&format!("webapp#21 PR 21 1h 04m T9 G7 · Asked {when} Swaps in 20m")), "{text}");
     // A re-review, for the task in the panel.
-    assert!(text.contains(&format!("webapp#13 PR 13 32m T4 G7 Changes addressed {when} Re-review This task")), "{text}");
-    assert!(text.contains(&format!("webapp#30 PR 30 5m T11 G7 Asked {when}")) && !text.contains("Swaps in 2h"), "{text}");
+    assert!(text.contains(&format!("webapp#13 PR 13 32m T4 G7 · Changes addressed {when} Re-review This task")), "{text}");
+    assert!(text.contains(&format!("webapp#30 PR 30 5m T11 G7 · Asked {when}")) && !text.contains("Swaps in 2h"), "{text}");
     assert!(text.ends_with("Reviewed this week · 1"), "folded until opened: {text}");
     let rows: Vec<&view::Node> = match pop {
         view::Node::El { kids, .. } => kids.iter().filter(|k| matches!(k, view::Node::El { k: view::K::RevAsk { .. }, .. })).collect(),
