@@ -483,12 +483,16 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
     Ok(ok(Some(&t), Some(ctx)))
 }
 
+/// Why a running task needs the owner only until its terminal carries on: a permission prompt or an
+/// idle prompt, or an API error. Any prompt, the turn's end, or Midna seeing it work again clears it.
+pub const UNTIL_IT_CARRIES_ON: [&str; 3] = ["attention", "offline", "api_error"];
+
 fn back_to_work(r: &Report, t: &Row, prompt: Option<&str>) -> Result<()> {
     if t.s("status") != Some("needs") || t.b("lost") {
         return Ok(());
     }
     let reason = t.st("needs_reason");
-    if matches!(reason.as_str(), "attention" | "offline" | "api_error") || (reason == "question" && (prompt.map(|p| !p.is_empty()).unwrap_or(false) || has(t.s("answered_at")))) {
+    if UNTIL_IT_CARRIES_ON.contains(&reason.as_str()) || (reason == "question" && (prompt.map(|p| !p.is_empty()).unwrap_or(false) || has(t.s("answered_at")))) {
         let text = if has(t.s("answered_at")) { "Back to work after your answer" } else { "Back to work" };
         board::set_working(r.app, t, &r.name(), Some(text))?;
     }
