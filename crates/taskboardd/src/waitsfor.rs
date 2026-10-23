@@ -293,6 +293,9 @@ pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
     if let Some(why) = crate::locks::blocker(app, t)? {
         return Ok(json!(why));
     }
+    if let Some(why) = crate::runner::slot_hold(app, t)? {
+        return Ok(json!(why));
+    }
     Ok(crate::devices::blocker(app, t)?.map(Value::String).unwrap_or(Value::Null))
 }
 
