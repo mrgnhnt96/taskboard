@@ -2438,16 +2438,52 @@ struct Ctx {
     session: String,
     claude: String,
     cwd: String,
+    /// The midna CLI that alerts and pins on this terminal; None outside Midna, and always None in tests so
+    /// cargo test in a Midna terminal never raises or pins anything there.
+    midna: Option<std::path::PathBuf>,
 }
 
 impl Ctx {
     fn new() -> Ctx {
+        let session = std::env::var("MIDNA_SESSION").unwrap_or_default();
         Ctx {
             cfg: client::config(),
-            session: std::env::var("MIDNA_SESSION").unwrap_or_default(),
+            midna: if session.is_empty() { None } else { client::midna_path() },
+            session,
             claude: std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(),
             cwd: std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         }
+    }
+
+    /// Raises a needs-you item with `text` on this Midna terminal; waits for midna to take it.
+    fn midna_attention(&self, text: &str) {
+        if let Some(mut cmd) = self.midna_cmd(vec!["attention".into(), text.into()]) {
+            let _ = cmd.status();
+        }
+    }
+
+    /// Pins a task or goal tb just made under this Midna terminal's links button (⌘L), so a click opens it in
+    /// Taskboard. Runs in the background and never fails the command: outside Midna, without midna, or when
+    /// its daemon is down, nothing happens.
+    fn midna_pin(&self, r: &str, title: &str) {
+        let Some(args) = midna_pin_args(Some(&self.session), r, title) else { return };
+        if let Some(mut cmd) = self.midna_cmd(args) {
+            let _ = cmd.spawn();
+        }
+    }
+
+    /// `midna <args>` aimed at this terminal, or None when there's no midna to run.
+    fn midna_cmd(&self, args: Vec<String>) -> Option<std::process::Command> {
+        if self.session.is_empty() {
+            return None;
+        }
+        let mut cmd = std::process::Command::new(self.midna.as_ref()?);
+        cmd.args(args)
+            .env("MIDNA_SESSION", &self.session)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        Some(cmd)
     }
 
     fn body(&self, event: &str, fields: Value, task: Option<&str>) -> Value {
@@ -2592,35 +2628,6 @@ fn short_title(title: &str) -> Result<String, String> {
 /// Checks each `--task "title::detail"`'s title.
 fn short_task_titles(tasks: &[String]) -> Result<(), String> {
     tasks.iter().try_for_each(|x| short_title(x.split_once("::").map_or(x.as_str(), |(t, _)| t)).map(|_| ()))
-}
-
-fn midna_attention(text: &str) {
-    if std::env::var("MIDNA_SESSION").map(|s| s.is_empty()).unwrap_or(true) {
-        return;
-    }
-    if let Some(m) = client::midna_path() {
-        let _ = std::process::Command::new(m)
-            .args(["attention", text])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-}
-
-/// Pins a task or goal tb just made under this Midna terminal's links button (⌘L), so a click opens it in
-/// Taskboard. Runs in the background and never fails the command: outside Midna, without midna, or when
-/// its daemon is down, nothing happens.
-fn midna_pin(r: &str, title: &str) {
-    let Some(args) = midna_pin_args(std::env::var("MIDNA_SESSION").ok().as_deref(), r, title) else { return };
-    if let Some(m) = client::midna_path() {
-        let _ = std::process::Command::new(m)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
 }
 
 /// `midna` arguments that pin `r` (T42 or G3), or None outside a Midna terminal or for another ref.
@@ -5342,7 +5349,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Err(e) => Err(e),
             };
             if let Some(a) = alert {
-                midna_attention(&a);
+                c.midna_attention(&a);
             }
             res
         }
@@ -5530,7 +5537,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                                  v["why"].as_str().unwrap_or("planned")));
                     print_warnings(&v);
                     for (r, t) in v["created"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).zip(&tasks) {
-                        midna_pin(r, t.split_once("::").map_or(t.as_str(), |(t, _)| t));
+                        c.midna_pin(r, t.split_once("::").map_or(t.as_str(), |(t, _)| t));
                     }
                 }
             }
@@ -5692,7 +5699,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                             format!("#/goals/{}", v["goal"].as_str().unwrap_or(""))
                         ));
                         print_warnings(&v);
-                        midna_pin(v["goal"].as_str().unwrap_or(""), v["name"].as_str().unwrap_or(""));
+                        c.midna_pin(v["goal"].as_str().unwrap_or(""), v["name"].as_str().unwrap_or(""));
                     }
                 }
                 Ok(0)
@@ -6040,7 +6047,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
-                        midna_pin(&r, v["title"].as_str().unwrap_or(&title));
+                        c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                         if lane.as_deref() == Some("slot") {
                             slot_claim(c, &r, bring, &[])?;
                         }
@@ -6054,7 +6061,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         };
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
-                        midna_pin(&r, v["title"].as_str().unwrap_or(&title));
+                        c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                     }
                 }
                 Ok(0)
@@ -6321,7 +6328,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Some(v) => {
                     let r = v["created"][0].as_str().unwrap_or("").to_string();
                     out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Made {issue} into {r} and you're on it.")).as_str());
-                    midna_pin(&r, v["title"].as_str().unwrap_or(""));
+                    c.midna_pin(&r, v["title"].as_str().unwrap_or(""));
                 }
             }
             Ok(0)
@@ -6335,7 +6342,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     _ => "a queued task".to_string(),
                 };
                 out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
-                midna_pin(t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""));
+                c.midna_pin(t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""));
             }
             Ok(0)
         }
@@ -7591,7 +7598,7 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         let mut cfg = Config::for_tests(&data);
         cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: String::new() };
+        let c = Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: String::new(), midna: None };
         let e = run_cmd(&c, Cli::try_parse_from(["tb", "status"]).unwrap().cmd).unwrap_err();
         assert_eq!(e, "The board isn't reachable.");
         let spooled = std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0);
@@ -7612,7 +7619,7 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         let mut cfg = Config::for_tests(&data);
         cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        (Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: data.to_string_lossy().to_string() }, data)
+        (Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: data.to_string_lossy().to_string(), midna: None }, data)
     }
 
     #[test]
@@ -7621,6 +7628,25 @@ mod tests {
         assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "submit", "Shipped it"]).unwrap().cmd), Ok(0));
         assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "question", "Which base?"]).unwrap().cmd), Ok(0));
         assert_eq!(std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0), 2, "both go to the spool");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_question_under_test_never_runs_midna() {
+        // tb question alerts only through the Ctx's midna, whatever MIDNA_SESSION the test inherited, and test
+        // Ctxs carry none, so cargo test in a Midna terminal leaves no needs-you item there.
+        let (c, data) = board_down_ctx("question-midna");
+        assert!(c.midna.is_none(), "test Ctxs never carry a midna");
+        let log = data.join("midna.log");
+        let fake = data.join("midna");
+        std::fs::write(&fake, format!("#!/bin/sh\necho \"$MIDNA_SESSION $*\" >> '{}'\n", log.display())).unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "question", "Which base?"]).unwrap().cmd), Ok(0));
+        assert!(!log.exists(), "no midna, no alert");
+
+        let c = Ctx { midna: Some(fake), ..c };
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "question", "Which base?"]).unwrap().cmd), Ok(0));
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "s1 attention Which base?\n", "aimed at the Ctx's terminal");
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -7859,7 +7885,7 @@ mod tests {
         git(&wt, &["add", "c"]);
         git(&wt, &["commit", "-q", "-m", "c2"]);
         shas.push(git(&wt, &["rev-parse", "HEAD"]));
-        let c = Ctx { cfg: Config::for_tests(&root), session: String::new(), claude: String::new(), cwd: repo.to_string_lossy().to_string() };
+        let c = Ctx { cfg: Config::for_tests(&root), session: String::new(), claude: String::new(), cwd: repo.to_string_lossy().to_string(), midna: None };
         (root, c, [shas[0].clone(), shas[1].clone(), shas[2].clone()])
     }
 
@@ -8047,7 +8073,7 @@ mod tests {
     #[test]
     fn a_change_names_the_terminal_it_came_from() {
         let root = std::env::temp_dir().join(format!("tb-from-here-{}", std::process::id()));
-        let c = Ctx { cfg: Config::for_tests(&root), session: "s1".into(), claude: String::new(), cwd: String::new() };
+        let c = Ctx { cfg: Config::for_tests(&root), session: "s1".into(), claude: String::new(), cwd: String::new(), midna: None };
         assert_eq!(c.credited_here("POST", Some(json!({"wave": 2}))), Some(json!({"wave": 2, "by_session": "s1"})));
         assert_eq!(c.credited_here("POST", None), Some(json!({"by_session": "s1"})));
         assert_eq!(c.credited_here("GET", None), None, "a read sends nothing");
