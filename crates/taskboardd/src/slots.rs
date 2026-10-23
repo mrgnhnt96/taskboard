@@ -204,6 +204,13 @@ fn slot_at(app: &App, path: &str) -> Result<Option<Row>> {
     Ok(app.db.q("SELECT * FROM worktree_slots", p![])?.into_iter().find(|s| crate::worktrees::real(s.st("path").as_str()) == root))
 }
 
+/// The live slot `t` holds, its latest take first. A restart goes back to it whatever folder the task
+/// last reported from (a subfolder of the slot has no `.git`), uncommitted work and all.
+pub fn held(app: &App, t: &Row) -> Result<Option<Row>> {
+    let mine = app.db.q("SELECT * FROM worktree_slots WHERE task_id = ? ORDER BY seq DESC, n", p![t.id()])?;
+    Ok(mine.into_iter().find(|s| live(s.st("path").as_str())))
+}
+
 /// Does `t` hold the slot `path` is in?
 pub fn holds(app: &App, t: &Row, path: &str) -> Result<bool> {
     Ok(slot_at(app, path)?.is_some_and(|s| s.i("task_id") == Some(t.id())))
@@ -221,6 +228,9 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
         return Ok(None);
     }
     let Some(repo) = crate::worktrees::slot_repo(app, t)? else { return Ok(None) };
+    if held(app, t)?.is_some_and(|s| s.s("repo") == Some(repo.as_str())) {
+        return Ok(None);
+    }
     let slots = rows(app, &repo)?;
     if (slots.len() as i64) < config(app, t.s("project")).max_slots {
         return Ok(None);
@@ -254,6 +264,13 @@ pub fn claim(app: &App, t: &Row, repo: &str, start: &str) -> Result<String> {
 }
 
 fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -> Result<String> {
+    // One slot per task: the one it holds already, as it left it.
+    if let Some(s) = held(app, t)?.filter(|s| s.s("repo") == Some(repo)) {
+        let path = s.st("path");
+        crate::dispatch::clear_alert_key(app, &dirty_key(&path))?;
+        take(app, t, s.id(), &path, &format!("Back in its worktree slot-{} at {path}", s.i0("n")), &ctx_base(t, start))?;
+        return Ok(path);
+    }
     let mut slots = rows(app, repo)?;
     // A conversation resumes only in the folder it ran in.
     if let Some(before) = board::task_context(t).s("worktree_slot") {
@@ -303,6 +320,11 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     Ok(path)
 }
 
+/// The base a slot it's back in was taken at, so `take` doesn't move it to `start`.
+fn ctx_base(t: &Row, start: &str) -> String {
+    board::task_context(t).s("worktree_base").unwrap_or(start).to_string()
+}
+
 fn dirty_key(path: &str) -> String {
     format!("slot-dirty:{path}")
 }
@@ -345,7 +367,7 @@ fn check_out(path: &str, start: &str, branch: Option<&str>) -> Result<String> {
 pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
     let ctx = board::task_context(t);
     let Some(before) = ctx.s("worktree_slot").filter(|p| is_slot(p)) else { return Ok(None) };
-    if let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])?.filter(|s| live(s.st("path").as_str())) {
+    if let Some(s) = held(app, t)? {
         return Ok(Some(s.st("path")));
     }
     let Some((repo, _)) = before.rsplit_once("/.claude/worktrees/") else { return Ok(None) };

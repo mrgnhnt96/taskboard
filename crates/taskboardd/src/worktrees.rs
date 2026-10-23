@@ -100,6 +100,9 @@ fn default_base(repo: &str, remote: bool) -> String {
 
 /// The task's recorded worktree that's there; a slot only while the task still holds it and it has its `.git`.
 fn existing(app: &App, t: &Row) -> Result<Option<String>> {
+    if let Some(s) = crate::slots::held(app, t)? {
+        return Ok(Some(s.st("path")));
+    }
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let made = ctx.s("worktree_made").map(|s| s.to_string());
