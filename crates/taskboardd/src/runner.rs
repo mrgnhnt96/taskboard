@@ -686,6 +686,7 @@ pub fn prs(app: &App) -> Result<()> {
     crate::lost_done::sweep(app)?;
     crate::release_tags::sweep(app)?;
     crate::slot_ageing::sweep(app)?;
+    crate::slot_tidy::sweep(app)?;
     worktrees::clean_up(app).map(|_| ())
 }
 

@@ -160,6 +160,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["summary"]) => get_summary(app),
         ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["slots"]) => crate::slots::overview(app, query.get("project").map(|s| s.as_str())),
+        ("POST", ["slots", "discard"]) => crate::slot_tidy::discard(app, body["path"].as_str().unwrap_or("")),
         ("GET", ["start-misses"]) => start_misses(app, q(query, "limit", "20").parse().unwrap_or(20)),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),

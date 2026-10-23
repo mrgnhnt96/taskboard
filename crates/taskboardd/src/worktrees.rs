@@ -140,6 +140,10 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     if lane != "slot" {
         return Ok(None);
     }
+    if let Some(s) = crate::slots::held(app, t)? {
+        crate::slot_tidy::on_resume(app, t, &s);
+        return Ok(Some(s.st("path")));
+    }
     if let Some(have) = existing(app, t)? {
         return Ok(Some(have));
     }
