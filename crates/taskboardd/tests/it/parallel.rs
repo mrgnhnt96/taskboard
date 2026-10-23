@@ -356,6 +356,41 @@ fn a_task_takes_the_free_slot_used_last_and_passes_over_a_dirty_one() {
 }
 
 #[test]
+fn a_restarted_task_goes_back_to_the_slot_it_holds_with_its_uncommitted_work() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 2}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(one).st("cwd"), slot(&b, 1));
+    // It worked from a subfolder, which has no .git of its own, and left uncommitted work.
+    let sub = format!("{}/ios", slot(&b, 1));
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(Path::new(&sub).join("Podfile.lock"), "x\n").unwrap();
+    let mut ctx = board::task_context(&board::get_task(&b.app, one).unwrap());
+    ctx.insert("where".into(), json!({"worktree": sub}));
+    board::save_context(&b.app, one, &ctx, false).unwrap();
+    let two = b.task("Two", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(two).st("cwd"), slot(&b, 2));
+
+    // Its terminal ended before it was done: the board starts it again.
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", p![one]).unwrap();
+    b.app.db.x("UPDATE tasks SET status = 'queued', session_id = NULL, start_job = NULL, retry_at = NULL WHERE id = ?", p![one]).unwrap();
+    let before = b.start_job(one).id();
+    assert!(b.card(one)["waiting"].is_null(), "a full pool doesn't hold up a task that has its slot: {}", b.card(one)["waiting"]);
+    runner::start_queued(&b.app).unwrap();
+    let again = b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap();
+    assert_ne!(again.id(), before, "it starts again: {}", b.card(one)["latest"]);
+    assert_eq!(b.start_job(one).st("cwd"), slot(&b, 1), "back in its own slot");
+    assert!(Path::new(&sub).join("Podfile.lock").exists(), "its work is still there");
+    let held: Vec<i64> = b.app.db.q("SELECT n FROM worktree_slots WHERE task_id = ?", p![one]).unwrap().iter().map(|s| s.i0("n")).collect();
+    assert_eq!(held, vec![1], "one slot per task");
+}
+
+#[test]
 fn at_max_slots_a_task_waits_for_a_slot_like_a_lock() {
     let b = new_board();
     git_repo(&b);
