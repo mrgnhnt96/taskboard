@@ -78,6 +78,7 @@ pub mod propen;
 pub mod qa;
 pub mod quality;
 pub mod pending_cut;
+pub mod release_run;
 pub mod release_tags;
 pub mod releases;
 pub mod relevance;

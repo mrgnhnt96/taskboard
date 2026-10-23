@@ -496,3 +496,27 @@ fn a_long_release_list_comes_a_page_at_a_time() {
     assert_eq!(seen.len(), 340, "paging back walks every release");
     assert!(seen.windows(2).all(|p| p[0] > p[1]), "newest first, each once");
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "git {args:?}");
+}
+
+#[test]
+fn the_board_looks_for_a_release_run_only_in_a_github_checkout() {
+    let (d, app) = new_board();
+    releases_on(&app, "webapp");
+    let (gh, other) = (d.path().join("webapp"), d.path().join("api"));
+    for (repo, origin) in [(&gh, "https://github.com/o/webapp.git"), (&other, "https://bitbucket.org/o/api.git")] {
+        git(repo, &["init", "-q"]);
+        git(repo, &["remote", "add", "origin", origin]);
+    }
+    done(&app, task(&app, "webapp", "Login form", None), None);
+    let r = call(&app, "POST", "/releases", json!({"name": "v1", "project": "webapp", "cwd": gh.to_string_lossy(), "script_secs": 30}));
+    assert_eq!(r["run_looking"], true, "tb release cut waits for the run's link");
+    assert_eq!(r["run_url"], Value::Null);
+
+    releases_on(&app, "api");
+    done(&app, task(&app, "api", "Login endpoint", None), None);
+    let r = call(&app, "POST", "/releases", json!({"name": "v1", "project": "api", "cwd": other.to_string_lossy()}));
+    assert_eq!(r["run_looking"], false, "off GitHub there's no run to wait for");
+}

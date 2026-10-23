@@ -3871,7 +3871,7 @@ enum ReleaseCut {
 fn cut_release(
     call: &mut dyn FnMut(Value) -> Result<Value, String>,
     run: &mut dyn FnMut(&str, &str, Option<&str>, bool) -> Result<i32, String>,
-    body: Value,
+    mut body: Value,
     no_script: bool,
 ) -> Result<ReleaseCut, String> {
     if !no_script {
@@ -3879,13 +3879,34 @@ fn cut_release(
         check["check"] = json!(true);
         let v = call(check)?;
         if let Some(script) = v["script"].as_str() {
+            let started = std::time::Instant::now();
             let code = run(script, v["name"].as_str().unwrap_or(""), v["dir"].as_str(), v["replaces"] == true)?;
             if code != 0 {
                 return Ok(ReleaseCut::ScriptFailed(code));
             }
+            // The board looks for the run the script's tag started from then on.
+            body["script_secs"] = json!(started.elapsed().as_secs_f64());
         }
     }
     call(body).map(ReleaseCut::Cut)
+}
+
+/// The CI run the release started, waiting up to a minute for the board to find it; none when the
+/// board isn't looking for one (the project isn't on GitHub) or doesn't find it in time.
+fn release_run(c: &Ctx, v: &Value) -> Option<String> {
+    let r = v["ref"].as_str()?;
+    let mut v = v.clone();
+    for _ in 0..30 {
+        if let Some(url) = v["run_url"].as_str() {
+            return Some(url.to_string());
+        }
+        if v["run_looking"] != true {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        v = c.call("GET", &format!("/releases/{r}"), None).ok()?;
+    }
+    None
 }
 
 /// Releases come from main or a release/* branch: a cut from a feature branch would tag work that hasn't merged.
@@ -3963,6 +3984,9 @@ fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
                 ReleaseCut::Cut(v) => {
                     out(&format!("Cut {}.", release_line(&v)));
                     release_groups(&v);
+                    if let Some(url) = release_run(c, &v) {
+                        out(&format!("Release run: {url}"));
+                    }
                 }
                 ReleaseCut::ScriptFailed(code) => {
                     eprintln!("tb: the release script exited {code}, so {name} isn't recorded. Fix it and run tb release cut again.");
@@ -3985,6 +4009,9 @@ fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
             });
             if let Some(n) = v["notes"].as_str().filter(|n| !n.is_empty()) {
                 out(&format!("  {n}"));
+            }
+            if let Some(u) = v["run_url"].as_str() {
+                out(&format!("  Run: {u}"));
             }
             release_groups(&v);
         }

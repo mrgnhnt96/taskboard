@@ -198,6 +198,7 @@ pub fn dict(app: &App, r: &Row) -> Result<Value> {
         "notes": r.v("notes"), "cut_at": r.v("cut_at"), "cut_by": r.v("cut_by"), "updated_at": r.v("updated_at"),
         "failed_at": r.v("failed_at"), "failed_by": r.v("failed_by"), "failed_reason": r.v("failed_reason"),
         "tasks": task_count(app, r.id())?,
+        "run_url": r.v("run_url"), "run_looking": crate::release_run::looking(r),
     }))
 }
 
@@ -385,6 +386,9 @@ fn cut(app: &App, body: &Value) -> Result<Value> {
     }
     let who = board::caller(app, body, board::OWNER);
     let id = put_in_release(app, &project, &name, notes, &tasks, &who)?;
+    // `script_secs`: how long `tb release cut` ran the release script, so its tag's run is one from since then.
+    let since = body["script_secs"].as_f64().map(|s| now_ts() - s);
+    crate::release_run::track(app, id, script_dir(app, body, &project)?.as_deref(), since)?;
     show(app, &rf("release", id), &crate::api::Query::new())
 }
 
