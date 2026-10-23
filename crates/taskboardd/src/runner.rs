@@ -712,6 +712,7 @@ pub fn run(app: Arc<App>) {
             last_tick = Some(Instant::now());
             safe("tick", tick(&app).map(|_| ()));
             safe("pending cuts", crate::pending_cut::sweep(&app));
+            safe("release runs", crate::release_run::sweep(&app));
         }
         if due(Some(last_spool), iv.spool) {
             last_spool = Instant::now();

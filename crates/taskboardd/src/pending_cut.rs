@@ -320,6 +320,7 @@ pub fn fire(app: &App, r: &Row) -> Result<Option<String>> {
         return Ok(None);
     }
     let script = if r.b("no_script") { None } else { crate::releases::script(app, &project)? };
+    let since = script.as_ref().map(|_| now_ts());
     if let Some(why) = script.and_then(|s| run_script(app, r, &s)) {
         app.db.tx(|| drop_cut(app, r, &why))?;
         return Ok(None);
@@ -333,6 +334,8 @@ pub fn fire(app: &App, r: &Row) -> Result<Option<String>> {
         let tasks = crate::releases::unreleased_rows(app, &project)?;
         let who = r.s("made_by").unwrap_or(board::OWNER).to_string();
         let id = crate::releases::put_in_release(app, &project, &r.st("name"), r.s("notes").map(str::to_string), &tasks, &who)?;
+        let dir = r.s("dir").map(str::to_string).or_else(|| crate::projects::project_path(app, Some(&project)).ok().flatten());
+        crate::release_run::track(app, id, dir.as_deref(), since)?;
         let rel = rf("release", id);
         app.info(format!("pending cut: {project}: cut {rel} ({}) with {} tasks", r.st("name"), tasks.len()));
         Ok(Some(rel))

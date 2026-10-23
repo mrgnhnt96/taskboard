@@ -231,6 +231,7 @@ fn cut_for(app: &App, project: &str, repo: &str, tag: &str, sha: &str) -> Result
             return Ok(None);
         }
         let id = crate::releases::put_in_release(app, project, &name, None, &tasks, board::BOARD)?;
+        crate::release_run::track(app, id, Some(repo), None)?;
         let r = rf("release", id);
         app.info(format!("release tags: {project}: cut {r} for tag {tag} with {} tasks", tasks.len()));
         Ok(Some(r))

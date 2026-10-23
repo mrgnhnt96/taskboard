@@ -382,6 +382,7 @@ impl Db {
         add_columns(&conn, crate::ideas::ADDED)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         add_columns(&conn, crate::releases::ADDED)?;
+        add_columns(&conn, crate::release_run::ADDED)?;
         conn.execute_batch(crate::releases::INDEXES)?;
         conn.execute_batch(crate::pending_cut::SCHEMA)?;
         conn.execute_batch(crate::relevance::SCHEMA)?;
