@@ -11,7 +11,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{PrLink, RowExt};
-use taskboardd::{board, midna, p, prflow, progress, reports, runner, slot_ageing, worklane, worktrees};
+use taskboardd::{board, dispatch, midna, p, prflow, progress, reports, runner, slot_ageing, worklane, worktrees};
 
 struct Board {
     app: Arc<App>,
@@ -374,6 +374,38 @@ fn at_max_slots_a_task_waits_for_a_slot_like_a_lock() {
     runner::start_queued(&b.app).unwrap();
     assert!(b.started().contains(&two));
     assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1));
+}
+
+#[test]
+fn a_full_pool_keeps_the_task_queued_and_a_dirty_free_slot_alerts_once() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 1}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    finish(&b, one);
+    std::fs::write(Path::new(&slot(&b, 1)).join("left"), "x\n").unwrap();
+
+    let two = b.task("Two", json!({"goal_id": g}));
+    for _ in 0..6 {
+        b.app.db.x("UPDATE tasks SET retry_at = NULL WHERE id = ?", p![two]).unwrap();
+        runner::start_queued(&b.app).unwrap();
+    }
+    let row = board::get_task(&b.app, two).unwrap();
+    assert_eq!((row.st("status"), row.i0("start_tries")), ("queued".to_string(), 0), "a slot wait is no failed start");
+    assert!(row.s("retry_at").is_some(), "it looks again in a minute");
+    let alerts = dispatch::listing(&b.app);
+    let slot_alerts: Vec<&Value> = alerts.iter().filter(|a| a["key"].as_str().is_some_and(|k| k.starts_with("slot-dirty:"))).collect();
+    assert_eq!(slot_alerts.len(), 1, "one alert for the slot: {alerts:?}");
+    assert!(!alerts.iter().any(|a| a["task"] == json!(format!("T{two}"))), "nothing for the task itself: {alerts:?}");
+
+    std::fs::remove_file(Path::new(&slot(&b, 1)).join("left")).unwrap();
+    b.app.db.x("UPDATE tasks SET retry_at = NULL WHERE id = ?", p![two]).unwrap();
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1));
+    assert!(!dispatch::listing(&b.app).iter().any(|a| a["key"].as_str().is_some_and(|k| k.starts_with("slot-dirty:"))), "the alert goes once the slot is clean");
 }
 
 /// The start jobs that may still open a terminal.
