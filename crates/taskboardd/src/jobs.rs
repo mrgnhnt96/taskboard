@@ -266,12 +266,28 @@ pub fn rename_state(app: &App, sid: &str) -> Result<Row> {
 }
 
 const START_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+/// How often a start waiting for a worktree slot looks for one again.
+const SLOT_RETRY_SECS: f64 = 60.0;
 
-/// A start that didn't happen: retry after 1, 5 and 15 minutes, then wait for the owner.
+/// A start that didn't happen: retry after 1, 5 and 15 minutes, then wait for the owner. A full
+/// slot pool isn't a failure: the task stays queued and looks again each minute, without a try.
 pub fn start_failed(app: &App, t: &Row, text: &str, counts: bool, retry: bool) -> Result<bool> {
     let t = board::get_task(app, t.id())?;
     if t.s("status") == Some("done") {
         return Ok(false);
+    }
+    if retry && text.ends_with(crate::slots::WAIT) {
+        let first = t.s("latest") != Some(text);
+        board::update_task(
+            app,
+            t.id(),
+            fields!["status" => "queued", "needs_reason" => null, "start_job" => null, "latest" => text,
+                    "retry_at" => iso(now_ts() + SLOT_RETRY_SECS)],
+        )?;
+        if first {
+            board::log_event(app, t.id(), board::BOARD, "midna", &format!("{text}. It starts once one is free"))?;
+        }
+        return Ok(true);
     }
     let tries = t.i0("start_tries") + if counts { 1 } else { 0 };
     if !retry || tries > START_RETRY_WAITS.len() as i64 {

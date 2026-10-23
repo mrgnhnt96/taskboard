@@ -270,8 +270,10 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
         let status = git(&path, &["status", "--porcelain"], GIT_SECS);
         if status.code != 0 || !status.out.trim().is_empty() {
             app.info(format!("worktrees: passed over {path}: it has uncommitted changes"));
+            dirty_alert(app, &s)?;
             continue;
         }
+        crate::dispatch::clear_alert_key(app, &dirty_key(&path))?;
         let n = s.i("n").unwrap_or(0);
         let at = check_out(&path, start, branch)?;
         crate::progress::stage(&format!("Switched slot-{n} to {at}"));
@@ -299,6 +301,18 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     let text = if at == start { format!("Made worktree slot-{n} from {start} at {path}") } else { format!("Made worktree slot-{n} at {path}, on its branch {at}") };
     take(app, t, id, &path, &text, start)?;
     Ok(path)
+}
+
+fn dirty_key(path: &str) -> String {
+    format!("slot-dirty:{path}")
+}
+
+/// A free slot left with uncommitted changes never frees up by itself, so it's the owner's to clear:
+/// one alert for the slot, not a failed start for each task waiting on the pool.
+fn dirty_alert(app: &App, s: &Row) -> Result<()> {
+    let path = s.st("path");
+    let text = format!("Worktree slot-{} is free but has uncommitted changes, so no task can take it: {path}", s.i0("n"));
+    crate::dispatch::add_alert_keyed(app, &text, None, None, &dirty_key(&path))
 }
 
 fn at_text(at: &str, start: &str) -> String {
