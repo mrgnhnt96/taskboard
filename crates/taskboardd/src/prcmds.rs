@@ -193,6 +193,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
         };
         board::log_event(app, id, &who_of(app, body), "status", &text).map(|_| ())
     })?;
+    crate::reports::give_back_slot(app, id);
     after(app, id, json!({"asked": asked}))
 }
 
@@ -384,6 +385,7 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         None => who_of(app, body),
     };
     app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who))?;
+    crate::reports::give_back_slot(app, id);
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
 }
@@ -622,6 +624,7 @@ pub fn needs_owner(app: &App, id: i64, body: &Value) -> Result<Value> {
             Some("pr"),
         )
     })?;
+    crate::reports::give_back_slot(app, id);
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "checks": checks, "head": head, "pr": board::pr_card(app, &t)}))
 }

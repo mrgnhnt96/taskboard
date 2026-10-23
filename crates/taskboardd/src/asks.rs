@@ -271,6 +271,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     };
     crate::progress::stage(&format!("Read PR #{} from {on_host}", pr.num));
     let t = board::get_task(app, id)?;
+    let ends_visit = t.s("pr_phase") == Some("ask");
     let by = who_of(app, body);
     let fail = |what: &str, e: String| ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num));
     let drop = body_str(body, "drop");
@@ -406,6 +407,9 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         let names = stuck.iter().map(|w| w.name.clone()).collect::<Vec<_>>().join(" and ");
         let swapped = replaced.as_ref().filter(|(old, _)| is_stuck(old)).map(|(_, new)| format!(" {} was asked, but", new.name)).unwrap_or_default();
         return err(502, format!("{on_host} still lists {names} on PR #{}'s reviewers:{swapped} the host didn't take them off. Check the PR on {on_host}.", pr.num));
+    }
+    if ends_visit {
+        crate::reports::give_back_slot(app, id);
     }
     let _ = prflow::refresh_task(app, id)?;
     let t = board::get_task(app, id)?;

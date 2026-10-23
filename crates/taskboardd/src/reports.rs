@@ -3333,8 +3333,8 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
 }
 
 /// A task that's done, failed or parked gives its worktree slot back, unless something there isn't
-/// pushed yet (the log says what).
-fn give_back_slot(app: &App, id: i64) {
+/// pushed yet (the log says what). So does a PR visit that ends, so the next work can take the slot.
+pub(crate) fn give_back_slot(app: &App, id: i64) {
     let Ok(t) = board::get_task(app, id) else { return };
     if t.s("status") != Some("done") && waitsfor::parked(&t).is_none() {
         return;
