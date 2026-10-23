@@ -142,6 +142,41 @@ pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// `start_hold` for `t`'s start not made yet, in a new terminal at `cwd`: the starts already waiting count
+/// as running, since they open first. A task checks it before it claims a worktree slot, so a start
+/// waiting on a cap doesn't sit on a slot.
+pub fn hold_before_start(app: &App, t: &Row, cwd: &str, queue: bool) -> Result<Option<String>> {
+    let waiting: Vec<Row> = app
+        .db
+        .q("SELECT j.* FROM jobs j JOIN tasks t ON t.start_job = j.id WHERE j.state = 'pending' AND j.purpose = 'start' AND t.status = 'queued'", p![])?
+        .into_iter()
+        .filter(|j| new_terminal(app, j))
+        .collect();
+    let (cap, running) = (board_max(app), running_task_terminals(app)?);
+    if running >= cap {
+        return Ok(Some(format!("Waits for a free slot: {running} of {cap} task terminals running across the board")));
+    }
+    if running + waiting.len() as i64 >= cap {
+        return Ok(Some(format!("Waits for a free slot: {} ahead of it for the board's {}", plural(waiting.len() as i64, "start"), plural(cap, "task terminal"))));
+    }
+    if !queue {
+        return Ok(None);
+    }
+    let root = root_for(app, cwd);
+    let name = match t.s("project").filter(|p| !p.is_empty()) {
+        Some(n) => Some(n.to_string()),
+        None => crate::projects::project_for_path(app, Some(&root))?,
+    };
+    let cap = crate::projects::max_terminals(app, name.as_deref());
+    let ahead = waiting.iter().filter(|j| as_bool(board::job_args(j).get("queue"), false) && root_for(app, &board::job_args(j).st("cwd")) == root).count() as i64;
+    let busy = busy_terminals(app, &root)?;
+    if busy + ahead >= cap {
+        let name = name.unwrap_or_else(|| "its project".into());
+        return Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy in {name}")));
+    }
+    Ok(None)
+}
+
 pub fn launch_ready(app: &App, j: &Row) -> Result<bool> {
     Ok(start_hold(app, j)?.is_none())
 }

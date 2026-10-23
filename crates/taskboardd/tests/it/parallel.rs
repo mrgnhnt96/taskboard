@@ -376,6 +376,54 @@ fn at_max_slots_a_task_waits_for_a_slot_like_a_lock() {
     assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1));
 }
 
+/// The start jobs that may still open a terminal.
+fn live_starts(b: &Board) -> Vec<i64> {
+    let rows = b.app.db.q("SELECT task_id FROM jobs WHERE kind = 'agent' AND purpose = 'start' AND state IN ('pending','running') ORDER BY task_id", p![]).unwrap();
+    rows.iter().map(|j| j.i0("task_id")).collect()
+}
+
+#[test]
+fn a_start_waiting_on_the_terminal_cap_claims_no_slot() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("terminals", json!({"max_terminals": 1}));
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![one]);
+    assert_eq!(b.card(two)["waiting"], "Waits for a free slot: 1 start ahead of it for the board's 1 task terminal");
+    let slots = b.get("slots")["slots"].clone();
+    assert_eq!(slots.as_array().unwrap().len(), 1, "only the start that can open has a slot: {slots}");
+
+    taskboardd::jobs::take(&b.app).unwrap().unwrap();
+    assert_eq!(b.card(two)["waiting"], "Waits for a free slot: 1 of 1 task terminals running across the board");
+    finish(&b, one);
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", p![one]).unwrap();
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1), "it claims the slot once its start can open");
+}
+
+#[test]
+fn a_start_already_waiting_on_the_cap_gives_its_slot_back() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(live_starts(&b), vec![one, two], "both claimed a slot while the board had room");
+    b.post("terminals", json!({"max_terminals": 1}));
+    taskboardd::jobs::take(&b.app).unwrap().unwrap();
+
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(live_starts(&b), vec![one], "the start still waiting goes");
+    let slots = b.get("slots")["slots"].clone();
+    assert_eq!((slots[0]["held_by"].clone(), slots[1]["held_by"].clone()), (json!(format!("T{one}")), Value::Null), "{slots}");
+    assert!(b.card(two)["log"].to_string().contains("so it gives back its worktree slot meanwhile"), "{}", b.card(two)["log"]);
+    assert_eq!(b.card(two)["waiting"], "Waits for a free slot: 1 of 1 task terminals running across the board");
+}
+
 #[test]
 fn a_project_s_slot_settings_are_checked_and_go_back_to_config() {
     let b = new_board();

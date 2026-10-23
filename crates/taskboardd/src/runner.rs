@@ -267,8 +267,55 @@ fn in_wave_order(queued: Vec<Row>) -> Vec<Row> {
         .collect()
 }
 
+/// Why `t` doesn't claim a worktree slot yet: it would take a new one, and its start would only wait
+/// on a terminal cap holding it. A slot is claimed only by a start that can open its terminal.
+pub fn slot_hold(app: &App, t: &Row) -> Result<Option<String>> {
+    if t.s("pickup") == Some("attach") || t.i("start_job").is_some() || worktrees::made(app, t)?.is_some() {
+        return Ok(None);
+    }
+    let Some(repo) = worktrees::slot_repo(app, t)? else { return Ok(None) };
+    let queue = waitsfor::parked(t).is_none() && t.s("pickup") != Some("new");
+    dispatch::hold_before_start(app, t, &repo, queue)
+}
+
+/// Gives back the worktree slots that starts waiting on a terminal cap sit on: the start job goes, and
+/// the task claims a slot again once its start can open (`slot_hold`). A slot with work in it, or one
+/// a parked conversation resumes in, stays.
+fn free_waiting_slots(app: &App) -> Result<()> {
+    let held = app.db.q(
+        "SELECT t.* FROM tasks t JOIN jobs j ON t.start_job = j.id JOIN worktree_slots s ON s.task_id = t.id \
+         WHERE t.status = 'queued' AND j.state = 'pending' AND j.purpose = 'start'",
+        p![],
+    )?;
+    for t in held {
+        if waitsfor::parked(&t).is_some() {
+            continue;
+        }
+        let Some(j) = board::live_start_job(app, &t)?.filter(|j| j.s("state") == Some("pending")) else { continue };
+        let Some(why) = dispatch::start_hold(app, &j)? else { continue };
+        if crate::slots::release_refusal(app, &t)?.is_some() {
+            continue;
+        }
+        let dropped = app.db.tx(|| {
+            if app.db.q1("SELECT id FROM jobs WHERE id = ? AND state = 'pending'", p![j.id()])?.is_none() {
+                return Ok(false);
+            }
+            app.db.x("UPDATE jobs SET state = 'cancelled', updated_at = ? WHERE id = ?", p![now_iso(), j.id()])?;
+            board::update_task(app, t.id(), fields!["start_job" => null, "latest" => null])?;
+            board::log_event(app, t.id(), board::BOARD, "midna", &format!("{why}, so it gives back its worktree slot meanwhile"))?;
+            Ok(true)
+        })?;
+        // Without its start job it starts in the slot it still holds, should this fail.
+        if dropped {
+            crate::slots::give_back(app, &t)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn start_queued(app: &App) -> Result<Vec<i64>> {
     let mut started = vec![];
+    free_waiting_slots(app)?;
     let in_hours = hours::may_start(app);
     let queued = app.db.q(
         "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND line_session IS NULL ORDER BY priority = 'high' DESC, created_at, id",
@@ -321,6 +368,9 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
                 app.db.tx(|| skip_task(app, &t, &d))?;
                 continue;
             }
+        }
+        if slot_hold(app, &t)?.is_some() {
+            continue;
         }
         if t.s("pickup") != Some("attach") {
             if let Err(e) = worktrees::ensure(app, &t) {
