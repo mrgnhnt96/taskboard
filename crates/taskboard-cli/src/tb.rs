@@ -433,6 +433,12 @@ enum Cmd {
         #[command(subcommand)]
         action: BacklogCmd,
     },
+    /// What needs the owner (the app's Needs you list), one in full, or on the owner's word answer or act on
+    /// one: tb needs, tb needs show T12, tb needs answer T12 "…", restart, finish, continue, dismiss, snooze
+    Needs {
+        #[command(subcommand)]
+        action: Option<crate::needs::NeedsCmd>,
+    },
     /// Raise an alert for the owner (the banner and a notification), or clear one you raised
     Alert {
         #[command(subcommand)]
@@ -3808,6 +3814,33 @@ fn release_line(r: &Value) -> String {
     head.join(" · ")
 }
 
+fn needs_cmd(c: &Ctx, cmd: crate::needs::NeedsCmd) -> Result<i32, String> {
+    use crate::needs::{self, NeedsCmd};
+    let home = c.call("GET", "/home", None)?;
+    if let NeedsCmd::List { project, json } = &cmd {
+        let items = needs::items(&home, project.as_deref());
+        if *json {
+            out(&serde_json::to_string_pretty(&items.iter().map(needs::json_of).collect::<Vec<_>>()).unwrap_or_default());
+        } else {
+            needs::list_lines(&items).iter().for_each(|l| out(l));
+        }
+        return Ok(0);
+    }
+    let items = needs::items(&home, None);
+    let item = needs::find(&items, needs::handle_of(&cmd).unwrap_or(""))?;
+    let (path, body) = match &cmd {
+        NeedsCmd::Show { .. } => {
+            needs::show_lines(item).iter().for_each(|l| out(l));
+            return Ok(0);
+        }
+        NeedsCmd::Answer { text, pick, .. } => needs::answer_request(item, text.as_deref(), pick)?,
+        _ => needs::act_request(&cmd, item)?,
+    };
+    let v = c.call("POST", &path, Some(body))?;
+    out(&needs::done_line(&cmd, item, &v));
+    Ok(0)
+}
+
 fn releases_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     let v = c.call("GET", &format!("/releases?{}", release_project_query(c, project)), None)?;
     let name = v["project"].as_str().unwrap_or("");
@@ -6338,6 +6371,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             ));
             Ok(0)
         }
+        Cmd::Needs { action } => needs_cmd(c, action.unwrap_or(crate::needs::NeedsCmd::List { project: None, json: false })),
         Cmd::Alert { action: AlertCmd::Clear { id } } => {
             c.call("POST", &format!("/alerts/{id}/clear"), Some(json!({})))?;
             out(&format!("Cleared {id}."));
