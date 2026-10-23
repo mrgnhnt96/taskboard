@@ -160,7 +160,11 @@ fn with_flag(flags: Option<String>, flag: &str, value: Option<&str>) -> Option<S
 
 fn start_parked(app: &App, t: &Row) -> Result<()> {
     let ctx = board::task_context(t);
-    let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
+    // A slot's root, not the subfolder it last reported from: the conversation is saved under the root.
+    let wt = match worktrees::made(app, t)? {
+        Some(w) => Some(w),
+        None => ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string()),
+    };
     let cwd = match &wt {
         Some(w) => Some(w.clone()),
         None => task_cwd(app, t)?,

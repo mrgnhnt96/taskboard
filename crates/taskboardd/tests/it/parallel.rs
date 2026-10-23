@@ -379,7 +379,7 @@ fn a_restarted_task_goes_back_to_the_slot_it_holds_with_its_uncommitted_work() {
     // Its terminal ended before it was done: the board starts it again.
     b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", p![one]).unwrap();
     b.app.db.x("UPDATE tasks SET status = 'queued', session_id = NULL, start_job = NULL, retry_at = NULL WHERE id = ?", p![one]).unwrap();
-    let before = b.start_job(one).id();
+    let before = b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap().id();
     assert!(b.card(one)["waiting"].is_null(), "a full pool doesn't hold up a task that has its slot: {}", b.card(one)["waiting"]);
     runner::start_queued(&b.app).unwrap();
     let again = b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap();
@@ -388,6 +388,56 @@ fn a_restarted_task_goes_back_to_the_slot_it_holds_with_its_uncommitted_work() {
     assert!(Path::new(&sub).join("Podfile.lock").exists(), "its work is still there");
     let held: Vec<i64> = b.app.db.q("SELECT n FROM worktree_slots WHERE task_id = ?", p![one]).unwrap().iter().map(|s| s.i0("n")).collect();
     assert_eq!(held, vec![1], "one slot per task");
+}
+
+#[test]
+fn a_full_pool_doesn_t_hold_up_a_task_whose_own_slot_lost_its_worktree() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 1}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(one).st("cwd"), slot(&b, 1));
+    std::fs::remove_dir_all(slot(&b, 1)).unwrap();
+
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", p![one]).unwrap();
+    b.app.db.x("UPDATE tasks SET status = 'queued', session_id = NULL, start_job = NULL, retry_at = NULL WHERE id = ?", p![one]).unwrap();
+    assert!(b.card(one)["waiting"].is_null(), "{}", b.card(one)["waiting"]);
+    let before = b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap().id();
+    runner::start_queued(&b.app).unwrap();
+    assert_ne!(b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap().id(), before, "it starts again: {}", b.card(one)["latest"]);
+    assert_eq!(b.start_job(one).st("cwd"), slot(&b, 1), "in its own slot, made again");
+}
+
+#[test]
+fn a_parked_task_starts_again_at_its_slot_s_root() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    let other = b.task("Needed", json!({}));
+    b.add_session("s1");
+    b.open_for("s1", one);
+    b.report("hook.prompt", "s1", json!({"prompt": b.start_job(one).st("prompt")}));
+    let sub = format!("{}/ios", slot(&b, 1));
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(Path::new(&sub).join("Podfile.lock"), "x\n").unwrap();
+    let mut ctx = board::task_context(&board::get_task(&b.app, one).unwrap());
+    ctx.insert("where".into(), json!({"worktree": sub}));
+    board::save_context(&b.app, one, &ctx, false).unwrap();
+    b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{other}")], "why": "Needs it."}));
+    assert_eq!(slot_row(&b, 1).i("task_id"), Some(one), "it keeps a slot with work in it");
+
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", p![other]).unwrap();
+    b.app.db.x("UPDATE tasks SET session_id = NULL, retry_at = NULL WHERE id = ?", p![one]).unwrap();
+    let before = b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap().id();
+    runner::start_queued(&b.app).unwrap();
+    assert_ne!(b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'start' AND task_id = ? ORDER BY id DESC", p![one]).unwrap().unwrap().id(), before, "it starts again: {}", b.card(one)["latest"]);
+    assert_eq!(b.start_job(one).st("cwd"), slot(&b, 1));
 }
 
 #[test]

@@ -18,6 +18,9 @@ use crate::worktrees::{git, last_line, GIT_SECS};
 use crate::{board, p};
 
 pub const WAIT: &str = "Waits for a worktree slot";
+/// One claim at a time: the runner and API requests claim on their own threads, and a slot picked as
+/// free must still be free when it's taken.
+static CLAIMS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 /// `tb project set --min-slots` and the rest: name → the `[worktrees]` keys it sets.
 const SETTING: &str = "project_worktree_slots";
 pub const KEYS: [&str; 5] = ["min_slots", "max_slots", "idle_trim_days", "idle_remove_days", "low_disk_gb"];
@@ -228,10 +231,11 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
         return Ok(None);
     }
     let Some(repo) = crate::worktrees::slot_repo(app, t)? else { return Ok(None) };
-    if held(app, t)?.is_some_and(|s| s.s("repo") == Some(repo.as_str())) {
+    let slots = rows(app, &repo)?;
+    // Its own slot, even one to make again, is no wait.
+    if slots.iter().any(|s| s.i("task_id") == Some(t.id())) {
         return Ok(None);
     }
-    let slots = rows(app, &repo)?;
     if (slots.len() as i64) < config(app, t.s("project")).max_slots {
         return Ok(None);
     }
@@ -264,6 +268,7 @@ pub fn claim(app: &App, t: &Row, repo: &str, start: &str) -> Result<String> {
 }
 
 fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -> Result<String> {
+    let _one = CLAIMS.lock();
     // One slot per task: the one it holds already, as it left it.
     if let Some(s) = held(app, t)?.filter(|s| s.s("repo") == Some(repo)) {
         let path = s.st("path");
