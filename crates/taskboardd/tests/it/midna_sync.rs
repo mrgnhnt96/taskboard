@@ -48,3 +48,44 @@ fn a_close_event_read_that_works_keeps_its_place() {
     assert_eq!(app.db.get_setting("midna_event_seq").unwrap().as_deref(), Some("7"));
     assert!(board::get_session(&app, Some("s1")).unwrap().is_some());
 }
+
+/// A task waiting on its terminal for `reason` since 10:00:00, as Midna's sync finds it.
+fn waiting_task(app: &App, reason: &str) -> i64 {
+    let id = app.db.insert("tasks", taskboardd::fields!["title" => "Fix", "project" => "webapp", "status" => "working", "session_id" => "s1"]).unwrap();
+    app.db.x("UPDATE tasks SET status = 'needs', needs_reason = ?, question = 'Allow Bash?' WHERE id = ?", taskboardd::p![reason, id]).unwrap();
+    board::log_event_full(app, id, "Term s1", "question", "Waiting for you: Allow Bash?", None, Some("2026-10-23T10:00:00Z")).unwrap();
+    id
+}
+
+fn sync_state(app: &App, state: &str, since: &str) {
+    let s = json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": "/tmp", "status": {"state": state, "since": since}});
+    midna::sync(app, &[s], &[]).unwrap();
+}
+
+#[test]
+fn a_terminal_that_carries_on_by_itself_takes_its_task_out_of_needs_you() {
+    let (app, _d) = board_with("echo '[]'");
+    let t = waiting_task(&app, "attention");
+    sync_state(&app, "working", "2026-10-23T09:59:58Z");
+    assert_eq!(board::get_task(&app, t).unwrap().s("status"), Some("needs"), "working since before the prompt is an old reading");
+    sync_state(&app, "needs_you", "2026-10-23T10:00:00Z");
+    assert_eq!(board::get_task(&app, t).unwrap().s("status"), Some("needs"));
+    sync_state(&app, "working", "2026-10-23T10:00:40Z");
+    let row = board::get_task(&app, t).unwrap();
+    assert_eq!((row.s("status"), row.s("question")), (Some("working"), None), "approved in the terminal");
+    let said = app.db.val("SELECT text FROM events WHERE task_id = ? ORDER BY id DESC LIMIT 1", taskboardd::p![t]).unwrap();
+    assert_eq!(said, json!("Back to work: its terminal carried on"));
+
+    let api = waiting_task(&app, "api_error");
+    app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", taskboardd::p![t]).unwrap();
+    sync_state(&app, "working", "2026-10-23T10:05:00Z");
+    assert_eq!(board::get_task(&app, api).unwrap().s("status"), Some("working"), "past its API error by itself");
+}
+
+#[test]
+fn a_question_for_the_owner_stays_while_the_terminal_works() {
+    let (app, _d) = board_with("echo '[]'");
+    let t = waiting_task(&app, "question");
+    sync_state(&app, "working", "2026-10-23T10:05:00Z");
+    assert_eq!(board::get_task(&app, t).unwrap().s("status"), Some("needs"));
+}

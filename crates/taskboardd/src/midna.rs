@@ -582,6 +582,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 if !name.is_empty() && t.s("session_name") != Some(name.as_str()) {
                     board::update_task(app, t.id(), crate::fields!["session_name" => name])?;
                 }
+                carried_on(app, &board::get_task(app, t.id())?, &sid, &state, st.s("since"))?;
             }
         }
         for s in app.db.q("SELECT * FROM sessions WHERE status != 'gone' AND source = 'midna'", p![])? {
@@ -602,6 +603,22 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
         app.info(format!("midna: {} gone", plural(gone.len() as i64, "terminal")));
     }
     Ok((gone, to_close))
+}
+
+/// A task waiting on its terminal (a permission prompt approved there, an API error it got past)
+/// whose terminal Midna has seen working since it last asked: it's back at work, with no prompt
+/// or turn end to say so. Working since before then is a reading from before the ask, so it stays.
+fn carried_on(app: &App, t: &Row, sid: &str, state: &str, since: Option<&str>) -> Result<()> {
+    let waiting = t.s("status") == Some("needs") && !t.b("lost") && t.s("session_id") == Some(sid);
+    if !waiting || state != "working" || !crate::reports::UNTIL_IT_CARRIES_ON.contains(&t.st("needs_reason").as_str()) {
+        return Ok(());
+    }
+    // When it last asked: each prompt or error logs a question, a second one while it still waits too.
+    let asked = app.db.val("SELECT MAX(at) FROM events WHERE task_id = ? AND kind = 'question'", p![t.id()])?;
+    if !since.zip(asked.as_str()).is_some_and(|(since, asked)| since > asked) {
+        return Ok(());
+    }
+    board::set_working(app, t, board::MIDNA, Some("Back to work: its terminal carried on"))
 }
 
 const SETTINGS_EVERY: Duration = Duration::from_secs(60);
