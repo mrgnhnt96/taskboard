@@ -1532,8 +1532,15 @@ fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &st
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
     }
+    // Queue only says it's ready: with no worktree slot free it waits in the queue for one.
+    let mut waits = false;
     if mode != "attach" {
-        crate::worktrees::ensure(app, &board::get_task(app, id)?)?;
+        match crate::worktrees::ensure(app, &board::get_task(app, id)?) {
+            Err(e) if mode == "queue" && e.message == crate::slots::WAIT => waits = true,
+            r => {
+                r?;
+            }
+        }
     }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
@@ -1560,6 +1567,16 @@ fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &st
                     "session_id" => if t.b("lost") { None } else { t.s("session_id").map(|s| s.to_string()) }],
         )?;
         board::log_event(app, id, board::OWNER, "status", started)?;
+        if waits {
+            board::update_task(
+                app,
+                id,
+                fields!["status" => "queued", "needs_reason" => null, "start_job" => null, "latest" => null,
+                        "start_tries" => 0, "retry_at" => null],
+            )?;
+            board::log_event(app, id, board::BOARD, "midna", &format!("{}. It starts once one is free", crate::slots::WAIT))?;
+            return Ok(());
+        }
         runner::start_task(app, &board::get_task(app, id)?, mode, sid.as_deref(), None, None, None)?;
         Ok(())
     })?;

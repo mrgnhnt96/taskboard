@@ -377,6 +377,29 @@ fn at_max_slots_a_task_waits_for_a_slot_like_a_lock() {
 }
 
 #[test]
+fn queue_with_no_free_slot_queues_the_task_to_start_once_one_frees() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 1}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    let two = b.task("Two", json!({"goal_id": g, "pickup": "manual"}));
+
+    let from_app: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+    let card = api::dispatch(&b.app, "POST", &format!("tasks/T{two}/start"), &from_app, &json!({"mode": "queue"})).unwrap();
+    assert_eq!(card["status"], "queued", "{card}");
+    assert_eq!(b.card(two)["waiting"], "Waits for a worktree slot");
+    assert!(!b.started().contains(&two));
+
+    finish(&b, one);
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.started().contains(&two));
+    assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1));
+}
+
+#[test]
 fn a_full_pool_keeps_the_task_queued_and_a_dirty_free_slot_alerts_once() {
     let b = new_board();
     git_repo(&b);
