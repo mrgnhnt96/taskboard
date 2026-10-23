@@ -3,6 +3,7 @@
 mod client;
 mod gitcred;
 mod hook;
+mod needs;
 mod preview;
 mod tb;
 
