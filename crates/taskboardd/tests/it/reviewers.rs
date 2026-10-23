@@ -768,6 +768,23 @@ fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
 }
 
 #[test]
+fn asking_for_reviews_gives_the_visit_s_slot_back() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    b.mark_reviewed(id);
+    assert_eq!(b.phase(id), "ask");
+    let gone = b.dir.path().join("slot-1").to_string_lossy().to_string();
+    b.app.db.x("INSERT INTO worktree_slots(repo, n, path, task_id) VALUES ('webapp', 1, ?, ?)", vec![json!(gone), json!(id)]).unwrap();
+
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    let slot = b.app.db.q1("SELECT task_id FROM worktree_slots WHERE n = 1", vec![]).unwrap().unwrap();
+    assert!(slot.i("task_id").is_none(), "the next work can take it");
+}
+
+#[test]
 fn outside_work_hours_the_board_asks_for_reviews_itself_and_retries() {
     let b = board_with(|c| c.reviewers.ask_stage = true);
     let h = fake(&b, green());
