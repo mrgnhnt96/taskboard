@@ -693,6 +693,11 @@ enum SlotCmd {
         #[arg(long)]
         task: Option<String>,
     },
+    /// Save the changes in a slot to a backup ref, then clear them (refused where a task works with its terminal open)
+    Discard {
+        /// A folder in the slot; here when left out
+        path: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3204,6 +3209,16 @@ fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
             let t = c.pr_task(task)?;
             let v = c.call("POST", &format!("/tasks/{t}/slot/release"), Some(json!({})))?;
             out(&if v["released"] == true { format!("{t} gave back its worktree slot.") } else { format!("{t} holds no worktree slot.") });
+        }
+        SlotCmd::Discard { path } => {
+            let here = std::env::current_dir().unwrap_or_default();
+            let path = here.join(path.unwrap_or_else(|| ".".into()));
+            let v = c.call("POST", "/slots/discard", Some(json!({"path": path.to_string_lossy()})))?;
+            let slot = v["slot"].as_str().unwrap_or("");
+            out(&match v["backup"].as_str() {
+                Some(b) => format!("Discarded {} changed files in {slot}; saved first to {b} (git checkout {b} -- . brings them back).", v["files"]),
+                None => format!("{slot} has no changes to discard."),
+            });
         }
     }
     Ok(0)

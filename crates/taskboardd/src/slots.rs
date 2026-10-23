@@ -201,7 +201,7 @@ fn holder(app: &App, s: &Row) -> Result<Option<Row>> {
     Ok(Some(t))
 }
 
-fn slot_at(app: &App, path: &str) -> Result<Option<Row>> {
+pub(crate) fn slot_at(app: &App, path: &str) -> Result<Option<Row>> {
     let Some(root) = crate::worktrees::root_of(Some(path)) else { return Ok(None) };
     let root = crate::worktrees::real(&root);
     Ok(app.db.q("SELECT * FROM worktree_slots", p![])?.into_iter().find(|s| crate::worktrees::real(s.st("path").as_str()) == root))
@@ -413,14 +413,14 @@ pub fn release_refusal(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn branch_of(path: &str) -> Option<String> {
+pub(crate) fn branch_of(path: &str) -> Option<String> {
     let r = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"], GIT_SECS);
     (r.code == 0).then(|| r.out.trim().to_string()).filter(|b| !b.is_empty())
 }
 
 /// Commits in a slot that only it has. Without a remote, a branch keeps its commits after the slot
 /// lets go of it; only a detached HEAD's would be lost.
-fn unpushed(path: &str) -> i64 {
+pub(crate) fn unpushed(path: &str) -> i64 {
     let remote = !git(path, &["remote"], GIT_SECS).out.trim().is_empty();
     if !remote && branch_of(path).is_some() {
         return 0;

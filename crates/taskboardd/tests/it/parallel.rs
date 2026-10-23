@@ -1531,3 +1531,110 @@ fn a_clash_leaves_both_sides_untouched() {
     assert!(slot_row(&b, 1).i("task_id").is_none(), "the slot is free again");
     assert_eq!(lane(&b, t), before);
 }
+
+/// Its terminal ended before it was done: the board queues it to start again.
+fn lose_and_restart(b: &Board, t: i64) {
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", p![t]).unwrap();
+    b.app.db.x("UPDATE tasks SET status = 'queued', session_id = NULL, start_job = NULL, retry_at = NULL WHERE id = ?", p![t]).unwrap();
+    runner::start_queued(&b.app).unwrap();
+}
+
+/// Pushes a commit adding `file` to origin's main from the project folder.
+fn advance_main(b: &Board, file: &str, text: &str) {
+    let repo = b.repo();
+    let repo = Path::new(&repo);
+    git(repo, &["switch", "-q", "main"]);
+    std::fs::write(repo.join(file), text).unwrap();
+    git(repo, &["add", file]);
+    git(repo, &["commit", "-q", "-m", &format!("Add {file}")]);
+    git(repo, &["push", "-q", "origin", "main"]);
+}
+
+#[test]
+fn a_restart_clears_a_stale_copy_of_the_base_but_keeps_the_task_s_own_changes() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    let dir = slot(&b, 1);
+    commit_in(&dir, "feature/one", false);
+    advance_main(&b, "later.txt", "from main\n");
+    git(Path::new(&dir), &["fetch", "-q", "origin"]);
+    // A stale copy of main's new file, the task's own edit, and a change nobody logged.
+    std::fs::write(Path::new(&dir).join("later.txt"), "from main\n").unwrap();
+    std::fs::write(Path::new(&dir).join("change"), "mine\n").unwrap();
+    std::fs::write(Path::new(&dir).join("mystery"), "?\n").unwrap();
+    let edits = b.dir.path().join("edits");
+    std::fs::create_dir_all(&edits).unwrap();
+    std::fs::write(edits.join(format!("T{one}")), format!("s1\t{dir}/change\n")).unwrap();
+
+    lose_and_restart(&b, one);
+    assert_eq!(b.start_job(one).st("cwd"), dir);
+    assert!(!Path::new(&dir).join("later.txt").exists(), "the stale copy is cleared");
+    assert_eq!(std::fs::read_to_string(Path::new(&dir).join("change")).unwrap(), "mine\n", "its own edit stays");
+    assert!(Path::new(&dir).join("mystery").exists(), "a change that may be its own stays");
+    let log = b.card(one)["log"].to_string();
+    assert!(log.contains("Cleared 1 changed file in slot-1 that") && log.contains("2 other changed files are left"), "{log}");
+    let saved = git(Path::new(&dir), &["for-each-ref", "--format=%(refname)", "refs/taskboard/backup"]);
+    assert_eq!(git(Path::new(&dir), &["show", &format!("{saved}:later.txt")]), "from main", "saved before it was cleared");
+    assert!(log.contains("it has uncommitted changes, so the board left it as it is"), "{log}");
+}
+
+#[test]
+fn a_restart_rebases_a_clean_unpushed_branch_onto_the_base() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    let dir = slot(&b, 1);
+    commit_in(&dir, "feature/one", false);
+    advance_main(&b, "later.txt", "from main\n");
+
+    lose_and_restart(&b, one);
+    let d = Path::new(&dir);
+    assert_eq!(git(d, &["merge-base", "HEAD", "origin/main"]), git(d, &["rev-parse", "origin/main"]), "on top of the base");
+    assert_eq!(git(d, &["rev-list", "--count", "origin/main..HEAD"]), "1", "its commit kept");
+    assert!(b.card(one)["log"].to_string().contains("Rebased feature/one in slot-1 onto origin/main: it was 1 commit behind origin/main"), "{}", b.card(one)["log"]);
+}
+
+#[test]
+fn a_task_holding_extra_slots_gives_back_clean_ones_and_gets_a_terminal_for_the_rest() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let (one, two, three) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})), b.task("Three", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    // One holds all three, as restarts left it before they went back to their own slot.
+    b.app.db.x("UPDATE worktree_slots SET task_id = ?, seq = CASE n WHEN 1 THEN 9 ELSE n END", p![one]).unwrap();
+    let _ = (two, three);
+    std::fs::write(Path::new(&slot(&b, 3)).join("Podfile.lock"), "x\n").unwrap();
+
+    taskboardd::slot_tidy::sweep(&b.app).unwrap();
+    assert_eq!(slot_row(&b, 2).i("task_id"), None, "a clean extra goes back");
+    assert_eq!((slot_row(&b, 1).i("task_id"), slot_row(&b, 3).i("task_id")), (Some(one), Some(one)));
+    let jobs = b.app.db.q("SELECT * FROM jobs WHERE purpose = 'slots'", p![]).unwrap();
+    assert_eq!(jobs.len(), 1);
+    let args = board::job_args(&jobs[0]);
+    assert_eq!(args.st("cwd"), slot(&b, 3));
+    assert!(args.st("prompt").contains("slot discard") && args.st("prompt").contains("generated files"), "{}", args.st("prompt"));
+
+    taskboardd::slot_tidy::sweep(&b.app).unwrap();
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM jobs WHERE purpose = 'slots'", p![]).unwrap(), 1, "one terminal for it");
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'slots'", p![]).unwrap();
+    taskboardd::slot_tidy::sweep(&b.app).unwrap();
+    assert!(dispatch::listing(&b.app).iter().any(|a| a["key"] == json!(format!("slots-extra:T{one}"))), "the owner hears once that terminal is gone");
+
+    let out = b.post("slots/discard", json!({"path": format!("{}/ios", slot(&b, 3))}));
+    assert_eq!(out["files"], 1, "{out}");
+    let backup = out["backup"].as_str().unwrap().to_string();
+    assert!(!Path::new(&slot(&b, 3)).join("Podfile.lock").exists());
+    assert_eq!(git(Path::new(&slot(&b, 3)), &["show", &format!("{backup}:Podfile.lock")]), "x");
+    taskboardd::slot_tidy::sweep(&b.app).unwrap();
+    assert_eq!(slot_row(&b, 3).i("task_id"), None, "given back once it's clean");
+    assert!(!dispatch::listing(&b.app).iter().any(|a| a["key"] == json!(format!("slots-extra:T{one}"))), "and the alert goes");
+}

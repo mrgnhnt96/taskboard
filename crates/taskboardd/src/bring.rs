@@ -391,7 +391,7 @@ fn rel_in(top: &str, file: &str) -> String {
 }
 
 /// The files in `task`'s edit log under `top`, from the checkout's top folder.
-fn edits_of(app: &App, task: &str, top: &str) -> Vec<String> {
+pub(crate) fn edits_of(app: &App, task: &str, top: &str) -> Vec<String> {
     let text = std::fs::read_to_string(app.cfg.data.join("edits").join(task)).unwrap_or_default();
     let mut out = vec![];
     for l in text.lines() {
