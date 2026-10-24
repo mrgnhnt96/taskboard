@@ -402,6 +402,11 @@ impl Db {
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }
 
+    /// Whether this thread holds the connection: inside a `tx`, or a query on this thread's stack.
+    pub fn held_here(&self) -> bool {
+        self.inner.is_owned_by_current_thread()
+    }
+
     /// Runs `f` in one transaction. Nested calls join the outer transaction.
     pub fn tx<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         let g = self.inner.lock();
