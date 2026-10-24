@@ -268,7 +268,16 @@ pub fn claim(app: &App, t: &Row, repo: &str, start: &str) -> Result<String> {
 }
 
 fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -> Result<String> {
-    let _one = CLAIMS.lock();
+    // A claim holding CLAIMS waits on the database, so one already holding the database (a PR wake
+    // inside a transaction) must not wait on CLAIMS: it waits for the next try instead.
+    let _one = if app.db.held_here() {
+        match CLAIMS.try_lock() {
+            Some(g) => g,
+            None => return err(409, WAIT),
+        }
+    } else {
+        CLAIMS.lock()
+    };
     // One slot per task: the one it holds already, as it left it.
     if let Some(s) = held(app, t)?.filter(|s| s.s("repo") == Some(repo)) {
         let path = s.st("path");
@@ -522,4 +531,30 @@ fn take(app: &App, t: &Row, id: i64, path: &str, text: &str, start: &str) -> Res
         board::log_event(app, t.id(), board::BOARD, "midna", text)?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use std::sync::mpsc;
+
+    #[test]
+    fn a_claim_inside_a_transaction_waits_for_the_next_try_while_another_claim_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (held, holding) = mpsc::channel();
+        let (finish, finished) = mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            let _one = CLAIMS.lock();
+            held.send(()).unwrap();
+            finished.recv().ok();
+        });
+        holding.recv().unwrap();
+        let out = app.db.tx(|| claim_on(&app, &Row::new(), "/repo", "HEAD", None));
+        finish.send(()).unwrap();
+        other.join().unwrap();
+        let e = out.expect_err("a claim holding the database can't wait on another claim");
+        assert_eq!((e.status, e.message.as_str()), (409, WAIT));
+    }
 }
