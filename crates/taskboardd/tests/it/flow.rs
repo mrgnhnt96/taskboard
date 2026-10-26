@@ -330,6 +330,18 @@ fn midna_sync_tracks_terminals_and_marks_missing_ones_gone() {
 }
 
 #[test]
+fn closing_a_terminal_midna_never_had_marks_it_gone() {
+    let b = new_board();
+    b.report("hook.stop", "h1", json!({"last_message": "MANGO"}));
+    assert_eq!(board::get_session(&b.app, Some("h1")).unwrap().unwrap().s("source"), Some("hook"));
+    b.post("/sessions/h1/close", json!({}));
+    let j = b.jobs("close").pop().unwrap();
+    b.app.db.tx(|| jobs::result(&b.app, j.id(), false, "", "no session h1", 1)).unwrap();
+    let s = board::get_session(&b.app, Some("h1")).unwrap().unwrap();
+    assert_eq!(s.s("status"), Some("gone"));
+}
+
+#[test]
 fn a_task_waits_for_another_and_a_goal_runs_in_order() {
     let b = new_board();
     let g = b.post("/goals", json!({"name": "Checkout", "project": "webapp", "outcome": "people can pay", "max_terminals": 2}));
