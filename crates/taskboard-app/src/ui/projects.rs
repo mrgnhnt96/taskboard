@@ -13,6 +13,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// Finished goals shown before Show all.
 const FINISHED_SHOWN: usize = 5;
@@ -30,6 +31,52 @@ pub struct State {
     pub show_idle: bool,
     /// `GET /goals/:id` for the picked project's open goals and the finished ones open, by ref.
     pub details: HashMap<String, Value>,
+    /// Counts each change to `details`.
+    rev: u64,
+    built: Option<Rc<Built>>,
+}
+
+impl State {
+    /// Goal `r` in full, as `GET /goals/:id` answered.
+    pub fn land(&mut self, r: String, g: Value) {
+        self.details.insert(r, g);
+        self.rev += 1;
+    }
+}
+
+/// What the page shows of a state and goal list, built once per answer, project picked and set
+/// of details.
+struct Built {
+    state: Option<Rc<Value>>,
+    goals: Rc<Vec<Value>>,
+    asked: (Option<String>, bool, u64),
+    open: Vec<ProjectRow>,
+    idle: Vec<ProjectRow>,
+    picked: Option<String>,
+    header: Header,
+    active: Vec<GoalLine>,
+    /// The finished goals shown, and how many there are.
+    done: (Vec<DoneLine>, usize),
+}
+
+impl Built {
+    fn of(m: &MainWindow) -> Built {
+        let (state, goals) = (m.data.state.clone(), m.data.goals.clone());
+        let st = state.clone().unwrap_or_default();
+        let (open, idle) = list(&st, &goals);
+        let picked = selected(&m.projects, &open, &idle);
+        let p = picked.as_deref().unwrap_or_default();
+        let (header, active, done) = (header(&st, p), active(&goals, &m.projects.details, p), finished(&goals, p, m.projects.show_all));
+        Built { state, goals, asked: asked(m), open, idle, picked, header, active, done }
+    }
+
+    fn holds(&self, m: &MainWindow) -> bool {
+        crate::ui::same(&self.state, &m.data.state) && Rc::ptr_eq(&self.goals, &m.data.goals) && self.asked == asked(m)
+    }
+}
+
+fn asked(m: &MainWindow) -> (Option<String>, bool, u64) {
+    (m.projects.selected.clone(), m.projects.show_all, m.projects.rev)
 }
 
 // ================================================================== view models
@@ -534,18 +581,18 @@ fn card(t: &Theme) -> Div {
 
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let state = m.state_rc();
-    let goals = m.data.goals.clone();
-    let (open, idle) = list(&state, &goals);
-    let picked = selected(&m.projects, &open, &idle);
-    let shell = div().id("projects-page").flex().flex_1().min_w_0().h_full().line_height(relative(1.4)).child(project_list(&t, &open, &idle, picked.as_deref(), m.projects.show_idle, cx));
-    let Some(p) = picked else {
+    let b = match &m.projects.built {
+        Some(b) if b.holds(m) => b.clone(),
+        _ => m.projects.built.insert(Rc::new(Built::of(m))).clone(),
+    };
+    let shell = div().id("projects-page").flex().flex_1().min_w_0().h_full().line_height(relative(1.4)).child(project_list(&t, &b.open, &b.idle, b.picked.as_deref(), m.projects.show_idle, cx));
+    let Some(p) = &b.picked else {
         let msg = if m.data.state.is_none() { if m.down.is_some() { "Can’t load the board." } else { "Loading…" } } else { "No projects" };
         return shell.child(div().flex_1().child(kit::empty(&t, msg))).into_any_element();
     };
-    let mut main = div().id("projects-main").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().px(px(32.)).pt(px(24.)).pb(px(32.)).child(head(&t, &p, &header(&state, &p), cx));
+    let mut main = div().id("projects-main").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().px(px(32.)).pt(px(24.)).pb(px(32.)).child(head(&t, p, &b.header, cx));
 
-    let act = active(&goals, &m.projects.details, &p);
+    let act = &b.active;
     if !act.is_empty() {
         let mut c = card(&t);
         for (n, g) in act.iter().enumerate() {
@@ -555,7 +602,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, "Active".into()))).child(c);
     }
 
-    let (done, n) = finished(&goals, &p, m.projects.show_all);
+    let (done, n) = (&b.done.0, b.done.1);
     if n > 0 {
         let more = n > FINISHED_SHOWN;
         let all = m.projects.show_all;
@@ -726,5 +773,38 @@ mod tests {
         assert_eq!(wanted(&st, &state(), &gs), ["G1", "G2", "G5"]);
         st.open.insert("G3".into());
         assert_eq!(wanted(&st, &state(), &gs), ["G1", "G2", "G3", "G5"]);
+    }
+
+    #[gpui_kit::test]
+    fn the_page_is_built_once_per_answer_and_project(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(crate::app::Page::Projects, cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let built = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| m.projects.built.clone().expect("the page was built")).unwrap();
+        let first = built(cx);
+        draw(cx);
+        assert!(Rc::ptr_eq(&first, &built(cx)), "a redraw keeps what was built");
+
+        w.update(cx, |m, _, cx| {
+            m.projects.selected = Some("nowhere".into());
+            cx.notify();
+        })
+        .unwrap();
+        draw(cx);
+        let picked = built(cx);
+        assert!(!Rc::ptr_eq(&first, &picked), "picking a project builds the page again");
+
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert!(!Rc::ptr_eq(&picked, &built(cx)), "a new answer builds the page again");
     }
 }

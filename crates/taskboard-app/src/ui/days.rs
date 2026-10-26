@@ -11,6 +11,7 @@ use chrono::{Datelike, Duration, NaiveDate};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use std::rc::Rc;
 
 const PREF_HIDDEN: &str = "taskboard.days.hidden";
 const SLOTS: usize = 144;
@@ -24,6 +25,8 @@ pub struct State {
     pub date: Option<NaiveDate>,
     pub hidden: Vec<String>,
     pub finished_all: bool,
+    /// The answer the view was built from, and the view: the same answer draws it as it is.
+    built: Option<(Rc<Value>, Option<Rc<View>>)>,
 }
 
 impl Default for State {
@@ -31,11 +34,23 @@ impl Default for State {
         let hidden = crate::prefs::get(PREF_HIDDEN)
             .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()))
             .unwrap_or_default();
-        State { date: None, hidden, finished_all: false }
+        State { date: None, hidden, finished_all: false, built: None }
     }
 }
 
 impl State {
+    /// The view of answer `v`, built once per answer.
+    fn view(&mut self, v: &Rc<Value>) -> Option<Rc<View>> {
+        match &self.built {
+            Some((b, view)) if Rc::ptr_eq(b, v) => view.clone(),
+            _ => {
+                let view = View::of(v).map(Rc::new);
+                self.built = Some((v.clone(), view.clone()));
+                view
+            }
+        }
+    }
+
     pub fn query(&self) -> Vec<(&'static str, String)> {
         let mut q = vec![("hide", self.hidden.join(","))];
         if let Some(d) = self.date {
@@ -670,7 +685,7 @@ const MARKS: &[(&str, &str)] = &[("commit", "Commit"), ("question", "Question"),
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let shell = div().id("days-page").flex().flex_col().flex_1().min_w_0().size_full().overflow_y_scroll();
-    let Some(v) = m.data.days.as_ref().and_then(View::of) else {
+    let Some(v) = m.data.days.clone().and_then(|d| m.days.view(&d)) else {
         let msg = m.data.errs.days.clone().unwrap_or_else(|| "Loading…".into());
         return shell.child(div().p(px(28.)).child(kit::empty(&t, msg))).into_any_element();
     };
@@ -1416,5 +1431,30 @@ mod tests {
         assert_eq!(dur(180.0), "3h");
         assert_eq!(hour_label(12), "12 PM");
         assert_eq!(hour_label(9), "9 AM");
+    }
+
+    #[gpui_kit::test]
+    fn the_view_is_built_once_per_answer(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        let (w, _rec) = crate::parity::window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(crate::app::Page::Days, cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let built = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| m.days.built.clone().and_then(|(_, v)| v)).unwrap();
+        let view = built(cx).expect("the day was built");
+        draw(cx);
+        assert!(std::rc::Rc::ptr_eq(&view, &built(cx).unwrap()), "a redraw keeps what was built");
+
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert!(!std::rc::Rc::ptr_eq(&view, &built(cx).unwrap()), "a new answer builds the day again");
     }
 }

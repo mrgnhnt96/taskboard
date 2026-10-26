@@ -105,11 +105,11 @@ pub struct Data {
     pub sessions: Option<Value>,
     pub closed: Option<Value>,
     pub session: Option<Value>,
-    /// `GET /days` for the Days page.
-    pub days: Option<Value>,
+    /// `GET /days` for the Days page, shared with the view the page builds from it.
+    pub days: Option<Rc<Value>>,
     /// `GET /home` and today's `GET /days` for the home page.
     pub home: Option<Rc<Value>>,
-    pub today: Option<Value>,
+    pub today: Option<Rc<Value>>,
     /// The ⌘K palette's best tasks and backlog issues for what's typed (`GET /search?palette=1`).
     pub tasks: Option<Value>,
     pub backlog: Option<Value>,
@@ -1345,13 +1345,17 @@ fn land(slot: &mut Option<Value>, err: &mut Option<String>, answer: Answer, map:
     }
 }
 
-/// A goal answer lands as a new `Rc`, so the page knows to rebuild from it.
-fn land_goal(slot: &mut Option<Rc<Value>>, err: &mut Option<String>, answer: Answer) {
+/// An answer lands as a new `Rc`, so the page knows to rebuild from it.
+fn land_rc(slot: &mut Option<Rc<Value>>, err: &mut Option<String>, answer: Answer, map: impl FnOnce(Value) -> Value) {
     let mut v = None;
-    land(&mut v, err, answer, merge_goal);
+    land(&mut v, err, answer, map);
     if let Some(v) = v {
         *slot = Some(Rc::new(v));
     }
+}
+
+fn land_goal(slot: &mut Option<Rc<Value>>, err: &mut Option<String>, answer: Answer) {
+    land_rc(slot, err, answer, merge_goal);
 }
 
 impl Got {
@@ -1483,13 +1487,13 @@ impl Got {
         if m.page == Page::Goals {
             for (r, v) in self.goal_rows {
                 if let Ok(v) = v {
-                    m.goals.details.insert(r, merge_goal(v));
+                    m.goals.land(r, merge_goal(v));
                 }
             }
         } else if m.page == Page::Projects {
             for (r, v) in self.goal_rows {
                 if let Ok(v) = v {
-                    m.projects.details.insert(r, merge_goal(v));
+                    m.projects.land(r, merge_goal(v));
                 }
             }
         }
@@ -1501,14 +1505,14 @@ impl Got {
         }
         if let Some(v) = self.days {
             if m.page == Page::Days {
-                land(&mut d.days, &mut d.errs.days, v, |v| v);
+                land_rc(&mut d.days, &mut d.errs.days, v, |v| v);
             }
         }
         if self.home.is_some() {
             d.home = self.home.map(Rc::new);
         }
         if self.today.is_some() {
-            d.today = self.today;
+            d.today = self.today.map(Rc::new);
         }
         if m.page == Page::Review {
             if let Some(v) = self.reviews {
