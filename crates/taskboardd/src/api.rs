@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -631,7 +632,60 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
 
 const DONE_SHOWN_MAX: usize = 200;
 
+/// How long the board part of `GET /state` is kept while nothing is written: idle times, the done
+/// window and some card parts move with the clock or outside the database.
+const STATE_BOARD_TTL: Duration = Duration::from_secs(10);
+
 fn get_state(app: &App, query: &Query) -> Result<Value> {
+    let mut out = state_board(app, query)?;
+    let projects = projects::list_projects(app)?;
+    let releases: Vec<&str> = projects.iter().filter_map(|p| p["name"].as_str()).filter(|n| crate::releases::on(app, n)).collect();
+    let live = json!({
+        "now": now_iso(), "midna": midna::status(app), "jira": {"enabled": app.cfg.jira_on(), "site": app.cfg.jira.site},
+        "owner": app.cfg.owner,
+        "alerts": alerts::listing(app), "work_hours": hours::state(app), "usage": usage::state(app),
+        "keep_awake": app.shared.lock().midna_keep_awake.clone(),
+        "accounts": accounts::attention(&app.cfg),
+        "prs_checked_at": app.shared.lock().prs_checked_at,
+        "pr_feed": crate::feed::health(app),
+        "stream": crate::stream::overview(app),
+        "rate_limits": crate::prhost::limit::status(),
+        "pr_builds": crate::prbuilds::status(app),
+        "master": crate::breaks::banner(app)?,
+        "projects": projects::facts(app, &projects)?, "releases": releases,
+    });
+    if let (Some(out), Value::Object(live)) = (out.as_object_mut(), live) {
+        out.extend(live);
+    }
+    if let Some(sid) = query.get("session") {
+        out["mine"] = match board::task_for_session(app, Some(sid))? {
+            Some(t) => board::task_card(app, &t)?,
+            None => Value::Null,
+        };
+    }
+    Ok(out)
+}
+
+/// The part of `GET /state` read from the database (columns, terminals, goals), kept per query
+/// until the next write or [`STATE_BOARD_TTL`]: an idle board's polls then skip building it.
+fn state_board(app: &App, query: &Query) -> Result<Value> {
+    let mut key: Vec<(&String, &String)> = query.iter().filter(|(k, _)| !matches!(k.as_str(), "since" | "session")).collect();
+    key.sort();
+    let key = format!("{key:?}");
+    let mark = app.db.mark()?;
+    if let Some((at, made, v)) = app.shared.lock().state_boards.get(&key) {
+        if *at == mark && made.elapsed() < STATE_BOARD_TTL {
+            return Ok(v.clone());
+        }
+    }
+    let v = build_state_board(app, query)?;
+    let mut shared = app.shared.lock();
+    shared.state_boards.retain(|_, (at, made, _)| *at == mark && made.elapsed() < STATE_BOARD_TTL);
+    shared.state_boards.insert(key, (mark, Instant::now(), v.clone()));
+    Ok(v)
+}
+
+fn build_state_board(app: &App, query: &Query) -> Result<Value> {
     let project = q(query, "project", "all");
     let goal = q(query, "goal", "all");
     let keep: Vec<i64> = q(query, "keep", "").split(',').filter(|k| !k.trim().is_empty()).filter_map(|k| parse_ref_str(k, "issue").ok().flatten()).collect();
@@ -712,9 +766,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         }
     }
     let sessions = ops::session_list(app, project)?;
-    let mut sp: Vec<String> = ops::session_list(app, "all")?.iter().filter_map(|s| s["project"].as_str().map(|x| x.to_string())).collect();
-    sp.sort();
-    sp.dedup();
+    let sp = ops::session_projects(app)?;
     counts.insert("done_hidden".into(), json!(done_hidden));
     counts.insert("open_issues".into(), json!(open_issues.len()));
     counts.insert("untriaged".into(), json!(app.db.count("SELECT COUNT(*) FROM issues WHERE state = 'open' AND goal_id IS NULL", p![])?));
@@ -724,30 +776,10 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
             planned.push(board::task_card(app, &t)?);
         }
     }
-    let projects = projects::list_projects(app)?;
-    let releases: Vec<&str> = projects.iter().filter_map(|p| p["name"].as_str()).filter(|n| crate::releases::on(app, n)).collect();
-    let mut out = json!({
-        "now": now_iso(), "midna": midna::status(app), "jira": {"enabled": app.cfg.jira_on(), "site": app.cfg.jira.site},
-        "owner": app.cfg.owner,
-        "alerts": alerts::listing(app), "work_hours": hours::state(app), "usage": usage::state(app),
-        "keep_awake": app.shared.lock().midna_keep_awake.clone(),
-        "accounts": accounts::attention(&app.cfg),
-        "prs_checked_at": app.shared.lock().prs_checked_at,
-        "pr_feed": crate::feed::health(app),
-        "stream": crate::stream::overview(app),
-        "rate_limits": crate::prhost::limit::status(),
-        "pr_builds": crate::prbuilds::status(app),
-        "master": crate::breaks::banner(app)?,
-        "projects": projects::facts(app, &projects)?, "releases": releases, "sessions": sessions, "session_projects": sp, "goals": goals,
+    Ok(json!({
+        "sessions": sessions, "session_projects": sp, "goals": goals,
         "columns": Value::Object(out_cols), "counts": Value::Object(counts), "planned": planned,
-    });
-    if let Some(sid) = query.get("session") {
-        out["mine"] = match board::task_for_session(app, Some(sid))? {
-            Some(t) => board::task_card(app, &t)?,
-            None => Value::Null,
-        };
-    }
-    Ok(out)
+    }))
 }
 
 /// The running daemon: its version, how long it has been up and its pid (Settings › System).

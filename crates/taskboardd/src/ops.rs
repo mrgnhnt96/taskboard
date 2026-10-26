@@ -519,7 +519,8 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         tasks.insert(t.st("session_id"), t);
     }
     let mut out = vec![];
-    for s in app.db.q("SELECT * FROM sessions ORDER BY name COLLATE NOCASE, id", p![])? {
+    // Gone terminals are most of the table and carry their whole turn history: leave them in the file.
+    for s in app.db.q("SELECT * FROM sessions WHERE status IS NOT 'gone' ORDER BY name COLLATE NOCASE, id", p![])? {
         if !session_visible(&s) || !project_match(s.s("project"), project) {
             continue;
         }
@@ -551,6 +552,20 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         }
         out.push(row);
     }
+    Ok(out)
+}
+
+/// The projects with a terminal in [`session_list`], sorted, without building its rows.
+pub fn session_projects(app: &App) -> Result<Vec<String>> {
+    let mut out: Vec<String> = app
+        .db
+        .q("SELECT project, status, agent FROM sessions WHERE status IS NOT 'gone' AND project IS NOT NULL", p![])?
+        .iter()
+        .filter(|s| session_visible(s))
+        .filter_map(|s| s.s("project").map(|p| p.to_string()))
+        .collect();
+    out.sort();
+    out.dedup();
     Ok(out)
 }
 
