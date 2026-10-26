@@ -494,17 +494,51 @@ fn a_task_terminal_that_compacted_three_times_carries_on_in_a_fresh_one() {
 }
 
 #[test]
-fn one_more_compaction_past_the_limit_closes_the_terminal_at_once() {
+fn one_more_compaction_past_the_limit_waits_and_closes_gently() {
     let b = board_with(|_| {});
     b.post("/limits", json!({"max_compactions": 1})).unwrap();
     let id = b.new_task();
     b.opened_by_board(id);
     b.compact();
+    b.settle();
     b.report("hook.pre_compact", json!({"trigger": "auto"})).unwrap();
     taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert!(b.close_jobs().is_empty(), "a force close would ask the owner, so it waits out the compaction");
+
+    b.report("hook.session_start", json!({"source": "compact"})).unwrap();
+    b.settle();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
     let jobs = b.close_jobs();
-    assert_eq!(jobs.len(), 1, "it doesn't wait for a turn that's compacting again");
-    assert_eq!(board::job_args(&jobs[0])["force"], true);
+    assert_eq!(jobs.len(), 1, "it closes once the compaction ends and the terminal settles");
+    assert_eq!(board::job_args(&jobs[0])["force"], false);
+}
+
+#[test]
+fn a_failed_compaction_close_is_retried_a_few_times_apart() {
+    let b = board_with(|_| {});
+    b.post("/limits", json!({"max_compactions": 1})).unwrap();
+    let id = b.new_task();
+    b.opened_by_board(id);
+    b.compact();
+    b.settle();
+    let fail_all = |at: &str| {
+        b.app.db.x("UPDATE jobs SET state = 'failed', updated_at = ? WHERE kind = 'close' AND state = 'pending'", p![at]).unwrap();
+    };
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert_eq!(b.close_jobs().len(), 1);
+
+    fail_all(&taskboardd::util::now_iso());
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert_eq!(b.close_jobs().len(), 1, "not sent again right after it failed");
+
+    for tries in 2..=4 {
+        b.app.db.x("UPDATE jobs SET updated_at = '2000-01-01T00:00:00Z' WHERE kind = 'close'", p![]).unwrap();
+        taskboardd::runner::close_compacted(&b.app).unwrap();
+        assert_eq!(b.close_jobs().len(), tries, "tried again a little later");
+        fail_all("2000-01-01T00:00:00Z");
+    }
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert_eq!(b.close_jobs().len(), 4, "gives up after four tries");
 }
 
 #[test]

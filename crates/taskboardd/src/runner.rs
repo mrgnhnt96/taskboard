@@ -486,10 +486,6 @@ fn task_terminals(app: &App) -> Result<Vec<(Row, Row)>> {
 }
 
 fn close_for(app: &App, s: &Row, t: &Row, purpose: &str, why: &str) -> Result<i64> {
-    close_job(app, s, t, purpose, why, false)
-}
-
-fn close_job(app: &App, s: &Row, t: &Row, purpose: &str, why: &str, force: bool) -> Result<i64> {
     board::log_event(
         app,
         t.id(),
@@ -503,7 +499,7 @@ fn close_job(app: &App, s: &Row, t: &Row, purpose: &str, why: &str, force: bool)
     board::create_job(
         app,
         "close",
-        json!({"session": s.v("id"), "reason": format!("Task board: {}", why.to_lowercase()), "force": force}),
+        json!({"session": s.v("id"), "reason": format!("Task board: {}", why.to_lowercase()), "force": false}),
         Some(t.id()),
         purpose,
         None,
@@ -512,7 +508,8 @@ fn close_job(app: &App, s: &Row, t: &Row, purpose: &str, why: &str, force: bool)
 
 /// A task terminal that has compacted `max_compactions` times carries on in a fresh one from its
 /// handoff (the checkpoint saved before each compaction) instead of compacting again: closed once
-/// its turn is over, or at once when it starts one more compaction (nothing runs while it compacts).
+/// its turn is over. Never force-closed, even mid-compaction: Midna asks the owner before an agent
+/// force-closes a terminal, so it waits for the compaction to end and the terminal to settle.
 /// Only terminals the board opened: one the owner opened that took a task (`--here`, `tb take`)
 /// holds their conversation, so it stays open.
 pub fn close_compacted(app: &App) -> Result<()> {
@@ -525,15 +522,14 @@ pub fn close_compacted(app: &App) -> Result<()> {
         if n < max || t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != s.s("id") {
             continue;
         }
-        let compacting = board::compacting_since(&s).is_string() && n > max && !board::waiting_on_background(&s);
-        if !compacting && (!settled(&s) || board::limited(&s)) {
+        if board::compacting_since(&s).is_string() || !settled(&s) || board::limited(&s) {
             continue;
         }
-        if !board::opened_by_board(app, s.s("id"))? {
+        if !board::opened_by_board(app, s.s("id"))? || !close_worth_trying(app, &s.st("id"), board::COMPACT_CLOSE)? {
             continue;
         }
         let why = format!("It has compacted its conversation {}", plural(n, "time"));
-        app.db.tx(|| close_job(app, &s, &t, board::COMPACT_CLOSE, &why, compacting))?;
+        app.db.tx(|| close_for(app, &s, &t, board::COMPACT_CLOSE, &why))?;
     }
     Ok(())
 }
@@ -600,12 +596,13 @@ pub fn close_idle_after_hours(app: &App) -> Result<()> {
 
 pub const PR_TAB_CLOSE: &str = "pr_tab_close";
 
-fn close_worth_trying(app: &App, sid: &str) -> Result<bool> {
+/// Whether to send `sid` another `purpose` close: a few tries, a little apart, after ones that failed.
+fn close_worth_trying(app: &App, sid: &str, purpose: &str) -> Result<bool> {
     let failed: Vec<Row> = app
         .db
         .q(
             "SELECT state, updated_at, args FROM jobs WHERE kind = 'close' AND purpose = ? AND state IN ('failed', 'expired') ORDER BY id",
-            p![PR_TAB_CLOSE],
+            p![purpose],
         )?
         .into_iter()
         .filter(|j| board::job_args(j).s("session") == Some(sid))
@@ -616,7 +613,7 @@ fn close_worth_trying(app: &App, sid: &str) -> Result<bool> {
 
 pub fn close_pr_tabs(app: &App) -> Result<()> {
     for (s, t, finished) in prflow::pr_tabs_to_close(app)? {
-        if !settled(&s) || board::closing_session(app, &s.st("id"))? || !close_worth_trying(app, &s.st("id"))? {
+        if !settled(&s) || board::closing_session(app, &s.st("id"))? || !close_worth_trying(app, &s.st("id"), PR_TAB_CLOSE)? {
             continue;
         }
         let why = if finished {
