@@ -35,10 +35,11 @@
 //!
 //! [`status`]: each account's host, its limit (`limited_until`, `why`), its slow restart (`slow_text`),
 //! the board's calls in the last hour and its budget, and the board's share of the calls in the hour
-//! before the last limit (`share_text`), on `/state` (`rate_limits`), `GET /prs/feed` (`tb feed`) and
+//! before the last limit (`share_text`), and what the last PR poll cost (`poll_text`, from [`counting`]
+//! and [`Limits::note_poll`]), on `/state` (`rate_limits`), `GET /prs/feed` (`tb feed`) and
 //! `POST /prs/refresh` (`tb pr check`).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::OnceLock;
 
@@ -155,6 +156,22 @@ pub struct Headroom {
 
 thread_local! {
     static PRIORITY: Cell<bool> = const { Cell::new(false) };
+    static COUNTED: RefCell<Option<HashMap<String, usize>>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` and counts the calls it made that reached each host, by host id.
+pub fn counting<T>(f: impl FnOnce() -> T) -> (T, HashMap<String, usize>) {
+    let was = COUNTED.with(|c| c.replace(Some(HashMap::new())));
+    let out = f();
+    let got = COUNTED.with(|c| c.replace(was)).unwrap_or_default();
+    for (host, n) in &got {
+        COUNTED.with(|c| c.borrow_mut().as_mut().map(|m| *m.entry(host.clone()).or_default() += n));
+    }
+    (out, got)
+}
+
+fn count(host: &str) {
+    COUNTED.with(|c| c.borrow_mut().as_mut().map(|m| *m.entry(host.to_string()).or_default() += 1));
 }
 
 /// Runs `f` with its reads marked as the highest value: they still go while an account restarts
@@ -180,6 +197,30 @@ pub struct Limits {
     stretch: Mutex<HashMap<String, (f64, f64)>>,
     /// Lines for the daemon's log, written on the next [`check`].
     log: Mutex<Vec<String>>,
+    /// The last PR poll by host.
+    polls: Mutex<HashMap<String, Poll>>,
+}
+
+/// What one PR poll cost on a host.
+#[derive(Debug, Clone, PartialEq)]
+struct Poll {
+    prs: usize,
+    /// PRs read in full: the rest hadn't changed.
+    full: usize,
+    calls: usize,
+    at: f64,
+}
+
+impl Poll {
+    fn text(&self) -> String {
+        let at = local_clock(Some(&iso(self.at)));
+        let cost = format!("The last PR poll, at {at}, made {} for {}", plural(self.calls as i64, "call"), plural(self.prs as i64, "PR"));
+        match self.full {
+            0 => format!("{cost}: none had changed."),
+            n if n == self.prs => format!("{cost} and read them all in full."),
+            n => format!("{cost} and read {n} of them in full."),
+        }
+    }
 }
 
 /// What the host said about a call that hit its limit.
@@ -344,9 +385,15 @@ impl Limits {
         out
     }
 
+    /// A PR poll on `host` looked at `prs` PRs, read `full` of them in full and made `calls` calls.
+    pub fn note_poll(&self, host: &str, prs: usize, full: usize, calls: usize, now: f64) {
+        self.polls.lock().insert(host.to_string(), Poll { prs, full, calls, at: now });
+    }
+
     /// Each account the board has called: its host, limit and calls in the last hour.
     pub fn status(&self, now: f64) -> Vec<Value> {
         let stretch = self.stretch.lock().clone();
+        let polls = self.polls.lock().clone();
         let mut all = self.accounts.lock();
         let mut out: Vec<Value> = all
             .values_mut()
@@ -363,6 +410,7 @@ impl Limits {
                     "slow_until": slow.map(iso),
                     "slow_text": slow.map(|s| format!("{}; reads other than the PR poll's wait until {}", a.slow_why, local_clock(Some(&iso(s))))),
                     "share_text": a.share_text(now),
+                    "poll_text": polls.get(&a.host).map(Poll::text),
                     "calls_last_hour": a.calls.len(),
                     "max_per_hour": self.budget(&a.host),
                     "stretch": stretch.get(&a.host).map(|(f, _)| *f).filter(|f| *f > 1.0),
@@ -446,6 +494,7 @@ impl Gate {
     pub fn call<T>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         let l = limits();
         l.admit(&self.key, &self.host, write, is_priority(), now_ts())?;
+        count(&self.host);
         match f() {
             Ok((v, hit)) => {
                 if let Some(h) = hit {
@@ -708,5 +757,43 @@ mod tests {
         assert!(l.lifted(T0 + 32.0 * 60.0).is_empty());
         assert!(l.lifted(t + 1.0).is_empty(), "still restarting slowly");
         assert_eq!(l.lifted(t + HOUR + 1.0), vec!["bitbucket".to_string()]);
+    }
+
+    #[test]
+    fn counting_counts_the_calls_that_reached_each_host_inside_it_and_around_it() {
+        let gate = Gate::new("counted-host", "counted:1".into());
+        let call = || gate.call(false, || Ok(((), None))).unwrap();
+        let ((inner, ()), outer) = counting(|| {
+            call();
+            let inner = counting(|| {
+                call();
+                call();
+            });
+            (inner.1, ())
+        });
+        assert_eq!(inner.get("counted-host"), Some(&2));
+        assert_eq!(outer.get("counted-host"), Some(&3), "the inner count adds to the outer one");
+        let refused = Gate::new("counted-host", "counted:2".into());
+        limits().hit("counted:2", "counted-host", &hit("429"), now_ts());
+        let ((), none) = counting(|| assert!(refused.call(false, || Ok(((), None))).is_err()));
+        assert!(none.is_empty(), "a call the limit stopped never reached the host: {none:?}");
+    }
+
+    #[test]
+    fn the_status_says_what_the_last_poll_cost() {
+        let l = Limits::default();
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
+        assert!(l.status(T0)[0]["poll_text"].is_null(), "no poll yet");
+        let text = |prs, full, calls| {
+            l.note_poll("bitbucket", prs, full, calls, T0);
+            let st = l.status(T0);
+            st[0]["poll_text"].as_str().unwrap().split(", made ").nth(1).unwrap().to_string()
+        };
+        assert_eq!(text(20, 1, 2), "2 calls for 20 PRs and read 1 of them in full.");
+        assert_eq!(text(20, 0, 1), "1 call for 20 PRs: none had changed.");
+        assert_eq!(text(3, 3, 4), "4 calls for 3 PRs and read them all in full.");
+        let st = l.status(T0);
+        let at = st[0]["poll_text"].as_str().unwrap().split(", at ").nth(1).unwrap().split(',').next().unwrap().to_string();
+        assert!(at.ends_with("am") || at.ends_with("pm"), "12-hour time: {at}");
     }
 }

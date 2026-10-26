@@ -1712,24 +1712,19 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
         "SELECT * FROM tasks WHERE pr_host IN ('github', 'bitbucket') AND pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
         p![],
     )?;
-    let mut changed = 0;
+    let mut by_host: std::collections::BTreeMap<String, Vec<Row>> = Default::default();
     for t in tasks {
         if skip_covered && crate::feed::pr_poll_skips(app, &t) {
             continue;
         }
-        match read(app, &t) {
-            Ok(rec) => {
-                crate::lens_pr::kick(app, t.id(), &rec)?;
-                let t = board::get_task(app, t.id())?;
-                note_expected(app, &t, &rec)?;
-                gate(app, &board::get_task(app, t.id())?, &rec)?;
-                let t = board::get_task(app, t.id())?;
-                if app.db.tx(|| step(app, &t, &rec))? {
-                    changed += 1;
-                }
-            }
-            Err(e) => app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url"))),
-        }
+        by_host.entry(t.st("pr_host")).or_default().push(t);
+    }
+    let mut changed = 0;
+    for (host, tasks) in by_host {
+        let (polled, calls) = crate::prhost::limit::counting(|| poll_host(app, &host, &tasks));
+        let (stepped, full) = polled?;
+        changed += stepped;
+        crate::prhost::limit::limits().note_poll(&host, tasks.len(), full, calls.get(&host).copied().unwrap_or(0), now_ts());
     }
     crate::stack::retarget(app)?;
     crate::propen::add_evidence(app)?;
@@ -1739,6 +1734,86 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     }
     app.shared.lock().prs_checked_at = Some(now_iso());
     Ok(changed)
+}
+
+/// The poll reads a PR in full at least this often even while its stamp stays put: a stamp can miss
+/// a change (a thread resolved on Bitbucket, a base the PR no longer merges into cleanly).
+const FULL_READ_EVERY: f64 = 3600.0;
+
+/// Polls one host's PRs: what changed on all of them in one batch ([`PrHost::stamps`]), then a full
+/// read of each one that changed, and steps them all. How many stepped to a new stage, and how many
+/// were read in full.
+///
+/// [`PrHost::stamps`]: crate::prhost::PrHost::stamps
+fn poll_host(app: &App, host: &str, tasks: &[Row]) -> Result<(i64, usize)> {
+    let stamps = stamps(app, host, tasks);
+    let (mut changed, mut full) = (0, 0);
+    for (t, stamp) in tasks.iter().zip(stamps) {
+        let rec = match unchanged(t, stamp.as_deref()) {
+            // The host said it hasn't changed: that counts as a read for the relay's reconcile (`feed::pr_poll_skips`).
+            Some(rec) => {
+                merge_flow(app, t.id(), fields!["read_at" => now_iso()])?;
+                rec
+            }
+            None => match read(app, t) {
+                Ok(rec) => {
+                    full += 1;
+                    merge_flow(app, t.id(), vec![("stamp", stamp.map_or(Value::Null, Value::from)), ("full_at", json!(now_iso()))])?;
+                    rec
+                }
+                Err(e) => {
+                    app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url")));
+                    continue;
+                }
+            },
+        };
+        crate::lens_pr::kick(app, t.id(), &rec)?;
+        let t = board::get_task(app, t.id())?;
+        note_expected(app, &t, &rec)?;
+        gate(app, &board::get_task(app, t.id())?, &rec)?;
+        let t = board::get_task(app, t.id())?;
+        if app.db.tx(|| step(app, &t, &rec))? {
+            changed += 1;
+        }
+    }
+    Ok((changed, full))
+}
+
+/// Each task's PR stamp, in order; every one None when the host couldn't say (each is read in full).
+fn stamps(app: &App, host: &str, tasks: &[Row]) -> Vec<Option<String>> {
+    use crate::prhost::{Look, PrRef};
+    let refs: Vec<Option<PrRef>> = tasks.iter().map(PrRef::of).collect();
+    let looks: Vec<Look> = refs.iter().zip(tasks).filter_map(|(pr, t)| Some(Look { pr: pr.clone()?, checks: waits_on_checks(t) })).collect();
+    // Like a read, an open PR's stamp still goes while the account restarts slowly after a limit.
+    let got = crate::prhost::host_for(app, host).and_then(|h| crate::prhost::limit::priority(|| h.stamps(&looks)));
+    let mut got = match got {
+        Ok(got) if got.len() == looks.len() => got.into_iter(),
+        Ok(_) => return vec![None; tasks.len()],
+        Err(e) => {
+            app.info(format!("prs: couldn't ask {host} what changed, so every PR there is read in full: {e}"));
+            return vec![None; tasks.len()];
+        }
+    };
+    refs.iter().map(|pr| pr.as_ref().and_then(|_| got.next().flatten())).collect()
+}
+
+/// The stamp reads the PR's checks too: it waits on them, or they're running or failed (a rerun moves
+/// them without a push).
+fn waits_on_checks(t: &Row) -> bool {
+    let rec = flow(t).get("rec").cloned().unwrap_or(Value::Null);
+    t.s("pr_phase") == Some("checks") || rec["running"].as_i64().unwrap_or(0) > 0 || rec["failed"].as_array().is_some_and(|f| !f.is_empty())
+}
+
+/// The PR's last record, when its stamp is the one its last full read had and that read is under
+/// [`FULL_READ_EVERY`] old.
+fn unchanged(t: &Row, stamp: Option<&str>) -> Option<Value> {
+    let f = flow(t);
+    let stamp = stamp?;
+    let full_at = f.get("full_at").and_then(|a| a.as_str()).and_then(parse_iso)?;
+    if f.get("stamp").and_then(|s| s.as_str()) != Some(stamp) || now_ts() - full_at >= FULL_READ_EVERY {
+        return None;
+    }
+    f.get("rec").filter(|r| r.is_object()).cloned()
 }
 
 /// A wake whose terminal closed before it finished, or whose job failed: try again.

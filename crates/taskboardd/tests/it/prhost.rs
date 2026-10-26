@@ -1264,3 +1264,41 @@ fn a_check_only_an_earlier_push_posted_holds_the_pr_only_for_the_short_wait() {
     poll(&b);
     assert_eq!(b.phase(id), "merge", "not the full 90 min");
 }
+
+#[test]
+fn the_poll_reads_a_pr_in_full_only_when_its_stamp_moves_or_its_last_full_read_is_an_hour_old() {
+    // #676: one batch call says what changed; unchanged PRs are stepped with their last record.
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    *h.stamp.lock() = Some("s1".into());
+    poll(&b);
+    assert_eq!(reads(&h), 1, "the first poll has nothing to compare with");
+    assert_eq!(b.flow(id)["stamp"], "s1");
+    prflow::merge_flow(&b.app, id, vec![("read_at", json!(iso(now_ts() - 600.0)))]).unwrap();
+    poll(&b);
+    assert_eq!(reads(&h), 1, "the stamp didn't move");
+    let read_at = b.flow(id)["read_at"].as_str().unwrap().to_string();
+    assert!(now_ts() - taskboardd::util::parse_iso(&read_at).unwrap() < 60.0, "asking what changed is a read: {read_at}");
+    assert_eq!(h.calls().iter().filter(|c| c.starts_with("stamps")).count(), 2);
+
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    *h.rec.lock() = rec;
+    *h.stamp.lock() = Some("s2".into());
+    poll(&b);
+    assert_eq!(reads(&h), 2, "the stamp moved");
+    assert_eq!(b.phase(id), "comments");
+    poll(&b);
+    assert_eq!(reads(&h), 2);
+    assert_eq!(b.phase(id), "comments", "stepped with the last record");
+
+    prflow::merge_flow(&b.app, id, vec![("full_at", json!(iso(now_ts() - 3601.0)))]).unwrap();
+    poll(&b);
+    assert_eq!(reads(&h), 3, "a stamp can miss a change, so the PR is read in full every hour");
+
+    *h.stamp.lock() = None;
+    poll(&b);
+    assert_eq!(reads(&h), 4, "no stamp: read in full");
+    assert!(b.flow(id).get("stamp").is_none(), "{}", b.flow(id));
+}
