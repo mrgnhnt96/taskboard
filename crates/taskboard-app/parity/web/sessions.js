@@ -1,13 +1,12 @@
 'use strict';
 
 const SS = {
-  list: null, listErr: '', closed: [], closedTotal: 0,
+  list: null, listErr: '', closed: [],
   detail: null, detailErr: '', detailFor: null,
   picked: new Set(), confirm: null, bulk: false, q: '',
   selecting: false,
   menu: null,
   focusRename: null,
-  closedOpen: false,
   hideSel: null,
   collapsed: (() => { try { return new Set(JSON.parse(localStorage.getItem('tb.sessCollapsed') || '[]')); } catch { return new Set(); } })(),
 };
@@ -62,7 +61,7 @@ async function loadSessionList() {
   for (const id of [...SS.picked]) { const s = ssSession(id); if (!s || !bulkable(s)) SS.picked.delete(id); }
 }
 async function loadClosedSessions() {
-  try { const r = await api('/sessions/closed?project=all'); SS.closed = (r && r.sessions) || []; SS.closedTotal = (r && r.total) || SS.closed.length; }
+  try { const r = await api('/sessions/closed?project=all'); SS.closed = (r && r.sessions) || []; }
   catch {}
 }
 async function loadSessionDetail(id) {
@@ -157,16 +156,6 @@ function ssRow(s) {
       <span class="srow-end"><span class="srow-state">${esc(state)}</span><span class="srow-when">${esc(when)}</span></span>
     </button></div>`;
 }
-function ssClosedRow(s) {
-  const on = ssSel() === s.id;
-  const sub = s.task_ref ? `${s.task_ref} · ${s.task_title || ''}` : 'No task';
-  return `<div class="srow s-gone${on ? ' on' : ''}" data-row="${esc(s.id)}">${SS.selecting ? '<span class="spacer"></span>' : ''}
-    <button type="button" class="srow-main" data-act="ss-open" data-id="${esc(s.id)}" aria-pressed="${on}">
-      <span class="dot"></span>
-      <span class="srow-text"><span class="srow-name">${esc(s.name)}</span><span class="srow-sub">${esc([s.project, sub].filter(Boolean).join(' · '))}</span></span>
-      <span class="srow-end"><span class="srow-state">Closed</span><span class="srow-when">${esc(ago(s.closed_at))}</span></span>
-    </button></div>`;
-}
 
 const holdsSel = rows => { const sel = ssSel(); return !!sel && sel !== SS.hideSel && rows.some(x => x.id === sel); };
 function groupHead(open, act, id, label, count) {
@@ -185,11 +174,6 @@ function ssList() {
       return `<div class="sgroup${open ? ' open' : ''}">${groupHead(open, 'ss-group', proj, proj, plural(ss.length, 'terminal') + extra)}${open ? ss.map(ssRow).join('') : ''}</div>`;
     }).join('')
       : `<p class="none-yet pad">${SS.q.trim() ? `No terminal matches “${esc(SS.q.trim())}”.` : ssFilter() === 'all' ? 'No Claude terminals in Midna right now.' : 'None right now.'}</p>`;
-    if (SS.closed.length && ssFilter() === 'all') {
-      const closed = SS.closed.filter(ssMatch);
-      const open = SS.closedOpen || holdsSel(closed);
-      if (closed.length) body += `<div class="sgroup closed${open ? ' open' : ''}">${groupHead(open, 'ss-closed', '', 'Closed', plural(SS.q.trim() ? closed.length : SS.closedTotal, 'terminal'))}${open ? closed.slice(0, 50).map(ssClosedRow).join('') : ''}</div>`;
-    }
   }
   const n = SS.picked.size;
   const stale = (SS.list || []).filter(s => bulkable(s) && isStale(s)).length;
@@ -371,7 +355,6 @@ Object.assign(ACTIONS, {
   },
   'ss-focus': el => run(el, () => post(`/sessions/${encodeURIComponent(el.dataset.id)}/focus`), { ok: () => sentNote() }),
   'ss-reopen': el => run(el, () => post(`/sessions/${encodeURIComponent(el.dataset.id)}/reopen`), { ok: () => 'Asked Midna to reopen it in a new terminal.' }),
-  'ss-closed': el => { SS.closedOpen = el.getAttribute('aria-expanded') !== 'true'; if (!SS.closedOpen) SS.hideSel = ssSel(); renderAll(); },
   'ss-group': el => {
     const proj = el.dataset.id;
     if (el.getAttribute('aria-expanded') === 'true') { SS.collapsed.add(proj); SS.hideSel = ssSel(); } else SS.collapsed.delete(proj);

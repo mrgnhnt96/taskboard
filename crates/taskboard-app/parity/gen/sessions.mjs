@@ -1,5 +1,5 @@
-// The Sessions page (sessions.js + the rename helpers in app.js): what the list, a row, a closed
-// row, the header, the row menu, the detail pane and the bulk-close confirmation show, and which
+// The Sessions page (sessions.js + the rename helpers in app.js): what the list, a row, the header,
+// the row menu, the detail pane and the bulk-close confirmation show, and which
 // actions each offers, for every state. Checked by `ui::sessions` tests.
 import { web, text, acts, writeGolden, NOW } from '../web.mjs';
 
@@ -50,13 +50,13 @@ TIMELINE.push({ at: at(2), kind: 'prompt', text: 'many   spaces\nand lines' });
 function page(w, o = {}) {
   w.run(`S.route = { page: 'sessions', id: null, q: {} }; S.rename = null; S.drafts = {}; S.notes = {}; S.busy = new Set();
     S.renameWatch = {}; S.renameFlash = {}; S.state = { midna: { up: true } };
-    SS.list = null; SS.listErr = ''; SS.closed = []; SS.closedTotal = 0; SS.detail = null; SS.detailErr = ''; SS.detailFor = null;
-    SS.picked = new Set(); SS.confirm = null; SS.bulk = false; SS.q = ''; SS.selecting = false; SS.menu = null; SS.closedOpen = false;
+    SS.list = null; SS.listErr = ''; SS.closed = []; SS.detail = null; SS.detailErr = ''; SS.detailFor = null;
+    SS.picked = new Set(); SS.confirm = null; SS.bulk = false; SS.q = ''; SS.selecting = false; SS.menu = null;
     SS.hideSel = null; SS.collapsed = new Set(); SS.hold = null;`);
   w.set('__o', o);
   w.run(`
     if (__o.list !== undefined) SS.list = __o.list;
-    if (__o.closed) { SS.closed = __o.closed; SS.closedTotal = __o.closedTotal || __o.closed.length; }
+    if (__o.closed) SS.closed = __o.closed;
     if (__o.sel) S.route.q.s = __o.sel;
     if (__o.f) S.route.q.f = __o.f;
     if (__o.back) S.route.q.back = __o.back;
@@ -65,7 +65,6 @@ function page(w, o = {}) {
     if (__o.hideSel) SS.hideSel = __o.hideSel;
     if (__o.selecting) SS.selecting = true;
     if (__o.picked) SS.picked = new Set(__o.picked);
-    if (__o.closedOpen) SS.closedOpen = true;
     if (__o.detail) { SS.detail = __o.detail; SS.detailFor = __o.detail.id; }
     if (__o.confirm) SS.confirm = __o.confirm;
     if (__o.rename) S.rename = __o.rename;
@@ -128,10 +127,6 @@ for (const s of LIVE) for (const [label, o] of [['', {}], [' selected', { sel: s
   page(w, { list: LIVE, ...o });
   add(`ssRow ${s.id}${label}`, { fn: 'ssRow', session: s, sel: o.sel || null, selecting: !!o.selecting, picked: o.picked || [] }, view(w.call('ssRow', s)));
 }
-for (const s of CLOSED) for (const [label, o] of [['', {}], [' selected', { sel: s.id }], [' selecting', { selecting: true }]]) {
-  page(w, { list: LIVE, closed: CLOSED, ...o });
-  add(`ssClosedRow ${s.id}${label}`, { fn: 'ssClosedRow', session: s, sel: o.sel || null, selecting: !!o.selecting }, view(w.call('ssClosedRow', s)));
-}
 
 // Header.
 for (const [label, o] of [['loading', { list: null }], ['loaded', { list: LIVE }], ['one', { list: [LIVE[0]] }], ['filter stale', { list: LIVE, f: 'stale' }],
@@ -156,13 +151,12 @@ const lists = [
   ['loading', { list: null }],
   ['empty', { list: [] }],
   ['empty filtered', { list: [LIVE[2]], f: 'needs' }],
-  ['default', { list: LIVE, closed: CLOSED, closedTotal: 7 }],
+  ['default', { list: LIVE, closed: CLOSED }],
   ['default with selection', { list: LIVE, closed: CLOSED, sel: 's-c' }],
   ['filter needs', { list: LIVE, closed: CLOSED, f: 'needs' }],
   ['filter stale', { list: LIVE, closed: CLOSED, f: 'stale' }],
   ['filter idle', { list: LIVE, closed: CLOSED, f: 'idle' }],
   ['search', { list: LIVE, closed: CLOSED, q: 'Pass' }],
-  ['search closed', { list: LIVE, closed: CLOSED, closedTotal: 7, q: 'old', closedOpen: true }],
   ['search none', { list: LIVE, closed: CLOSED, q: 'zzz' }],
   ['search spaces', { list: LIVE, closed: CLOSED, q: '  Zeta ' }],
   ['collapsed api', { list: LIVE, closed: CLOSED, collapsed: ['api'] }],
@@ -170,9 +164,6 @@ const lists = [
   ['collapsed api hidden selection', { list: LIVE, closed: CLOSED, collapsed: ['api'], sel: 's-c', hideSel: 's-c' }],
   ['collapsed webapp needs', { list: LIVE, collapsed: ['webapp'] }],
   ['collapsed but searching', { list: LIVE, collapsed: ['webapp'], q: 'T3' }],
-  ['closed open', { list: LIVE, closed: CLOSED, closedTotal: 2, closedOpen: true }],
-  ['closed holds selection', { list: LIVE, closed: CLOSED, sel: 'closed-2' }],
-  ['closed hidden selection', { list: LIVE, closed: CLOSED, sel: 'closed-2', hideSel: 'closed-2' }],
   ['selecting none picked', { list: LIVE, closed: CLOSED, selecting: true }],
   ['selecting picked', { list: LIVE, closed: CLOSED, selecting: true, picked: ['s-e', 's-c'] }],
   ['selecting one picked', { list: LIVE, selecting: true, picked: ['s-d'] }],

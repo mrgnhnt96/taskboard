@@ -4004,156 +4004,6 @@
       }
     },
     {
-      "name": "ssClosedRow closed-1",
-      "input": {
-        "fn": "ssClosedRow",
-        "session": {
-          "id": "closed-1",
-          "name": "old one",
-          "project": "webapp",
-          "project_path": "/Users/sam/dev/webapp",
-          "closed_at": "2026-10-07T13:00:00.000Z",
-          "last_activity": "2026-10-07T12:55:00.000Z",
-          "task_ref": "T1",
-          "task_title": "Add endpoint",
-          "can_reopen": true
-        },
-        "sel": null,
-        "selecting": false
-      },
-      "expect": {
-        "text": "old one webapp · T1 · Add endpoint Closed 2h ago",
-        "acts": [
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssClosedRow closed-1 selected",
-      "input": {
-        "fn": "ssClosedRow",
-        "session": {
-          "id": "closed-1",
-          "name": "old one",
-          "project": "webapp",
-          "project_path": "/Users/sam/dev/webapp",
-          "closed_at": "2026-10-07T13:00:00.000Z",
-          "last_activity": "2026-10-07T12:55:00.000Z",
-          "task_ref": "T1",
-          "task_title": "Add endpoint",
-          "can_reopen": true
-        },
-        "sel": "closed-1",
-        "selecting": false
-      },
-      "expect": {
-        "text": "old one webapp · T1 · Add endpoint Closed 2h ago",
-        "acts": [
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssClosedRow closed-1 selecting",
-      "input": {
-        "fn": "ssClosedRow",
-        "session": {
-          "id": "closed-1",
-          "name": "old one",
-          "project": "webapp",
-          "project_path": "/Users/sam/dev/webapp",
-          "closed_at": "2026-10-07T13:00:00.000Z",
-          "last_activity": "2026-10-07T12:55:00.000Z",
-          "task_ref": "T1",
-          "task_title": "Add endpoint",
-          "can_reopen": true
-        },
-        "sel": null,
-        "selecting": true
-      },
-      "expect": {
-        "text": "old one webapp · T1 · Add endpoint Closed 2h ago",
-        "acts": [
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssClosedRow closed-2",
-      "input": {
-        "fn": "ssClosedRow",
-        "session": {
-          "id": "closed-2",
-          "name": "older",
-          "project": null,
-          "project_path": null,
-          "closed_at": "2026-10-04T15:00:00.000Z",
-          "last_activity": null,
-          "task_ref": null,
-          "task_title": null,
-          "can_reopen": false
-        },
-        "sel": null,
-        "selecting": false
-      },
-      "expect": {
-        "text": "older No task Closed 3d ago",
-        "acts": [
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssClosedRow closed-2 selected",
-      "input": {
-        "fn": "ssClosedRow",
-        "session": {
-          "id": "closed-2",
-          "name": "older",
-          "project": null,
-          "project_path": null,
-          "closed_at": "2026-10-04T15:00:00.000Z",
-          "last_activity": null,
-          "task_ref": null,
-          "task_title": null,
-          "can_reopen": false
-        },
-        "sel": "closed-2",
-        "selecting": false
-      },
-      "expect": {
-        "text": "older No task Closed 3d ago",
-        "acts": [
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssClosedRow closed-2 selecting",
-      "input": {
-        "fn": "ssClosedRow",
-        "session": {
-          "id": "closed-2",
-          "name": "older",
-          "project": null,
-          "project_path": null,
-          "closed_at": "2026-10-04T15:00:00.000Z",
-          "last_activity": null,
-          "task_ref": null,
-          "task_title": null,
-          "can_reopen": false
-        },
-        "sel": null,
-        "selecting": true
-      },
-      "expect": {
-        "text": "older No task Closed 3d ago",
-        "acts": [
-          "ss-open"
-        ]
-      }
-    },
-    {
       "name": "ssHeader loading",
       "input": {
         "fn": "ssHeader",
@@ -6197,11 +6047,10 @@
             "task_title": null,
             "can_reopen": false
           }
-        ],
-        "closedTotal": 7
+        ]
       },
       "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 7 terminals",
+        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-group",
@@ -6217,8 +6066,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
@@ -6408,7 +6256,7 @@
         "sel": "s-c"
       },
       "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
+        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-group",
@@ -6424,8 +6272,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
@@ -7214,205 +7061,6 @@
       }
     },
     {
-      "name": "ssList search closed",
-      "input": {
-        "fn": "ssList",
-        "list": [
-          {
-            "id": "s-a",
-            "name": "T2 Sign in with a passkey",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "status": "working",
-            "task_ref": "T2",
-            "task_title": "Sign in with a passkey",
-            "last_activity": "2026-10-07T14:57:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "feature/passkeys",
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-b",
-            "name": "T3 Settings page",
-            "project": "webapp",
-            "project_path": null,
-            "status": "needs",
-            "task_ref": "T3",
-            "task_title": "Settings page: manage passkeys",
-            "last_activity": "2026-10-07T14:59:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-c",
-            "name": "api shell",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T13:30:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "main",
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-d",
-            "name": "api tests",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:59:30.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-e",
-            "name": "scratch",
-            "project": null,
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T11:40:00.000Z",
-            "seen_at": "2026-10-07T11:40:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-f",
-            "name": "Zeta build",
-            "project": "Zeta",
-            "project_path": null,
-            "status": "working",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:55:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": true,
-            "close": null,
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-g",
-            "name": "Old name",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": "T9",
-            "task_title": "Docs",
-            "last_activity": "2026-10-07T14:50:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": "New name",
-            "rename_error": null
-          },
-          {
-            "id": "s-h",
-            "name": "beta shell",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-06T13:00:00.000Z",
-            "seen_at": "2026-10-06T13:00:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": "Midna said no"
-          },
-          {
-            "id": "s-i",
-            "name": "odd one",
-            "project": "api",
-            "project_path": null,
-            "status": "weird",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": null,
-            "seen_at": "2026-10-07T08:20:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          }
-        ],
-        "closed": [
-          {
-            "id": "closed-1",
-            "name": "old one",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "closed_at": "2026-10-07T13:00:00.000Z",
-            "last_activity": "2026-10-07T12:55:00.000Z",
-            "task_ref": "T1",
-            "task_title": "Add endpoint",
-            "can_reopen": true
-          },
-          {
-            "id": "closed-2",
-            "name": "older",
-            "project": null,
-            "project_path": null,
-            "closed_at": "2026-10-04T15:00:00.000Z",
-            "last_activity": null,
-            "task_ref": null,
-            "task_title": null,
-            "can_reopen": false
-          }
-        ],
-        "closedTotal": 7,
-        "q": "old",
-        "closedOpen": true
-      },
-      "expect": {
-        "text": "Select 3 idle beta 1 terminal New name T9 · Docs Idle for 10 min Closed 2 terminals old one webapp · T1 · Add endpoint Closed 2h ago older No task Closed 3d ago",
-        "acts": [
-          "ss-stale",
-          "ss-group",
-          "ss-open",
-          "ss-closed",
-          "ss-open",
-          "ss-open"
-        ]
-      }
-    },
-    {
       "name": "ssList search none",
       "input": {
         "fn": "ssList",
@@ -7986,7 +7634,7 @@
         ]
       },
       "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
+        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-group",
@@ -7999,8 +7647,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
@@ -8193,7 +7840,7 @@
         "sel": "s-c"
       },
       "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
+        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-group",
@@ -8209,8 +7856,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
@@ -8404,7 +8050,7 @@
         "hideSel": "s-c"
       },
       "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
+        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-group",
@@ -8417,8 +8063,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
@@ -8778,633 +8423,6 @@
       }
     },
     {
-      "name": "ssList closed open",
-      "input": {
-        "fn": "ssList",
-        "list": [
-          {
-            "id": "s-a",
-            "name": "T2 Sign in with a passkey",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "status": "working",
-            "task_ref": "T2",
-            "task_title": "Sign in with a passkey",
-            "last_activity": "2026-10-07T14:57:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "feature/passkeys",
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-b",
-            "name": "T3 Settings page",
-            "project": "webapp",
-            "project_path": null,
-            "status": "needs",
-            "task_ref": "T3",
-            "task_title": "Settings page: manage passkeys",
-            "last_activity": "2026-10-07T14:59:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-c",
-            "name": "api shell",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T13:30:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "main",
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-d",
-            "name": "api tests",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:59:30.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-e",
-            "name": "scratch",
-            "project": null,
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T11:40:00.000Z",
-            "seen_at": "2026-10-07T11:40:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-f",
-            "name": "Zeta build",
-            "project": "Zeta",
-            "project_path": null,
-            "status": "working",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:55:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": true,
-            "close": null,
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-g",
-            "name": "Old name",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": "T9",
-            "task_title": "Docs",
-            "last_activity": "2026-10-07T14:50:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": "New name",
-            "rename_error": null
-          },
-          {
-            "id": "s-h",
-            "name": "beta shell",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-06T13:00:00.000Z",
-            "seen_at": "2026-10-06T13:00:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": "Midna said no"
-          },
-          {
-            "id": "s-i",
-            "name": "odd one",
-            "project": "api",
-            "project_path": null,
-            "status": "weird",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": null,
-            "seen_at": "2026-10-07T08:20:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          }
-        ],
-        "closed": [
-          {
-            "id": "closed-1",
-            "name": "old one",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "closed_at": "2026-10-07T13:00:00.000Z",
-            "last_activity": "2026-10-07T12:55:00.000Z",
-            "task_ref": "T1",
-            "task_title": "Add endpoint",
-            "can_reopen": true
-          },
-          {
-            "id": "closed-2",
-            "name": "older",
-            "project": null,
-            "project_path": null,
-            "closed_at": "2026-10-04T15:00:00.000Z",
-            "last_activity": null,
-            "task_ref": null,
-            "task_title": null,
-            "can_reopen": false
-          }
-        ],
-        "closedTotal": 2,
-        "closedOpen": true
-      },
-      "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals old one webapp · T1 · Add endpoint Closed 2h ago older No task Closed 3d ago",
-        "acts": [
-          "ss-stale",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-closed",
-          "ss-open",
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssList closed holds selection",
-      "input": {
-        "fn": "ssList",
-        "list": [
-          {
-            "id": "s-a",
-            "name": "T2 Sign in with a passkey",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "status": "working",
-            "task_ref": "T2",
-            "task_title": "Sign in with a passkey",
-            "last_activity": "2026-10-07T14:57:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "feature/passkeys",
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-b",
-            "name": "T3 Settings page",
-            "project": "webapp",
-            "project_path": null,
-            "status": "needs",
-            "task_ref": "T3",
-            "task_title": "Settings page: manage passkeys",
-            "last_activity": "2026-10-07T14:59:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-c",
-            "name": "api shell",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T13:30:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "main",
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-d",
-            "name": "api tests",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:59:30.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-e",
-            "name": "scratch",
-            "project": null,
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T11:40:00.000Z",
-            "seen_at": "2026-10-07T11:40:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-f",
-            "name": "Zeta build",
-            "project": "Zeta",
-            "project_path": null,
-            "status": "working",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:55:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": true,
-            "close": null,
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-g",
-            "name": "Old name",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": "T9",
-            "task_title": "Docs",
-            "last_activity": "2026-10-07T14:50:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": "New name",
-            "rename_error": null
-          },
-          {
-            "id": "s-h",
-            "name": "beta shell",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-06T13:00:00.000Z",
-            "seen_at": "2026-10-06T13:00:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": "Midna said no"
-          },
-          {
-            "id": "s-i",
-            "name": "odd one",
-            "project": "api",
-            "project_path": null,
-            "status": "weird",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": null,
-            "seen_at": "2026-10-07T08:20:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          }
-        ],
-        "closed": [
-          {
-            "id": "closed-1",
-            "name": "old one",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "closed_at": "2026-10-07T13:00:00.000Z",
-            "last_activity": "2026-10-07T12:55:00.000Z",
-            "task_ref": "T1",
-            "task_title": "Add endpoint",
-            "can_reopen": true
-          },
-          {
-            "id": "closed-2",
-            "name": "older",
-            "project": null,
-            "project_path": null,
-            "closed_at": "2026-10-04T15:00:00.000Z",
-            "last_activity": null,
-            "task_ref": null,
-            "task_title": null,
-            "can_reopen": false
-          }
-        ],
-        "sel": "closed-2"
-      },
-      "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals old one webapp · T1 · Add endpoint Closed 2h ago older No task Closed 3d ago",
-        "acts": [
-          "ss-stale",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-closed",
-          "ss-open",
-          "ss-open"
-        ]
-      }
-    },
-    {
-      "name": "ssList closed hidden selection",
-      "input": {
-        "fn": "ssList",
-        "list": [
-          {
-            "id": "s-a",
-            "name": "T2 Sign in with a passkey",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "status": "working",
-            "task_ref": "T2",
-            "task_title": "Sign in with a passkey",
-            "last_activity": "2026-10-07T14:57:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "feature/passkeys",
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-b",
-            "name": "T3 Settings page",
-            "project": "webapp",
-            "project_path": null,
-            "status": "needs",
-            "task_ref": "T3",
-            "task_title": "Settings page: manage passkeys",
-            "last_activity": "2026-10-07T14:59:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "force",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-c",
-            "name": "api shell",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T13:30:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": "main",
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-d",
-            "name": "api tests",
-            "project": "api",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:59:30.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-e",
-            "name": "scratch",
-            "project": null,
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T11:40:00.000Z",
-            "seen_at": "2026-10-07T11:40:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-f",
-            "name": "Zeta build",
-            "project": "Zeta",
-            "project_path": null,
-            "status": "working",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-07T14:55:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": true,
-            "close": null,
-            "renaming": null,
-            "rename_error": null
-          },
-          {
-            "id": "s-g",
-            "name": "Old name",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": "T9",
-            "task_title": "Docs",
-            "last_activity": "2026-10-07T14:50:00.000Z",
-            "seen_at": "2026-10-07T14:59:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": "New name",
-            "rename_error": null
-          },
-          {
-            "id": "s-h",
-            "name": "beta shell",
-            "project": "beta",
-            "project_path": null,
-            "status": "idle",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": "2026-10-06T13:00:00.000Z",
-            "seen_at": "2026-10-06T13:00:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": "Midna said no"
-          },
-          {
-            "id": "s-i",
-            "name": "odd one",
-            "project": "api",
-            "project_path": null,
-            "status": "weird",
-            "task_ref": null,
-            "task_title": null,
-            "last_activity": null,
-            "seen_at": "2026-10-07T08:20:00.000Z",
-            "can_take": false,
-            "branch": null,
-            "closing": false,
-            "close": "close",
-            "renaming": null,
-            "rename_error": null
-          }
-        ],
-        "closed": [
-          {
-            "id": "closed-1",
-            "name": "old one",
-            "project": "webapp",
-            "project_path": "/Users/sam/dev/webapp",
-            "closed_at": "2026-10-07T13:00:00.000Z",
-            "last_activity": "2026-10-07T12:55:00.000Z",
-            "task_ref": "T1",
-            "task_title": "Add endpoint",
-            "can_reopen": true
-          },
-          {
-            "id": "closed-2",
-            "name": "older",
-            "project": null,
-            "project_path": null,
-            "closed_at": "2026-10-04T15:00:00.000Z",
-            "last_activity": null,
-            "task_ref": null,
-            "task_title": null,
-            "can_reopen": false
-          }
-        ],
-        "sel": "closed-2",
-        "hideSel": "closed-2"
-      },
-      "expect": {
-        "text": "Select 3 idle webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
-        "acts": [
-          "ss-stale",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-open",
-          "ss-group",
-          "ss-open",
-          "ss-closed"
-        ]
-      }
-    },
-    {
       "name": "ssList selecting none picked",
       "input": {
         "fn": "ssList",
@@ -9590,7 +8608,7 @@
         "selecting": true
       },
       "expect": {
-        "text": "0 selected Add the 3 idle over 1 h Done webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
+        "text": "0 selected Add the 3 idle over 1 h Done webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-done",
@@ -9607,8 +8625,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
@@ -9802,7 +8819,7 @@
         ]
       },
       "expect": {
-        "text": "2 selected Add the 3 idle over 1 h Done Close 2 terminals webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min Closed 2 terminals",
+        "text": "2 selected Add the 3 idle over 1 h Done Close 2 terminals webapp 2 terminals T3 Settings page T3 · Settings page: manage passkeys Needs you 1m ago T2 Sign in with a passkey T2 · Sign in with a passkey Working 3m ago Zeta 1 terminal Zeta build No task Closing… 5m ago api 3 terminals api tests No task Idle just now api shell No task · main Idle for 1 h 30 min odd one No task Idle for 6 h beta 2 terminals New name T9 · Docs Idle for 10 min beta shell No task Idle for 1 day No project 1 terminal scratch No task Idle for 3 h 20 min",
         "acts": [
           "ss-stale",
           "ss-done",
@@ -9820,8 +8837,7 @@
           "ss-open",
           "ss-open",
           "ss-group",
-          "ss-open",
-          "ss-closed"
+          "ss-open"
         ]
       }
     },
