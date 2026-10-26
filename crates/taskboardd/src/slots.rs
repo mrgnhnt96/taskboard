@@ -532,7 +532,8 @@ pub(crate) fn give_back(app: &App, t: &Row) -> Result<bool> {
     })
 }
 
-/// Every slot for `GET /slots`: who holds it, who waits for one, when it was last used and its size.
+/// Every slot for `GET /slots`: who holds it, who waits for one, when it was last used and its size;
+/// and `pools`, the settings of each project those slots belong to.
 pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
     let project = project.filter(|p| !p.is_empty());
     let all = app.db.q("SELECT * FROM worktree_slots ORDER BY project, repo, n", p![])?;
@@ -547,7 +548,12 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
     let shown: Vec<&Row> = all.iter().filter(|s| project.is_none() || s.s("project") == project).collect();
     let sizes = sizes(&shown.iter().map(|s| s.st("path")).collect::<Vec<_>>());
     let mut out = vec![];
+    let mut pools = serde_json::Map::new();
     for (s, size_kb) in shown.into_iter().zip(sizes) {
+        let name = s.st("project");
+        if !pools.contains_key(&name) {
+            pools.insert(name.clone(), serde_json::to_value(config(app, Some(&name))).unwrap_or(Value::Null));
+        }
         let repo = s.st("repo");
         let held = holder(app, s)?;
         out.push(json!({
@@ -557,7 +563,7 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
             "waiting": waiting.iter().filter(|(r, _)| *r == repo).map(|(_, t)| t.clone()).collect::<Vec<_>>(),
         }));
     }
-    Ok(json!({"slots": out}))
+    Ok(json!({"slots": out, "pools": pools}))
 }
 
 #[derive(Default)]
