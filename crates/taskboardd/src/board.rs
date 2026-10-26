@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
+use crate::runner::GoalOrder;
 use crate::{fields, hooks, p, prflow, waitsfor};
 
 pub const BOARD: &str = "Task board";
@@ -701,20 +702,33 @@ pub fn is_blocked(app: &App, t: &Row) -> Result<bool> {
 /// A queued task that isn't blocked by another task's work but that something else holds back:
 /// its goal's waves or order, a lock, a bit or the device pool.
 pub fn is_held(app: &App, t: &Row) -> Result<bool> {
+    held_in(app, t, None)
+}
+
+/// `is_held`, with the goal's order already read when `t` is in that goal.
+fn held_in(app: &App, t: &Row, order: Option<&GoalOrder>) -> Result<bool> {
     if t.s("status") != Some("queued") || t.i("start_job").is_some() {
         return Ok(false);
     }
-    if let Some(g) = find_goal(app, t.i("goal_id"))? {
-        if crate::runner::goal_order_blocker(app, t, &g)?.is_some() {
-            return Ok(true);
-        }
-    }
-    Ok(crate::locks::blocker(app, t)?.is_some() || crate::devices::blocker(app, t)?.is_some())
+    let why = match order.filter(|o| t.i("goal_id") == Some(o.goal_id())) {
+        Some(o) => o.blocker(t)?,
+        None => match find_goal(app, t.i("goal_id"))? {
+            Some(g) => crate::runner::goal_order_blocker(app, t, &g)?,
+            None => None,
+        },
+    };
+    Ok(why.is_some() || crate::locks::blocker(app, t)?.is_some() || crate::devices::blocker(app, t)?.is_some())
 }
 
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
-    let rows = crate::shared::counted_tasks(app, goal_id)?;
-    let accepted = find_goal(app, Some(goal_id))?.map(|g| accepted_failed(&g)).unwrap_or_default();
+    let g = find_goal(app, Some(goal_id))?;
+    let order = g.as_ref().map(|g| GoalOrder::read(app, g)).transpose()?;
+    counts_in(app, goal_id, &crate::shared::counted_tasks(app, goal_id)?, order.as_ref())
+}
+
+/// `goal_counts` over the goal's counted tasks, with its order read once for all of them.
+fn counts_in(app: &App, goal_id: i64, rows: &[Row], order: Option<&GoalOrder>) -> Result<Value> {
+    let accepted = order.map(|o| accepted_failed(o.goal())).unwrap_or_default();
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
     // A submitted task whose PR is still open is in review, not done, until the PR merges.
     let in_review = |r: &Row| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r);
@@ -726,10 +740,10 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let misses = open_misses(app, goal_id)?;
     let mut blocked = 0;
     let mut held = 0;
-    for r in &rows {
+    for r in rows {
         if is_blocked(app, r)? {
             blocked += 1;
-        } else if is_held(app, r)? {
+        } else if held_in(app, r, order)? {
             held += 1;
         }
     }
@@ -737,14 +751,14 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let prs_open: Vec<i64> = rows.iter().filter(|r| in_review(r)).filter_map(|r| r.i("pr_num")).collect();
     // The PR plan: tasks that end in a PR, how many have one, and how many finished without (`--no-pr`).
     let mut prs_planned = 0;
-    for r in &rows {
+    for r in rows {
         if !has(r.s("no_pr")) && crate::projects::task_ships_pr(app, r)? {
             prs_planned += 1;
         }
     }
     let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
-    let last_update = last_update(app, &rows)?;
+    let last_update = last_update(app, rows)?;
     let finished_at = if total > 0 && done + failed_accepted == total && bits_waiting == 0 && misses == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
@@ -826,11 +840,40 @@ pub fn goal_state_line(c: &Value) -> String {
     "In progress".into()
 }
 
+/// How long a goal's summary is kept while nothing is written: some of it (work hours, git remotes,
+/// PR state) moves with the clock or outside the database.
+const GOAL_DICT_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A goal's summary for the app and `tb`. Every poll asks for all of them, so each is kept until the
+/// database is written to (`Db::mark`) or it ages out.
 pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
-    let c = goal_counts(app, g.id())?;
+    if app.db.in_tx() {
+        return read_goal_dict(app, g);
+    }
+    let mark = app.db.mark()?;
+    if let Some((at, dicts)) = &app.shared.lock().goal_dicts {
+        if let Some((made, row, d)) = dicts.get(&g.id()).filter(|_| *at == mark) {
+            if row == g && made.elapsed() < GOAL_DICT_TTL {
+                return Ok(d.clone());
+            }
+        }
+    }
+    let d = read_goal_dict(app, g)?;
+    let mut shared = app.shared.lock();
+    let dicts = match &mut shared.goal_dicts {
+        Some((at, dicts)) if *at == mark => dicts,
+        slot => &mut slot.insert((mark, Default::default())).1,
+    };
+    dicts.insert(g.id(), (std::time::Instant::now(), g.clone(), d.clone()));
+    Ok(d)
+}
+
+fn read_goal_dict(app: &App, g: &Row) -> Result<Value> {
+    let order = GoalOrder::read(app, g)?;
+    let rows = crate::shared::counted_tasks(app, g.id())?;
+    let c = counts_in(app, g.id(), &rows, Some(&order))?;
     // A goal stopped at a wave for the owner (a review stop, or a failed task): one line.
-    let ts = goal_tasks(app, g.id())?;
-    let stopped = if crate::waves::uses_waves(&ts) { crate::waves::stopped_line(&crate::waves::waves(app, g, &ts)?) } else { None };
+    let stopped = crate::waves::stopped_line(order.waves()?);
     let mut d = json!({
         "id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "outcome": g.v("outcome"),
         "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"),
@@ -845,7 +888,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "after_blocker": crate::chain::blocker(app, g)?,
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),
         "state": goal_state_line(&c),
-        "peek": goal_peek(app, g)?,
+        "peek": goal_peek(app, &rows)?,
         "stopped": stopped,
     });
     if let (Some(o), Some(c)) = (d.as_object_mut(), c.as_object()) {
@@ -878,9 +921,10 @@ fn peek_order(s: &str) -> u8 {
     }
 }
 
-pub fn goal_peek(app: &App, g: &Row) -> Result<Vec<Value>> {
+/// The goal's unfinished counted tasks, the ones needing the owner first.
+fn goal_peek(app: &App, rows: &[Row]) -> Result<Vec<Value>> {
     let mut out = vec![];
-    for t in crate::shared::counted_tasks(app, g.id())? {
+    for t in rows {
         let mut why = Value::Null;
         let key = match t.s("status") {
             Some("done") if !t.b("failed") => continue,
@@ -889,7 +933,7 @@ pub fn goal_peek(app: &App, g: &Row) -> Result<Vec<Value>> {
             Some("queued") => {
                 if t.i("start_job").is_some() {
                     "starting".into()
-                } else if let Some(b) = waitsfor::blocker(app, &t)? {
+                } else if let Some(b) = waitsfor::blocker(app, t)? {
                     why = json!(b);
                     "blocked".into()
                 } else {
