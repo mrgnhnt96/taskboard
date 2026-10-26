@@ -130,11 +130,21 @@ pub fn request_progress(
 }
 
 pub fn spool_write(cfg: &Config, body: &Value) -> std::io::Result<PathBuf> {
+    spool_file(cfg, body, "")
+}
+
+/// Spools a report marked as being sent (`taskboardd::reports::SENDING`): the board's spool reader
+/// leaves it to its sender, unless the sender is lost.
+pub fn spool_claimed(cfg: &Config, body: &Value) -> std::io::Result<PathBuf> {
+    spool_file(cfg, body, taskboardd::reports::SENDING)
+}
+
+fn spool_file(cfg: &Config, body: &Value, end: &str) -> std::io::Result<PathBuf> {
     use rand::Rng;
     let dir = cfg.spool_dir();
     std::fs::create_dir_all(&dir)?;
     let ms = chrono::Utc::now().timestamp_millis();
-    let name = format!("{ms:013}-{}-{:06x}.json", std::process::id(), rand::thread_rng().gen::<u32>() & 0xff_ffff);
+    let name = format!("{ms:013}-{}-{:06x}.json{end}", std::process::id(), rand::thread_rng().gen::<u32>() & 0xff_ffff);
     let tmp = dir.join(format!(".{name}.tmp"));
     let fin = dir.join(&name);
     {

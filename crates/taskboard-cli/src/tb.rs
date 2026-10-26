@@ -7475,6 +7475,9 @@ fn master_cmd(c: &Ctx, args: Vec<String>, verdict: Verdict, open_only: bool, lim
 
 pub fn main_with(args: Vec<String>) -> i32 {
     if args.get(1).map(|a| a == "hook").unwrap_or(false) {
+        if args.get(2).map(|a| a == "Send").unwrap_or(false) {
+            return hook::send(args.get(3).map(|s| s.as_str()), args.iter().any(|a| a == "--drop"));
+        }
         return hook::run(args.get(2).map(|s| s.as_str()));
     }
     if args.get(1).map(|a| a == "statusline").unwrap_or(false) {
@@ -7489,13 +7492,18 @@ pub fn main_with(args: Vec<String>) -> i32 {
         }
     };
     let ctx = Ctx::new();
-    match run_cmd(&ctx, cli.cmd) {
+    let code = match run_cmd(&ctx, cli.cmd) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("tb: {e}");
             1
         }
+    };
+    // What the hooks kept of this terminal's steps may be out of date now.
+    if !ctx.session.is_empty() {
+        hook::forget_steps(&ctx.cfg.data, &ctx.session);
     }
+    code
 }
 
 #[cfg(test)]

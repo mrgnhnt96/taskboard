@@ -2,6 +2,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -3351,6 +3352,12 @@ pub(crate) fn give_back_slot(app: &App, id: i64) {
     }
 }
 
+/// The end a hook gives a spooled report while it sends it in the background (`tb hook Send`); the
+/// spool reader leaves it alone until it's older than `SENDING_STALE`.
+pub const SENDING: &str = ".sending";
+/// How old a report being sent gets before the spool reader takes it as lost by its sender.
+pub const SENDING_STALE: Duration = Duration::from_secs(120);
+
 pub fn ingest_spool(app: &App) -> Result<usize> {
     let dir = app.cfg.spool_dir();
     let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(0) };
@@ -3358,7 +3365,8 @@ pub fn ingest_spool(app: &App) -> Result<usize> {
     for e in rd.flatten() {
         let p = e.path();
         let name = e.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".json") || name.starts_with('.') {
+        let lost = name.ends_with(&format!(".json{SENDING}")) && e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > SENDING_STALE);
+        if !(name.ends_with(".json") || lost) || name.starts_with('.') {
             continue;
         }
         match std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
@@ -3387,6 +3395,38 @@ pub fn ingest_spool(app: &App) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_spool_reader_takes_a_report_being_sent_only_once_its_sender_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let spool = app.cfg.spool_dir();
+        let body = json!({"event": "hook.tool_end", "session": "s1", "at": "2026-10-26T10:00:00Z"}).to_string();
+        let plain = spool.join("0001-1-a.json");
+        let sending = spool.join(format!("0002-1-b.json{SENDING}"));
+        let lost = spool.join(format!("0003-1-c.json{SENDING}"));
+        for p in [&plain, &sending, &lost] {
+            std::fs::write(p, &body).unwrap();
+        }
+        let f = std::fs::OpenOptions::new().write(true).open(&lost).unwrap();
+        f.set_modified(std::time::SystemTime::now() - SENDING_STALE - Duration::from_secs(5)).unwrap();
+        ingest_spool(&app).unwrap();
+        assert!(!plain.exists());
+        assert!(sending.exists(), "its sender still has it");
+        assert!(!lost.exists());
+    }
+
+    #[test]
+    fn a_queued_report_is_answered_without_its_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let mut q = crate::api::Query::new();
+        q.insert("queue".into(), "1".into());
+        let ok = crate::api::dispatch(&app, "POST", "/report", &q, &json!({"event": "hook.tool_end", "session": "s1"})).unwrap();
+        assert_eq!(ok, json!({"ok": true, "queued": true}));
+        let refused = crate::api::dispatch(&app, "POST", "/report", &q, &json!({"event": 7})).unwrap();
+        assert_eq!(refused["queued"], true, "a report the board refuses is only logged");
+    }
 
     #[test]
     fn git_place_reads_dash_c_then_cd() {

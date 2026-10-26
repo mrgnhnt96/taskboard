@@ -21,7 +21,6 @@ const WAITING_NOTIFICATIONS: &[&str] = &["permission_prompt", "idle_prompt"];
 const CONTINUING_END_REASONS: &[&str] = &["clear", "resume"];
 const GIT_TIMEOUT: f64 = 0.3;
 const SLACK: f64 = 0.35;
-const SESSION_END_POST_CAP: f64 = 0.8;
 const MAX_CONTEXT: usize = 9900;
 /// A prompt is sent whole up to what the board keeps of one; a longer one keeps its start and its end.
 #[cfg(test)]
@@ -131,6 +130,14 @@ fn elsewhere(place: &Path, home: &Path, task: &str, project: &str) -> Option<(St
     ))
 }
 
+/// A `/steps` answer's task, the repository it works in, and its project's name.
+fn home_of(v: &Value) -> Option<(&str, &str, &str)> {
+    let task = v["task"].as_str()?;
+    let vars = &v["vars"];
+    let home = ["repo", "worktree"].iter().filter_map(|k| vars[*k].as_str()).find(|p| !p.is_empty())?;
+    Some((task, home, vars["project"].as_str().unwrap_or("its project")))
+}
+
 /// `PreToolUse`: refuses an edit, a git commit, push or new worktree, or a PR opening in a repository
 /// this terminal's task doesn't own, and tells the owner. No task, no board, or no repository: carry on.
 fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
@@ -139,14 +146,18 @@ fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) ->
     if repo_of(&place).is_none() {
         return false;
     }
-    let Ok(v) = board_call(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
-    let Some(task) = v["task"].as_str() else { return false };
-    let vars = &v["vars"];
-    let Some(home) = ["repo", "worktree"].iter().filter_map(|k| vars[*k].as_str()).find(|p| !p.is_empty()) else { return false };
-    let project = vars["project"].as_str().unwrap_or("its project");
-    let Some((why, top)) = elsewhere(&place, Path::new(home), task, project) else {
+    let refusal = judged(cfg, session, "", |v| {
+        let (task, home, project) = home_of(v)?;
+        let (why, top) = elsewhere(&place, Path::new(home), task, project)?;
+        Some((why, top, task.to_string(), project.to_string()))
+    });
+    let Some((why, top, task, project)) = refusal else {
         if EDIT_TOOLS.contains(&tool) {
-            note_edit(&cfg.data, task, session, &place);
+            if let Some((v, _)) = steps(cfg, session, "") {
+                if let Some((task, _, _)) = home_of(&v) {
+                    note_edit(&cfg.data, task, session, &place);
+                }
+            }
         }
         return false;
     };
@@ -213,7 +224,7 @@ fn edit_done(payload: &Value, session: &str) {
     let cwd = payload["cwd"].as_str().unwrap_or("");
     let Some(file) = EDIT_TOOLS.contains(&tool).then(|| work_place(tool, &payload["tool_input"], cwd)).flatten() else { return };
     let cfg = client::config();
-    let Ok(v) = board_call(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return };
+    let Some((v, _)) = steps(&cfg, session, "") else { return };
     if let Some(task) = v["task"].as_str() {
         note_patch(&cfg.data, task, &file, &payload["tool_response"]);
     }
@@ -589,12 +600,13 @@ fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &s
     if !SHARED_GIT_RE.is_match(cmd) || ledger(&cfg.data).is_empty() {
         return false;
     }
-    let Ok(v) = board_call(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Some((v, _)) = steps(cfg, session, "") else { return false };
     let own = v["task"].as_str();
     let Some((verb, top, mut theirs)) = shared_conflicts(cmd, cwd, &cfg.data, own) else { return false };
     // Only a task still on its terminal is working there; a finished one's ledger is done with.
     theirs.retain(|(task, terminal, _)| {
-        let on = board_call(cfg, "GET", &format!("/steps?session={terminal}"), None, hook_timeout()).is_ok_and(|v| v["task"].as_str() == Some(task.as_str()));
+        // Asked of the board itself: a terminal it doesn't hear back from loses its ledger.
+        let on = steps_live(cfg, terminal, "").is_some_and(|v| v["task"].as_str() == Some(task.as_str()));
         if !on {
             let _ = std::fs::remove_file(ledger_dir(&cfg.data).join(task));
         }
@@ -692,10 +704,8 @@ fn stray_worktree_refused(payload: &Value, session: &str, cfg: &Config, cwd: &st
     if stray_worktree(tool, input, cwd, None).is_none() {
         return false;
     }
-    let Ok(v) = board_call(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
-    let Some(task) = v["task"].as_str() else { return false };
-    let Some(what) = stray_worktree(tool, input, cwd, v["vars"]["worktree"].as_str()) else { return false };
-    deny(&stray_refusal(task, &what, &tb_path()));
+    let Some((task, what)) = judged(cfg, session, "", |v| Some((v["task"].as_str()?.to_string(), stray_worktree(tool, input, cwd, v["vars"]["worktree"].as_str())?))) else { return false };
+    deny(&stray_refusal(&task, &what, &tb_path()));
     true
 }
 
@@ -846,7 +856,8 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
         }
     }
     let what = if opening { "opening the PR" } else { "pushing to the open PR" };
-    let Ok(mut v) = board_call(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    // Whether the steps are done is the board's to say now, not a kept answer's.
+    let Some(mut v) = steps_live(&cfg, session, "") else { return false };
     if opening && !GITLAB_RE.is_match(payload["tool_input"]["command"].as_str().unwrap_or("")) {
         if let Some(reason) = board_opens_pr(&v, &tb_path()) {
             deny(&reason);
@@ -859,9 +870,9 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
     }
     // Per-head steps are judged on the task's own checkout, not on whichever folder this call runs in.
     if let Some(head) = own_head(&v["vars"]).filter(|h| v["head"].as_str() != Some(h.as_str())) {
-        match board_call(&cfg, "GET", &format!("/steps?session={session}&head={head}"), None, hook_timeout()) {
-            Ok(at) => v = at,
-            Err(_) => return false,
+        match steps_live(&cfg, session, &format!("&head={head}")) {
+            Some(at) => v = at,
+            None => return false,
         }
     }
     let vars = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
@@ -936,15 +947,11 @@ fn tool_window_body(payload: &Value, session: &str, event: &str) -> Option<Value
     Some(body)
 }
 
-/// Sends a tool call's window. One the board doesn't hear about only leaves the Stop to its older
-/// guess, so nothing is spooled.
+/// Sends a tool call's window in the background. One the board doesn't hear about only leaves the
+/// Stop to its older guess, so it isn't kept for later.
 fn tool_window(payload: &Value, session: &str, event: &str) {
-    let start = Instant::now();
     let Some(body) = tool_window_body(payload, session, event) else { return };
-    let left = (hook_timeout() + SLACK - start.elapsed().as_secs_f64()).min(hook_timeout());
-    if left > 0.05 {
-        let _ = board_call(&client::config(), "POST", "/report", Some(&body), left);
-    }
+    send_later(&client::config(), &body, false);
 }
 
 fn deny(reason: &str) {
@@ -1258,6 +1265,10 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         _ => {}
     }
     let cfg = client::config();
+    if CONTEXT_EVENTS.contains(&hook.as_str()) || hook == "Stop" {
+        // A new turn, or its end: what the board said of this terminal's steps may have moved on.
+        forget_steps(&cfg.data, &session);
+    }
     let timeout = hook_timeout();
     let deadline = start + Duration::from_secs_f64(timeout + SLACK);
     let left = || deadline.saturating_duration_since(Instant::now()).as_secs_f64().min(timeout);
@@ -1284,10 +1295,12 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     for (k, v) in extra {
         body[k] = v;
     }
-    let mut post_timeout = left();
-    if hook == "SessionEnd" {
-        post_timeout = post_timeout.min(SESSION_END_POST_CAP);
+    if !CONTEXT_EVENTS.contains(&hook.as_str()) && hook != "Stop" {
+        // Nothing comes back to Claude from this one: the board takes it when it can.
+        send_later(&cfg, &body, true);
+        return 0;
     }
+    let post_timeout = left();
     let resp = if post_timeout > 0.05 {
         match board_call(&cfg, "POST", "/report", Some(&body), post_timeout) {
             Ok(v) => Some(v),
@@ -1338,11 +1351,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         let mut ack = base.clone();
         ack["event"] = json!("hook.delivered");
         ack["ids"] = Value::Array(ids);
-        let l = left();
-        let sent = l > 0.05 && !matches!(board_call(&cfg, "POST", "/report", Some(&ack), l), Err(CallError::Unreachable(_) | CallError::TimedOut(_)));
-        if !sent {
-            spool(&cfg, &ack);
-        }
+        send_later(&cfg, &ack, true);
     }
     0
 }
@@ -1353,6 +1362,188 @@ fn spool(cfg: &Config, body: &Value) {
     let start = Instant::now();
     if let Err(e) = client::spool_write(cfg, body) {
         log_failure(&cfg.data, "spool", &e.to_string(), start.elapsed());
+    }
+}
+
+/// How long a report sent in the background waits for the board: nothing waits on it.
+const SEND_TIMEOUT: f64 = 10.0;
+
+/// Sends a report that needs no answer without waiting for it: spooled first, marked as being sent,
+/// then posted by a detached `tb hook Send`. With `keep`, one the board can't take is left in the
+/// spool for it to read later; without (a tool call's window, which the board ignores once late),
+/// it's dropped.
+fn send_later(cfg: &Config, body: &Value, keep: bool) {
+    use std::os::unix::process::CommandExt;
+    let start = Instant::now();
+    let path = match client::spool_claimed(cfg, body) {
+        Ok(p) => p,
+        Err(e) => return log_failure(&cfg.data, "spool", &e.to_string(), start.elapsed()),
+    };
+    let spawned = std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .args(["hook", "Send"])
+            .arg(&path)
+            .args((!keep).then_some("--drop"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            // Its own group: Claude ending the hook's doesn't end the send.
+            .process_group(0)
+            .spawn()
+    });
+    if let Err(e) = spawned {
+        log_failure(&cfg.data, "send", &e.to_string(), start.elapsed());
+        unclaim(&path, keep);
+    }
+}
+
+/// Hands a report being sent back to the spool reader (`keep`), or drops it.
+fn unclaim(path: &Path, keep: bool) {
+    if !keep || std::fs::rename(path, path.with_extension("")).is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// `tb hook Send <file> [--drop]`: posts a report `send_later` spooled, for the board to queue.
+/// Taken or refused, it's done with; the board unreachable or slow, it goes back to the spool
+/// (`--drop`: it's dropped). Only a file in the spool marked as being sent is touched.
+pub fn send(file: Option<&str>, drop: bool) -> i32 {
+    if let Some(path) = file {
+        send_file(&client::config(), Path::new(path), drop);
+    }
+    0
+}
+
+fn send_file(cfg: &Config, path: &Path, drop: bool) {
+    let ours = path.parent() == Some(cfg.spool_dir().as_path()) && path.to_string_lossy().ends_with(taskboardd::reports::SENDING);
+    if !ours {
+        return;
+    }
+    let Some(body) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        let _ = std::fs::remove_file(path);
+        return;
+    };
+    let _ = RUN.set((body["session"].as_str().unwrap_or("").to_string(), format!("Send {}", body["event"].as_str().unwrap_or(""))));
+    match board_call(cfg, "POST", "/report?queue=1", Some(&body), SEND_TIMEOUT) {
+        Ok(_) | Err(CallError::Refused(_)) => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(CallError::Unreachable(_) | CallError::TimedOut(_)) => unclaim(path, !drop),
+    }
+}
+
+/// How long a `/steps` answer this terminal had stands in for asking again. PreToolUse asks for
+/// nearly every call, and a board busy elsewhere shouldn't hold each one; a refusal is never made on
+/// a kept answer alone (`judged`), and `tb` commands and new turns drop it (`forget_steps`).
+const STEPS_FRESH: Duration = Duration::from_secs(15);
+/// How old a kept answer can be and still stand in when the board can't answer at all.
+const STEPS_STALE: Duration = Duration::from_secs(120);
+
+/// The answers this hook has had, and whether each was kept rather than the board's: one call's
+/// checks ask once.
+static STEPS_HAD: Lazy<std::sync::Mutex<std::collections::HashMap<String, (Value, bool)>>> = Lazy::new(Default::default);
+
+fn steps_dir(data: &Path) -> PathBuf {
+    data.join("hook-cache")
+}
+
+/// A name that doesn't change between builds (FNV-1a), unlike std's hasher.
+fn stable_hash(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+/// `more` is the rest of the query after the terminal (`&head=…`).
+fn steps_file(data: &Path, session: &str, more: &str) -> PathBuf {
+    steps_dir(data).join(format!("{:016x}-{:016x}.json", stable_hash(session), stable_hash(more)))
+}
+
+fn kept_steps(data: &Path, session: &str, more: &str, max_age: Duration) -> Option<Value> {
+    let p = steps_file(data, session, more);
+    let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().unwrap_or_default();
+    if age > max_age {
+        return None;
+    }
+    serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()
+}
+
+/// Keeps the board's answer for the next hook, and clears out answers too old to stand in.
+fn keep_steps(data: &Path, session: &str, more: &str, v: &Value) {
+    let dir = steps_dir(data);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let p = steps_file(data, session, more);
+    let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, v.to_string()).is_err() || std::fs::rename(&tmp, &p).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STEPS_STALE * 5) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// Drops the `/steps` answers kept for this terminal, so the next hook asks the board: after a `tb`
+/// command that may change them, and at each new turn.
+pub fn forget_steps(data: &Path, session: &str) {
+    if let Ok(mut had) = STEPS_HAD.lock() {
+        had.retain(|k, _| k.split('\n').next() != Some(session));
+    }
+    let start = format!("{:016x}-", stable_hash(session));
+    for e in std::fs::read_dir(steps_dir(data)).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with(&start) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// This terminal's `/steps` answer, and whether it's a kept one: one this hook had, one kept in the
+/// last `STEPS_FRESH`, the board's, or, when the board can't answer, one kept in the last
+/// `STEPS_STALE`. None: no answer at all.
+fn steps(cfg: &Config, session: &str, more: &str) -> Option<(Value, bool)> {
+    let key = format!("{session}\n{more}");
+    if let Some(had) = STEPS_HAD.lock().ok().and_then(|h| h.get(&key).cloned()) {
+        return Some(had);
+    }
+    if let Some(v) = kept_steps(&cfg.data, session, more, STEPS_FRESH) {
+        if let Ok(mut had) = STEPS_HAD.lock() {
+            had.insert(key, (v.clone(), true));
+        }
+        return Some((v, true));
+    }
+    if let Some(v) = steps_live(cfg, session, more) {
+        return Some((v, false));
+    }
+    kept_steps(&cfg.data, session, more, STEPS_STALE).map(|v| (v, true))
+}
+
+/// The board's own `/steps` answer for this terminal (kept for the next hook). None: no answer.
+fn steps_live(cfg: &Config, session: &str, more: &str) -> Option<Value> {
+    let key = format!("{session}\n{more}");
+    if let Some((v, false)) = STEPS_HAD.lock().ok().and_then(|h| h.get(&key).cloned()) {
+        return Some(v);
+    }
+    let v = board_call(cfg, "GET", &format!("/steps?session={session}{more}"), None, hook_timeout()).ok()?;
+    keep_steps(&cfg.data, session, more, &v);
+    if let Ok(mut had) = STEPS_HAD.lock() {
+        had.insert(key, (v.clone(), false));
+    }
+    Some(v)
+}
+
+/// What `judge` makes of this terminal's `/steps` answer: Some is a refusal. One made on a kept answer
+/// is made again on the board's own, so keeping answers only ever lets a call through sooner. No
+/// answer: None.
+fn judged<T>(cfg: &Config, session: &str, more: &str, judge: impl Fn(&Value) -> Option<T>) -> Option<T> {
+    let (v, kept) = steps(cfg, session, more)?;
+    let verdict = judge(&v);
+    if verdict.is_none() || !kept {
+        return verdict;
+    }
+    match steps_live(cfg, session, more) {
+        Some(v) => judge(&v),
+        None => verdict,
     }
 }
 
@@ -1918,6 +2109,156 @@ mod tests {
         assert!(lines[0].contains(" GET /steps failed after ") && lines[0].contains("ms: unreachable: "), "{}", lines[0]);
         assert!(!lines[0].contains("session=7&"), "the query isn't repeated: {}", lines[0]);
         assert!(lines[1].contains(&format!(" write {} failed after ", root.join("edits").join("T1").display())), "{}", lines[1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A board that answers `answers` in turn, one request each, then stops listening; and what it
+    /// was asked.
+    fn board(cfg: &mut Config, answers: Vec<Value>) -> std::sync::mpsc::Receiver<String> {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let Ok((stream, _)) = listener.accept() else { return };
+                let mut r = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                let _ = r.read_line(&mut first);
+                let mut len = 0;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(n) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = n.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; len];
+                let _ = std::io::Read::read_exact(&mut r, &mut body);
+                let _ = tx.send(first.trim().to_string());
+                let text = answer.to_string();
+                let mut w = stream;
+                let _ = write!(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
+            }
+        });
+        rx
+    }
+
+    fn down(cfg: &mut Config) {
+        cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    }
+
+    fn age(p: &Path, by: Duration) {
+        let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - by).unwrap();
+    }
+
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("tb-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_kept_steps_answer_stands_in_while_fresh_and_while_the_board_is_down() {
+        let root = test_root("steps-kept");
+        let mut cfg = Config::for_tests(&root);
+        down(&mut cfg);
+        assert!(steps(&cfg, "fresh-1", "").is_none(), "nothing kept, board down: no answer");
+
+        keep_steps(&root, "fresh-1", "", &json!({"task": "T1"}));
+        let rx = board(&mut cfg, vec![json!({"task": "T2"})]);
+        assert_eq!(steps(&cfg, "fresh-1", ""), Some((json!({"task": "T1"}), true)), "a fresh answer is used without asking");
+        assert!(rx.try_recv().is_err());
+
+        // Too old to stand in when the board answers, still good when it doesn't.
+        keep_steps(&root, "aged-1", "", &json!({"task": "T1"}));
+        age(&steps_file(&root, "aged-1", ""), STEPS_FRESH + Duration::from_secs(5));
+        down(&mut cfg);
+        assert_eq!(steps(&cfg, "aged-1", ""), Some((json!({"task": "T1"}), true)));
+        board(&mut cfg, vec![json!({"task": "T3"})]);
+        assert_eq!(steps(&cfg, "aged-1", ""), Some((json!({"task": "T3"}), false)), "the board's answer when it has one");
+        assert_eq!(kept_steps(&root, "aged-1", "", STEPS_FRESH), Some(json!({"task": "T3"})), "and it's kept for the next hook");
+
+        keep_steps(&root, "stale-1", "", &json!({"task": "T1"}));
+        age(&steps_file(&root, "stale-1", ""), STEPS_STALE + Duration::from_secs(5));
+        down(&mut cfg);
+        assert!(steps(&cfg, "stale-1", "").is_none(), "too old even with the board down");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forgetting_steps_drops_only_that_terminals_answers() {
+        let root = test_root("steps-forget");
+        let mut cfg = Config::for_tests(&root);
+        keep_steps(&root, "forget-a", "", &json!({"task": "T1"}));
+        keep_steps(&root, "forget-a", "&head=x", &json!({"task": "T1"}));
+        keep_steps(&root, "forget-b", "", &json!({"task": "T2"}));
+        down(&mut cfg);
+        assert!(steps(&cfg, "forget-a", "").is_some());
+        forget_steps(&root, "forget-a");
+        assert!(steps(&cfg, "forget-a", "").is_none(), "neither the memo nor the file is left");
+        assert!(kept_steps(&root, "forget-a", "&head=x", STEPS_STALE).is_none());
+        assert_eq!(kept_steps(&root, "forget-b", "", STEPS_FRESH), Some(json!({"task": "T2"})));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refusal_on_a_kept_answer_is_checked_with_the_board() {
+        let root = test_root("steps-judged");
+        let mut cfg = Config::for_tests(&root);
+        let refuse = |v: &Value| v["home"].as_str().filter(|h| *h == "/elsewhere").map(str::to_string);
+
+        keep_steps(&root, "judge-1", "", &json!({"home": "/elsewhere"}));
+        let rx = board(&mut cfg, vec![json!({"home": "/here"})]);
+        assert_eq!(judged(&cfg, "judge-1", "", refuse), None, "the board moved on: let through");
+        let asked = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(asked.starts_with("GET ") && asked.contains("/steps?session=judge-1 "), "{asked}");
+
+        keep_steps(&root, "judge-2", "", &json!({"home": "/elsewhere"}));
+        down(&mut cfg);
+        assert_eq!(judged(&cfg, "judge-2", "", refuse).as_deref(), Some("/elsewhere"), "no board: the kept answer stands");
+
+        keep_steps(&root, "judge-3", "", &json!({"home": "/here"}));
+        let rx = board(&mut cfg, vec![json!({"home": "/elsewhere"})]);
+        assert_eq!(judged(&cfg, "judge-3", "", refuse), None, "a kept answer that lets through isn't rechecked");
+        assert!(rx.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_background_send_clears_its_report_or_hands_it_back() {
+        let root = test_root("send");
+        let mut cfg = Config::for_tests(&root);
+        let body = json!({"event": "hook.tool_end", "session": "7"});
+
+        let sent = client::spool_claimed(&cfg, &body).unwrap();
+        let rx = board(&mut cfg, vec![json!({"ok": true, "queued": true})]);
+        send_file(&cfg, &sent, false);
+        let asked = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(asked.starts_with("POST ") && asked.ends_with("/report?queue=1 HTTP/1.1"), "{asked}");
+        assert!(!sent.exists());
+
+        down(&mut cfg);
+        let kept = client::spool_claimed(&cfg, &body).unwrap();
+        send_file(&cfg, &kept, false);
+        assert!(!kept.exists());
+        let back = kept.with_extension("");
+        assert!(back.to_string_lossy().ends_with(".json"), "{}", back.display());
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&back).unwrap()).unwrap(), body, "back in the spool for the board");
+
+        let dropped = client::spool_claimed(&cfg, &body).unwrap();
+        send_file(&cfg, &dropped, true);
+        assert!(!dropped.exists() && !dropped.with_extension("").exists(), "--drop: gone");
+
+        // Only a report in the spool marked as being sent is touched.
+        let stray = root.join("x.json.sending");
+        std::fs::write(&stray, body.to_string()).unwrap();
+        send_file(&cfg, &stray, true);
+        assert!(stray.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
