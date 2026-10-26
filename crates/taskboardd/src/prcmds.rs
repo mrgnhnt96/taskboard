@@ -3,8 +3,15 @@
 //! that isn't the PR's (`not-ours`).
 //!
 //! Each reads the PR fresh first (`prflow::refresh_task`), so it judges what the host says now, and
-//! never calls the host inside a database transaction.
+//! never calls the host inside a database transaction. Reading and answering a thread don't (#679):
+//! `tb pr thread` serves the board's own copy of the PR (its last poll or stream event) while it's
+//! younger than [`HELD_SECS`], and `tb pr reply` / `tb pr ack` write to the host once and note the
+//! write on that copy. When they do read, callers asking at once share the one read ([`shared_read`]).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -17,6 +24,8 @@ pub const BASE_COMMITS: usize = 5;
 pub const REASON_MIN: usize = 20;
 pub const REASON_MAX: usize = 300;
 pub const TITLE_MAX: usize = 80;
+/// How long `tb pr thread` serves the board's copy of a PR before it reads the host again.
+pub const HELD_SECS: f64 = 60.0;
 
 fn pr_of(t: &Row) -> Result<PrRef> {
     match PrRef::of(t) {
@@ -25,7 +34,7 @@ fn pr_of(t: &Row) -> Result<PrRef> {
     }
 }
 
-fn host(app: &App, pr: &PrRef) -> Result<std::sync::Arc<dyn prhost::PrHost>> {
+fn host(app: &App, pr: &PrRef) -> Result<Arc<dyn prhost::PrHost>> {
     prhost::host_for(app, &pr.host).map_err(|e| ApiError::new(409, format!("Can't work with PR #{}: {e}.", pr.num)))
 }
 
@@ -42,6 +51,50 @@ fn fresh(app: &App, id: i64) -> Result<(Row, Value)> {
     match on_host(&pr, "reading", || prflow::refresh_task(app, id))? {
         Ok(rec) => Ok((board::get_task(app, id)?, rec)),
         Err(e) => err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
+    }
+}
+
+/// The last read of each task's PR made here, and how many have ended: a caller that asked while one
+/// ran takes its answer instead of reading again.
+#[derive(Default)]
+pub struct Flight {
+    reads: AtomicU64,
+    last: Mutex<Option<std::result::Result<Value, String>>>,
+}
+
+/// Reads the PR now and steps it, as [`fresh`] does, but one read at a time per task: a caller that
+/// asked while another's read ran gets that read's answer, so concurrent asks cost the host one call.
+fn shared_read(app: &App, id: i64, pr: &PrRef) -> Result<std::result::Result<Value, String>> {
+    let f = app.shared.lock().pr_reads.entry(id).or_default().clone();
+    let asked = f.reads.load(Ordering::SeqCst);
+    let mut last = f.last.lock();
+    if let Some(r) = last.as_ref().filter(|_| f.reads.load(Ordering::SeqCst) > asked) {
+        return Ok(r.clone());
+    }
+    let r = on_host(pr, "reading", || prflow::refresh_task(app, id))?;
+    *last = Some(r.clone());
+    f.reads.fetch_add(1, Ordering::SeqCst);
+    Ok(r)
+}
+
+/// The record to find thread `want` in, and why it may be stale: the board's copy while it's younger
+/// than `max_age` seconds and has the thread, else a read of the host. When that read fails, the
+/// board's copy still answers if it has the thread, marked stale with why.
+fn held_or_read(app: &App, id: i64, want: &str, max_age: f64) -> Result<(Row, Value, Option<String>)> {
+    let t = board::get_task(app, id)?;
+    let pr = pr_of(&t)?;
+    let f = flow(&t);
+    let held = f.get("rec").filter(|r| r["threads"].is_array()).cloned();
+    let young = wall_age_secs(f.s("checked_at")).is_some_and(|a| a < max_age);
+    if let Some(rec) = held.as_ref().filter(|r| young && find_thread(r, pr.num, want).is_ok()) {
+        return Ok((t, rec.clone(), None));
+    }
+    match shared_read(app, id, &pr)? {
+        Ok(rec) => Ok((board::get_task(app, id)?, rec, None)),
+        Err(e) => match held.filter(|r| find_thread(r, pr.num, want).is_ok()) {
+            Some(rec) => Ok((t, rec, Some(e))),
+            None => err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
+        },
     }
 }
 
@@ -83,9 +136,10 @@ pub fn reply(app: &App, id: i64, body: &Value) -> Result<Value> {
     if text.is_empty() {
         return err(400, "Say what you did: the reply can't be empty.");
     }
-    let (t, rec) = fresh(app, id)?;
+    let want = body_str(body, "thread");
+    let (t, rec, _) = held_or_read(app, id, &want, f64::INFINITY)?;
     let pr = pr_of(&t)?;
-    let th = find_thread(&rec, pr.num, &body_str(body, "thread"))?;
+    let th = find_thread(&rec, pr.num, &want)?;
     let h = host(app, &pr)?;
     on_host(&pr, "replying on", || h.reply(&pr, &th, &text)).map_err(|e| ApiError::new(502, format!("Couldn't reply on PR #{}: {e}.", pr.num)))?;
     let resolve = as_bool(body.get("resolve"), false);
@@ -98,14 +152,23 @@ pub fn reply(app: &App, id: i64, body: &Value) -> Result<Value> {
         let what = if resolved { "Replied to and resolved" } else { "Replied to" };
         board::log_event(app, id, &who_of(app, body), "status", &format!("{what} {} on PR #{}: {}", thread_name(&th), pr.num, one_line(&text, 200))).map(|_| ())
     })?;
-    after(app, id, json!({"thread": th.id, "resolved": resolved}))
+    noted(app, id, &th.id, |rec, held| {
+        let us = prflow::us(rec).to_string();
+        let at = now_iso();
+        held.replies.push(prhost::Reply { author: us.clone(), author_name: us.clone(), text: one_line(&text, prhost::REPLY_MAX), body: prhost::whole(&text), at: at.clone() });
+        held.last_author = us;
+        held.last_at = at;
+        held.resolved |= resolved;
+    })?;
+    answered(app, id, json!({"thread": th.id, "resolved": resolved}))
 }
 
 /// `tb pr ack <thread>`: resolved without a reply (on the board only, where the host can't resolve it).
 pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
-    let (t, rec) = fresh(app, id)?;
+    let want = body_str(body, "thread");
+    let (t, rec, _) = held_or_read(app, id, &want, f64::INFINITY)?;
     let pr = pr_of(&t)?;
-    let th = find_thread(&rec, pr.num, &body_str(body, "thread"))?;
+    let th = find_thread(&rec, pr.num, &want)?;
     let resolved = if th.resolvable && !th.resolved {
         let h = host(app, &pr)?;
         on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)).map_err(|e| ApiError::new(502, format!("Couldn't resolve the thread: {e}.")))?
@@ -116,16 +179,46 @@ pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
         ack_locally(app, id, &th)?;
         board::log_event(app, id, &who_of(app, body), "status", &format!("Acknowledged {} on PR #{} without a reply", thread_name(&th), pr.num)).map(|_| ())
     })?;
-    after(app, id, json!({"thread": th.id, "resolved": resolved}))
+    noted(app, id, &th.id, |_, held| held.resolved |= resolved)?;
+    answered(app, id, json!({"thread": th.id, "resolved": resolved}))
 }
 
-/// `tb pr thread <thread>`: one thread with its whole text and replies, read from the host now with the
-/// board's own account (the agent has none of its own).
+/// `tb pr thread <thread> [--refresh]`: one thread with its whole text and replies, as the board's
+/// account reads it (the agent has none of its own). From the board's copy of the PR while it's
+/// younger than [`HELD_SECS`] (`refresh` reads the host anyway); `as_of` is when that copy was read,
+/// and `stale` says why it couldn't be read again.
 pub fn thread(app: &App, id: i64, body: &Value) -> Result<Value> {
-    let (t, rec) = fresh(app, id)?;
+    let want = body_str(body, "thread");
+    let max_age = if as_bool(body.get("refresh"), false) { 0.0 } else { HELD_SECS };
+    let (t, rec, stale) = held_or_read(app, id, &want, max_age)?;
     let pr = pr_of(&t)?;
-    let th = find_thread(&rec, pr.num, &body_str(body, "thread"))?;
-    Ok(json!({"thread": th, "open": prflow::open_threads(&flow(&t), &rec).iter().any(|o| o["id"].as_str() == Some(th.id.as_str()))}))
+    let th = find_thread(&rec, pr.num, &want)?;
+    let open = prflow::open_threads(&flow(&t), &rec).iter().any(|o| o["id"].as_str() == Some(th.id.as_str()));
+    Ok(json!({"thread": th, "open": open, "as_of": flow(&t).v("checked_at"), "stale": stale}))
+}
+
+/// Notes a write on thread `id` in the board's copy of the PR, as the host now has it, and steps the
+/// PR with it, without reading the host. The copy's read time stays its last read's, so it ages out
+/// as before.
+fn noted(app: &App, id: i64, thread: &str, change: impl FnOnce(&Value, &mut Thread)) -> Result<()> {
+    let f = flow(&board::get_task(app, id)?);
+    let Some(mut rec) = f.get("rec").filter(|r| r["threads"].is_array()).cloned() else { return Ok(()) };
+    let at = rec["threads"].as_array().and_then(|a| a.iter().position(|t| t["id"].as_str() == Some(thread)));
+    let Some(held) = at.and_then(|i| serde_json::from_value::<Thread>(rec["threads"][i].clone()).ok().map(|th| (i, th))) else { return Ok(()) };
+    let (i, mut th) = held;
+    change(&rec, &mut th);
+    rec["threads"][i] = json!(th);
+    prflow::apply(app, id, &rec)?;
+    prflow::merge_flow(app, id, fields!["checked_at" => f.v("checked_at")]).map(|_| ())
+}
+
+/// Answers a write on a thread with the PR's card, from the board's copy.
+fn answered(app: &App, id: i64, mut out: Value) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    out["task"] = json!(rf("task", id));
+    out["pr"] = board::pr_card(app, &t);
+    out["open_threads"] = json!(prflow::open_threads(&flow(&t), &flow(&t).get("rec").cloned().unwrap_or(Value::Null)).len());
+    Ok(out)
 }
 
 fn thread_name(th: &Thread) -> String {
@@ -139,16 +232,12 @@ fn thread_name(th: &Thread) -> String {
 }
 
 /// Steps the PR again after a change and answers with its card.
-fn after(app: &App, id: i64, mut out: Value) -> Result<Value> {
+fn after(app: &App, id: i64, out: Value) -> Result<Value> {
     let _ = match PrRef::of(&board::get_task(app, id)?) {
         Some(pr) => on_host(&pr, "reading", || prflow::refresh_task(app, id))?,
         None => prflow::refresh_task(app, id)?,
     };
-    let t = board::get_task(app, id)?;
-    out["task"] = json!(rf("task", id));
-    out["pr"] = board::pr_card(app, &t);
-    out["open_threads"] = json!(prflow::open_threads(&flow(&t), &flow(&t).get("rec").cloned().unwrap_or(Value::Null)).len());
-    Ok(out)
+    answered(app, id, out)
 }
 
 /// `tb pr addressed`: refuses while threads are open; then asks each reviewer with a standing request
