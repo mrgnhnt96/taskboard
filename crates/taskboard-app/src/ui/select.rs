@@ -57,6 +57,13 @@ impl Sel {
         self
     }
 
+    /// Byte ranges drawn in `family` (code spans in the mono font). Each must also be a highlight's
+    /// exact range, so it lays out as a run of its own.
+    pub fn font_family(mut self, ranges: Vec<Range<usize>>, family: SharedString) -> Self {
+        self.styled = self.styled.with_font_family_overrides(ranges.into_iter().map(|r| (r, family.clone())));
+        self
+    }
+
     fn link_at(links: &[(Range<usize>, String)], layout: &TextLayout, at: Point<Pixels>) -> Option<usize> {
         let ix = layout.index_for_position(at).ok()?;
         links.iter().position(|(r, _)| r.contains(&ix))

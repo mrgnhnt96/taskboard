@@ -11,7 +11,7 @@ use crate::app::{MainWindow, Page, Panel, TaskTab};
 use crate::fmt::{self, s};
 use crate::theme::{Theme, ThemeMode};
 use crate::ui::kit;
-use crate::ui::select::sel;
+use crate::ui::select::{sel, sel_styled};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -1066,6 +1066,7 @@ impl Draw<'_> {
     #[inline(never)]
     fn node(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         match n {
+            Node::Text { s, st: St::Pre, .. } => self.leaf_pre(s, cx),
             Node::Text { s, st, tip } => self.leaf_text(s, *st, tip, boxed),
             Node::Pill { s, tone, tip } => self.leaf_pill(s, *tone, tip),
             Node::Btn { label, act: a, look, disabled, tip } => self.leaf_btn(label, a, *look, *disabled, tip, boxed, cx),
@@ -1286,6 +1287,7 @@ impl Draw<'_> {
             K::Files => self.c_files(m, n, boxed, cx),
             K::LogItem => self.c_log_item(m, n, boxed, cx),
             K::MdLi => self.c_md_li(m, n, boxed, cx),
+            K::Line if self.parent() == Some(K::MdP) => self.md_line(n).unwrap_or_else(|| self.c_simple(m, n, k, boxed, cx)),
             K::Li => self.c_li(m, n, boxed, cx),
             K::RevName { open } => self.c_rev_name(m, n, open, boxed, cx),
             K::RevPop => self.c_rev_pop(m, n, boxed, cx),
@@ -2085,8 +2087,56 @@ impl Draw<'_> {
 
     #[inline(never)]
     fn c_md_li(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let kids = self.kids(m, n, boxed, cx);
-        div().flex().gap(px(6.)).child(div().flex_none().w(px(8.)).child("•")).child(div().flex().flex_wrap().items_center().gap(px(4.)).min_w_0().children(kids)).into_any_element()
+        let body = match self.md_line(n) {
+            Some(line) => div().flex_1().min_w_0().child(line),
+            None => div().flex().flex_wrap().items_center().gap(px(4.)).min_w_0().children(self.kids(m, n, boxed, cx)),
+        };
+        div().flex().gap(px(6.)).child(div().flex_none().w(px(8.)).child("•")).child(body).into_any_element()
+    }
+
+    /// A note's line as one run of text: bold, `code` in the mono font and links styled in place,
+    /// so it wraps like prose and a drag copies it as written. `None` when it holds anything else.
+    #[inline(never)]
+    fn md_line(&self, n: &Node) -> Option<AnyElement> {
+        let t = self.t;
+        let Node::El { kids, .. } = n else { return None };
+        let mut text = String::new();
+        let (mut highlights, mut links, mut mono) = (Vec::new(), Vec::new(), Vec::new());
+        for kid in kids {
+            let start = text.len();
+            match kid {
+                Node::Text { s, st: St::Plain, tip: None } => text.push_str(s),
+                Node::Text { s, st: St::Strong, tip: None } => {
+                    text.push_str(s);
+                    highlights.push((start..text.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() }));
+                }
+                Node::Text { s, st: St::Code, tip: None } => {
+                    text.push_str(s);
+                    highlights.push((start..text.len(), HighlightStyle { background_color: Some(t.panel_2), ..Default::default() }));
+                    mono.push(start..text.len());
+                }
+                Node::Link { s, go: Go::Url(u), .. } => {
+                    text.push_str(s);
+                    let underline = UnderlineStyle { thickness: px(1.), color: Some(t.accent), wavy: false };
+                    highlights.push((start..text.len(), HighlightStyle { color: Some(t.accent), underline: Some(underline), ..Default::default() }));
+                    links.push((start..text.len(), u.clone()));
+                }
+                _ => return None,
+            }
+        }
+        Some(sel_styled(t, self.id("md"), text, highlights).links(links).font_family(mono, t.mono_font.clone()).into_any_element())
+    }
+
+    /// A note's code block, with a button that copies it whole.
+    #[inline(never)]
+    fn leaf_pre(&self, s: &str, cx: &mut Context<MainWindow>) -> AnyElement {
+        let code = s.to_string();
+        let copy = kit::btn_small(self.t, self.id("copy"), "Copy")
+            .absolute()
+            .top(px(6.))
+            .right(px(6.))
+            .on_click(cx.listener(move |m, _, _, cx| crate::app::copy_text(m, &code, cx)));
+        div().relative().min_w_0().child(self.text(s, St::Pre, None).pr(px(64.))).child(copy).into_any_element()
     }
 }
 
