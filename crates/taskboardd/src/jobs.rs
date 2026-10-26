@@ -82,6 +82,11 @@ pub fn you_said_no(why: &str) -> bool {
     why.contains("denied by user")
 }
 
+/// Midna's answer when it has no such terminal.
+fn midna_lost(why: &str, sid: &str) -> bool {
+    !sid.is_empty() && why.contains(&format!("no session {sid}"))
+}
+
 pub fn after_result(app: &App, j: &Row, ok: bool, res: &Value) -> Result<()> {
     let a = board::job_args(j);
     let t = board::find_task(app, j.i("task_id"))?;
@@ -156,6 +161,8 @@ pub fn after_result(app: &App, j: &Row, ok: bool, res: &Value) -> Result<()> {
         }
         "close" => {
             let sid = a.st("session");
+            // A terminal Midna never had (one only Claude's hooks told the board of) is as closed as it gets.
+            let ok = ok || midna_lost(&why, &sid);
             board::session_event(
                 app,
                 &sid,
