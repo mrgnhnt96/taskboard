@@ -727,7 +727,11 @@ pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -
         text += &format!("\n{e}");
     }
     let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "prompt": text, "queue": false});
-    let args = if app.cfg.models.fresh_pr_visits && MECHANICAL.contains(&phase) { fresh_visit(app, t, phase, args)? } else { resume_or_fresh(app, t, args)? };
+    let mut args = if app.cfg.models.fresh_pr_visits && MECHANICAL.contains(&phase) { fresh_visit(app, t, phase, args)? } else { resume_or_fresh(app, t, args)? };
+    // A merge needs nobody watching it: a new terminal for it opens in Midna's Background group.
+    if phase == "merge" {
+        args["background"] = json!(true);
+    }
     let jid = board::create_job(app, "agent", args, Some(t.id()), "pr", None)?;
     board::log_event(app, t.id(), board::BOARD, "handoff", &format!("Brought the conversation back for PR #{}: {}", t.i0("pr_num"), label(phase).to_lowercase()))?;
     Ok(Some(jid))
