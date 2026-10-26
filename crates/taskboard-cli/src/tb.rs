@@ -1907,6 +1907,9 @@ enum PrCmd {
         /// [task] thread
         #[arg(num_args = 1..=2, required = true)]
         args: Vec<String>,
+        /// Read the host now, not the board's copy from its last read
+        #[arg(long)]
+        refresh: bool,
     },
     /// Every thread is answered: ask the reviewers who wanted changes to look again
     Addressed { task: Option<String> },
@@ -2290,6 +2293,9 @@ fn print_pr_thread(v: &Value) {
     if let Some(u) = th["url"].as_str() {
         out(u);
     }
+    if let Some(line) = pr_thread_as_of(v, &chrono::Local::now()) {
+        out(&line);
+    }
     out("");
     out(&whole(th));
     for r in th["replies"].as_array().cloned().unwrap_or_default() {
@@ -2299,6 +2305,19 @@ fn print_pr_thread(v: &Value) {
             out(&format!("  {l}"));
         }
     }
+}
+
+/// When the board read the thread, and whether it may have changed since because the host couldn't
+/// be read again.
+fn pr_thread_as_of<Tz: chrono::TimeZone>(v: &Value, now: &chrono::DateTime<Tz>) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let at = v["as_of"].as_str().and_then(|a| crate::preview::clock(a, now))?;
+    Some(match v["stale"].as_str() {
+        Some(why) => format!("As of {at}; may be stale: couldn't read it again ({why})."),
+        None => format!("As of {at}."),
+    })
 }
 
 /// `tb pr check`'s answer to `POST /prs/refresh`.
@@ -6580,10 +6599,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v)));
                 Ok(0)
             }
-            PrCmd::Thread { args } => {
+            PrCmd::Thread { args, refresh } => {
                 let (task, rest) = task_and(args, 1);
                 let t = c.pr_task(task)?;
-                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/thread"), Some(json!({"thread": rest[0]})))?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/thread"), Some(json!({"thread": rest[0], "refresh": refresh})))?;
                 print_pr_thread(&v);
                 Ok(0)
             }
@@ -7502,6 +7521,18 @@ mod tests {
             ["1:30 PM · T8 · Term", "  > make it", "  > and start it", "Oct 11, 9:05 AM · G2 · s2", "  (no prompt typed in this conversation)"]
         );
         assert_eq!(misses_lines(&json!([]), &now), ["No start has been refused."]);
+    }
+
+    #[test]
+    fn tb_pr_thread_says_how_old_the_boards_copy_is() {
+        assert!(matches!(Cli::try_parse_from(["tb", "pr", "thread", "4", "--refresh"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Thread { refresh: true, .. } }));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-12T15:00:00Z").unwrap();
+        assert_eq!(pr_thread_as_of(&json!({"as_of": "2026-10-12T13:30:00Z", "stale": null}), &now).as_deref(), Some("As of 1:30 PM."));
+        assert_eq!(
+            pr_thread_as_of(&json!({"as_of": "2026-10-12T13:30:00Z", "stale": "Bitbucket rate-limited"}), &now).as_deref(),
+            Some("As of 1:30 PM; may be stale: couldn't read it again (Bitbucket rate-limited).")
+        );
+        assert_eq!(pr_thread_as_of(&json!({}), &now), None);
     }
 
     #[test]

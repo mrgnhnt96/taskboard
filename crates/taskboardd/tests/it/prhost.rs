@@ -9,8 +9,8 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::{Config, PrProject, RebasePolicy};
 use taskboardd::prhost::{self, Check, FakeHost, Record, Reviewer, Thread};
-use taskboardd::util::{now_ts, RowExt};
-use taskboardd::{board, midna, p, prflow, reports};
+use taskboardd::util::{iso, now_ts, RowExt};
+use taskboardd::{board, midna, p, prcmds, prflow, reports};
 
 struct Board {
     app: Arc<App>,
@@ -155,6 +155,116 @@ fn pr_thread_prints_a_threads_whole_text_and_replies() {
     assert_eq!(v["open"], true);
     assert_eq!(b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "2"}))["open"], false, "the author had the last word");
     assert!(b.try_post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "9"})).unwrap_err().contains("no thread 9"));
+}
+
+fn reads(h: &FakeHost) -> usize {
+    *h.reads.lock()
+}
+
+/// Ages the board's copy of the PR past `pr thread`'s TTL.
+fn age_copy(b: &Board, id: i64) {
+    prflow::merge_flow(&b.app, id, vec![("checked_at", json!(iso(now_ts() - prcmds::HELD_SECS - 5.0)))]).unwrap();
+}
+
+#[test]
+fn pr_thread_serves_the_boards_copy_until_it_ages_out_or_is_refreshed() {
+    // #679: each pr/thread read the host live, 2-9 s a time, and added to the rate limit.
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    let polled = reads(&h);
+    let v = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert_eq!(reads(&h), polled, "the board's copy from the poll answers");
+    assert_eq!(v["as_of"], b.flow(id)["checked_at"]);
+    assert!(v["stale"].is_null());
+    assert_eq!(v["open"], true);
+
+    h.rec.lock().threads[0].replies = vec![taskboardd::prhost::Reply { author: "rev".into(), text: "Ping".into(), ..Default::default() }];
+    let v = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert!(v["thread"]["replies"].as_array().map_or(true, |r| r.is_empty()), "still the copy");
+    let v = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1", "refresh": true}));
+    assert_eq!(reads(&h), polled + 1, "refresh reads the host");
+    assert_eq!(v["thread"]["replies"][0]["text"], "Ping");
+
+    age_copy(&b, id);
+    b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert_eq!(reads(&h), polled + 2, "an old copy is read again");
+    b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert_eq!(reads(&h), polled + 2, "and that read is the copy now");
+
+    h.rec.lock().threads.push(thread("2", "rev"));
+    assert_eq!(b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "2"}))["thread"]["id"], "2", "a thread the copy doesn't have yet is read");
+    assert_eq!(reads(&h), polled + 3);
+}
+
+#[test]
+fn pr_thread_reads_asked_at_once_share_one_host_call() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    let polled = reads(&h);
+    *h.read_delay.lock() = std::time::Duration::from_millis(400);
+    let path = format!("/tasks/T{id}/pr/thread");
+    std::thread::scope(|sc| {
+        let first = sc.spawn(|| b.post(&path, json!({"thread": "1", "refresh": true})));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let second = sc.spawn(|| b.post(&path, json!({"thread": "1", "refresh": true})));
+        assert_eq!(first.join().unwrap()["thread"]["id"], "1");
+        assert_eq!(second.join().unwrap()["thread"]["id"], "1");
+    });
+    assert_eq!(reads(&h), polled + 1, "the second waited on the first's read");
+}
+
+#[test]
+fn pr_thread_answers_from_the_copy_while_the_host_is_rate_limited() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    age_copy(&b, id);
+    *h.read_error.lock() = Some("Bitbucket rate-limited until 3:40 PM".into());
+    let v = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert_eq!(v["thread"]["text"], "Thread 1");
+    assert_eq!(v["stale"], "Bitbucket rate-limited until 3:40 PM", "it says the copy may be stale");
+    assert_eq!(v["as_of"], b.flow(id)["checked_at"], "as of the copy's own read");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "2"})).unwrap_err();
+    assert!(e.contains("Couldn't read PR #9: Bitbucket rate-limited"), "{e}");
+}
+
+#[test]
+fn reply_and_ack_write_once_and_note_it_on_the_copy_without_reading_the_pr() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev"), thread("2", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    let polled = reads(&h);
+    let as_of = b.flow(id)["checked_at"].clone();
+
+    let v = b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it"}));
+    assert_eq!(v["open_threads"], 1);
+    let v = b.post(&format!("/tasks/T{id}/pr/ack"), json!({"thread": "2"}));
+    assert_eq!(v["resolved"], true);
+    assert_eq!(v["open_threads"], 0);
+    assert_eq!(h.calls(), vec!["reply 1 Renamed it", "resolve 2"]);
+    assert_eq!(reads(&h), polled, "neither read the PR");
+
+    let th = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
+    assert_eq!(th["thread"]["replies"][0]["text"], "Renamed it", "the copy has the reply");
+    assert_eq!(th["thread"]["last_author"], "me");
+    assert_eq!(th["open"], false);
+    assert_eq!(b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "2"}))["thread"]["resolved"], true);
+    assert_eq!(reads(&h), polled);
+    assert_eq!(b.flow(id)["checked_at"], as_of, "the copy is still as of its last read");
 }
 
 #[test]

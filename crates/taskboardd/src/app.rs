@@ -66,6 +66,8 @@ pub struct Shared {
     pub plan_seq: i64,
     /// QA comments being read by Claude right now (`qa.rs`).
     pub qa_reading: HashSet<i64>,
+    /// The last `tb pr …` read of each task's PR, shared with callers that asked while it ran (`prcmds`).
+    pub pr_reads: HashMap<i64, Arc<crate::prcmds::Flight>>,
     /// PR hosts used in place of the real ones (`prhost::install`, tests).
     pub pr_hosts: std::collections::HashMap<String, Arc<dyn crate::prhost::PrHost>>,
     /// Default-branch CI readers used in place of the real ones (`breaks::install`, tests).
