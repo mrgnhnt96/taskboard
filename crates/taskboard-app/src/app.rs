@@ -18,6 +18,8 @@ const POLL: Duration = Duration::from_secs(3);
 /// How long a toast stays (the web's `toast`): 3 s, an error 6 s.
 const TOAST_OK: Duration = Duration::from_secs(3);
 const TOAST_ERR: Duration = Duration::from_secs(6);
+/// How many goals just left stay on hand to show again at once.
+const RECENT_GOALS: usize = 8;
 /// The least a clicked button reads "Sending…", so a quick answer doesn't flash it. None in
 /// tests, whose clock only moves when told (it would bring on polls).
 #[cfg(not(test))]
@@ -243,6 +245,10 @@ pub struct MainWindow {
     settling: Vec<(u64, Instant, Settle)>,
     /// The task or issue whose own `GET` is out (its panel opened just now): a refresh leaves it out.
     panel_fetch: Option<String>,
+    /// Likewise the goal whose page opened just now.
+    goal_fetch: Option<String>,
+    /// The goals opened last, newest first, so going back to one shows it at once.
+    recent_goals: Vec<Value>,
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
@@ -290,6 +296,8 @@ impl MainWindow {
             posted: 0,
             settling: Vec::new(),
             panel_fetch: None,
+            goal_fetch: None,
+            recent_goals: Vec::new(),
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
         };
@@ -478,12 +486,15 @@ impl MainWindow {
             }
             if matches!(self.page, Page::Goal(_)) {
                 self.goal_page.reset_for("");
+                if let Some(g) = self.data.goal.take() {
+                    self.keep_goal(g);
+                }
             }
             if let Page::Goal(r) = &page {
-                if self.data.goal.as_ref().and_then(|g| g["ref"].as_str()) != Some(r.as_str()) {
-                    self.data.goal = None;
-                    self.data.errs.goal = None;
-                }
+                // A goal opened lately shows as it was until its own answer lands.
+                self.data.goal = self.recent_goals.iter().find(|g| g["ref"].as_str() == Some(r.as_str())).cloned();
+                self.data.errs.goal = None;
+                self.fetch_goal(r.clone(), cx);
             }
             if let Page::Idea(r) = &page {
                 if self.data.idea.as_ref().and_then(|i| i["ref"].as_str()) != Some(r.as_str()) {
@@ -554,6 +565,39 @@ impl MainWindow {
             });
         })
         .detach();
+    }
+
+    /// A goal page's own `GET /goals/:id`, so it doesn't wait for `GET /state` and the rest of a
+    /// refresh. An answer from before a change is dropped and asked for again.
+    fn fetch_goal(&mut self, r: String, cx: &mut Context<Self>) {
+        self.goal_fetch = Some(r.clone());
+        let (backend, asked) = (self.backend.clone(), self.generation);
+        let path = format!("goals/{r}");
+        cx.spawn(async move |this, cx| {
+            let v: Answer = cx.background_executor().spawn(async move { backend.get(&path, &[]).map_err(|e| e.message) }).await;
+            let _ = this.update(cx, |m, cx| {
+                if m.goal_fetch.as_ref() != Some(&r) {
+                    return;
+                }
+                m.goal_fetch = None;
+                if m.page != Page::Goal(r) {
+                    return;
+                }
+                if m.posted > asked {
+                    return m.refresh(cx);
+                }
+                land(&mut m.data.goal, &mut m.data.errs.goal, v, merge_goal);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Keep a goal just left for going back to, dropping the oldest past [`RECENT_GOALS`].
+    fn keep_goal(&mut self, g: Value) {
+        self.recent_goals.retain(|x| x["ref"] != g["ref"]);
+        self.recent_goals.insert(0, g);
+        self.recent_goals.truncate(RECENT_GOALS);
     }
 
     pub fn open_issue(&mut self, r: impl Into<String>, cx: &mut Context<Self>) {
@@ -1051,8 +1095,9 @@ impl Wants {
                 Some(Panel::Issue { r }) if m.panel_fetch.as_ref() != Some(r) => Some(r.clone()),
                 _ => None,
             },
+            // So is a goal page that just opened (`fetch_goal`).
             goal: match &m.page {
-                Page::Goal(g) => Some(g.clone()),
+                Page::Goal(g) if m.goal_fetch.as_ref() != Some(g) => Some(g.clone()),
                 _ => None,
             },
             goal_rows: match m.page {

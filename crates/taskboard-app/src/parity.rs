@@ -285,6 +285,38 @@ mod tests {
         .unwrap();
     }
 
+    /// A goal page has its own fetch, so it lands even when the board's /state doesn't.
+    #[gpui_kit::test]
+    fn a_goal_opens_without_the_board_refresh(cx: &mut gpui_kit::TestAppContext) {
+        use crate::app::Page;
+        let (w, rec) = window(cx);
+        rec.fail("state", 500, "slow");
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, _| {
+            let g = m.data.goal.as_ref().expect("the goal landed on its own");
+            assert_eq!(g["ref"], "G1");
+            assert!(g["tasks"].is_array());
+        })
+        .unwrap();
+    }
+
+    /// Going back to a goal opened just now shows it at once, then refetches it.
+    #[gpui_kit::test]
+    fn a_goal_opened_lately_shows_again_at_once(cx: &mut gpui_kit::TestAppContext) {
+        use crate::app::Page;
+        let (w, _rec) = window(cx);
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G9".into()), cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, cx| {
+            m.go(Page::Goal("G1".into()), cx);
+            assert_eq!(m.data.goal.as_ref().map(|g| g["ref"].clone()), Some(json!("G1")));
+        })
+        .unwrap();
+    }
+
     #[gpui_kit::test]
     fn filters_persist_like_the_web(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
