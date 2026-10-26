@@ -103,6 +103,7 @@ pub mod slot_tidy;
 pub mod slots;
 pub mod slowlog;
 pub mod spans;
+pub mod stamp;
 pub mod tidy;
 pub mod stack;
 pub mod suggest;

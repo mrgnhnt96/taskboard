@@ -65,6 +65,25 @@ impl Print for Value {
     }
 }
 
+/// A stamped answer (`GET /state`, `GET /goals`) by its stamp alone: the board already boiled it
+/// down, clocks aside, and an `unchanged` answer then prints the same as the one it stands for.
+pub struct Stamped<'a>(pub &'a Value);
+
+impl Print for Stamped<'_> {
+    fn print(&self, f: &mut Fingerprint) {
+        match self.0["stamp"].as_str() {
+            Some(s) => (7u8, s).hash(&mut f.h),
+            None => self.0.print(f),
+        }
+    }
+}
+
+impl<T: Print + ?Sized> Print for &T {
+    fn print(&self, f: &mut Fingerprint) {
+        (**self).print(f);
+    }
+}
+
 impl Print for String {
     fn print(&self, f: &mut Fingerprint) {
         self.hash(&mut f.h);

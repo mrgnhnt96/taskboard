@@ -1,5 +1,6 @@
-//! `GET /state`'s Done column (picked from the rows, then carded) and the project list it and
-//! every card read, which the board keeps until the database changes.
+//! `GET /state`'s Done column (picked from the rows, then carded), the project list it and
+//! every card read, which the board keeps until the database changes, and the stamp a poll asks
+//! it and `GET /goals` `since`.
 
 use std::sync::Arc;
 
@@ -124,4 +125,33 @@ fn another_connections_commit_is_seen() {
     let other = rusqlite::Connection::open(dir.path().join("tasks.db")).unwrap();
     other.execute("INSERT INTO tasks (title, project, status) VALUES ('a', 'cli', 'queued')", []).unwrap();
     assert_eq!(names(&app), [("cli".to_string(), Value::Null)]);
+}
+
+fn get(app: &App, path: &str, since: Option<&Value>) -> Value {
+    let q: Query = since.map(|s| ("since".to_string(), s.as_str().unwrap().to_string())).into_iter().collect();
+    api::dispatch(app, "GET", path, &q, &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
+}
+
+#[test]
+fn a_poll_since_the_stamp_it_holds_hears_unchanged_until_the_board_moves() {
+    let (app, _dir) = new_board();
+    app.db.insert("goals", fields!["name" => "Ship", "project" => "webapp", "created_at" => now_iso()]).unwrap();
+    for path in ["state", "goals"] {
+        let full = get(&app, path, None);
+        let stamp = full["stamp"].clone();
+        assert!(stamp.is_string(), "{path} comes stamped");
+        let again = get(&app, path, Some(&stamp));
+        assert_eq!(again["unchanged"], true, "{path}: nothing moved");
+        assert_eq!(again["stamp"], stamp);
+        assert!(again["now"].is_string(), "{path}: the clock still comes");
+        assert!(again.get("columns").is_none() && again.get("goals").is_none(), "{path}: and nothing else");
+        assert!(get(&app, path, Some(&json!("other"))).get("unchanged").is_none(), "{path}: another stamp gets it all");
+    }
+    let (state, goals) = (get(&app, "state", None)["stamp"].clone(), get(&app, "goals", None)["stamp"].clone());
+    app.db.insert("goals", fields!["name" => "Polish", "project" => "webapp", "created_at" => now_iso()]).unwrap();
+    app.db.insert("tasks", fields!["title" => "a", "project" => "webapp", "status" => "queued", "created_at" => now_iso()]).unwrap();
+    let moved = get(&app, "state", Some(&state));
+    assert!(moved.get("unchanged").is_none() && moved["stamp"] != state, "a new task moves the board");
+    let moved = get(&app, "goals", Some(&goals));
+    assert_eq!(moved["goals"].as_array().unwrap().len(), 2, "a new goal moves the list");
 }

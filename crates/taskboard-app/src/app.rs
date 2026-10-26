@@ -5,7 +5,7 @@
 //! Every page lives in its own module under `ui/` with a `State` struct held here and a
 //! `render(m, window, cx)` function. They read `m.data` and act through [`MainWindow::post`].
 use crate::backend::{Backend, CallError};
-use crate::fingerprint::{self, Fingerprint};
+use crate::fingerprint::{self, Fingerprint, Stamped};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
 use crate::ui::{self, kit};
@@ -257,6 +257,8 @@ pub struct MainWindow {
     shown: std::collections::HashMap<String, (u64, u64)>,
     /// When the window last drew.
     drawn: Instant,
+    /// The stamps of the board and goal list shown, which a poll asks `since` ([`Stamps`]).
+    stamps: Stamps,
     /// What waits for the board's first answer after a change (see [`settle`](Self::settle)): the
     /// generation it was asked at, when the button was clicked, and what to do.
     settling: Vec<(u64, Instant, Settle)>,
@@ -327,6 +329,7 @@ impl MainWindow {
             posted: 0,
             shown: Default::default(),
             drawn: Instant::now(),
+            stamps: Stamps::default(),
             settling: Vec::new(),
             panel_fetch: None,
             goal_fetch: None,
@@ -953,7 +956,7 @@ impl MainWindow {
         let generation = self.generation;
         let asked = Wants::of(self, cx);
         let (tx, rx) = async_channel::unbounded();
-        for (key, call) in asked.clone().calls() {
+        for (key, call) in asked.clone().calls(self.stamps.since()) {
             let (backend, tx, asked) = (self.backend.clone(), tx.clone(), asked.clone());
             cx.background_executor()
                 .spawn(async move {
@@ -1260,8 +1263,9 @@ impl Wants {
         }
     }
 
-    /// Every call on its own, keyed by the part of the view it fills.
-    fn calls(self) -> Vec<(String, Call)> {
+    /// Every call on its own, keyed by the part of the view it fills. The board and goal list are
+    /// asked `since` the stamps shown.
+    fn calls(self, since: Since) -> Vec<(String, Call)> {
         fn get(be: &dyn Backend, p: &str, q: &[(&str, String)]) -> Answer {
             be.get(p, q).map_err(|e| e.message)
         }
@@ -1269,9 +1273,14 @@ impl Wants {
             c.push((key.into(), Box::new(f)));
         }
         let mut c = Vec::new();
+        fn since_q(mut q: Vec<(&'static str, String)>, since: Option<String>) -> Vec<(&'static str, String)> {
+            q.extend(since.map(|s| ("since", s)));
+            q
+        }
         let Wants { state_q, task, issue, goal, goal_rows, sessions, session, days_q, home, palette, task_page, review, releases, release_rows, ideas, idea } = self;
-        add(&mut c, "state", move |be| Got { state: Some(be.get("state", &state_q)), ..Got::default() });
-        add(&mut c, "goals", |be| Got { goals: get(be, "goals", &[]).ok(), ..Got::default() });
+        let Since { state: state_since, goals: goals_since } = since;
+        add(&mut c, "state", move |be| Got { state: Some(be.get("state", &since_q(state_q, state_since))), ..Got::default() });
+        add(&mut c, "goals", move |be| Got { goals: get(be, "goals", &since_q(vec![], goals_since)).ok(), ..Got::default() });
         if let Some(r) = task {
             add(&mut c, "task", move |be| Got { task: Some((r.clone(), get(be, &format!("tasks/{r}"), &[]))), ..Got::default() });
         }
@@ -1335,6 +1344,46 @@ impl Wants {
     }
 }
 
+/// The stamps of the `GET /state` and `GET /goals` answers shown ([`Got::apply`]), each with when
+/// it landed in full. Asked `since` one, the board answers `{"unchanged": true}` when nothing but
+/// its clocks moved, and the window keeps what it has: no copy of the board, no rebuilt pages.
+#[derive(Default)]
+struct Stamps {
+    state: Option<(String, Instant)>,
+    goals: Option<(String, Instant)>,
+}
+
+/// What a refresh asks `GET /state` and `GET /goals` since (see [`Stamps`]).
+#[derive(Default)]
+struct Since {
+    state: Option<String>,
+    goals: Option<String>,
+}
+
+impl Stamps {
+    /// Each stamp younger than [`AGES`]: an older one is asked for in full, so the clocks an
+    /// unchanged answer leaves out (when a terminal was last heard from, a goal's last update) and
+    /// the ages the pages build from them still catch up.
+    fn since(&self) -> Since {
+        let fresh = |s: &Option<(String, Instant)>| s.as_ref().filter(|(_, at)| at.elapsed() < AGES).map(|(s, _)| s.clone());
+        Since { state: fresh(&self.state), goals: fresh(&self.goals) }
+    }
+
+    /// Note a full answer's stamp, or, for an `unchanged` one, forget a stamp it doesn't match (an
+    /// older answer landed in between) so the next poll asks in full. True for a full answer.
+    fn took(slot: &mut Option<(String, Instant)>, v: &Value) -> bool {
+        let stamp = v["stamp"].as_str();
+        if v["unchanged"] != true {
+            *slot = stamp.map(|s| (s.to_string(), Instant::now()));
+            return true;
+        }
+        if slot.as_ref().map(|(s, _)| s.as_str()) != stamp {
+            *slot = None;
+        }
+        false
+    }
+}
+
 /// Swap in a good answer (clearing its error) or keep what's shown and remember why it failed.
 fn land(slot: &mut Option<Value>, err: &mut Option<String>, answer: Answer, map: impl FnOnce(Value) -> Value) {
     match answer {
@@ -1363,7 +1412,8 @@ impl Got {
     /// Everything asked and answered, without the clocks ([`fingerprint::CLOCKS`]).
     fn fingerprint(&self, asked: &Wants) -> u64 {
         let mut f = Fingerprint::new(asked);
-        f.add(&self.state).add(&self.goals).add(&self.task).add(&self.issue).add(&self.goal).add(&self.goal_rows);
+        // The board and goal list by their stamps, so an unchanged answer prints as the one it stands for.
+        f.add(&self.state.as_ref().map(|a| a.as_ref().map(Stamped))).add(&self.goals.as_ref().map(Stamped)).add(&self.task).add(&self.issue).add(&self.goal).add(&self.goal_rows);
         f.add(&self.sessions).add(&self.closed).add(&self.session).add(&self.home).add(&self.palette);
         f.add(&self.task_page).add(&self.reviews).add(&self.review).add(&self.releases).add(&self.release_rows);
         f.add(&self.ideas).add(&self.idea);
@@ -1418,17 +1468,20 @@ impl Got {
     fn apply(self, m: &mut MainWindow, cx: &App) {
         match self.state {
             Some(Ok(v)) => {
+                // An unchanged answer still sets the clock the pages' ages count from.
                 fmt::set_server_now(s(&v, "now"));
-                if arr(&v, "alerts").is_empty() && matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
-                    m.modal = None;
+                if Stamps::took(&mut m.stamps.state, &v) {
+                    if arr(&v, "alerts").is_empty() && matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
+                        m.modal = None;
+                    }
+                    m.data.state = Some(Rc::new(v));
                 }
-                m.data.state = Some(Rc::new(v));
                 m.down = None;
             }
             Some(Err(e)) => m.down = Some(e.message),
             None => {}
         }
-        if let Some(g) = self.goals {
+        if let Some(g) = self.goals.filter(|g| Stamps::took(&mut m.stamps.goals, g)) {
             m.data.goals = Rc::new(if g.is_array() { g.as_array().cloned().unwrap_or_default() } else { arr(&g, "goals").to_vec() });
             m.goals_loaded = true;
         }
@@ -2594,7 +2647,7 @@ mod tests {
         m.generation += 1;
         let out = m.generation;
         let asked = super::Wants::of(m, cx);
-        let mut parts: Vec<_> = asked.clone().calls().into_iter().map(|(k, call)| (k, call(rec))).collect();
+        let mut parts: Vec<_> = asked.clone().calls(super::Since::default()).into_iter().map(|(k, call)| (k, call(rec))).collect();
         for (_, got) in &mut parts {
             if let Some(Ok(s)) = got.state.as_mut() {
                 s["marker"] = json!("slow");
@@ -2652,6 +2705,55 @@ mod tests {
             assert_eq!(m.data.home.as_ref().map(|h| h["marker"].clone()), Some(json!("new")));
         })
         .unwrap();
+    }
+
+    /// A poll asks the board and goal list `since` the stamps shown: when nothing moved the window
+    /// keeps what it has (no copy, no rebuilt page), a change lands in full, and a stamp older than
+    /// the ages' redraw is asked for in full again.
+    #[gpui_kit::test]
+    fn an_unchanged_poll_keeps_the_board_it_has(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        use std::rc::Rc;
+        let (w, rec) = window(cx);
+        settle(cx);
+        let (state, goals) = w
+            .update(cx, |m: &mut MainWindow, _, cx| {
+                let since = m.stamps.since();
+                assert!(since.state.is_some() && since.goals.is_some(), "the answers came stamped");
+                let held = (m.data.state.clone().unwrap(), m.data.goals.clone());
+                m.ask(true, cx);
+                held
+            })
+            .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert!(Rc::ptr_eq(m.data.state.as_ref().unwrap(), &state), "the same board");
+            assert!(Rc::ptr_eq(&m.data.goals, &goals), "the same goal list");
+            rec.post("/goals", json!({"name": "Moved", "project": "webapp"})).unwrap();
+            m.ask(true, cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert!(!Rc::ptr_eq(&m.data.goals, &goals), "a change lands in full");
+            assert!(m.data.goals.iter().any(|g| g["name"] == "Moved"));
+            let at = &mut m.stamps.state.as_mut().unwrap().1;
+            *at = at.checked_sub(super::AGES).unwrap();
+            assert!(m.stamps.since().state.is_none(), "an old stamp asks in full");
+        })
+        .unwrap();
+    }
+
+    /// An unchanged answer for a stamp other than the one shown (an older answer landed in
+    /// between) forgets the stamp, so the next poll asks in full.
+    #[::core::prelude::v1::test]
+    fn an_unchanged_answer_for_another_stamp_asks_in_full_next() {
+        let mut slot = None;
+        assert!(super::Stamps::took(&mut slot, &json!({"stamp": "a", "columns": {}})));
+        assert!(!super::Stamps::took(&mut slot, &json!({"unchanged": true, "stamp": "a"})));
+        assert_eq!(slot.as_ref().map(|(s, _)| s.as_str()), Some("a"));
+        assert!(!super::Stamps::took(&mut slot, &json!({"unchanged": true, "stamp": "b"})));
+        assert!(slot.is_none());
     }
 
     /// Opening a page while a slow refresh is out keeps the board and goals it read instead of
