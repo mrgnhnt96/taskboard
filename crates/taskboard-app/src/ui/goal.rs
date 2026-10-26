@@ -164,15 +164,31 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
 
 /// The status bar's parts in the design's order (done, working, needs you, in review, failed,
 /// queued, planned), and the line beside it: ("2 of 7", " done · 2 working · 1 needs you").
+/// A `/goals` row, without its tasks, counts from its summary.
 pub fn progress(g: &Value) -> (Vec<(St, i64)>, String, String) {
-    let tasks = counted(g);
     let mut n: HashMap<St, i64> = HashMap::new();
-    for t in &tasks {
-        *n.entry(status::row(t).st).or_default() += 1;
-    }
+    let total = if g["tasks"].is_array() {
+        let tasks = counted(g);
+        for t in &tasks {
+            *n.entry(status::row(t).st).or_default() += 1;
+        }
+        tasks.len() as i64
+    } else {
+        let counts = [
+            (St::Done, i(g, "done")),
+            (St::Working, (i(g, "active") - i(g, "needs")).max(0)),
+            (St::Needs, i(g, "needs")),
+            (St::Review, i(g, "review")),
+            (St::Failed, i(g, "failed")),
+            (St::Queued, i(g, "queued")),
+            (St::Planned, i(g, "planned")),
+        ];
+        n.extend(counts.into_iter().filter(|(_, x)| *x > 0));
+        i(g, "total")
+    };
     let order = [St::Done, St::Working, St::Needs, St::Review, St::Failed, St::Queued, St::Planned];
     let parts: Vec<(St, i64)> = order.iter().filter_map(|st| n.get(st).map(|x| (*st, *x))).collect();
-    let lead = format!("{} of {}", n.get(&St::Done).copied().unwrap_or(0), tasks.len());
+    let lead = format!("{} of {total}", n.get(&St::Done).copied().unwrap_or(0));
     let mut tail = " done".to_string();
     for st in &order[1..] {
         if let Some(x) = n.get(st) {
@@ -1018,7 +1034,8 @@ fn misses_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
     Some(kit::popover(at, menu))
 }
 
-fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
+/// The run buttons wait for the goal's tasks (`loaded`); a `/goals` row alone can't tell which apply.
+fn header(m: &MainWindow, t: &Theme, g: &Value, loaded: bool, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let epic: Option<AnyElement> = fmt::opt_s(g, "epic_key").map(|key| {
         let url = fmt::opt_s(g, "epic_url").filter(|u| u.starts_with("http://") || u.starts_with("https://")).map(str::to_string);
@@ -1077,7 +1094,7 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                             d.child(div().max_w(px(820.)).text_size(px(14.)).line_height(relative(1.5)).text_color(t.text_2).child(sel(t, "goal-tldr", tl)))
                         }),
                 )
-                .child(buttons(m, t, g, cx)),
+                .when(loaded, |d| d.child(buttons(m, t, g, cx))),
         )
         .child(
             div()
@@ -1292,19 +1309,18 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     if m.goal_page.for_goal != want {
         m.goal_page.reset_for(&want);
     }
-    let Some(g) = m.data.goal.clone().filter(|g| fmt::ref_of(g, "G") == want) else {
-        let err = m.data.errs.goal.clone();
-        return div()
-            .flex_1()
-            .pt(px(20.))
-            .px(px(36.))
-            .child(match err {
-                Some(e) => div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e),
-                None => kit::help(&t, "Loading…"),
-            })
-            .into_any_element();
+    let loaded = m.data.goal.as_ref().is_some_and(|g| fmt::ref_of(g, "G") == want);
+    // Until the goal's own answer lands, its `/goals` row fills the header and progress.
+    let row = || m.data.goals.iter().find(|g| fmt::ref_of(g, "G") == want).cloned();
+    let Some(g) = (if loaded { m.data.goal.clone() } else { row() }) else {
+        return div().flex_1().pt(px(20.)).px(px(36.)).child(loading(m, &t)).into_any_element();
     };
-    lists::sync(m, &g, cx);
+    let body = if loaded {
+        lists::sync(m, &g, cx);
+        lists::body(m, cx)
+    } else {
+        div().pt(px(20.)).px(px(36.)).child(loading(m, &t))
+    };
     // The header stays put; under it the wave cards and the aside each scroll as a list that
     // draws only what's in view.
     div()
@@ -1323,14 +1339,20 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .pt(px(20.))
                 .px(px(36.))
                 .child(crumbs(&t, &g, cx))
-                .child(header(m, &t, &g, cx))
+                .child(header(m, &t, &g, loaded, cx))
                 .children(gate(m, &t, &g, cx)),
         )
-        .child(lists::body(m, cx))
-        .children(start_menu(m, &t, &g, cx))
-        .children(wait_menu(m, &t, &g, cx))
-        .children(misses_menu(m, &t, &g, cx))
+        .child(body)
+        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)))
         .into_any_element()
+}
+
+/// Where the goal's answer will show: why it failed, or that it's on its way.
+fn loading(m: &MainWindow, t: &Theme) -> Div {
+    match m.data.errs.goal.clone() {
+        Some(e) => div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e),
+        None => kit::help(t, "Loading…"),
+    }
 }
 
 fn inline_el(t: &Theme, segs: &[Inline], key: String) -> AnyElement {
@@ -1463,6 +1485,16 @@ mod tests {
         let (parts, lead, tail) = progress(&json!({"tasks": []}));
         assert!(parts.is_empty());
         assert_eq!((lead.as_str(), tail.as_str()), ("0 of 0", " done"));
+    }
+
+    /// A `/goals` row, before the goal's own answer, counts the same from its summary.
+    #[test]
+    fn progress_of_a_goals_row_counts_from_its_summary() {
+        let row = json!({"done": 2, "total": 7, "active": 3, "needs": 1, "review": 0, "failed": 0, "queued": 1, "planned": 1});
+        let (parts, lead, tail) = progress(&row);
+        assert_eq!(parts, vec![(St::Done, 2), (St::Working, 2), (St::Needs, 1), (St::Queued, 1), (St::Planned, 1)]);
+        assert_eq!(lead, "2 of 7");
+        assert_eq!(tail, " done · 2 working · 1 needs you · 1 queued · 1 planned");
     }
 
     #[test]
