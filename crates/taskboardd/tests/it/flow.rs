@@ -198,6 +198,28 @@ fn a_closed_terminal_requeues_the_task_then_waits_for_the_owner() {
 }
 
 #[test]
+fn a_terminal_lost_for_no_named_reason_says_what_midna_saw() {
+    let fake = tempfile::tempdir().unwrap();
+    let exe = fake.path().join("midna");
+    std::fs::write(
+        &exe,
+        "#!/bin/sh\ncase \"$2\" in\n  session.get) echo '{\"created_at\": \"2020-01-01T00:00:00Z\", \"status\": {\"state\": \"exited\", \"exit_code\": 1}}' ;;\n  session.read) echo '{\"text\": \"panicked at src/main.rs\\\\n───\\\\n\"}' ;;\n  *) echo '{}' ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let b = board_with(|c| c.midna = exe);
+    let id = new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+    assert_eq!(b.task(id).s("status"), Some("queued"));
+    let ended = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE 'Terminal ended%'", p![id]).unwrap();
+    let text = ended[0].st("text");
+    assert!(text.starts_with("Terminal ended (other: exit 1, ran "), "{text}");
+    assert!(text.contains(", last lines: panicked at src/main.rs) before the task was done"), "{text}");
+}
+
+#[test]
 fn a_tasks_terminals_say_when_their_session_ended() {
     let b = new_board();
     let id = new_task(&b, "Long job", json!({}));
