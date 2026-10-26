@@ -12,11 +12,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
 use std::ops::Range;
+use std::time::Duration;
 
 /// Results shown per kind; the group's header counts them all.
 const PER_GROUP: usize = 6;
 /// The tasks and issues asked of the board per query, best first; the palette ranks them again.
 const WINDOW: usize = 30;
+/// How long typing pauses before the board is asked about it, so a burst of keys asks once.
+const PAUSE: Duration = Duration::from_millis(120);
 
 #[derive(Default)]
 pub struct State {
@@ -26,6 +29,8 @@ pub struct State {
     scroll: ScrollHandle,
     /// What the board last answered: the query and how many tasks and issues match it in all.
     found: Option<(String, usize, usize)>,
+    /// The ask waiting for typing to pause; the next key drops it and waits again.
+    soon: Option<Task<()>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -279,6 +284,14 @@ fn fetch(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     .detach();
 }
 
+/// [`fetch`] once typing pauses for [`PAUSE`]; meanwhile the palette ranks the last answer again.
+fn fetch_soon(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    m.search.soon = Some(cx.spawn(async move |this, cx| {
+        cx.background_executor().timer(PAUSE).await;
+        let _ = this.update(cx, |m, cx| fetch(m, cx));
+    }));
+}
+
 fn flat(groups: &[Group]) -> Vec<&Hit> {
     groups.iter().flat_map(|g| &g.hits).collect()
 }
@@ -296,7 +309,7 @@ pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
         cx.subscribe(&input.field, |m: &mut MainWindow, _, _: &FieldChanged, cx| {
             m.search.sel = 0;
             m.search.scroll.scroll_to_item(0);
-            fetch(m, cx);
+            fetch_soon(m, cx);
             cx.notify();
         })
         .detach();
@@ -599,5 +612,38 @@ mod tests {
         assert_eq!((g[0].total, g[0].hits.len()), (9, PER_GROUP));
         assert_eq!(row_child(&g, 0), 1);
         assert_eq!(row_child(&g, 5), 6);
+    }
+
+    #[gpui_kit::test]
+    fn a_burst_of_keys_asks_the_board_once_it_pauses(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        w.update(cx, |m, window, cx| open(m, window, cx)).unwrap();
+        crate::parity::settle(cx);
+        rec.take_gets();
+        for q in ["s", "si", "sig"] {
+            w.update(cx, |m, _, cx| m.search.input.as_ref().unwrap().set_text(q, cx)).unwrap();
+            cx.executor().advance_clock(PAUSE / 2);
+        }
+        crate::parity::settle(cx);
+        assert!(rec.take_gets().is_empty(), "nothing asked while typing");
+        cx.executor().advance_clock(PAUSE);
+        crate::parity::settle(cx);
+        assert_eq!(rec.take_gets(), ["search"], "one ask, for search alone");
+        w.update(cx, |m, _, _| assert_eq!(m.search.found.as_ref().map(|f| f.0.as_str()), Some("sig"))).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn an_answer_for_older_text_is_dropped(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _) = crate::parity::window(cx);
+        w.update(cx, |m, window, cx| open(m, window, cx)).unwrap();
+        w.update(cx, |m, _, cx| m.search.input.as_ref().unwrap().set_text("sig", cx)).unwrap();
+        cx.executor().advance_clock(PAUSE);
+        crate::parity::settle(cx);
+        w.update(cx, |m, _, cx| {
+            land(m, "si", json!({"tasks": [], "issues": [], "tasks_total": 0, "issues_total": 0}), cx);
+            assert_eq!(m.search.found.as_ref().map(|f| f.0.as_str()), Some("sig"));
+            assert!(m.data.tasks.as_ref().is_some_and(|t| t["tasks"].as_array().is_some_and(|a| !a.is_empty())), "the answer for sig stays");
+        })
+        .unwrap();
     }
 }
