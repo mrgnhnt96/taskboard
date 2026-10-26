@@ -19,7 +19,9 @@
 //! sets it; `tb stream mode` overrides it on the board.
 //!
 //! A pr event without every v1 field is still accepted, kept with `complete = 0`: the board reads that
-//! PR from its host instead of trusting the event.
+//! PR from its host instead of trusting the event, unless the event carries the PR's state, title,
+//! branch and base and prs streams. Then the PR is updated from it, the rest kept from the last read,
+//! and only the checks of a head it moved are read from the host.
 
 use std::collections::BTreeMap;
 
@@ -359,10 +361,17 @@ fn source_of(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether an incomplete pr event still says what the PR is (its state, title, branch and base): in
+/// stream mode the PR is updated from it, keeping the rest of the last read and reading from the host
+/// only what it moved without carrying (`prflow::apply_event`).
+fn carries_state(ev: &Value) -> bool {
+    ["state", "title", "branch", "base"].iter().all(|k| ev.get(*k).is_some_and(|v| !v.is_null()))
+}
+
 fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
     match kind {
         "pr" => {
-            let apply = (complete && streams(app, "prs")).then_some(ev);
+            let apply = ((complete || carries_state(ev)) && streams(app, "prs")).then_some(ev);
             feed::intake_from(app, &as_feed_pr(ev), &["prs"], apply)
         }
         "build" => {

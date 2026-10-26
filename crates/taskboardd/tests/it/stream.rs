@@ -436,8 +436,8 @@ fn a_relay_covering_only_bitbucket_leaves_github_prs_polled() {
     let b = board_with(stream_mode("prs"));
     let gh = FakeHost::new("github", Record { title: "read from GitHub".into(), ..host_rec("g1") });
     let bb = FakeHost::new("bitbucket", Record { title: "read from Bitbucket".into(), ..host_rec("b1") });
-    prhost::install(&b.app, gh);
-    prhost::install(&b.app, bb);
+    prhost::install(&b.app, gh.clone());
+    prhost::install(&b.app, bb.clone());
     let gh_task = b.pr_task("https://github.com/acme/webapp/pull/7");
     let bb_task = b.pr_task(BB);
     b.send(from("bb-relay", ev("h1", "heartbeat", json!({"sources": ["prs", "builds"], "covers": [{"provider": "bitbucket"}]}))));
@@ -449,7 +449,13 @@ fn a_relay_covering_only_bitbucket_leaves_github_prs_polled() {
     prflow::poll(&b.app).unwrap();
     let title = |id: i64| board::get_task(&b.app, id).unwrap().s("pr_title").map(str::to_string);
     assert_eq!(title(gh_task).as_deref(), Some("read from GitHub"), "the GitHub PR is polled");
-    assert_ne!(title(bb_task).as_deref(), Some("read from Bitbucket"), "bb-relay drives the Bitbucket PR");
+    assert_eq!(title(bb_task).as_deref(), Some("read from Bitbucket"), "never read yet, so the Bitbucket PR is read once");
+
+    gh.rec.lock().title = "GitHub again".into();
+    bb.rec.lock().title = "Bitbucket again".into();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(title(gh_task).as_deref(), Some("GitHub again"), "the GitHub PR is polled every round");
+    assert_eq!(title(bb_task).as_deref(), Some("read from Bitbucket"), "bb-relay drives the Bitbucket PR until its reconcile");
 
     let relays = b.source("prs")["relays"].as_array().unwrap().clone();
     let names: Vec<&str> = relays.iter().map(|r| r["relay"].as_str().unwrap()).collect();
@@ -578,13 +584,144 @@ fn one_relay_covering_every_provider_works_as_before() {
     let prs = b.source("prs");
     assert_eq!(prs["healthy"], true);
     assert_eq!(prs["polling"], false);
-    assert!(feed::poll_rests(&b.app, "prs") && !feed::poll_due(&b.app));
+    assert!(feed::poll_rests(&b.app, "prs") && feed::poll_due(&b.app), "the poll runs, for the relay's hourly reconcile");
     assert!(feed::pr_poll_rests(&b.app, "github", "acme/webapp"));
     assert!(prs["last_heartbeat_at"].is_string(), "the source's own fields still show the last heartbeat");
 
     b.feed_state("prs", json!({"since": ago(4000.0), "last_heartbeat_at": ago(200.0), "relays": {"relay": {"since": ago(4000.0), "last_heartbeat_at": ago(200.0)}}}));
     assert_eq!(b.source("prs")["problem"], "stuck");
     assert!(feed::poll_due(&b.app), "stuck, so the poll takes over");
+}
+
+// --- a relay-covered PR's slow reconcile (#675) ---
+
+fn bb_relay(id: &str, extra: Value) -> Value {
+    let mut e = ev(id, "heartbeat", json!({"sources": ["prs", "builds"], "covers": [{"provider": "bitbucket"}]}));
+    for (k, v) in extra.as_object().unwrap() {
+        e[k] = v.clone();
+    }
+    from("fi", e)
+}
+
+#[test]
+fn in_board_mode_a_relay_covered_pr_is_read_hourly_or_when_its_relay_comes_back() {
+    let b = board();
+    let h = FakeHost::new("bitbucket", Record { title: "one".into(), ..host_rec("h1") });
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task(BB);
+    b.send(bb_relay("h1", json!({})));
+    let title = |b: &Board| board::get_task(&b.app, id).unwrap().s("pr_title").map(str::to_string).unwrap_or_default();
+    let read_again = |b: &Board, t: &str| {
+        h.rec.lock().title = t.into();
+        prflow::poll(&b.app).unwrap();
+        title(b) == t
+    };
+    assert!(read_again(&b, "one"), "never read since the relay connected: read once");
+    assert!(!read_again(&b, "two"), "fi covers it and it was just read");
+
+    prflow::merge_flow(&b.app, id, taskboardd::fields!["read_at" => ago(4000.0)]).unwrap();
+    assert!(read_again(&b, "two"), "an hour on, the reconcile reads it");
+    assert!(!read_again(&b, "three"));
+
+    prflow::merge_flow(&b.app, id, taskboardd::fields!["read_at" => ago(60.0)]).unwrap();
+    b.send(bb_relay("h2", json!({"connected_at": ago(10.0)})));
+    assert!(read_again(&b, "three"), "fi connected again since the last read");
+    assert!(!read_again(&b, "four"));
+
+    let mut st: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
+    st["relays"]["fi"]["last_heartbeat_at"] = json!(ago(200.0));
+    b.feed_state("prs", st);
+    assert!(read_again(&b, "four"), "fi is stuck, so its PRs are polled");
+    assert!(read_again(&b, "five"));
+
+    prflow::merge_flow(&b.app, id, taskboardd::fields!["read_at" => ago(30.0)]).unwrap();
+    b.send(bb_relay("h3", json!({})));
+    assert!(read_again(&b, "six"), "fi came back since the last read");
+    assert!(!read_again(&b, "seven"));
+}
+
+#[test]
+fn a_pr_with_no_covering_relay_or_poll_while_healthy_is_polled_every_round() {
+    let b = board_with(|c| c.feed.poll_while_healthy = true);
+    let h = FakeHost::new("bitbucket", Record { title: "one".into(), ..host_rec("h1") });
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task(BB);
+    b.send(bb_relay("h1", json!({})));
+    prflow::poll(&b.app).unwrap();
+    h.rec.lock().title = "two".into();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(board::get_task(&b.app, id).unwrap().s("pr_title"), Some("two"), "poll_while_healthy");
+
+    let b = board();
+    let h = FakeHost::new("bitbucket", Record { title: "one".into(), ..host_rec("h1") });
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task(BB);
+    b.send(from("fi", ev("h1", "heartbeat", json!({"sources": ["prs"], "covers": [{"provider": "github"}]}))));
+    prflow::poll(&b.app).unwrap();
+    h.rec.lock().title = "two".into();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(board::get_task(&b.app, id).unwrap().s("pr_title"), Some("two"), "fi covers GitHub only");
+}
+
+#[test]
+fn board_mode_says_what_a_covering_relay_could_stop() {
+    let b = board();
+    assert_eq!(b.source("prs")["relay_hint"], Value::Null, "no relay");
+    b.send(bb_relay("h1", json!({})));
+    let hint = b.source("prs")["relay_hint"].as_str().unwrap().to_string();
+    assert!(hint.starts_with("prs: relay fi covers bitbucket every repo, so the poll reads them again every 60 minutes"), "{hint}");
+    assert!(hint.ends_with("`tb stream mode prs stream` would stop that"), "{hint}");
+    let builds = b.source("builds")["relay_hint"].as_str().unwrap().to_string();
+    assert_eq!(builds, "builds: polling although relay fi covers bitbucket every repo; `tb stream mode builds stream` would stop that");
+    assert_eq!(b.get("/state")["pr_feed"]["relay_hint"], json!(hint), "/state says it too");
+    assert_eq!(b.get("/prs/feed")["relay_hint"], json!(hint));
+    assert_eq!(b.post("/prs/refresh", json!({}))["relay_hints"], json!([hint, builds]));
+
+    b.post("/stream/mode", json!({"source": "prs", "mode": "stream"}));
+    assert_eq!(b.source("prs")["relay_hint"], Value::Null, "stream mode: nothing to switch");
+    assert_eq!(b.post("/prs/refresh", json!({}))["relay_hints"], json!([builds]));
+
+    let mut st: Value = serde_json::from_str(&b.app.db.get_setting("stream_feed_builds").unwrap().unwrap()).unwrap();
+    st["relays"]["fi"]["last_heartbeat_at"] = json!(ago(4000.0));
+    b.feed_state("builds", st);
+    assert_eq!(b.source("builds")["relay_hint"], Value::Null, "a stuck relay covers nothing");
+}
+
+#[test]
+fn in_stream_mode_a_pr_event_with_its_state_is_applied_and_only_new_checks_are_read() {
+    let b = board_with(stream_mode("prs"));
+    let id = b.pr_task(BB);
+    let h = FakeHost::new("bitbucket", Record { title: "from the host".into(), ..host_rec("h0") });
+    prhost::install(&b.app, h.clone());
+    prflow::refresh_task(&b.app, id).unwrap().unwrap();
+    let mut e = full_pr("pr1");
+    e["reviewers"] = json!([{"who": "sam", "state": "approved"}]);
+    e["threads"] = json!([{"id": "t1", "path": "src/a.rs", "line": 3, "resolved": false,
+        "comments": [{"id": "c1", "author": "kim", "body": "Rename this", "at": "2026-10-12T15:01:00Z"}]}]);
+    b.send(batch(vec![e]));
+    let calls = h.calls().len();
+
+    let partial = |id: &str, head: &str, title: &str| {
+        ev(id, "pr", json!({"provider": "bitbucket", "repo": "acme/webapp", "num": 9, "url": BB, "state": "open",
+            "title": title, "branch": "login", "base": "main", "head": head}))
+    };
+    let r = b.send(batch(vec![partial("pr2", "h1", "Login, renamed")]));
+    assert_eq!(r["results"][0]["complete"], false, "{r}");
+    assert_eq!(r["results"][0]["result"]["applied"], true, "{r}");
+    let rec = b.rec(id);
+    assert_eq!(rec["title"], "Login, renamed", "{rec}");
+    assert_eq!((rec["approvals"].clone(), rec["comments"].clone()), (json!(1), json!(1)), "what it doesn't carry stays: {rec}");
+    assert_eq!(rec["checks"][0]["name"], "build");
+    assert_eq!(h.calls().len(), calls, "same head: nothing read from the host");
+
+    h.rec.lock().checks = vec![Check { name: "lint".into(), state: "failed".into(), url: None, at: None }];
+    let r = b.send(batch(vec![partial("pr3", "h2", "Login, again")]));
+    assert_eq!(r["results"][0]["result"]["applied"], true, "{r}");
+    let rec = b.rec(id);
+    assert_eq!((rec["head"].clone(), rec["title"].clone()), (json!("h2"), json!("Login, again")), "{rec}");
+    assert_eq!(rec["failed"], json!(["lint"]), "a new head's checks are read: {rec}");
+    assert_eq!(rec["approvals"], 1);
+    assert_eq!(h.calls()[calls..], ["checks h2".to_string()], "only its checks");
 }
 
 // --- jira.issue (#78) ---

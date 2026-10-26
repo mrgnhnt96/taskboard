@@ -63,7 +63,9 @@ A field marked `?` may be left out or set to null. Times are ISO 8601. A PR refe
 
 A pr event is **complete** only when it carries every field in this table; null counts as present. An
 incomplete pr event is still accepted, but it's kept with `complete: false`, and the board reads that PR from its
-host instead of trusting the event. In board mode (see Modes) every pr event is only a hint: the board reads the PR
+host instead of trusting the event, unless it carries `state`, `title`, `branch` and `base` and prs is in stream
+mode: then the PR is updated from it, every field it leaves out is kept from the last read, and a `head` it moved
+without `checks` reads only that commit's checks from the host. In board mode (see Modes) every pr event is only a hint: the board reads the PR
 from its host either way.
 
 An empty `checks` on the head the board already has keeps the checks it read before: Bitbucket's PR webhooks
@@ -171,9 +173,10 @@ Each source, `prs`, `builds`, `jira` and `qa`, has a mode:
 - `board` (the default, today's behaviour): the board polls the source itself. Events are hints; a pr event makes
   the board read that PR from its host.
 - `stream`: the stream is the source of truth. A complete pr event is turned into the PR's record and stepped
-  through the PR flow without reading the host; a jira.comment goes to QA as it is. A pr event missing fields, or
-  one for a PR the board hasn't read yet (the board's own account and the base branch's head come from that first
-  read), falls back to one host read.
+  through the PR flow without reading the host; a jira.comment goes to QA as it is. A pr event with the PR's
+  state, title, branch and base but not the rest is applied too, keeping the rest of the last read (a new head
+  without checks reads that commit's checks). One missing any of those four, or one for a PR the board hasn't read
+  yet (the board's own account and the base branch's head come from that first read), falls back to one host read.
 
 config.toml sets it (`[stream.sources.<source>] mode`); `tb stream mode <source> board|stream|default` overrides it
 on the board (`default` drops the override). `tb stream` (`GET /stream`) prints each source's mode and health.
@@ -207,9 +210,15 @@ for a source, the source's health is its relays':
   *event-only*: it's never stuck or silent, so its quiet doesn't count against the source, doesn't hold the
   review loop and never runs the source's `restart_cmd` (which is the heartbeating listener's). `GET /stream`
   still lists it, with its last event and `event_only: true`;
-- the PR poll rests only for PRs a healthy, active relay covers by its heartbeats (`covers`), and the whole poll
-  rests only while one covers every PR. Other PRs are polled as in board mode. A relay that never sent a heartbeat
-  covers nothing, so the poll keeps reading its PRs. `POST /prs/refresh` still reads every PR.
+- in either mode, the PR poll reads a PR a healthy, active relay covers by its heartbeats (`covers`) only to
+  reconcile: once every `[feed] reconcile_secs` (default 3600, 0 never), and once more after the relay connects or
+  comes back from being stuck. Other PRs are polled as before, and so are a relay's PRs again from the round after
+  it goes stuck or silent. A relay that never sent a heartbeat covers nothing, so the poll keeps reading its PRs.
+  `POST /prs/refresh` still reads every PR;
+- while a board-mode source has a healthy, active relay that covers it, its events still make host reads (and
+  builds and qa still poll). `GET /stream`, `GET /prs/feed` and `GET /state` give the source a `relay_hint` saying
+  so, with the `tb stream mode <source> stream` that would stop that, and `tb stream`, `tb feed` and
+  `tb pr check` (`POST /prs/refresh`, as `relay_hints`) print it.
 
 Each relay in `GET /stream` says what it covers: `"all"` when its heartbeats left `covers` out, `[]` when it never
 sent one, else the list. A source's `polling_some` is true while the PR poll runs but skips the PRs a relay covers.
