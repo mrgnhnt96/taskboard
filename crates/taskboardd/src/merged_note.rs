@@ -14,6 +14,8 @@ use crate::{board, dispatch, fields, p, projects};
 const RETRY_SECS: f64 = 600.0;
 /// How long a note may be.
 pub const MAX: usize = 20_000;
+/// The PR flow's mark that the conversation was brought back to write the note.
+const ASKED: &str = "note_asked";
 
 pub fn on(app: &App) -> bool {
     app.cfg.jira_on() && app.cfg.jira.merged_note
@@ -100,6 +102,7 @@ fn landed(app: &App, t: &Row, comment: &str) -> Result<()> {
         return Ok(());
     }
     board::update_task(app, t.id(), fields!["merged_note_wait" => now_iso(), "merged_note_posted" => null])?;
+    crate::prflow::merge_flow(app, t.id(), fields![ASKED => null])?;
     let t = board::get_task(app, t.id())?;
     if has_note(&t) {
         return post(app, &t);
@@ -118,13 +121,23 @@ fn missing(app: &App, t: &Row) -> Result<()> {
     );
     dispatch::add_alert_keyed(app, &text, Some(t.id()), t.i("goal_id"), &alert_key(t))?;
     board::log_event(app, t.id(), board::BOARD, "jira", &format!("Kept {} where it is: the task has no note for testers", t.st("jira_key")))?;
+    ask(app, t)
+}
+
+/// Brings the conversation back to write the note. While it can't come back yet (no free slot, or a
+/// PR visit under way) the mark stays off, so `tick` asks again.
+fn ask(app: &App, t: &Row) -> Result<()> {
+    let me = rf("task", t.id());
+    let tb = board::tb_cmd(app);
     let ask = format!(
         "PR #{} merged, and its ticket {} waits for your note for testers before it moves. Read what the note covers in {tb} jira, \
          then run {tb} task set {me} --merged-note \"<markdown>\". Don't change code, take another task or run tb submit: the task is already submitted.",
         t.i0("pr_num"),
         t.st("jira_key")
     );
-    crate::prflow::ask_for_note(app, t, &ask)?;
+    if crate::prflow::ask_for_note(app, t, &ask)?.is_some() {
+        crate::prflow::merge_flow(app, t.id(), fields![ASKED => true])?;
+    }
     Ok(())
 }
 
@@ -169,7 +182,13 @@ pub fn tick(app: &App) -> Result<()> {
         return Ok(());
     }
     for t in app.db.q("SELECT * FROM tasks WHERE merged_note_wait IS NOT NULL", p![])? {
-        if !has_note(&t) || live_job(app, &t)?.is_some() {
+        if !has_note(&t) {
+            if !crate::prflow::flow(&t).contains_key(ASKED) {
+                ask(app, &t)?;
+            }
+            continue;
+        }
+        if live_job(app, &t)?.is_some() {
             continue;
         }
         match last_failed_at(app, &t)? {
