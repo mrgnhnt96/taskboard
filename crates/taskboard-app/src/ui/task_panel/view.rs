@@ -2715,12 +2715,14 @@ fn two_ws(line: &str) -> bool {
     c.next().is_some_and(char::is_whitespace) && c.next().is_some_and(char::is_whitespace)
 }
 
-/// `noteBody(text)`: paragraphs (lines joined by line breaks), `- ` lists and indented code.
+/// `noteBody(text)`: paragraphs (lines joined by line breaks), `- ` lists, and code: indented, or
+/// fenced in ``` (kept as written, blank lines and all).
 pub fn note_body(text: &str) -> Node {
     let text = join_labels(text);
     let mut out = Vec::new();
     let mut kind: Option<&str> = None;
     let mut buf: Vec<String> = Vec::new();
+    let mut fenced = false;
     let flush = |kind: Option<&str>, buf: &mut Vec<String>, out: &mut Vec<Node>| {
         if buf.is_empty() {
             return;
@@ -2741,6 +2743,16 @@ pub fn note_body(text: &str) -> Node {
     for raw in text.split('\n') {
         let line = raw.trim_end();
         let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            flush(kind, &mut buf, &mut out);
+            kind = if fenced { None } else { Some("code") };
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            buf.push(line.to_string());
+            continue;
+        }
         let k = if line.trim().is_empty() {
             None
         } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("• ") {

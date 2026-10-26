@@ -1342,3 +1342,50 @@ fn a_human_tasks_done_turns_the_box_without_a_note(cx: &mut gpui_kit::TestAppCon
     })
     .unwrap();
 }
+
+/// A note's lines drawn as the panel draws them.
+struct NoteLines;
+
+impl gpui_kit::Render for NoteLines {
+    fn render(&mut self, window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{ParentElement as _, Styled as _, div, px};
+        let t = cx.global::<crate::theme::Theme>().clone();
+        let view::Node::El { kids, .. } = view::note_body("Start `quill touch ios` then **swipe** it.\n- Run `idb` now.") else { unreachable!() };
+        let mut d = super::Draw { t: &t, window, path: Vec::new(), within: vec![view::K::MdP] };
+        let mut col = div().flex().flex_col().w(px(400.));
+        for (i, block) in kids.iter().enumerate() {
+            d.path = vec![i];
+            let line = match block {
+                view::Node::El { k: view::K::MdP, kids, .. } => &kids[0],
+                view::Node::El { k: view::K::MdUl, kids, .. } => &kids[0],
+                _ => unreachable!(),
+            };
+            col = col.child(div().h(px(20.)).child(d.md_line(line).expect("one run")));
+        }
+        div().size_full().child(gpui_kit::base::TextSelectionLayer).child(col)
+    }
+}
+
+#[gpui_kit::test]
+fn a_note_line_copies_as_written(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton, point, px};
+    cx.update(|cx| cx.set_global(crate::theme::Theme::new(crate::theme::ThemeMode::Dark, "Helvetica".into(), "Menlo".into())));
+    let (_, cx) = cx.add_window_view(|_, _| NoteLines);
+    cx.update(|window, cx| drop(window.draw(cx)));
+    cx.simulate_mouse_down(point(px(1.), px(10.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(point(px(399.), px(30.)), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(point(px(399.), px(30.)), MouseButton::Left, Modifiers::default());
+    let picked = cx.update(|window, cx| {
+        drop(window.draw(cx));
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    // One run per line: a code span or bold word doesn't break the line in the copy.
+    assert_eq!(picked, "Start quill touch ios then swipe it.\nRun idb now.");
+}
+
+#[test]
+fn a_fenced_block_is_code_kept_as_written() {
+    let view::Node::El { kids, .. } = view::note_body("Run:\n```\nquill touch ios\n\n  --port 9\n```\nThen swipe.") else { unreachable!() };
+    assert_eq!(kids.len(), 3, "{kids:?}");
+    assert!(matches!(&kids[1], view::Node::Text { s, st: view::St::Pre, .. } if s == "quill touch ios\n\n  --port 9"), "{:?}", kids[1]);
+}
