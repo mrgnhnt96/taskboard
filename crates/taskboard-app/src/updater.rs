@@ -324,7 +324,7 @@ pub fn apply() -> Result<(), String> {
     set(State::Applying { version: version.clone() });
     let done = swap_in(&staged, &installed).and_then(|_| {
         if let Err(e) = crate::install::restart_daemon(&installed) {
-            eprintln!("taskboard-app: restarting the daemon after the update: {e}");
+            crate::log::info(format!("restarting the daemon after the update: {e}"));
         }
         Command::new("/bin/sh")
             .args(["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$2\"", "relaunch"])

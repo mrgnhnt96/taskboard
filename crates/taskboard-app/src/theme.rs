@@ -199,7 +199,7 @@ pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf")),
     ];
     if let Err(e) = cx.text_system().add_fonts(fonts) {
-        eprintln!("taskboard-app: could not load bundled fonts: {e:#}");
+        crate::log::info(format!("could not load bundled fonts: {e:#}"));
     }
     let names = cx.text_system().all_font_names();
     let has = |n: &str| names.iter().any(|x| x == n);
