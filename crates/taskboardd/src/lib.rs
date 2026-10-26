@@ -70,6 +70,7 @@ pub mod prbar;
 pub mod prbuilds;
 pub mod prflow;
 pub mod prhost;
+pub mod prpace;
 pub mod proc;
 pub mod progress;
 pub mod palette;
