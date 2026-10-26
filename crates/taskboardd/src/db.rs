@@ -455,6 +455,13 @@ impl Db {
         Ok(c.last_insert_rowid())
     }
 
+    /// Like `x`, but returns how many rows the statement changed.
+    pub fn changed(&self, sql: &str, params: Vec<Value>) -> Result<i64> {
+        let g = self.inner.lock();
+        let c = g.conn.borrow();
+        Ok(c.execute(sql, params_from_iter(params.iter().map(param)))? as i64)
+    }
+
     pub fn q(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
         let g = self.inner.lock();
         let c = g.conn.borrow();

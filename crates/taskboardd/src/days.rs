@@ -793,18 +793,18 @@ pub fn cleanup(app: &App) -> Result<Value> {
     let before = iso(start_of(cut));
     let done = "SELECT id FROM tasks WHERE status = 'done'";
     let (events, states, lines) = app.db.tx(|| {
-        let e = app.db.x(&format!("DELETE FROM events WHERE at < ? AND task_id IN ({done})"), p![before])?;
+        let e = app.db.changed(&format!("DELETE FROM events WHERE at < ? AND task_id IN ({done})"), p![before])?;
         // Keep each finished task's last status change, so it still reads as done.
-        let s = app.db.x(
+        let s = app.db.changed(
             &format!("DELETE FROM task_states WHERE at < ? AND task_id IN ({done}) AND id NOT IN (SELECT MAX(id) FROM task_states GROUP BY task_id)"),
             p![before],
         )?;
-        let l = app.db.x("DELETE FROM session_events WHERE at < ?", p![before])?;
+        let l = app.db.changed("DELETE FROM session_events WHERE at < ?", p![before])?;
         Ok((e, s, l))
     })?;
     let days = match summary_days(app) {
         0 => 0,
-        n => app.db.x("DELETE FROM day_stats WHERE date < ?", p![date_str(today - Duration::days(n))])?,
+        n => app.db.changed("DELETE FROM day_stats WHERE date < ?", p![date_str(today - Duration::days(n))])?,
     };
     app.db.set_setting(LAST_CLEANUP_KEY, Some(&now_iso()))?;
     app.info(format!("history cleanup: {events} events, {states} status changes, {lines} terminal lines, {days} day rows removed"));
@@ -838,5 +838,27 @@ mod tests {
         assert_eq!(week_start(d, Weekday::Mon), NaiveDate::from_ymd_opt(2026, 10, 5).unwrap());
         assert_eq!(week_start(d, Weekday::Thu), d);
         assert_eq!(week_start(d, Weekday::Fri), NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+    }
+
+    #[test]
+    fn cleanup_counts_the_rows_each_table_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let old = iso(start_of(today() - Duration::days(200)));
+        let t = app.db.x("INSERT INTO tasks(title, status) VALUES('Old', 'done')", p![]).unwrap();
+        for _ in 0..3 {
+            app.db.x("INSERT INTO events(task_id, at, kind, text) VALUES(?, ?, 'note', 'x')", p![t, old.clone()]).unwrap();
+        }
+        // The last of these is kept, so the task still reads as done.
+        for s in ["working", "review", "done"] {
+            app.db.x("INSERT INTO task_states(task_id, at, status) VALUES(?, ?, ?)", p![t, old.clone(), s]).unwrap();
+        }
+        for _ in 0..4 {
+            app.db.x("INSERT INTO session_events(session_id, at, kind, text) VALUES('s1', ?, 'line', 'x')", p![old.clone()]).unwrap();
+        }
+        app.db.x("INSERT INTO day_stats(date, project, data) VALUES('2020-01-01', '', '')", p![]).unwrap();
+
+        let out = cleanup(&app).unwrap();
+        assert_eq!(out["removed"], json!({"events": 3, "status_changes": 2, "terminal_lines": 4, "day_rows": 1}));
     }
 }
