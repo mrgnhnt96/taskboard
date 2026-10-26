@@ -146,15 +146,6 @@ pub fn holding_wave(t: &Row, wl: &[Value]) -> Option<Value> {
         .cloned()
 }
 
-/// Why a goal's waves hold this queued task back.
-pub fn wave_block(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
-    if t.i("wave").is_none() {
-        return Ok(None);
-    }
-    let tasks = board::goal_tasks(app, g.id())?;
-    Ok(holding_wave(t, &waves(app, g, &tasks)?).map(|w| hold_reason(&w)))
-}
-
 /// The goal is stopped at a wave for the owner (review stop or a failed task): one line, or None.
 pub fn stopped_line(wl: &[Value]) -> Option<String> {
     let w = wl.iter().find(|w| w["passed"] != true)?;

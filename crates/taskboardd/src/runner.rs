@@ -223,34 +223,71 @@ pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
 /// `goal_blocker` without the terminal limit: paused, a goal it runs after not finished, or an earlier
 /// wave or task not done.
 pub fn goal_order_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
-    if g.b("deprioritized") {
-        return Ok(Some("Its goal is deprioritized".into()));
+    GoalOrder::read(app, g)?.blocker(t)
+}
+
+/// What a goal's order holds its queued tasks back with, read once for all of them: the goal itself,
+/// the goals it runs after, and its waves (worked out the first time they're asked for).
+pub struct GoalOrder<'a> {
+    app: &'a App,
+    g: &'a Row,
+    why: Option<String>,
+    tasks: Vec<Row>,
+    waves: once_cell::unsync::OnceCell<Vec<serde_json::Value>>,
+}
+
+impl<'a> GoalOrder<'a> {
+    pub fn read(app: &'a App, g: &'a Row) -> Result<Self> {
+        let why = if g.b("deprioritized") {
+            Some("Its goal is deprioritized".into())
+        } else if g.b("paused") {
+            Some("Its goal is paused".into())
+        } else {
+            crate::chain::blocker(app, g)?
+        };
+        Ok(GoalOrder { app, g, why, tasks: board::goal_tasks(app, g.id())?, waves: Default::default() })
     }
-    if g.b("paused") {
-        return Ok(Some("Its goal is paused".into()));
+
+    pub fn goal(&self) -> &Row {
+        self.g
     }
-    if let Some(why) = crate::chain::blocker(app, g)? {
-        return Ok(Some(why));
+
+    pub fn goal_id(&self) -> i64 {
+        self.g.id()
     }
-    let tasks = board::goal_tasks(app, g.id())?;
-    // Waves take the place of running in order.
-    let waved = crate::waves::uses_waves(&tasks);
-    if waved {
-        if let Some(why) = crate::waves::wave_block(app, t, g)? {
-            return Ok(Some(why));
+
+    /// The goal's waves (`waves::waves`), empty when it doesn't use them.
+    pub fn waves(&self) -> Result<&[serde_json::Value]> {
+        let wl = self.waves.get_or_try_init(|| {
+            if crate::waves::uses_waves(&self.tasks) { crate::waves::waves(self.app, self.g, &self.tasks) } else { Ok(vec![]) }
+        })?;
+        Ok(wl)
+    }
+
+    /// Why the goal's order holds `t` back: paused, a goal it runs after not finished, or an earlier
+    /// wave or task not done. Waves take the place of running in order.
+    pub fn blocker(&self, t: &Row) -> Result<Option<String>> {
+        if let Some(why) = &self.why {
+            return Ok(Some(why.clone()));
         }
-    }
-    if g.b("run_in_order") && !waved {
-        for x in &tasks {
-            if x.id() == t.id() {
-                break;
-            }
-            if !matches!(x.s("status"), Some("done") | Some("planned")) {
-                return Ok(Some(format!("Waits for {} to finish first", rf("task", x.id()))));
+        let waved = crate::waves::uses_waves(&self.tasks);
+        if waved && t.i("wave").is_some() {
+            if let Some(w) = crate::waves::holding_wave(t, self.waves()?) {
+                return Ok(Some(crate::waves::hold_reason(&w)));
             }
         }
+        if self.g.b("run_in_order") && !waved {
+            for x in &self.tasks {
+                if x.id() == t.id() {
+                    break;
+                }
+                if !matches!(x.s("status"), Some("done") | Some("planned")) {
+                    return Ok(Some(format!("Waits for {} to finish first", rf("task", x.id()))));
+                }
+            }
+        }
+        Ok(None)
     }
-    Ok(None)
 }
 
 /// Each goal's queued tasks in wave order, in the places its tasks hold in `queued`: a later wave's
