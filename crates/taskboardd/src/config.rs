@@ -25,6 +25,7 @@ pub struct FileConfig {
     pub claude_projects: Option<String>,
     pub statusline_dir: Option<String>,
     pub runner: Option<bool>,
+    pub debug_log: Option<bool>,
     pub intervals: Intervals,
     pub work_hours: WorkHoursDefault,
     pub questions: Questions,
@@ -750,6 +751,8 @@ pub struct Config {
     pub claude_projects: PathBuf,
     pub statusline_dir: PathBuf,
     pub runner: bool,
+    /// `App::debug` lines go to the log too (off: they're the routine noise).
+    pub debug_log: bool,
     pub intervals: Intervals,
     pub work_hours: WorkHoursDefault,
     pub questions: Questions,
@@ -888,6 +891,10 @@ impl Config {
             Some(v) => matches!(v.as_str(), "1" | "true" | "on" | "yes"),
             None => f.runner.unwrap_or(is_default_data),
         };
+        let debug_log = match env("TASKBOARD_DEBUG_LOG") {
+            Some(v) => matches!(v.as_str(), "1" | "true" | "on" | "yes"),
+            None => f.debug_log.unwrap_or(false),
+        };
         let mut jira = f.jira.clone();
         if let Some(e) = env("TASKBOARD_JIRA_EMAIL") {
             jira.email = e;
@@ -924,6 +931,7 @@ impl Config {
                 &env("TASKBOARD_CLAUDE_PROJECTS").or(f.claude_projects.clone()).unwrap_or_else(|| "~/.claude/projects".into()),
             ),
             runner,
+            debug_log,
             intervals: f.intervals,
             work_hours: f.work_hours,
             questions: f.questions,

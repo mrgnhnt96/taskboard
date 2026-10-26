@@ -600,7 +600,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
         Ok(())
     })?;
     if !gone.is_empty() {
-        app.info(format!("midna: {} gone", plural(gone.len() as i64, "terminal")));
+        app.debug(format!("midna: {} gone", plural(gone.len() as i64, "terminal")));
     }
     Ok((gone, to_close))
 }

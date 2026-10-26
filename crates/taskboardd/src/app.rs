@@ -1,7 +1,6 @@
 //! The running board: config, database, log, and the signals its threads share.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -107,7 +106,7 @@ pub struct App {
     pub db: Db,
     pub shared: Mutex<Shared>,
     pub stopping: AtomicBool,
-    log_file: Mutex<Option<std::fs::File>>,
+    log_file: Mutex<Option<crate::logfile::Log>>,
     log_stderr: bool,
     runner_signal: Signal,
     jobs_signal: Signal,
@@ -134,7 +133,7 @@ impl App {
         std::fs::create_dir_all(cfg.md_dir()).ok();
         std::fs::create_dir_all(cfg.spool_dir()).ok();
         let db = Db::open(&cfg.db_path())?;
-        let log_file = std::fs::OpenOptions::new().create(true).append(true).open(cfg.log_path()).ok();
+        let log_file = Some(crate::logfile::Log::open(cfg.log_path(), crate::logfile::CAP));
         Ok(Arc::new(App::build(cfg, db, log_file, log_stderr, false)))
     }
 
@@ -145,7 +144,7 @@ impl App {
         Arc::new(App::build(cfg, Db::memory().unwrap(), None, false, true))
     }
 
-    fn build(cfg: Config, db: Db, log_file: Option<std::fs::File>, log_stderr: bool, inline: bool) -> App {
+    fn build(cfg: Config, db: Db, log_file: Option<crate::logfile::Log>, log_stderr: bool, inline: bool) -> App {
         App {
             accounts: crate::accounts::Accounts::new(&cfg),
             cfg,
@@ -180,10 +179,18 @@ impl App {
     pub fn info(&self, msg: impl AsRef<str>) {
         let line = format!("{} {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), msg.as_ref());
         if let Some(f) = self.log_file.lock().as_mut() {
-            let _ = f.write_all(line.as_bytes());
+            f.write(&line);
         }
         if self.log_stderr {
             eprint!("{line}");
+        }
+    }
+
+    /// A line only worth logging while chasing something: kept out of the log unless `debug_log` is on
+    /// (config, or env `TASKBOARD_DEBUG_LOG=1`), so the routine noise doesn't bury real errors.
+    pub fn debug(&self, msg: impl AsRef<str>) {
+        if self.cfg.debug_log {
+            self.info(msg);
         }
     }
 
@@ -307,5 +314,26 @@ impl App {
         }
         self.hook_signal.wait(timeout);
         self.hook_jobs.lock().pop_front()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_lines_reach_the_log_only_when_turned_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::new(Config::for_tests(dir.path()), false).unwrap();
+        app.debug("midna: 3 terminals gone");
+        app.info("midna: taking a job failed");
+        let log = std::fs::read_to_string(app.cfg.log_path()).unwrap();
+        assert!(!log.contains("terminals gone") && log.contains("taking a job failed"), "{log}");
+
+        let mut cfg = Config::for_tests(dir.path());
+        cfg.debug_log = true;
+        let app = App::new(cfg, false).unwrap();
+        app.debug("clock: the Mac slept for 40 minutes");
+        assert!(std::fs::read_to_string(app.cfg.log_path()).unwrap().contains("the Mac slept"));
     }
 }
