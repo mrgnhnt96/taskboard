@@ -621,3 +621,36 @@ fn a_tag_need_in_the_handoff_s_form_gets_the_device() {
     assert_eq!(b.started(), vec![t]);
     assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["probe-pixel"]));
 }
+
+#[test]
+fn a_running_task_is_lent_a_free_device_when_its_need_is_set_later() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "dev"}));
+    b.post("devices", json!({"name": "arc_keepalive_a", "tags": "rig"}));
+    let t = b.task("Runs first", json!({}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![t]);
+
+    b.post(&format!("tasks/T{t}"), json!({"devices": "tag:dev"}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["dev-a"]), "lent at once, as at its start");
+    assert_eq!(b.get("devices")["devices"][1]["held_by"]["ref"], format!("T{t}"));
+
+    b.post(&format!("tasks/T{t}"), json!({"devices": ["arc_keepalive_a"]}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["arc_keepalive_a"]), "a name is that device; dev-a goes back");
+    assert!(b.get("devices")["devices"][1]["held_by"].is_null());
+
+    // Asks for one that's taken: it waits, then gets it when it frees.
+    let o = b.task("Other", json!({"devices": "dev"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{o}"))["devices"]["lent"], json!(["dev-a"]));
+    b.post(&format!("tasks/T{t}"), json!({"devices": "arc_keepalive_a dev"}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["arc_keepalive_a"]));
+    let pool = b.get("devices");
+    assert_eq!(pool["waiting"][0]["ref"], format!("T{t}"), "{pool}");
+    assert_eq!(pool["waiting"][0]["why"], format!("Waits for a dev device (dev-a is with T{o})"));
+
+    b.set(o, "done");
+    runner::tick(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["arc_keepalive_a", "dev-a"]), "it keeps what it had and gains");
+    assert_eq!(b.get("devices")["waiting"], json!([]));
+}
