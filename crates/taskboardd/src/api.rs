@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, steps, triage, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, stamp, steps, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -153,7 +153,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
 fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
     let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
     let r = match (method, segs.as_slice()) {
-        ("GET", ["state"]) => get_state(app, query),
+        ("GET", ["state"]) => get_state(app, query).map(|v| stamp::answer(v, query.get("since").map(String::as_str))),
         ("GET", ["accounts"]) => accounts::status(app, q(query, "fresh", "") == "1"),
         ("GET", ["ci-token"]) => Ok(accounts::ci_token_status(app)),
         ("POST", ["ci-token", "clear"]) => accounts::clear_ci_token(app),
@@ -333,7 +333,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                     out.push(board::goal_dict(app, &g)?);
                 }
             }
-            Ok(json!({"goals": out}))
+            Ok(stamp::answer(json!({"goals": out}), query.get("since").map(String::as_str)))
         }
         ("POST", ["goals"]) => {
             let g = app.db.tx(|| new_goal(app, body))?;
