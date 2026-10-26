@@ -5,7 +5,6 @@
 //! as the aside nears its end, the same way the task panel's Full log pages.
 
 use super::*;
-use std::rc::Rc;
 
 /// How many older notes one fetch asks for (the goal itself carries the newest `NOTE_PAGE`).
 const NOTE_PAGE: usize = 100;
@@ -20,8 +19,30 @@ pub struct Lists {
     wave_items: Rc<Vec<WItem>>,
     aside_items: Rc<Vec<AItem>>,
     issues: Rc<Vec<Issue>>,
+    attached: Rc<attached::Rollup>,
     notes: Notes,
     cache: NoteCache,
+    /// The goal answer and the view the items were built from: the same again draws them as
+    /// they are.
+    built: Option<(Rc<Value>, View)>,
+}
+
+/// What, besides the goal answer, decides the items.
+#[derive(Clone, PartialEq)]
+struct View {
+    notes_open: bool,
+    note_filter: Option<&'static str>,
+    devices_open: bool,
+    backlog_view: bool,
+    att_filter: attached::Filter,
+    notes_rev: u64,
+}
+
+impl View {
+    fn of(m: &MainWindow) -> View {
+        let p = &m.goal_page;
+        View { notes_open: p.notes_open, note_filter: p.note_filter, devices_open: p.devices_open, backlog_view: p.backlog_view, att_filter: p.att_filter, notes_rev: p.lists.cache.rev }
+    }
 }
 
 struct Body {
@@ -70,6 +91,8 @@ struct NoteCache {
     /// The board has nothing older.
     done: bool,
     loading: bool,
+    /// Counts each change to `rows`.
+    rev: u64,
 }
 
 impl NoteCache {
@@ -80,6 +103,7 @@ impl NoteCache {
             self.rows = page.to_vec();
             self.rows.sort_by(note_order);
             self.done = true;
+            self.rev += 1;
         } else {
             self.add(page.iter().cloned());
         }
@@ -94,6 +118,7 @@ impl NoteCache {
             }
         }
         self.rows.sort_by(note_order);
+        self.rev += 1;
     }
 }
 
@@ -122,19 +147,35 @@ enum AItem {
 }
 
 /// Bring the lists, the notes and their items up to date with goal `g`, and fetch older notes
-/// when the aside nears their end.
-pub fn sync(m: &mut MainWindow, g: &Value, cx: &mut Context<MainWindow>) {
-    let gr = fmt::ref_of(g, "G");
-    let total = g["notes_total"].as_u64().map_or(arr(g, "notes").len(), |n| n as usize);
+/// when the aside nears their end. The items are built again only for a new answer or view.
+pub fn sync(m: &mut MainWindow, g: &Rc<Value>, cx: &mut Context<MainWindow>) {
     let l = &mut m.goal_page.lists;
-    if l.cache.goal != gr {
-        l.cache = NoteCache { goal: gr.clone(), ..Default::default() };
+    let total = notes_total(g);
+    if !l.built.as_ref().is_some_and(|(b, _)| Rc::ptr_eq(b, g)) {
+        let gr = fmt::ref_of(g, "G");
+        if l.cache.goal != gr {
+            l.cache = NoteCache { goal: gr, ..Default::default() };
+        }
+        let seen = json!([g["notes"], total]);
+        if l.cache.seen != seen {
+            l.cache.take(arr(g, "notes"), total);
+            l.cache.seen = seen;
+        }
     }
-    let seen = json!([g["notes"], total]);
-    if l.cache.seen != seen {
-        l.cache.take(arr(g, "notes"), total);
-        l.cache.seen = seen;
+    let view = View::of(m);
+    let l = &m.goal_page.lists;
+    if !l.built.as_ref().is_some_and(|(b, v)| Rc::ptr_eq(b, g) && *v == view) {
+        build(m, g, total, view);
     }
+    load_older_notes(m, cx);
+}
+
+fn notes_total(g: &Value) -> usize {
+    g["notes_total"].as_u64().map_or(arr(g, "notes").len(), |n| n as usize)
+}
+
+fn build(m: &mut MainWindow, g: &Rc<Value>, total: usize, view: View) {
+    let l = &mut m.goal_page.lists;
     // The rows are already in the board's order, so each lines up with its item.
     let items = note_items(&l.cache.rows);
     let groups = note_groups(&items);
@@ -176,7 +217,8 @@ pub fn sync(m: &mut MainWindow, g: &Value, cx: &mut Context<MainWindow>) {
             }
         }
     }
-    let att = attached::attached_parts(m, g);
+    let rollup = attached::rollup(g, m.goal_page.att_filter);
+    let att = attached::parts(&rollup);
     for k in 0..att {
         ai.push(AItem::Att(k));
         ak.push(format!("att:{k}:{att}"));
@@ -211,9 +253,10 @@ pub fn sync(m: &mut MainWindow, g: &Value, cx: &mut Context<MainWindow>) {
     l.wave_items = Rc::new(wi);
     l.aside_items = Rc::new(ai);
     l.issues = Rc::new(issues);
+    l.attached = Rc::new(rollup);
+    l.built = Some((g.clone(), view));
     Body::sync(&mut l.waves, wk);
     Body::sync(&mut l.aside, ak);
-    load_older_notes(m, cx);
 }
 
 /// Fetch the next older page of notes when the aside is scrolled near their end.
@@ -282,8 +325,8 @@ fn wave_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Mai
 
 fn aside_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let Some(g) = m.data.goal.clone() else { return div().into_any_element() };
     let l = &m.goal_page.lists;
+    let Some(g) = l.built.as_ref().map(|(g, _)| g.clone()) else { return div().into_any_element() };
     let items = l.aside_items.clone();
     let Some(&item) = items.get(ix) else { return div().into_any_element() };
     let body = match item {
@@ -295,7 +338,7 @@ fn aside_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Ma
             note_piece(&t, &shown[k], k, last)
         }
         AItem::NotesMore => notes_more(&t, !l.notes.shown.is_empty()),
-        AItem::Att(k) => attached::attached_piece(m, &t, &g, k, cx),
+        AItem::Att(k) => attached::attached_piece(m, &t, &g, &l.attached.clone(), k, cx),
         AItem::Devices => pool::devices_aside(m, &t, &g, cx).unwrap_or_else(div),
         AItem::Bits => pool::bits_aside(&t, &g).unwrap_or_else(div),
         AItem::BacklogHead => backlog_head(&t, l.issues.len()),
@@ -329,6 +372,42 @@ mod tests {
     use super::*;
     use crate::backend::Backend;
     use ::core::prelude::v1::test;
+
+    /// A redraw draws the items built for the answer it has; a new view or answer builds them again.
+    #[gpui_kit::test]
+    fn the_items_are_built_once_per_answer_and_view(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let built = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| (m.goal_page.lists.cards.clone(), m.goal_page.lists.aside_items.clone())).unwrap();
+        let (cards, aside) = built(cx);
+        draw(cx);
+        let (again, aside_again) = built(cx);
+        assert!(Rc::ptr_eq(&cards, &again) && Rc::ptr_eq(&aside, &aside_again), "a redraw keeps what was built");
+
+        w.update(cx, |m, _, cx| {
+            m.goal_page.notes_open = true;
+            cx.notify();
+        })
+        .unwrap();
+        draw(cx);
+        let (_, opened) = built(cx);
+        assert!(!Rc::ptr_eq(&aside, &opened), "opening the notes builds the aside again");
+
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let (fresh, _) = built(cx);
+        assert!(!Rc::ptr_eq(&cards, &fresh), "a new answer builds the cards again");
+    }
 
     #[gpui_kit::test]
     fn a_goal_with_hundreds_of_notes_pages_them_in_as_the_aside_scrolls(cx: &mut gpui_kit::TestAppContext) {

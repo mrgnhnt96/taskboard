@@ -17,6 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 mod attached;
 mod lists;
@@ -1311,7 +1312,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     }
     let loaded = m.data.goal.as_ref().is_some_and(|g| fmt::ref_of(g, "G") == want);
     // Until the goal's own answer lands, its `/goals` row fills the header and progress.
-    let row = || m.data.goals.iter().find(|g| fmt::ref_of(g, "G") == want).cloned();
+    let row = || m.data.goals.iter().find(|g| fmt::ref_of(g, "G") == want).cloned().map(Rc::new);
     let Some(g) = (if loaded { m.data.goal.clone() } else { row() }) else {
         return div().flex_1().pt(px(20.)).px(px(36.)).child(loading(m, &t)).into_any_element();
     };

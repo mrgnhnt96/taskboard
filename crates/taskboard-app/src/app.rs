@@ -11,6 +11,7 @@ use crate::ui::{self, kit};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -89,8 +90,8 @@ pub struct Data {
     pub task_card: Option<Value>,
     /// `GET /backlog/:id` for the open issue panel.
     pub issue: Option<Value>,
-    /// `GET /goals/:id` for the goal page.
-    pub goal: Option<Value>,
+    /// `GET /goals/:id` for the goal page, shared with what the page builds from it.
+    pub goal: Option<Rc<Value>>,
     /// `GET /sessions`, `GET /sessions/closed`, `GET /sessions/:id` for the Sessions page.
     pub sessions: Option<Value>,
     pub closed: Option<Value>,
@@ -248,7 +249,7 @@ pub struct MainWindow {
     /// Likewise the goal whose page opened just now.
     goal_fetch: Option<String>,
     /// The goals opened last, newest first, so going back to one shows it at once.
-    recent_goals: Vec<Value>,
+    recent_goals: Vec<Rc<Value>>,
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
@@ -586,7 +587,7 @@ impl MainWindow {
                 if m.posted > asked {
                     return m.refresh(cx);
                 }
-                land(&mut m.data.goal, &mut m.data.errs.goal, v, merge_goal);
+                land_goal(&mut m.data.goal, &mut m.data.errs.goal, v);
                 cx.notify();
             });
         })
@@ -594,7 +595,7 @@ impl MainWindow {
     }
 
     /// Keep a goal just left for going back to, dropping the oldest past [`RECENT_GOALS`].
-    fn keep_goal(&mut self, g: Value) {
+    fn keep_goal(&mut self, g: Rc<Value>) {
         self.recent_goals.retain(|x| x["ref"] != g["ref"]);
         self.recent_goals.insert(0, g);
         self.recent_goals.truncate(RECENT_GOALS);
@@ -1209,6 +1210,15 @@ fn land(slot: &mut Option<Value>, err: &mut Option<String>, answer: Answer, map:
     }
 }
 
+/// A goal answer lands as a new `Rc`, so the page knows to rebuild from it.
+fn land_goal(slot: &mut Option<Rc<Value>>, err: &mut Option<String>, answer: Answer) {
+    let mut v = None;
+    land(&mut v, err, answer, merge_goal);
+    if let Some(v) = v {
+        *slot = Some(Rc::new(v));
+    }
+}
+
 impl Got {
     /// What of an answer asked for `asked` still holds for a view that asks for `now`. Answers for one
     /// task, goal, issue and so on keep (`apply` takes them only while that one is still open); the
@@ -1287,7 +1297,7 @@ impl Got {
         }
         if let Some((r, v)) = self.goal {
             if m.page == Page::Goal(r) {
-                land(&mut d.goal, &mut d.errs.goal, v, merge_goal);
+                land_goal(&mut d.goal, &mut d.errs.goal, v);
             }
         }
         match self.ideas.filter(|_| m.page == Page::Ideas) {
