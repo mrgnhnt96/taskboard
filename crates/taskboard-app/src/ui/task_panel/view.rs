@@ -996,8 +996,9 @@ fn link_label(u: &str) -> String {
     format!("Open {}", host.trim_start_matches("www."))
 }
 
-/// A human task (`kind: human`): the owner's steps, their links, and Done with a note for the agents
-/// waiting on it. Done is the app's only say on it; it never gets a terminal.
+/// A human task (`kind: human`): the owner's steps, their links, Done with a note for the agents
+/// waiting on it, and Talk it over, which opens a Claude terminal to ask about it in. No agent ever
+/// works on it.
 fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let grp = format!("did:{r}");
@@ -1022,7 +1023,10 @@ fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         }
         let k = format!("did:{r}");
         bx.push(Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false });
-        let mut row = vec![c.btn("Done", Act::new("did", "", &r, &grp), Look::Primary, false, Some("Anything waiting for this goes on, with what you wrote"))];
+        let mut row = vec![
+            c.btn("Done", Act::new("did", "", &r, &grp), Look::Primary, false, Some("Anything waiting for this goes on, with what you wrote")),
+            c.btn("Talk it over", Act::new("talk", "", &r, &grp), Look::Out, false, Some("Ask Claude about it in a Midna terminal")),
+        ];
         row.extend(c.note(&grp));
         bx.push(el(K::Row, row));
         out.push(el(K::Box(BoxTone::Ask), bx));
@@ -1383,6 +1387,10 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
         let grp = format!("ask:{r}");
         let mut bx = vec![txt(opt_s(t, "question").or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::BannerText)];
         bx.extend(ask_options(c, &t["ask"], &r, &grp));
+        // A human task has no terminal to answer in: its box below holds Done and Talk it over.
+        if s(t, "kind") == "human" {
+            return Some(el(K::Banner(BoxTone::Ask), bx));
+        }
         let mut row = step_btns(c, t, &r, &grp);
         // Its terminal when it has one; a question with none reopens one that asks it again; otherwise a new one, picking up from its handoff.
         let write = if session_live(t) || opt_s(t, "question").is_some_and(|q| !q.is_empty()) {
