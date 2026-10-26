@@ -1262,19 +1262,23 @@ fn run(
         m.sessions.notes.remove(g);
     }
     let (b2, g2) = (busy.clone(), grp.clone());
+    let since = std::time::Instant::now();
     m.post_or(
         path,
         body,
         cx,
         move |m, v, cx| {
-            m.sessions.busy.remove(&busy);
-            if let Some(text) = ok(m, &v, cx).filter(|t| !t.is_empty()) {
-                match grp {
-                    Some(g) => set_note(m, g, text, false, cx),
-                    None => m.toast(text, false, cx),
+            let text = ok(m, &v, cx).filter(|t| !t.is_empty());
+            // "Sending…" stays until the board's answer shows the change, so it doesn't flash back.
+            m.settle(since, move |m, cx| {
+                m.sessions.busy.remove(&busy);
+                if let Some(text) = text {
+                    match grp {
+                        Some(g) => set_note(m, g, text, false, cx),
+                        None => m.toast(text, false, cx),
+                    }
                 }
-            }
-            cx.notify();
+            });
         },
         move |m, e, cx| {
             m.sessions.busy.remove(&b2);

@@ -18,6 +18,14 @@ const POLL: Duration = Duration::from_secs(3);
 /// How long a toast stays (the web's `toast`): 3 s, an error 6 s.
 const TOAST_OK: Duration = Duration::from_secs(3);
 const TOAST_ERR: Duration = Duration::from_secs(6);
+/// The least a clicked button reads "Sending…", so a quick answer doesn't flash it. None in
+/// tests, whose clock only moves when told (it would bring on polls).
+#[cfg(not(test))]
+const HOLD: Duration = Duration::from_millis(600);
+#[cfg(test)]
+const HOLD: Duration = Duration::ZERO;
+
+type Settle = Box<dyn FnOnce(&mut MainWindow, &mut Context<MainWindow>)>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
@@ -227,6 +235,9 @@ pub struct MainWindow {
     generation: u64,
     /// The newest refresh that has answered: behind `generation` while one is still out.
     answered: u64,
+    /// What waits for the board's first answer after a change (see [`settle`](Self::settle)): the
+    /// generation it was asked at, when the button was clicked, and what to do.
+    settling: Vec<(u64, Instant, Settle)>,
     /// The task whose own `GET /tasks/:id` is out (it opened just now): a refresh leaves it out.
     task_fetch: Option<String>,
     /// The Claude Code hooks (status bar), and whether an install is running.
@@ -273,6 +284,7 @@ impl MainWindow {
             goals_loaded: false,
             generation: 0,
             answered: 0,
+            settling: Vec::new(),
             task_fetch: None,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
@@ -727,6 +739,10 @@ impl MainWindow {
         fail: impl FnOnce(&mut MainWindow, CallError, &mut Context<MainWindow>) + 'static,
     ) {
         let (backend, path) = (self.backend.clone(), path.into());
+        // A refresh already out may have read the board before this change: drop its answer
+        // (polls wait meanwhile) so it can't put back what the click just changed. The refresh
+        // after the change answers instead.
+        self.generation += 1;
         cx.spawn(async move |this, cx| {
             let r = cx.background_executor().spawn(async move { backend.post(&path, body) }).await;
             let _ = this.update(cx, |m, cx| {
@@ -825,6 +841,7 @@ impl MainWindow {
                     let asked: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
                     let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
                     got.apply(m, cx);
+                    m.settled(generation, cx);
                     cx.notify();
                     // A linked release whose project the page didn't know: its answer says which.
                     if let Some(p) = ui::releases::focus_moves(&m.releases, &m.page) {
@@ -847,6 +864,35 @@ impl MainWindow {
             });
         })
         .detach();
+    }
+
+    /// Run `f` once the board's answer after a change has landed (the clicked button shows what
+    /// changed instead of flashing back first), and no sooner than [`HOLD`] after `since` (a quick
+    /// answer still leaves the button's "Sending…" up long enough to see). Call it from a
+    /// [`post`](Self::post)'s `ok`: the refresh that follows is the answer it waits for.
+    pub fn settle(&mut self, since: Instant, f: impl FnOnce(&mut MainWindow, &mut Context<MainWindow>) + 'static) {
+        self.settling.push((self.generation, since, Box::new(f)));
+    }
+
+    /// The refresh asked at `generation` landed: run what was waiting on an answer from after it.
+    fn settled(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.settling).into_iter().partition(|(g, ..)| *g < generation);
+        self.settling = wait;
+        for (_, since, f) in due {
+            let left = HOLD.saturating_sub(since.elapsed());
+            if left.is_zero() {
+                f(self, cx);
+                continue;
+            }
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(left).await;
+                let _ = this.update(cx, |m, cx| {
+                    f(m, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     // -------------------------------------------------------------- helpers for pages
@@ -2158,6 +2204,36 @@ mod tests {
             assert_eq!(m.generation, before + 1);
         })
         .unwrap();
+    }
+
+    /// What waits on a change runs once the refresh after it lands, not before.
+    #[gpui_kit::test]
+    fn settle_waits_for_the_refresh_after_the_change(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let r2 = ran.clone();
+        w.update(cx, |m: &mut MainWindow, _, _| m.settle(std::time::Instant::now(), move |_, _| r2.set(true))).unwrap();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.settled(m.generation, cx)).unwrap();
+        assert!(!ran.get(), "an answer asked before the change doesn't count");
+        w.update(cx, |m: &mut MainWindow, _, cx| m.refresh(cx)).unwrap();
+        settle(cx);
+        assert!(ran.get());
+    }
+
+    /// A refresh out when a change is posted may predate it: its answer is dropped.
+    #[gpui_kit::test]
+    fn a_post_drops_the_refresh_already_out(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.refresh(cx);
+            let out = m.generation;
+            m.post("alerts/a1/dismiss", json!({}), cx, |_, _, _| {});
+            assert!(m.generation > out, "the refresh that's out is now stale");
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.answered, m.generation, "the refresh after the post answers")).unwrap();
     }
 
     #[gpui_kit::test]

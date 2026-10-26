@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 pub use view::{Act, Go, Node};
 pub(crate) use view::{ATT_KINDS, att_file_type};
 use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, TlSt, Tone};
@@ -311,8 +311,9 @@ fn set_note(grp: &str, text: impl Into<String>, err: bool, cx: &mut Context<Main
 }
 
 /// The web's `run(el, fn, {ok})`: one request per button at a time (it reads "Sending…"
-/// meanwhile), the group's note cleared first, then the `ok` sentence (or the board's error) in
-/// the group's note, or a toast when the button has no group.
+/// meanwhile, until the board's answer shows the change: see `MainWindow::settle`), the group's
+/// note cleared first, then the `ok` sentence (or the board's error) in the group's note, or a
+/// toast when the button has no group.
 fn run(m: &mut MainWindow, a: &Act, path: String, body: Value, ok: impl FnOnce(&mut MainWindow, &Value) -> String + 'static, cx: &mut Context<MainWindow>) {
     let key = a.busy_key();
     if ui(|u| !u.busy.insert(key.clone())) {
@@ -324,17 +325,19 @@ fn run(m: &mut MainWindow, a: &Act, path: String, body: Value, ok: impl FnOnce(&
     }
     cx.notify();
     let (k2, g2) = (key.clone(), grp.clone());
+    let since = Instant::now();
     m.post_or(
         path,
         body,
         cx,
-        move |m, v, cx| {
-            ui(|u| u.busy.remove(&key));
+        move |m, v, _| {
             let msg = ok(m, &v);
-            if !grp.is_empty() && !msg.is_empty() {
-                set_note(&grp, msg, false, cx);
-            }
-            cx.notify();
+            m.settle(since, move |_, cx| {
+                ui(|u| u.busy.remove(&key));
+                if !grp.is_empty() && !msg.is_empty() {
+                    set_note(&grp, msg, false, cx);
+                }
+            });
         },
         move |m, e, cx| {
             ui(|u| u.busy.remove(&k2));
@@ -550,10 +553,11 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
                 a,
                 tp("/did"),
                 json!({"note": note}),
+                // The box turning to "Done by you" says it; no note beside the button.
                 move |m, _| {
                     ui(|u| u.drafts.remove(&k));
                     drop_field(m, &k);
-                    "Done".into()
+                    String::new()
                 },
                 cx,
             );
