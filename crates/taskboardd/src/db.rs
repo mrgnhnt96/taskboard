@@ -1,10 +1,11 @@
 //! SQLite storage. Rows come back as JSON objects so the board logic can read them by name.
 
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
-use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
+use parking_lot::{Mutex, ReentrantMutex, ReentrantMutexGuard};
 use rusqlite::types::ValueRef;
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{Number, Value};
@@ -319,8 +320,59 @@ struct Inner {
     depth: Cell<u32>,
 }
 
+/// Read-only connections to the board's file, so a read outside a transaction doesn't queue behind
+/// one: in WAL mode it sees the last commit while the writer works.
+struct Readers {
+    path: PathBuf,
+    idle: Mutex<Vec<Connection>>,
+    /// Kept apart from the pool: its `data_version` only compares with its own earlier answers.
+    marker: Mutex<Option<Connection>>,
+}
+
+/// How many idle readers to keep; a burst past it opens more and closes them after.
+const IDLE_READERS: usize = 8;
+
+impl Readers {
+    fn take(&self) -> Result<Connection> {
+        if let Some(c) = self.idle.lock().pop() {
+            return Ok(c);
+        }
+        self.open()
+    }
+
+    fn open(&self) -> Result<Connection> {
+        let c = Connection::open(&self.path)?;
+        c.busy_timeout(std::time::Duration::from_secs(10))?;
+        c.pragma_update(None, "query_only", true)?;
+        c.pragma_update(None, "cache_size", -16384).ok();
+        c.pragma_update(None, "mmap_size", 268_435_456).ok();
+        Ok(c)
+    }
+
+    /// Moves whenever another connection commits, the daemon's writer or not.
+    fn data_version(&self) -> Result<i64> {
+        let mut marker = self.marker.lock();
+        if marker.is_none() {
+            *marker = Some(self.open()?);
+        }
+        let c = marker.as_ref().expect("opened above");
+        Ok(c.query_row("PRAGMA data_version", [], |r| r.get(0))?)
+    }
+
+    fn give_back(&self, c: Connection) {
+        let mut idle = self.idle.lock();
+        if idle.len() < IDLE_READERS {
+            idle.push(c);
+        }
+    }
+}
+
 pub struct Db {
     inner: ReentrantMutex<Inner>,
+    /// None for an in-memory board, which has no file for a second connection to open.
+    readers: Option<Readers>,
+    /// Bumped once each write is committed, for `mark`.
+    writes: AtomicI64,
 }
 
 // The connection is only touched while the re-entrant lock is held.
@@ -358,14 +410,14 @@ macro_rules! p {
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        Self::init(conn, Some(path.to_path_buf()))
     }
 
     pub fn memory() -> Result<Db> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Db> {
+    fn init(conn: Connection, path: Option<PathBuf>) -> Result<Db> {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -400,7 +452,11 @@ impl Db {
         add_columns(&conn, crate::review::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
         conn.execute_batch(BACKFILL_LANES)?;
-        Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
+        Ok(Db {
+            inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }),
+            readers: path.map(|path| Readers { path, idle: Mutex::new(vec![]), marker: Mutex::new(None) }),
+            writes: AtomicI64::new(0),
+        })
     }
 
     /// Whether this thread holds the connection: inside a `tx`, or a query on this thread's stack.
@@ -417,6 +473,31 @@ impl Db {
         let g = self.inner.lock();
         crate::slowlog::db_wait(asked.elapsed(), what);
         g
+    }
+
+    /// Runs `f` with a connection for reading. Outside a transaction that is a pooled reader, so it
+    /// doesn't wait for another thread's; inside one, the writer's, to see its own changes.
+    fn read<T>(&self, what: &str, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        match &self.readers {
+            Some(readers) if !self.held_here() => {
+                let c = readers.take()?;
+                let out = f(&c);
+                readers.give_back(c);
+                out
+            }
+            _ => {
+                let g = self.lock(what);
+                let c = g.conn.borrow();
+                f(&c)
+            }
+        }
+    }
+
+    /// Notes a write that is now committed: one outside a transaction, or a transaction's end.
+    fn wrote(&self, g: &Inner) {
+        if g.depth.get() == 0 {
+            self.writes.fetch_add(1, Ordering::Release);
+        }
     }
 
     /// Runs `f` in one transaction. Nested calls join the outer transaction.
@@ -453,6 +534,7 @@ impl Db {
                     let _ = c.execute_batch("ROLLBACK");
                     return Err(e.into());
                 }
+                self.wrote(&g);
             } else {
                 let _ = c.execute_batch("ROLLBACK");
             }
@@ -464,6 +546,7 @@ impl Db {
         let g = self.lock(sql);
         let c = g.conn.borrow();
         c.execute(sql, params_from_iter(params.iter().map(param)))?;
+        self.wrote(&g);
         Ok(c.last_insert_rowid())
     }
 
@@ -471,24 +554,26 @@ impl Db {
     pub fn changed(&self, sql: &str, params: Vec<Value>) -> Result<i64> {
         let g = self.lock(sql);
         let c = g.conn.borrow();
-        Ok(c.execute(sql, params_from_iter(params.iter().map(param)))? as i64)
+        let n = c.execute(sql, params_from_iter(params.iter().map(param)))? as i64;
+        self.wrote(&g);
+        Ok(n)
     }
 
     pub fn q(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
-        let g = self.lock(sql);
-        let c = g.conn.borrow();
-        let mut st = c.prepare_cached(sql)?;
-        let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
-        let mut rows = st.query(params_from_iter(params.iter().map(param)))?;
-        let mut out = Vec::new();
-        while let Some(r) = rows.next()? {
-            let mut m = Row::new();
-            for (i, n) in names.iter().enumerate() {
-                m.insert(n.clone(), to_json(r.get_ref(i)?));
+        self.read(sql, |c| {
+            let mut st = c.prepare_cached(sql)?;
+            let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+            let mut rows = st.query(params_from_iter(params.iter().map(param)))?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                let mut m = Row::new();
+                for (i, n) in names.iter().enumerate() {
+                    m.insert(n.clone(), to_json(r.get_ref(i)?));
+                }
+                out.push(m);
             }
-            out.push(m);
-        }
-        Ok(out)
+            Ok(out)
+        })
     }
 
     pub fn q1(&self, sql: &str, params: Vec<Value>) -> Result<Option<Row>> {
@@ -496,13 +581,13 @@ impl Db {
     }
 
     pub fn val(&self, sql: &str, params: Vec<Value>) -> Result<Value> {
-        let g = self.lock(sql);
-        let c = g.conn.borrow();
-        let mut st = c.prepare_cached(sql)?;
-        let mut rows = st.query(params_from_iter(params.iter().map(param)))?;
-        Ok(match rows.next()? {
-            Some(r) => to_json(r.get_ref(0)?),
-            None => Value::Null,
+        self.read(sql, |c| {
+            let mut st = c.prepare_cached(sql)?;
+            let mut rows = st.query(params_from_iter(params.iter().map(param)))?;
+            Ok(match rows.next()? {
+                Some(r) => to_json(r.get_ref(0)?),
+                None => Value::Null,
+            })
         })
     }
 
@@ -530,15 +615,20 @@ impl Db {
     }
 
     /// Whether this thread is inside `tx`: what it reads there may yet roll back.
+    /// Another thread's transaction isn't this one's, so it never waits for the lock to find out.
     pub fn in_tx(&self) -> bool {
-        self.lock("a transaction check").depth.get() > 0
+        self.held_here() && self.inner.try_lock().is_some_and(|g| g.depth.get() > 0)
     }
 
-    /// Changes when anything is written: this connection's writes, or another's commit. A rollback
-    /// doesn't move it back, so don't key on it inside `tx`.
+    /// Changes after each committed write, without waiting for a transaction that is still open. A
+    /// read after taking the mark sees every write it counts; don't key on it inside `tx`. The first
+    /// part counts this board's writes, the second moves on another connection's commit too.
     pub fn mark(&self) -> Result<(i64, i64)> {
-        let changes = self.count("SELECT total_changes()", p![])?;
-        Ok((changes, self.count("PRAGMA data_version", p![])?))
+        let others = match &self.readers {
+            Some(readers) => readers.data_version()?,
+            None => 0,
+        };
+        Ok((self.writes.load(Ordering::Acquire), others))
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
@@ -585,6 +675,50 @@ mod tests {
         assert_eq!(db.val("SELECT title FROM tasks", p![]).unwrap(), "B");
         db.set_setting("k", Some("v")).unwrap();
         assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn a_read_on_another_thread_does_not_wait_for_a_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(Db::open(&dir.path().join("board.db")).unwrap());
+        db.set_setting("k", Some("before")).unwrap();
+        let (inside, go_on) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let d = db.clone();
+        let writer = std::thread::spawn(move || {
+            d.tx(|| {
+                d.set_setting("k", Some("after"))?;
+                assert!(d.in_tx());
+                assert_eq!(d.get_setting("k")?.as_deref(), Some("after"));
+                inside.0.send(()).unwrap();
+                go_on.1.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        inside.1.recv().unwrap();
+        let mark = db.mark().unwrap();
+        assert!(!db.in_tx());
+        assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("before"));
+        go_on.0.send(()).unwrap();
+        writer.join().unwrap();
+        assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("after"));
+        assert_ne!(db.mark().unwrap(), mark);
+    }
+
+    #[test]
+    fn a_read_inside_a_transaction_sees_its_own_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("board.db")).unwrap();
+        let mark = db.mark().unwrap();
+        db.tx(|| {
+            db.set_setting("k", Some("v"))?;
+            assert_eq!(db.mark()?, mark);
+            assert_eq!(db.get_setting("k")?.as_deref(), Some("v"));
+            assert_eq!(db.count("SELECT COUNT(*) FROM settings WHERE key = 'k'", p![])?, 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_ne!(db.mark().unwrap(), mark);
     }
 }
 

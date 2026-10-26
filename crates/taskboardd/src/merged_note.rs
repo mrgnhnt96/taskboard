@@ -124,9 +124,7 @@ fn missing(app: &App, t: &Row) -> Result<()> {
         t.i0("pr_num"),
         t.st("jira_key")
     );
-    if crate::prflow::ask_for_note(app, t, &ask)?.is_some() {
-        board::log_event(app, t.id(), board::BOARD, "handoff", "Brought the conversation back to write the note for testers")?;
-    }
+    crate::prflow::ask_for_note(app, t, &ask)?;
     Ok(())
 }
 
