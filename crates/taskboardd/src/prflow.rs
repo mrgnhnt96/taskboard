@@ -17,6 +17,7 @@
 //! when it can't be (outside work hours, or `pr.wake` off), the board asks them itself
 //! (`asks::stage`).
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -717,11 +718,88 @@ pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     })
 }
 
+/// What a wake that had to wait for its slot does once the claim is made.
+enum Again {
+    Step,
+    Follow(String),
+    Note(String),
+    Nothing,
+}
+
+impl Again {
+    fn key(&self, id: i64) -> String {
+        match self {
+            Again::Step => format!("{id}:step"),
+            Again::Follow(text) => format!("{id}:follow:{text}"),
+            Again::Note(text) => format!("{id}:note:{text}"),
+            Again::Nothing => format!("{id}:claim"),
+        }
+    }
+}
+
+/// Wakes whose slot claim is waiting on the deferred worker, so a busy poll doesn't queue the same
+/// claim again before the first one runs.
+static CLAIMING: parking_lot::Mutex<BTreeSet<String>> = parking_lot::Mutex::new(BTreeSet::new());
+
+/// `pr_cwd` for a wake, which often runs inside a transaction. Claiming a slot afresh checks it out
+/// with git (seconds, more on a big repository), and every request would wait on the database
+/// meanwhile: the claim goes to the deferred worker instead, which then does the wake again.
+fn wake_cwd(app: &App, t: &Row, again: Again) -> Result<Option<String>> {
+    if app.db.held_here() && !app.inline_deferred && crate::slots::needs_claim(app, t)? {
+        claim_later(app, t.id(), again);
+        return Ok(None);
+    }
+    pr_cwd(app, t)
+}
+
+fn claim_later(app: &App, id: i64, again: Again) {
+    let key = again.key(id);
+    if !CLAIMING.lock().insert(key.clone()) {
+        return;
+    }
+    app.info(format!("worktrees: {} claims its slot outside the database first", rf("task", id)));
+    app.defer(Box::new(move |app: &App| {
+        if let Err(e) = claimed_then(app, id, again) {
+            app.info(format!("worktrees: {} PR work after its slot claim: {}", rf("task", id), e.message));
+        }
+        CLAIMING.lock().remove(&key);
+    }));
+}
+
+fn claimed_then(app: &App, id: i64, again: Again) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    if let Err(e) = crate::slots::reclaim(app, &t) {
+        app.info(format!("worktrees: {} has no slot for its PR work yet: {}", rf("task", id), e.message));
+        return Ok(());
+    }
+    let t = board::get_task(app, id)?;
+    if crate::slots::needs_claim(app, &t)? {
+        return Ok(());
+    }
+    match again {
+        Again::Step => {
+            if let Some(rec) = flow(&t).get("rec").filter(|r| r.is_object()) {
+                app.db.tx(|| step(app, &t, rec))?;
+            }
+        }
+        Again::Follow(text) => {
+            app.db.tx(|| follow_wake(app, &t, &text))?;
+        }
+        Again::Note(text) => {
+            app.db.tx(|| ask_for_note(app, &t, &text))?;
+        }
+        Again::Nothing => {}
+    }
+    Ok(())
+}
+
 pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -> Result<Option<i64>> {
     if visit_live(app, t)? {
         return Ok(None);
     }
-    let Some(cwd) = pr_cwd(app, t)? else { return Ok(None) };
+    // An answer is delivered again until it lands, so only a plain wake comes back after the claim.
+    let again = if extra.is_none() { Again::Step } else { Again::Nothing };
+    let Some(cwd) = wake_cwd(app, t, again)? else { return Ok(None) };
     let mut text = prompt(app, t, phase, rec);
     if let Some(e) = extra {
         text += &format!("\n{e}");
@@ -741,7 +819,7 @@ pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     if visit_live(app, t)? {
         return Ok(None);
     }
-    let Some(cwd) = pr_cwd(app, t)? else { return Ok(None) };
+    let Some(cwd) = wake_cwd(app, t, Again::Follow(text.to_string()))? else { return Ok(None) };
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
     let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "queue": false,
@@ -755,10 +833,12 @@ pub fn ask_for_note(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     if visit_live(app, t)? {
         return Ok(None);
     }
-    let Some(cwd) = pr_cwd(app, t)? else { return Ok(None) };
+    let Some(cwd) = wake_cwd(app, t, Again::Note(text.to_string()))? else { return Ok(None) };
     let args = json!({"cwd": cwd, "title": short(&format!("Note for testers: {}", t.st("title")), 40), "prompt": text, "queue": false});
     let args = resume_or_fresh(app, t, args)?;
-    Ok(Some(board::create_job(app, "agent", args, Some(t.id()), "pr", None)?))
+    let jid = board::create_job(app, "agent", args, Some(t.id()), "pr", None)?;
+    board::log_event(app, t.id(), board::BOARD, "handoff", "Brought the conversation back to write the note for testers")?;
+    Ok(Some(jid))
 }
 
 pub fn answer_in_new_tab(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
@@ -1917,6 +1997,36 @@ pub fn mark_declined(app: &App, t: &Row, who: &str, reason: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wake_inside_a_transaction_claims_its_slot_on_the_deferred_worker_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        std::sync::Arc::get_mut(&mut app).unwrap().inline_deferred = false;
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap();
+        let run = |args: &[&str]| assert_eq!(crate::worktrees::git(repo, args, 30.0).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let slot = format!("{repo}/.claude/worktrees/slot-1");
+        let ctx = json!({"worktree_slot": slot}).to_string();
+        let id = app.db.insert("tasks", fields!["title" => "A", "status" => "done", "pr_num" => 7, "context" => ctx]).unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        let jobs = || app.db.q("SELECT * FROM jobs WHERE task_id = ?", p![id]).unwrap();
+        for _ in 0..2 {
+            assert_eq!(app.db.tx(|| follow_wake(&app, &t, "Rebase")).unwrap(), None, "no checkout while the database is held");
+        }
+        assert!(jobs().is_empty() && !Path::new(&slot).exists());
+        let claim = app.next_deferred(std::time::Duration::ZERO).expect("the claim waits for the worker");
+        assert!(app.next_deferred(std::time::Duration::ZERO).is_none(), "the same wake queues one claim");
+        claim(&app);
+        assert!(Path::new(&slot).is_dir(), "the worker made the slot");
+        let made = jobs();
+        assert_eq!(made.len(), 1, "then woke the task in it");
+        let args: Value = serde_json::from_str(&made[0].st("args")).unwrap();
+        assert_eq!(args["cwd"], json!(slot));
+    }
 
     #[test]
     fn the_review_label_counts_approvals_against_the_ones_needed() {

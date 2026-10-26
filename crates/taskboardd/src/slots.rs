@@ -432,13 +432,24 @@ pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(s) = held(app, t)? {
         return Ok(Some(s.st("path")));
     }
-    let Some((repo, _)) = before.rsplit_once("/.claude/worktrees/") else { return Ok(None) };
-    if !Path::new(repo).is_dir() {
-        return Ok(None);
-    }
+    let Some(repo) = slot_repo(before) else { return Ok(None) };
     let start = ctx.s("worktree_base").unwrap_or("HEAD").to_string();
     let branch = ctx.s("worktree_branch").or_else(|| ctx.get("where").and_then(|w| w.get("branch")).and_then(|b| b.as_str())).map(|b| b.to_string());
     claim_on(app, t, repo, &start, branch.as_deref()).map(Some)
+}
+
+/// Whether `reclaim` would claim `t` a slot afresh, which checks the slot out with git. A caller
+/// holding the database does that first without it.
+pub fn needs_claim(app: &App, t: &Row) -> Result<bool> {
+    let ctx = board::task_context(t);
+    let Some(before) = ctx.s("worktree_slot").filter(|p| is_slot(p)) else { return Ok(false) };
+    Ok(slot_repo(before).is_some() && held(app, t)?.is_none())
+}
+
+/// The repository a slot folder belongs to, while it's still there.
+fn slot_repo(slot: &str) -> Option<&str> {
+    let (repo, _) = slot.rsplit_once("/.claude/worktrees/")?;
+    Path::new(repo).is_dir().then_some(repo)
 }
 
 /// Why `t` can't give its slot back yet: uncommitted changes, or commits that aren't pushed. None
@@ -664,6 +675,26 @@ mod tests {
         other.join().unwrap();
         let e = out.expect_err("a claim holding the database can't wait on another claim");
         assert_eq!((e.status, e.message.as_str()), (409, WAIT));
+    }
+
+    #[test]
+    fn only_a_task_that_gave_its_slot_back_needs_a_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let repo = dir.path().join("repo").to_str().unwrap().to_string();
+        let path = slot_path(&repo, 1);
+        std::fs::create_dir_all(&path).unwrap();
+        let none = app.db.insert("tasks", crate::fields!["title" => "B", "status" => "done"]).unwrap();
+        assert!(!needs_claim(&app, &board::get_task(&app, none).unwrap()).unwrap(), "it never worked in a slot");
+        let ctx = json!({"worktree_slot": path}).to_string();
+        let id = app.db.insert("tasks", crate::fields!["title" => "A", "status" => "done", "context" => ctx]).unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        assert!(needs_claim(&app, &t).unwrap(), "a slot given back is claimed again");
+        git(&path, &["init", "-q"], GIT_SECS);
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo, "n" => 1, "path" => path, "task_id" => id]).unwrap();
+        assert!(!needs_claim(&app, &t).unwrap(), "the slot it holds is still its own");
+        std::fs::remove_dir_all(&repo).unwrap();
+        assert!(!needs_claim(&app, &t).unwrap(), "a repository that's gone has no slot to claim");
     }
 
     /// Asks until the background measuring gives a size other than `not`.
