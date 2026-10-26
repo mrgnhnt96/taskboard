@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{gist, whole, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, whole, Cancelled, Check, Comment, HostResult, Look, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// Runs `gh` with these arguments and answers its stdout.
 pub trait Gh: Send + Sync {
@@ -85,6 +85,12 @@ const VIEW_FIELDS: &str = "number,state,title,author,headRefOid,headRefName,base
 
 const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){pullRequest(number:$num){reviewThreads(first:100){nodes{id isResolved isOutdated path line first:comments(first:1){nodes{id author{login} body createdAt url}} last:comments(last:1){nodes{id author{login} body createdAt url}} replies:comments(first:30){nodes{id author{login} body createdAt}}}}}}}";
 const RECENT_COMMENTS_QUERY: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequests(first:$n,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number comments(last:50){nodes{id author{login} body createdAt}} reviews(last:50){nodes{id author{login} body submittedAt comments(first:30){nodes{id author{login} body createdAt}}}}}}}}";
+/// What a stamp reads of each PR: whatever a full read would see change. Checks don't move `updatedAt`:
+/// their rollup is there for every PR, each check only for PRs waiting on them (`STAMP_CHECKS`).
+const STAMP_PR: &str = "fragment pr on PullRequest{state title updatedAt headRefOid headRefName baseRefOid baseRefName mergeable reviewDecision comments{totalCount} reviews{totalCount} reviewRequests{totalCount} reviewThreads(first:100){nodes{isResolved isOutdated comments{totalCount}}} rollup:commits(last:1){nodes{commit{statusCheckRollup{state}}}}}";
+const STAMP_CHECKS: &str = "fragment checks on PullRequest{checks:commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}";
+/// PRs per stamp query.
+const STAMP_BATCH: usize = 50;
 const REPLY_MUTATION: &str = "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}";
 const RESOLVE_MUTATION: &str = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
 
@@ -158,9 +164,50 @@ impl GithubHost {
     }
 }
 
+/// One query for every look in the batch: `r<repo>` per repository, `p<look>` per PR in it.
+fn stamps_query(looks: &[Look]) -> String {
+    let mut repos: Vec<(&str, Vec<usize>)> = vec![];
+    for (i, l) in looks.iter().enumerate() {
+        match repos.iter_mut().find(|(r, _)| *r == l.pr.repo) {
+            Some((_, at)) => at.push(i),
+            None => repos.push((&l.pr.repo, vec![i])),
+        }
+    }
+    let mut q = String::from("query{");
+    for (r, (repo, at)) in repos.iter().enumerate() {
+        let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+        q.push_str(&format!("r{r}:repository(owner:{},name:{}){{", Value::from(owner), Value::from(name)));
+        for &i in at {
+            let checks = if looks[i].checks { " ...checks" } else { "" };
+            q.push_str(&format!("p{i}:pullRequest(number:{}){{...pr{checks}}} ", looks[i].pr.num));
+        }
+        q.push_str("} ");
+    }
+    q.push_str("} ");
+    q.push_str(STAMP_PR);
+    if looks.iter().any(|l| l.checks) {
+        q.push(' ');
+        q.push_str(STAMP_CHECKS);
+    }
+    q
+}
+
 impl PrHost for GithubHost {
     fn id(&self) -> &'static str {
         "github"
+    }
+
+    fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {
+        let mut out = Vec::with_capacity(looks.len());
+        for batch in looks.chunks(STAMP_BATCH) {
+            let v = self.graphql(&stamps_query(batch), &[], &[])?;
+            let repos: Vec<&Value> = v["data"].as_object().map(|o| o.values().collect()).unwrap_or_default();
+            for i in 0..batch.len() {
+                let node = repos.iter().map(|r| &r[format!("p{i}")]).find(|n| !n.is_null());
+                out.push(node.map(|n| n.to_string()));
+            }
+        }
+        Ok(out)
     }
 
     fn read(&self, pr: &PrRef) -> HostResult<Record> {
@@ -645,6 +692,28 @@ pub(crate) mod tests {
 
     fn pr() -> PrRef {
         PrRef { host: "github".into(), repo: "acme/webapp".into(), num: 9, url: "https://github.com/acme/webapp/pull/9".into() }
+    }
+
+    #[test]
+    fn stamps_are_one_graphql_query_for_every_pr() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let answer = json!({"data": {
+            "r0": {"p0": {"state": "OPEN", "headRefOid": "abc"}, "p2": null},
+            "r1": {"p1": {"state": "OPEN", "headRefOid": "def", "checks": {"nodes": []}}}
+        }});
+        let h = GithubHost::new(Box::new(FakeGh { answers: vec![("api graphql", answer.to_string())], calls: calls.clone() }));
+        let look = |repo: &str, num: i64, checks: bool| Look { pr: PrRef { repo: repo.into(), num, ..pr() }, checks };
+        let looks = [look("acme/webapp", 9, false), look("acme/lib", 4, true), look("acme/webapp", 10, false)];
+        let stamps = h.stamps(&looks).unwrap();
+        assert_eq!(calls.lock().len(), 1, "one query for both repos");
+        let q = calls.lock()[0].join(" ");
+        assert!(q.contains(r#"r0:repository(owner:"acme",name:"webapp"){p0:pullRequest(number:9){...pr} p2:pullRequest(number:10){...pr} }"#), "{q}");
+        assert!(q.contains(r#"r1:repository(owner:"acme",name:"lib"){p1:pullRequest(number:4){...pr ...checks} }"#), "{q}");
+        assert!(q.contains("fragment checks on PullRequest"), "#4 waits on its checks: {q}");
+        assert_eq!(serde_json::from_str::<Value>(stamps[0].as_deref().unwrap()).unwrap(), json!({"state": "OPEN", "headRefOid": "abc"}));
+        assert!(stamps[1].as_deref().unwrap().contains("checks"));
+        assert_eq!(stamps[2], None, "GitHub had nothing for #10: read it in full");
+        assert!(!stamps_query(&looks[..1]).contains("fragment checks"), "no checks fragment when no PR waits on checks");
     }
 
     fn view() -> Value {

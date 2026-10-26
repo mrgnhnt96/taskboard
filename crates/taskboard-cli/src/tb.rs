@@ -7153,7 +7153,7 @@ fn rate_lines(v: &Value) -> Vec<String> {
         if let Some(f) = a["stretch"].as_f64() {
             line += &format!(" · polling {f:.1}× slower to fit");
         }
-        for key in ["why", "slow_text", "share_text"] {
+        for key in ["why", "slow_text", "share_text", "poll_text"] {
             if let Some(more) = a[key].as_str() {
                 line += &format!("\n  {more}");
             }
@@ -7163,10 +7163,10 @@ fn rate_lines(v: &Value) -> Vec<String> {
     lines
 }
 
-/// `tb pr check`'s rate-limit lines: only the accounts that are limited, slowing down, or were
-/// limited in the last day.
+/// `tb pr check`'s rate-limit lines: only the accounts that are limited, slowing down, were limited
+/// in the last day, or were polled (what the last poll cost).
 fn pr_check_rate_lines(v: &Value) -> Vec<String> {
-    let said = |a: &&Value| ["text", "slow_text", "share_text"].iter().any(|k| a[*k].is_string());
+    let said = |a: &&Value| ["text", "slow_text", "share_text", "poll_text"].iter().any(|k| a[*k].is_string());
     rate_lines(&json!(v.as_array().into_iter().flatten().filter(said).collect::<Vec<_>>()))
 }
 
@@ -7895,6 +7895,17 @@ mod tests {
         assert!(lines[0].starts_with("Bitbucket isn't rate-limited · the board's calls in the last hour: 470\n  Bitbucket limited the account until 7:33am"), "{}", lines[0]);
         assert!(lines[0].ends_with(&format!("\n  {share}")), "{}", lines[0]);
         assert!(pr_check_rate_lines(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn tb_pr_check_says_what_the_last_poll_cost() {
+        let poll = "The last PR poll, at 9:05am, made 2 calls for 20 PRs and read 1 of them in full.";
+        let v = json!([
+            {"label": "Bitbucket", "text": null, "why": null, "calls_last_hour": 24, "max_per_hour": null, "poll_text": poll},
+            {"label": "GitHub", "text": null, "why": null, "poll_text": null, "calls_last_hour": 40},
+        ]);
+        let lines = pr_check_rate_lines(&v);
+        assert_eq!(lines, vec![format!("Bitbucket isn't rate-limited · the board's calls in the last hour: 24\n  {poll}")]);
     }
 
     #[test]

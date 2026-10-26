@@ -11,6 +11,7 @@
 //! | Call | GitHub (`gh`) | Bitbucket Cloud (REST 2.0) |
 //! |---|---|---|
 //! | [`read`](PrHost::read): state, head, base, checks, reviewers, threads, tasks | `gh pr view --json …` + GraphQL `reviewThreads` | `pullrequests/{n}`, `/comments`, `/tasks`, `commit/{head}/statuses` |
+//! | [`stamps`](PrHost::stamps): what changed since the last poll, for many PRs at once | one GraphQL query of every PR's `updatedAt`, head, checks, threads and review counts | one `pullrequests?q=id=… OR …` per repo; `commit/{head}/statuses` only for PRs waiting on checks |
 //! | [`reviewers`](PrHost::reviewers) / [`threads`](PrHost::threads) | from `read` | from `read` |
 //! | [`reply`](PrHost::reply) to a thread | GraphQL `addPullRequestReviewThreadReply`; a quoting `gh pr comment` for a plain comment | a reply comment (`parent`) |
 //! | [`resolve`](PrHost::resolve) a thread | GraphQL `resolveReviewThread` (plain comments can't be: `Ok(false)`) | `comments/{id}/resolve`; a task is set `RESOLVED` |
@@ -84,6 +85,13 @@ pub struct PrRef {
     pub repo: String,
     pub num: i64,
     pub url: String,
+}
+
+/// A PR the poll looks at: [`PrHost::stamps`] reads its checks too when `checks` is set (it waits on them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Look {
+    pub pr: PrRef,
+    pub checks: bool,
 }
 
 impl PrRef {
@@ -488,6 +496,13 @@ pub trait PrHost: Send + Sync {
     fn my_open_prs(&self, _repo: &str) -> HostResult<Vec<OpenPr>> {
         Err(format!("the board can't list a {} repo's open PRs", self.id()))
     }
+
+    /// One stamp per look, in order, read in as few calls as the host allows: it changes whenever
+    /// anything a [`read`](PrHost::read) sees could have, so the poll reads in full only the PRs whose
+    /// stamp moved. `None` for a PR the host didn't answer for (read it in full). Every `None` by default.
+    fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {
+        Ok(vec![None; looks.len()])
+    }
 }
 
 /// The host a task's PR lives on: one [`install`]ed for this board, else the real one.
@@ -560,11 +575,13 @@ pub struct FakeHost {
     pub read_error: Mutex<Option<String>>,
     /// How long `read` takes.
     pub read_delay: Mutex<std::time::Duration>,
+    /// The stamp `stamps` answers for every PR, while set (logged as `stamps <n>`).
+    pub stamp: Mutex<Option<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -577,6 +594,11 @@ impl FakeHost {
 impl PrHost for FakeHost {
     fn id(&self) -> &'static str {
         self.host
+    }
+    fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {
+        let Some(stamp) = self.stamp.lock().clone() else { return Ok(vec![None; looks.len()]) };
+        self.log(format!("stamps {}", looks.len()));
+        Ok(vec![Some(stamp); looks.len()])
     }
     fn read(&self, _pr: &PrRef) -> HostResult<Record> {
         *self.reads.lock() += 1;

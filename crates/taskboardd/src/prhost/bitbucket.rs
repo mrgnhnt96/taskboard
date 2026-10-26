@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{gist, whole, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, whole, Cancelled, Check, Comment, HostResult, Look, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// One HTTP call: method, full URL and JSON body; answers the JSON reply (Null when it's empty). An
 /// error starts with "Bitbucket answered <code>" when Bitbucket answered.
@@ -240,6 +240,12 @@ impl BitbucketHost {
     }
 }
 
+/// PRs per list call: one page of them.
+const STAMP_BATCH: usize = 50;
+/// What a stamp reads of each PR in the list: whatever a full read would see change, short of its
+/// checks (a build doesn't move `updated_on`).
+const STAMP_FIELDS: &str = "next,values.id,values.state,values.title,values.updated_on,values.source.commit.hash,values.destination.branch.name,values.destination.commit.hash,values.comment_count,values.task_count,values.reviewers.uuid,values.participants.user.uuid,values.participants.approved,values.participants.state,values.participants.participated_on";
+
 impl PrHost for BitbucketHost {
     fn id(&self) -> &'static str {
         "bitbucket"
@@ -247,6 +253,36 @@ impl PrHost for BitbucketHost {
 
     fn checks(&self, pr: &PrRef, head: &str) -> HostResult<Option<Vec<Check>>> {
         Ok(Some(checks_of(&self.statuses(&pr.repo, head)?)))
+    }
+
+    fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {
+        let mut out = vec![None; looks.len()];
+        let mut repos: Vec<(&str, Vec<usize>)> = vec![];
+        for (i, l) in looks.iter().enumerate() {
+            match repos.iter_mut().find(|(r, _)| *r == l.pr.repo) {
+                Some((_, at)) => at.push(i),
+                None => repos.push((&l.pr.repo, vec![i])),
+            }
+        }
+        for (repo, at) in repos {
+            for chunk in at.chunks(STAMP_BATCH) {
+                let q = chunk.iter().map(|&i| format!("id%3D{}", looks[i].pr.num)).collect::<Vec<_>>().join("%20OR%20");
+                let url = format!(
+                    "{}/pullrequests?q={q}&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED&pagelen={STAMP_BATCH}&fields={STAMP_FIELDS}",
+                    self.repo_url(repo)
+                );
+                let list = self.get(&url)?;
+                let prs = list["values"].as_array().cloned().unwrap_or_default();
+                for &i in chunk {
+                    let l = &looks[i];
+                    let Some(p) = prs.iter().find(|p| p["id"].as_i64() == Some(l.pr.num)) else { continue };
+                    let head = p["source"]["commit"]["hash"].as_str().unwrap_or("");
+                    let statuses = if l.checks && !head.is_empty() { Value::Array(self.statuses(repo, head)?) } else { Value::Null };
+                    out[i] = Some(json!({"pr": p, "statuses": statuses}).to_string());
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn read(&self, pr: &PrRef) -> HostResult<Record> {
@@ -829,6 +865,34 @@ pub(crate) mod tests {
         assert!(r.to_value()["tasks_open"].is_null());
         h.read(&pr()).unwrap();
         assert_eq!(calls.lock().iter().filter(|(_, u, _)| u == "https://api/user").count(), 1, "who the account is is asked once");
+    }
+
+    #[test]
+    fn stamps_are_one_list_call_per_repo_and_statuses_only_for_prs_waiting_on_checks() {
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let other = json!({"id": 8, "state": "OPEN", "updated_on": "2026-10-02T10:00:00Z", "source": {"commit": {"hash": "def456"}}});
+        let http = FakeHttp {
+            answers: vec![
+                ("GET https://api/repositories/ws/repo/pullrequests?q=", json!({"values": [pr_json(), other]})),
+                ("GET https://api/repositories/ws/lib/pullrequests?q=", json!({"values": [{"id": 3, "updated_on": "2026-10-01T10:00:00Z"}]})),
+                ("GET https://api/repositories/ws/repo/commit/abc123/statuses", json!({"values": [{"key": "build", "state": "INPROGRESS"}]})),
+            ],
+            calls: calls.clone(),
+        };
+        let h = BitbucketHost::new(Box::new(http), "https://api/");
+        let look = |repo: &str, num: i64, checks: bool| Look { pr: PrRef { repo: repo.into(), num, ..pr() }, checks };
+        let looks = [look("ws/repo", 7, true), look("ws/lib", 3, false), look("ws/repo", 8, false), look("ws/repo", 9, false)];
+        let stamps = h.stamps(&looks).unwrap();
+        let urls: Vec<String> = calls.lock().iter().map(|(_, u, _)| u.clone()).collect();
+        assert_eq!(urls.len(), 3, "a list call per repo and one PR's statuses: {urls:?}");
+        assert!(urls[0].starts_with("https://api/repositories/ws/repo/pullrequests?q=id%3D7%20OR%20id%3D8%20OR%20id%3D9&state=OPEN&"), "{}", urls[0]);
+        assert!(urls[0].contains("values.updated_on") && urls[0].contains("values.source.commit.hash"), "{}", urls[0]);
+        assert_eq!(urls[1], "https://api/repositories/ws/repo/commit/abc123/statuses?pagelen=100", "only #7 waits on checks");
+        assert!(urls[2].starts_with("https://api/repositories/ws/lib/pullrequests?q=id%3D3&"), "{}", urls[2]);
+        assert!(stamps[0].as_deref().unwrap().contains("INPROGRESS"), "#7's stamp moves with its checks");
+        assert!(stamps[1].is_some() && stamps[2].is_some());
+        assert_ne!(stamps[0], stamps[2]);
+        assert_eq!(stamps[3], None, "#9 wasn't in the list: read it in full");
     }
 
     fn pr() -> PrRef {
