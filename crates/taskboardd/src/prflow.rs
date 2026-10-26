@@ -62,7 +62,7 @@ pub fn label(phase: &str) -> &str {
     }
 }
 
-fn flow(t: &Row) -> Row {
+pub(crate) fn flow(t: &Row) -> Row {
     jloads_obj(t.s("pr_flow"))
 }
 
@@ -1324,7 +1324,7 @@ pub fn note_checks_running(app: &App, t: &Row, head: &str, checks: &[String], wh
 }
 
 /// Seconds (awake) since this push was first seen.
-fn head_waited(f: &Row, rec: &Value) -> f64 {
+pub(crate) fn head_waited(f: &Row, rec: &Value) -> f64 {
     let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
     first.map(crate::clock::awake_since).unwrap_or(0.0)
 }
@@ -1523,6 +1523,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     // A merged PR stays merged: a stream event laid over the record from before the merge still reads open.
     let phase = if old == "merged" { old.clone() } else { phase_of(app, &probe(t, &f), rec) };
     let phase_changed = phase != old;
+    changes.extend(crate::prpace::note(app, t, &f, rec, &phase, phase_changed)?);
     let build = if crate::prbuilds::stopped(app) {
         "Builds stopped"
     } else if checks_skipped(&f, rec).is_some() && (skip_hides_failures(&f, rec) || failing(&f, rec).is_empty()) {
@@ -1703,7 +1704,7 @@ pub fn refresh(app: &App) -> Result<i64> {
 }
 
 /// The timed PR poll: [`refresh`], skipping the PRs a healthy stream relay covers until their reconcile
-/// is due (`feed::pr_poll_skips`).
+/// is due (`feed::pr_poll_skips`), and the PRs not due at their pace (`prpace.rs`).
 pub fn poll(app: &App) -> Result<i64> {
     refresh_where(app, true)
 }
@@ -1718,7 +1719,7 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     )?;
     let mut by_host: std::collections::BTreeMap<String, Vec<Row>> = Default::default();
     for t in tasks {
-        if skip_covered && crate::feed::pr_poll_skips(app, &t) {
+        if skip_covered && (crate::feed::pr_poll_skips(app, &t) || !crate::prpace::due(app, &t)?) {
             continue;
         }
         by_host.entry(t.st("pr_host")).or_default().push(t);

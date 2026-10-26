@@ -219,6 +219,9 @@ pub struct PrConfig {
     /// Seconds after a stream review or comment hint before its PR is read once more: a review's
     /// changes request often follows its comments as its own event, or none. 0: no second read.
     pub comment_settle_secs: f64,
+    /// The timed poll reads a PR less often the longer it stays the same, and outside work hours only
+    /// the PRs that can move at night at that pace (`prpace.rs`). Off: every PR on every poll.
+    pub pace_polls: bool,
     /// Bitbucket Cloud's REST API (2.0).
     pub bitbucket_api: String,
     /// The environment variable holding an Azure DevOps personal access token, for reading the failed
@@ -244,6 +247,7 @@ impl Default for PrConfig {
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
             comment_settle_secs: 90.0,
+            pace_polls: true,
             bitbucket_api: "https://api.bitbucket.org/2.0".into(),
             azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
             approvals: DEFAULT_APPROVALS,
@@ -981,6 +985,8 @@ impl Config {
         c.pr.watch = false;
         // No host is read for the owner's open PRs unless a test asks.
         c.pr_builds.owner_prs_secs = 0.0;
+        // Every PR is read on every poll unless a test paces them.
+        c.pr.pace_polls = false;
         // The host's verdict (or any approval) is enough, unless a test asks for a count.
         c.pr.approvals = 0;
         c.accounts_sandbox = true;

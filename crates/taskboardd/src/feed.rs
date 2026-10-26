@@ -336,7 +336,7 @@ fn polling_some(app: &App, src: &Source) -> bool {
     })
 }
 
-fn span(secs: f64) -> String {
+pub(crate) fn span(secs: f64) -> String {
     let m = (secs / 60.0).round() as i64;
     if secs < 60.0 {
         plural(secs.round() as i64, "second")
@@ -772,6 +772,7 @@ pub fn intake_from(app: &App, body: &Value, sources: &[&str], pr: Option<&Value>
 /// `phase` or `read_error`).
 pub fn read_pr(app: &App, t: &Row, pr: Option<&Value>, out: &mut Value) -> Result<()> {
     if crate::prhost::watched(t.s("pr_host")) && t.i("pr_num").is_some() && !matches!(t.s("pr_phase"), Some("merged" | "declined")) {
+        crate::prpace::stirred(app, t.id())?;
         let applied = match pr {
             Some(ev) => prflow::apply_event(app, t.id(), ev)?,
             None => None,
