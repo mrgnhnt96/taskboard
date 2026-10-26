@@ -232,7 +232,7 @@ pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<
 
 fn current(m: &MainWindow, cx: &App) -> Vec<Group> {
     let q = m.search.input.as_ref().map(|i| i.text(cx)).unwrap_or_default();
-    let mut groups = results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.data.sessions.as_ref());
+    let mut groups = results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.data.sessions.as_deref());
     // The board sent the best few: its counts are the whole.
     if let Some((_, tasks, issues)) = m.search.found.as_ref().filter(|f| f.0 == q) {
         for g in &mut groups {

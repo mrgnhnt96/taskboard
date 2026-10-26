@@ -114,12 +114,13 @@ struct Key {
     kind: Kind,
     words: String,
     group: GroupBy,
-    goals: std::rc::Rc<Vec<Value>>,
     since: DateTime<Utc>,
 }
 
 struct View {
     key: Key,
+    /// The goal list built from, by identity: a new answer rebuilds without comparing it.
+    goals: std::rc::Rc<Vec<Value>>,
     all: Head,
     hd: Head,
     picked: Option<String>,
@@ -494,14 +495,13 @@ fn sync(m: &mut MainWindow, words: &str) {
         kind: s.kind,
         words: words.to_string(),
         group: s.group,
-        goals: m.data.goals.clone(),
         since: week_start(),
     };
     let more = s.held.next.is_some();
     let old = s.view.take();
     let filters_same = old.as_ref().is_some_and(|v| (&v.key.project, v.key.show, v.key.kind, &v.key.words, v.key.group) == (&key.project, key.show, key.kind, &key.words, key.group));
     let mut v = match old {
-        Some(v) if v.key == key => v,
+        Some(v) if v.key == key && std::rc::Rc::ptr_eq(&v.goals, &m.data.goals) => v,
         _ => {
             let items = items_of(&s.held.rows);
             let all = head(&items, None, key.since);
@@ -510,7 +510,7 @@ fn sync(m: &mut MainWindow, words: &str) {
             let hd = head(&items, picked.as_deref(), key.since);
             let f = Filter { project: picked.as_deref(), show: key.show, kind: key.kind, words };
             let groups = groups(&items, &m.data.goals, key.group, &f);
-            View { key, all, hd, picked, groups, toggled: HashSet::new(), more, lines: vec![] }
+            View { key, goals: m.data.goals.clone(), all, hd, picked, groups, toggled: HashSet::new(), more, lines: vec![] }
         }
     };
     let mut lines = vec![Line::Top];

@@ -18,6 +18,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const LIST_W: f32 = 460.;
@@ -98,6 +99,8 @@ pub struct State {
     pending: HashMap<String, Pending>,
     /// "Back to T12": the task the reader came from (the route's `back=`).
     back: Option<String>,
+    /// The rows as last built, shared by every part of a frame.
+    lists: Option<Lists>,
 }
 
 // ------------------------------------------------------------------ helpers (sessions.js)
@@ -996,12 +999,68 @@ pub fn bulk_vm(picked: &[String], live: &[Value], closed: &[Value], note: Option
 
 // ------------------------------------------------------------------ data with local overrides
 
-fn live_list(m: &MainWindow) -> Vec<Value> {
-    m.data.sessions.as_ref().map(|v| arr(v, "sessions").iter().map(|x| effective(&m.sessions, x)).collect()).unwrap_or_default()
+/// The live rows with renames applied and the closed rows, built once per answer.
+struct Lists {
+    sessions: Option<Rc<Value>>,
+    closed: Option<Rc<Value>>,
+    overrides: Vec<Override>,
+    live: Rc<Vec<Value>>,
+    closed_rows: Rc<Vec<Value>>,
 }
 
-fn closed_list(m: &MainWindow) -> Vec<Value> {
-    m.data.closed.as_ref().map(|v| arr(v, "sessions").to_vec()).unwrap_or_default()
+/// A rename the board hasn't caught up with: the session, the name asked for, the error.
+type Override = (String, Option<String>, Option<String>);
+
+fn overrides(st: &State) -> Vec<Override> {
+    let mut v: Vec<Override> = st.pending.iter().map(|(id, p)| (id.clone(), p.renaming.clone(), p.error.clone())).collect();
+    v.sort_unstable();
+    v
+}
+
+fn same(a: &Option<Rc<Value>>, b: &Option<Rc<Value>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
+}
+
+impl Lists {
+    fn build(m: &MainWindow) -> Lists {
+        Lists {
+            sessions: m.data.sessions.clone(),
+            closed: m.data.closed.clone(),
+            overrides: overrides(&m.sessions),
+            live: Rc::new(m.data.sessions.as_ref().map(|v| arr(v, "sessions").iter().map(|x| effective(&m.sessions, x)).collect()).unwrap_or_default()),
+            closed_rows: Rc::new(m.data.closed.as_ref().map(|v| arr(v, "sessions").to_vec()).unwrap_or_default()),
+        }
+    }
+
+    /// Built from the answers `m` holds (by identity) with the same renames waiting.
+    fn holds(&self, m: &MainWindow) -> bool {
+        same(&self.sessions, &m.data.sessions) && same(&self.closed, &m.data.closed) && self.overrides == overrides(&m.sessions)
+    }
+}
+
+/// Build the rows again if an answer or a rename changed them; render does it first, so the rest
+/// of the frame shares them.
+fn sync_lists(m: &mut MainWindow) {
+    if !m.sessions.lists.as_ref().is_some_and(|l| l.holds(m)) {
+        m.sessions.lists = Some(Lists::build(m));
+    }
+}
+
+fn live_list(m: &MainWindow) -> Rc<Vec<Value>> {
+    match &m.sessions.lists {
+        Some(l) if l.holds(m) => l.live.clone(),
+        _ => Lists::build(m).live,
+    }
+}
+
+fn closed_list(m: &MainWindow) -> Rc<Vec<Value>> {
+    match &m.sessions.lists {
+        Some(l) if l.holds(m) => l.closed_rows.clone(),
+        _ => Lists::build(m).closed_rows,
+    }
 }
 
 
@@ -1011,7 +1070,7 @@ fn detail_data(m: &MainWindow) -> Option<Value> {
 
 /// `ssSession`: a live row, else a closed one.
 fn find_session(m: &MainWindow, id: &str) -> Option<Value> {
-    live_list(m).into_iter().chain(closed_list(m)).find(|x| s(x, "id") == id)
+    live_list(m).iter().chain(closed_list(m).iter()).find(|x| s(x, "id") == id).cloned()
 }
 
 /// The row with the rename the board hasn't caught up with yet applied.
@@ -1037,7 +1096,7 @@ fn retire_pending(m: &mut MainWindow) {
     if m.sessions.pending.is_empty() {
         return;
     }
-    let rows: Vec<Value> = m.data.sessions.as_ref().map(|v| arr(v, "sessions").to_vec()).unwrap_or_default();
+    let rows = m.data.sessions.as_deref().map(|v| arr(v, "sessions")).unwrap_or_default();
     m.sessions.pending.retain(|id, p| {
         let now = rows.iter().find(|x| s(x, "id") == id).map(|x| x.to_string()).unwrap_or_default();
         p.at.elapsed() < Duration::from_secs(4) && now == p.seen
@@ -1412,10 +1471,10 @@ pub fn auto_select(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 /// Watch renames finish (✓ / ✗ flash), expire flashes, and retire local overrides.
 fn tick_renames(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     retire_pending(m);
-    let mut rows = live_list(m);
-    rows.extend(detail_data(m));
+    sync_lists(m);
+    let (live, detail) = (live_list(m), detail_data(m));
     let mut started = false;
-    for x in &rows {
+    for x in live.iter().chain(detail.as_ref()) {
         started |= observe_rename(&mut m.sessions.watch, &mut m.sessions.flash, x);
     }
     m.sessions.flash.retain(|_, f| f.at.elapsed() < if f.ok { FLASH_OK } else { FLASH_BAD });
@@ -1603,6 +1662,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         m.sessions.search = Some(input);
     }
     load_collapsed(&mut m.sessions);
+    sync_lists(m);
     // Drop picks that are gone or can't be closed together any more (`loadSessionList`).
     let live = live_list(m);
     let closed = closed_list(m);
@@ -1633,7 +1693,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 
 fn header(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     let live = m.data.sessions.as_ref().map(|_| live_list(m));
-    let vm = header_vm(live.as_deref(), &m.sessions.filter, m.sessions.back.as_deref());
+    let vm = header_vm(live.as_ref().map(|l| l.as_slice()), &m.sessions.filter, m.sessions.back.as_deref());
     // `.seg.sm`: 3px padding, 2px gaps, radius 9; 32px semibold buttons with the count in faint.
     let mut seg = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
     for (idx, (k, label, n)) in vm.filters.iter().enumerate() {
@@ -1700,7 +1760,7 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     let q = query(m, cx);
     let st = &m.sessions;
     let vm = list_vm(&ListCtx {
-        live: live.as_deref(),
+        live: live.as_ref().map(|l| l.as_slice()),
         list_err: m.data.errs.sessions.as_deref(),
         sel: st.selected.as_deref(),
         filter: &st.filter,

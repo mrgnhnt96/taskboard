@@ -73,8 +73,9 @@ pub struct State {
     /// Checked issues, in the order checked: the new goal's issues and the bar's selection.
     pub picked: Vec<String>,
     focus: Option<FocusHandle>,
-    /// `GET /backlog/triage`'s first page (the counts and projects) and `GET /backlog/plan`.
-    data: Option<Value>,
+    /// `GET /backlog/triage`'s first page (the counts and projects), shared with each frame, and
+    /// `GET /backlog/plan`.
+    data: Option<Rc<Value>>,
     /// The issues held so far, page by page.
     held: Paged,
     list: Option<ListState>,
@@ -364,7 +365,7 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             let (list, plan) = got;
             match list {
                 Ok(f) => {
-                    m.backlog.data = Some(f.first().clone());
+                    m.backlog.data = Some(Rc::new(f.first().clone()));
                     m.backlog.held.land("issues", f);
                     m.backlog.err = None;
                 }
@@ -642,7 +643,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     sync_view(m);
     load_older(m, cx);
     let d = draft(&list, m.backlog.plan.as_ref(), &m.backlog.picked);
-    let data = m.backlog.data.clone().unwrap_or(Value::Null);
+    let data = m.backlog.data.clone().unwrap_or_default();
     let (untriaged, triaged, total) = (fmt::i(&data, "untriaged"), fmt::i(&data, "triaged"), fmt::i(&data, "total"));
     let sel = selected(m);
 
@@ -673,7 +674,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .tooltip(kit::tip(format!("{triaged} of {total} issues triaged: in a goal, deferred or dropped")))
                 .child(div().h_full().rounded_full().w(relative(pct)).bg(if untriaged > 0 { t.warn } else { t.up })),
         );
-    let projects: Vec<Value> = arr(&data, "projects").to_vec();
+    let projects = arr(&data, "projects");
     let project_btn = (projects.len() > 1 || m.backlog.project != "all").then(|| {
         let counts: Vec<(String, usize)> = projects.iter().map(|p| (s(p, "name").to_string(), fmt::i(p, "untriaged") as usize)).collect();
         ip::project_filter(&t, MENU_PROJECT, &m.backlog.project.clone(), &counts, cx, |m, v, cx| {
