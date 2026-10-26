@@ -983,7 +983,12 @@ fn submitting_gives_the_slot_back_detached_with_its_branch_kept() {
     assert_eq!(slots[0]["name"], "slot-1");
     assert_eq!(slots[0]["held_by"], format!("T{one}"));
     assert_eq!(slots[0]["waiting"], json!([format!("T{two}")]), "{slots}");
-    assert!(slots[0]["size_kb"].as_i64().is_some(), "{slots}");
+    // Sizes are measured in the background: the first ask answers without one.
+    let sized = (0..200).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        b.get("slots")["slots"][0]["size_kb"].as_i64().is_some()
+    });
+    assert!(sized, "{slots}");
     // used_at is whole seconds: backdate it so a claim and give-back in one second still differ.
     b.app.db.x("UPDATE worktree_slots SET used_at = '2000-01-01T00:00:00Z' WHERE n = 1", p![]).unwrap();
     let used = slot_row(&b, 1).s("used_at").map(|s| s.to_string());
