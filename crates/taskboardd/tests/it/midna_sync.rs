@@ -89,3 +89,16 @@ fn a_question_for_the_owner_stays_while_the_terminal_works() {
     sync_state(&app, "working", "2026-10-23T10:05:00Z");
     assert_eq!(board::get_task(&app, t).unwrap().s("status"), Some("needs"));
 }
+
+#[test]
+fn a_sync_that_finds_nothing_new_writes_nothing() {
+    let (app, _d) = board_with("echo '[]'");
+    sync_state(&app, "working", "2026-10-23T10:00:00Z");
+    let mark = app.db.mark().unwrap();
+    sync_state(&app, "working", "2026-10-23T10:00:00Z");
+    assert_eq!(app.db.mark().unwrap(), mark, "a heartbeat with nothing new leaves the board as it was");
+
+    sync_state(&app, "needs_you", "2026-10-23T10:01:00Z");
+    assert_ne!(app.db.mark().unwrap(), mark);
+    assert_eq!(board::get_session(&app, Some("s1")).unwrap().unwrap().s("status"), Some("needs"));
+}

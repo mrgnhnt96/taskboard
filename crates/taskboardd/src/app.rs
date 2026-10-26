@@ -44,6 +44,8 @@ pub struct Shared {
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,
+    /// The database part of `GET /state` by query, as of a `Db::mark` and when it was made (`api::state_board`).
+    pub state_boards: HashMap<String, ((i64, i64), Instant, Value)>,
     pub jira_token_off: bool,
     pub jira_creds: Option<(String, String)>,
     pub remotes: std::collections::HashMap<String, (Instant, Option<bool>)>,

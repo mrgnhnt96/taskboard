@@ -503,6 +503,10 @@ pub fn live_background(info: &Row) -> Option<(i64, i64)> {
     Some((running.len() as i64, agents as i64))
 }
 
+/// How stale a terminal's `seen_at` may get while nothing else about it changes. Stamping it on every
+/// sync would move the board's mark each tick, and nothing reads it closer than this.
+const SEEN_EVERY_SECS: f64 = 60.0;
+
 /// Applies Midna's terminal and project lists to the board.
 pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<String>, Vec<String>)> {
     let mut seen_ids: Vec<String> = vec![];
@@ -519,8 +523,11 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 })
                 .map(|p| json!({"name": p.get("name"), "path": p.get("path")}))
                 .collect();
-            crate::reqcache::forget_setting("midna_projects");
-            app.db.set_setting("midna_projects", Some(&jdumps(&Value::Array(list))))?;
+            let list = jdumps(&Value::Array(list));
+            if app.db.get_setting("midna_projects")?.as_deref() != Some(list.as_str()) {
+                crate::reqcache::forget_setting("midna_projects");
+                app.db.set_setting("midna_projects", Some(&list))?;
+            }
         }
         let now = now_iso();
         for s in sessions {
@@ -565,8 +572,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
             let mut f = crate::fields![
                 "name" => name, "project" => project, "project_path" => path, "branch" => branch, "dirty" => dirty,
                 "agent" => agent, "status" => state_of(&state), "prompt_waiting" => (state == "needs_you") as i64,
-                "last_activity" => s.get("last_activity_at"), "source" => "midna", "seen_at" => now, "missed" => 0,
-                "gone_at" => null
+                "last_activity" => s.get("last_activity_at"), "source" => "midna", "missed" => 0, "gone_at" => null
             ];
             if let Some(c) = info.s("conversation_id").filter(|c| !c.is_empty()) {
                 f.push(("claude_session_id", json!(c)));
@@ -576,9 +582,12 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
             f.push(("live_background_agents", live_agents));
             if let Some(cur) = &cur {
                 board::note_rename(app, Some(cur), Some(&name))?;
-                app.db.update("sessions", &json!(sid), f)?;
+                let moved = app.db.update_changed("sessions", &json!(sid), f)?;
+                if moved || !wall_age_secs(cur.s("seen_at")).is_some_and(|a| a < SEEN_EVERY_SECS) {
+                    app.db.update("sessions", &json!(sid), crate::fields!["seen_at" => now])?;
+                }
             } else {
-                let mut row = vec![("id", json!(sid))];
+                let mut row = vec![("id", json!(sid)), ("seen_at", json!(now))];
                 row.extend(f);
                 app.db.insert("sessions", row)?;
             }

@@ -155,3 +155,15 @@ fn a_poll_since_the_stamp_it_holds_hears_unchanged_until_the_board_moves() {
     let moved = get(&app, "goals", Some(&goals));
     assert_eq!(moved["goals"].as_array().unwrap().len(), 2, "a new goal moves the list");
 }
+
+#[test]
+fn a_kept_board_shows_a_write_at_once() {
+    let (app, _dir) = new_board();
+    done_task(&app, "first", None);
+    let before = state(&app, "all");
+    assert_eq!(state(&app, "all")["columns"], before["columns"]);
+
+    done_task(&app, "second", None);
+    assert_eq!(titles(&state(&app, "all")).len(), 2);
+    assert_eq!(titles(&state(&app, "24h")).len(), 2, "each query keeps its own board");
+}

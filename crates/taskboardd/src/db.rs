@@ -322,6 +322,8 @@ struct Inner {
     depth: Cell<u32>,
     /// The rows written since the last commit, as SQLite's update hook reports them.
     changed: Arc<Mutex<Vec<(String, i64)>>>,
+    /// The connection's row change total when `writes` last moved.
+    counted: Cell<u64>,
 }
 
 /// How many recent writes `changed_since` can answer for, and how many rows one can list.
@@ -467,7 +469,7 @@ impl Db {
         let hooked = changed.clone();
         conn.update_hook(Some(move |_, _: &str, table: &str, rowid: i64| hooked.lock().push((table.to_string(), rowid))));
         Ok(Db {
-            inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0), changed }),
+            inner: ReentrantMutex::new(Inner { counted: Cell::new(conn.total_changes()), conn: RefCell::new(conn), depth: Cell::new(0), changed }),
             readers: path.map(|path| Readers { path, idle: Mutex::new(vec![]), marker: Mutex::new(None) }),
             writes: AtomicI64::new(0),
             log: Mutex::new(VecDeque::new()),
@@ -508,10 +510,17 @@ impl Db {
         }
     }
 
-    /// Notes a write that is now committed: one outside a transaction, or a transaction's end.
+    /// Notes a write that is now committed: one outside a transaction, or a transaction's end. One
+    /// that changed no rows (an update that matched none, an idle sync's empty transaction) leaves
+    /// the mark where it was, so a cache keyed on it still holds.
     fn wrote(&self, g: &Inner) {
         if g.depth.get() == 0 {
             let rows = std::mem::take(&mut *g.changed.lock());
+            let total = g.conn.borrow().total_changes();
+            if total == g.counted.get() {
+                return;
+            }
+            g.counted.set(total);
             let mut log = self.log.lock();
             let n = self.writes.load(Ordering::Acquire) + 1;
             log.push_back((n, (rows.len() <= LOGGED_ROWS).then_some(rows)));
@@ -646,15 +655,24 @@ impl Db {
     }
 
     pub fn update(&self, table: &str, id: &Value, fields: Vec<(&str, Value)>) -> Result<()> {
+        self.update_changed(table, id, fields)?;
+        Ok(())
+    }
+
+    /// Like `update`, but returns whether the row changed. A row that already holds every value is
+    /// left alone, so the write doesn't move the mark.
+    pub fn update_changed(&self, table: &str, id: &Value, fields: Vec<(&str, Value)>) -> Result<bool> {
         if fields.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let sets: Vec<String> = fields.iter().map(|(k, _)| format!("{k} = ?")).collect();
-        let sql = format!("UPDATE {table} SET {} WHERE id = ?", sets.join(", "));
-        let mut params: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
+        let differs: Vec<String> = fields.iter().map(|(k, _)| format!("{k} IS NOT ?")).collect();
+        let sql = format!("UPDATE {table} SET {} WHERE id = ? AND ({})", sets.join(", "), differs.join(" OR "));
+        let values: Vec<Value> = fields.into_iter().map(|(_, v)| v).collect();
+        let mut params = values.clone();
         params.push(id.clone());
-        self.x(&sql, params)?;
-        Ok(())
+        params.extend(values);
+        Ok(self.changed(&sql, params)? > 0)
     }
 
     /// Whether this thread is inside `tx`: what it reads there may yet roll back.
@@ -780,6 +798,28 @@ mod tests {
             Ok(())
         })
         .unwrap();
+        assert_ne!(db.mark().unwrap(), mark);
+    }
+
+    #[test]
+    fn a_write_that_changes_no_rows_keeps_the_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("board.db")).unwrap();
+        db.set_setting("k", Some("v")).unwrap();
+        let mark = db.mark().unwrap();
+        db.tx(|| Ok(())).unwrap();
+        db.x("UPDATE settings SET value = 'w' WHERE key = 'missing'", p![]).unwrap();
+        db.tx(|| db.x("DELETE FROM settings WHERE key = 'missing'", p![])).unwrap();
+        db.set_setting("k", Some("v")).unwrap();
+        assert_eq!(db.mark().unwrap(), mark);
+        db.insert("sessions", vec![("id", serde_json::json!("s1")), ("name", serde_json::json!("a")), ("missed", serde_json::json!(0))]).unwrap();
+        let mark = db.mark().unwrap();
+        assert!(!db.update_changed("sessions", &serde_json::json!("s1"), crate::fields!["name" => "a", "missed" => 0, "gone_at" => null]).unwrap());
+        assert_eq!(db.mark().unwrap(), mark);
+        assert!(db.update_changed("sessions", &serde_json::json!("s1"), crate::fields!["name" => "a", "missed" => 1]).unwrap());
+        assert_ne!(db.mark().unwrap(), mark);
+        let mark = db.mark().unwrap();
+        db.tx(|| db.set_setting("k", Some("w"))).unwrap();
         assert_ne!(db.mark().unwrap(), mark);
     }
 }

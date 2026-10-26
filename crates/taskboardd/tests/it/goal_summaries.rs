@@ -105,9 +105,10 @@ fn a_finished_goal_is_made_again_after_a_write_it_reads() {
     b.task(g, "done");
     b.app.db.set_setting("pr_flow", Some("pr")).unwrap();
     assert_eq!(b.total(g), 1);
-    b.add_unseen(g);
+    let mark = b.app.db.mark().unwrap();
     b.app.db.set_setting("pr_flow", Some("pr")).unwrap();
-    assert_eq!(b.total(g), 1, "a setting rewritten as it was changes nothing");
+    assert_eq!(b.app.db.mark().unwrap(), mark, "a setting rewritten as it was changes nothing");
+    b.add_unseen(g);
     b.app.db.set_setting("pr_flow", Some("direct")).unwrap();
     assert_eq!(b.total(g), 2);
 }
