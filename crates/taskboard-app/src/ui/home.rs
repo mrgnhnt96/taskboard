@@ -530,7 +530,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
 
 /// Dismiss on a Needs you item: `POST /alerts/:id/dismiss`, gone from the list at once.
 pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
-    if let Some(needs) = m.data.home.as_mut().and_then(|h| h.get_mut("needs")).and_then(Value::as_array_mut) {
+    if let Some(needs) = m.data.home.as_mut().and_then(|h| std::rc::Rc::make_mut(h).get_mut("needs")).and_then(Value::as_array_mut) {
         needs.retain(|a| s(a, "id") != id);
     }
     crate::app::dismiss_alert(m, id, cx);
@@ -561,7 +561,7 @@ pub fn snoozed_note(a: &Value) -> String {
 /// Snooze on a Needs you item: `POST /alerts/:id/snooze`, gone from the list until it's up.
 fn snooze(m: &mut MainWindow, id: &str, body: Value, cx: &mut Context<MainWindow>) {
     m.menu = None;
-    if let Some(needs) = m.data.home.as_mut().and_then(|h| h.get_mut("needs")).and_then(Value::as_array_mut) {
+    if let Some(needs) = m.data.home.as_mut().and_then(|h| std::rc::Rc::make_mut(h).get_mut("needs")).and_then(Value::as_array_mut) {
         needs.retain(|a| s(a, "id") != id);
     }
     m.post(format!("alerts/{id}/snooze"), body, cx, |m, v, cx| sent(m, snoozed_note(&v["alert"]), cx));
@@ -657,9 +657,9 @@ fn flip(key: String) {
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let home = m.data.home.clone().unwrap_or(Value::Null);
+    let home = m.data.home.clone().unwrap_or_default();
     // A break's urgent alert is already its "Master is red" line.
-    let st = m.state().clone();
+    let st = m.state_rc();
     let needs: Vec<Value> = arr(&home, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).cloned().collect();
     let all = asks_vm(&json!({ "needs": needs, "goals": home["goals"] }));
     let stats = m.data.today.as_ref().map(stats_vm).unwrap_or_default();

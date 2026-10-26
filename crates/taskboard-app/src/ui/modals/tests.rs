@@ -40,7 +40,7 @@ fn escape_closes_the_alerts_dialog(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
     w.update(cx, |m, window, cx| {
         // An alert, so the dialog doesn't close by itself.
-        m.data.state.as_mut().unwrap()["alerts"] = one_alert();
+        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = one_alert();
         m.set_modal(Some(Modal::Alerts), window, cx);
     })
     .unwrap();
@@ -55,14 +55,14 @@ fn escape_closes_the_alerts_dialog(cx: &mut TestAppContext) {
 fn the_alerts_dialog_closes_itself_when_none_are_left(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
     w.update(cx, |m, window, cx| {
-        m.data.state.as_mut().unwrap()["alerts"] = one_alert();
+        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = one_alert();
         m.set_modal(Some(Modal::Alerts), window, cx);
     })
     .unwrap();
     redraw(w, cx);
     w.update(cx, |m, _, _| {
         assert!(matches!(m.modal, Some(Modal::Alerts)));
-        m.data.state.as_mut().unwrap()["alerts"] = json!([]);
+        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = json!([]);
     })
     .unwrap();
     redraw(w, cx);

@@ -534,8 +534,8 @@ fn card(t: &Theme) -> Div {
 
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let state = m.state().clone();
-    let goals: Vec<Value> = m.data.goals.clone();
+    let state = m.state_rc();
+    let goals = m.data.goals.clone();
     let (open, idle) = list(&state, &goals);
     let picked = selected(&m.projects, &open, &idle);
     let shell = div().id("projects-page").flex().flex_1().min_w_0().h_full().line_height(relative(1.4)).child(project_list(&t, &open, &idle, picked.as_deref(), m.projects.show_idle, cx));

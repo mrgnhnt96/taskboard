@@ -318,7 +318,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, in_detail: bool, window: &mut W
 
 /// The New idea dialog: title, detail, and the project it's for.
 pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let mut projects = crate::app::project_names(m.state(), &m.data.goals);
+    let mut projects = crate::app::project_names(m.state(), m.data.goals.iter());
     for (p, _) in &m.ideas.projects {
         if !projects.contains(p) {
             projects.push(p.clone());

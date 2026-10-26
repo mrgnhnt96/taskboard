@@ -92,14 +92,15 @@ fn square(color: Hsla, outline: bool) -> Div {
 }
 
 pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
-    let st = m.state().clone();
+    let st = m.state_rc();
     let page = m.page.clone();
     let needs = m.data.home.as_ref().map(|h| arr(h, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).count() as i64).unwrap_or_else(|| m.needs_count());
     let running = arr(&st, "sessions").iter().filter(|x| s(x, "status") == "working").count();
     let projects = arr(&st, "projects").len();
     let counts = &st["counts"];
     let open_tasks = i(counts, "queued") + i(counts, "working") + i(counts, "needs");
-    let goals = active_goals(&m.data.goals).into_iter().cloned().collect::<Vec<_>>();
+    let all_goals = m.data.goals.clone();
+    let goals = active_goals(&all_goals);
     let active_goals = goals.len();
     let untriaged = i(counts, "untriaged");
 
@@ -229,7 +230,7 @@ fn search_box(t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
 /// The board's health: Midna, work hours and usage, then whatever needs a look (hooks, accounts,
 /// an update, the PR feed), and Settings.
 fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
-    let st = m.state().clone();
+    let st = m.state_rc();
     let mut wrap = div().flex().flex_wrap().gap(px(6.)).pt(px(10.)).border_t_1().border_color(t.border);
     if let Some(mid) = st.get("midna").filter(|v| v.is_object()) {
         let p = crate::app::conn_pill(mid);

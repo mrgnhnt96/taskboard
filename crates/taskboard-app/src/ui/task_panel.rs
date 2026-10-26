@@ -272,7 +272,7 @@ pub fn build(m: &MainWindow) -> Option<Node> {
     let task = m.data.task.as_ref().filter(|t| fmt::same_task(&fmt::ref_of(t, "T"), r));
     let log = log_rows(m, task, u.log_filter());
     let c = view::Ctx {
-        state: m.data.state.as_ref().unwrap_or(&null),
+        state: m.data.state.as_deref().unwrap_or(&null),
         task,
         card: m.data.task_card.as_ref().filter(|t| fmt::same_task(&fmt::ref_of(t, "T"), r)),
         r,

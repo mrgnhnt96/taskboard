@@ -114,7 +114,7 @@ struct Key {
     kind: Kind,
     words: String,
     group: GroupBy,
-    goals: Vec<Value>,
+    goals: std::rc::Rc<Vec<Value>>,
     since: DateTime<Utc>,
 }
 
