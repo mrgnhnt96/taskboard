@@ -4,7 +4,7 @@ members = ["crates/taskboardd", "crates/taskboard-cli", "crates/taskboard-app"]
 exclude = ["vendor/gpui-base"]
 
 [workspace.package]
-version = "0.1.0-beta.65"
+version = "0.1.0-beta.66"
 edition = "2021"
 license = "MIT"
 
