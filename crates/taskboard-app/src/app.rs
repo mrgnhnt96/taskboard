@@ -1090,7 +1090,9 @@ struct Got {
 
 impl Wants {
     fn of(m: &MainWindow, cx: &App) -> Wants {
-        let state_q = crate::ui::board::state_query(&m.filters, &m.board.keep);
+        let mut state_q = crate::ui::board::state_query(&m.filters, &m.board.keep);
+        // The goal list comes from `GET /goals` on every poll; the state needn't carry it twice.
+        state_q.push(("goals", "0".into()));
         Wants {
             state_q,
             // A task or issue that just opened is fetched on its own (`fetch_panel`).

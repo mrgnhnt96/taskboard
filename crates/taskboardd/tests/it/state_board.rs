@@ -72,6 +72,18 @@ fn done_shows_at_most_200_the_newest() {
     assert_eq!(st["counts"]["done_hidden"], json!(5));
 }
 
+#[test]
+fn goals_ride_along_unless_left_out() {
+    let (app, _dir) = new_board();
+    api::dispatch(&app, "POST", "/goals", &Query::new(), &json!({"name": "Sign in", "project": "webapp"})).unwrap();
+    let with = |q: &[(&str, &str)]| -> Value {
+        let q: Query = q.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        api::dispatch(&app, "GET", "state", &q, &json!({})).unwrap()["goals"].clone()
+    };
+    assert_eq!(with(&[])[0]["name"], "Sign in");
+    assert_eq!(with(&[("goals", "0")]), json!([]), "the app keeps its own list from GET /goals");
+}
+
 fn names(app: &App) -> Vec<(String, Value)> {
     projects::list_projects(app).unwrap().iter().map(|p| (p["name"].as_str().unwrap().to_string(), p["path"].clone())).collect()
 }

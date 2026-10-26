@@ -680,10 +680,13 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
     }
     out_cols.insert("backlog".into(), Value::Array(shown.iter().map(|b| board::issue_card(app, b)).collect::<Result<Vec<_>>>()?));
     out_cols.insert("backlog_open".into(), json!(open_issues.len()));
+    // `goals=0`: the caller keeps its own list from `GET /goals`, so skip building every goal again.
     let mut goals = vec![];
-    for g in app.db.q("SELECT * FROM goals WHERE archived = 0 ORDER BY id", p![])? {
-        if project_match(g.s("project"), project) {
-            goals.push(board::goal_dict(app, &g)?);
+    if as_bool(query.get("goals").map(|s| json!(s)).as_ref(), true) {
+        for g in app.db.q("SELECT * FROM goals WHERE archived = 0 ORDER BY id", p![])? {
+            if project_match(g.s("project"), project) {
+                goals.push(board::goal_dict(app, &g)?);
+            }
         }
     }
     let sessions = ops::session_list(app, project)?;
