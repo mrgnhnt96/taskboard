@@ -73,7 +73,7 @@ impl WaveGroup {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rollup {
     pub goal: Vec<File>,
     pub waves: Vec<WaveGroup>,
@@ -246,14 +246,13 @@ fn files(t: &Theme, list: &[File], key: &str) -> Div {
 
 /// How many list items the Attached section takes: its head (the count, chips and the goal's own
 /// files) and one per wave group; none when nothing's attached.
-pub(super) fn attached_parts(m: &MainWindow, g: &Value) -> usize {
-    let r = rollup(g, m.goal_page.att_filter);
+pub(super) fn parts(r: &Rollup) -> usize {
     if r.total == 0 { 0 } else { 1 + r.waves.len() }
 }
 
-/// Piece `k` of the Attached section (`attached_parts`): 0 is its head, then each wave group.
-pub(super) fn attached_piece(m: &MainWindow, t: &Theme, g: &Value, k: usize, cx: &mut Context<MainWindow>) -> Div {
-    let r = rollup(g, m.goal_page.att_filter);
+/// Piece `k` of the Attached section (`parts`) of goal `g`, rolled up as `r`: 0 is its head, then
+/// each wave group.
+pub(super) fn attached_piece(m: &MainWindow, t: &Theme, g: &Value, r: &Rollup, k: usize, cx: &mut Context<MainWindow>) -> Div {
     let last = k == r.waves.len();
     let gr = s(g, "ref").to_string();
     let shut = m.goal_page.att_closed.get(&gr).cloned().unwrap_or_default();
