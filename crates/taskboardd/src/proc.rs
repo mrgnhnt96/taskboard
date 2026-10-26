@@ -5,6 +5,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::slowlog::{self, Ended};
+
 pub struct Output {
     pub code: Option<i32>,
     pub stdout: String,
@@ -38,6 +40,7 @@ pub fn run_with(
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
+    let started = Instant::now();
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
         let bytes = bytes.to_vec();
@@ -67,6 +70,9 @@ pub fn run_with(
             Ok(None) if Instant::now() >= end => {
                 let _ = child.kill();
                 let _ = child.wait();
+                // Whatever it had said by then; a helper holding the pipe open gets only a moment.
+                let stderr = String::from_utf8_lossy(&erx.recv_timeout(Duration::from_millis(200)).unwrap_or_default()).into_owned();
+                slowlog::command(program, args, cwd, started.elapsed(), Ended::TimedOut { stderr: &stderr });
                 return Err(RunError::TimedOut);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(15)),
@@ -77,7 +83,9 @@ pub fn run_with(
     let grace = Duration::from_secs(2);
     let stdout = String::from_utf8_lossy(&orx.recv_timeout(grace).unwrap_or_default()).into_owned();
     let stderr = String::from_utf8_lossy(&erx.recv_timeout(grace).unwrap_or_default()).into_owned();
-    Ok(Output { code: status.and_then(|s| s.code()), stdout, stderr })
+    let code = status.and_then(|s| s.code());
+    slowlog::command(program, args, cwd, started.elapsed(), Ended::Exited { code, stderr: &stderr });
+    Ok(Output { code, stdout, stderr })
 }
 
 /// Finds a command on PATH (or returns the path as given when it has a slash).
