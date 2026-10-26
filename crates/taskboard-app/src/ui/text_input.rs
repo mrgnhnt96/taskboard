@@ -8,9 +8,9 @@
 //! everything else (↩, esc, ⇥, ↑/↓ outside `wrap`, ⌘-shortcuts) bubbles to the parent, which decides what
 //! submit/cancel mean. Font, size and color are inherited from the parent element.
 //!
-//! With `wrap` set (the image sheet's note field) the text wraps at the field's width and the
-//! field grows a line at a time instead of scrolling sideways. The [`Newline`] action
-//! (`keys.note_newline`, ⇧↩ by default) starts a new line there; ↩ stays the parent's. ↑/↓
+//! With `wrap` set (New idea's detail, the task panel's answers) the text wraps at the field's
+//! width and the field grows a line at a time instead of scrolling sideways. The [`Newline`]
+//! action (⇧↩, bound in `app::bind_keys`) starts a new line there; ↩ stays the parent's. ↑/↓
 //! (⇧ to select) move a row there, to the start or end past the first or last row; ⌘↑/↓ still
 //! bubble.
 use crate::theme::Theme;
@@ -21,7 +21,7 @@ use std::ops::Range;
 actions!(
     taskboard,
     [
-        /// Start a new line in a wrapping field (`keys.note_newline`).
+        /// Start a new line in a wrapping field (⇧↩).
         Newline,
     ]
 );

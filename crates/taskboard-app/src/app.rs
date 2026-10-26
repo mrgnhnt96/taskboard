@@ -1260,6 +1260,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-right", NoAction, Some(ui::text_input::CTX)),
         // A text field copies its own selection.
         KeyBinding::new("cmd-c", NoAction, Some(ui::text_input::CTX)),
+        // ⇧↩ starts a new line in a multi-line field (New idea's detail, answers); ↩ stays the parent's.
+        KeyBinding::new("shift-enter", ui::text_input::Newline, Some(ui::text_input::CTX_WRAP)),
     ]);
 }
 

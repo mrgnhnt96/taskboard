@@ -713,6 +713,41 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn shift_enter_starts_a_new_line_in_the_detail_only(cx: &mut gpui_kit::TestAppContext) {
+        use crate::ui::text_input::Newline;
+        // The test platform types ↩ as "\n" on its own, so check the binding a real ⇧↩ goes through.
+        let (w, rec) = crate::parity::window(cx);
+        let newline_key = |field: fn(&Form) -> &kit::Input, cx: &mut gpui_kit::TestAppContext| {
+            w.update(cx, |m: &mut MainWindow, window, _| {
+                let focus = &field(m.ideas.form.as_ref().unwrap()).focus;
+                window.bindings_for_action_in(&Newline, focus).last().map(|b| b.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" "))
+            })
+            .unwrap()
+        };
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.open_link("ideas", cx);
+            open_form(m, window, cx);
+            m.ideas.form.as_ref().unwrap().detail.set_text("Follow the system setting.", cx);
+        })
+        .unwrap();
+        redraw(w, cx);
+        assert_eq!(newline_key(|f| &f.title, cx), None, "the title stays one line");
+        assert_eq!(newline_key(|f| &f.detail, cx).as_deref(), Some("shift-enter"));
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            window.focus(&m.ideas.form.as_ref().unwrap().detail.focus, cx);
+            window.dispatch_action(Box::new(Newline), cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let f = m.ideas.form.as_ref().expect("the dialog stays open");
+            assert_eq!(f.detail.text(cx), "Follow the system setting.\n");
+            assert!(rec.last("ideas").is_none(), "nothing is sent");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn a_long_idea_list_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContext) {
         use crate::backend::Backend;
         use std::collections::HashSet;
