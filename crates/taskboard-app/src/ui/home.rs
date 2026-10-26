@@ -117,6 +117,8 @@ pub struct Ask {
     pub asks: Vec<AskQuestion>,
     /// The asks are Claude's picker, pressed through Midna; otherwise each option answers in a click.
     pub picker: bool,
+    /// A human task: it has no terminal, so nothing on its card opens one.
+    pub human: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -195,6 +197,7 @@ pub fn ask_vm(a: &Value) -> Ask {
     let r = opt_s(card, "ref").or(opt_s(a, "task")).map(str::to_string);
     let has_card = card.is_object();
     let reason = s(card, "needs_reason");
+    let human = has_card && (reason == "human" || s(card, "kind") == "human");
     // A task found the goal's done-when unmet: the backlog item it filed holds the goal open.
     let miss = s(a, "key").strip_prefix("miss:").filter(|n| !n.is_empty()).map(|n| format!("B{n}"));
     // Its terminal is gone and it still asks: Focus opens a new terminal to ask again.
@@ -219,7 +222,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         (Sev::Ok, "Review the PR", pr_url(card).map(Act::OpenPr))
     } else if has_card && phase(card) == "merge" {
         (Sev::Ok, "Ready to merge", pr_url(card).map(Act::OpenPr))
-    } else if has_card && reason == "human" {
+    } else if human {
         // A human task has no terminal: you do it and press Done on its page.
         (Sev::Warn, "Needs you", r.clone().map(Act::OpenTask))
     } else if has_card && s(card, "status") == "needs" && reason == "question" {
@@ -298,6 +301,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         help,
         asks,
         picker,
+        human,
     }
 }
 
@@ -337,6 +341,7 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         help: vec![],
         asks: Vec::new(),
         picker: false,
+        human: false,
     })
 }
 
@@ -879,14 +884,7 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
     let body = div().flex().flex_col().gap(px(10.)).pl(px(58.)).pr(px(20.)).pb(px(16.));
     if question {
         let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        // The head's button already opens the terminal when that's what it does.
-        let focus = match &a.act {
-            Some(Act::Focus(_) | Act::AskAgain(_)) => None,
-            _ => {
-                let act = Act::Focus(r.clone());
-                Some(kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx))))
-            }
-        };
+        let focus = body_focus(a).map(|act| kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx))));
         // An option answers in one click, and so does a picker's when it asks one single-select
         // question; otherwise its options toggle and Send presses them. The alert's suggested
         // answers answer like options.
@@ -963,6 +961,15 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         card = card.child(body.children(buttons));
     }
     card
+}
+
+/// The terminal button under a question: none when the head's button already opens the terminal,
+/// and none on a human task, which has no terminal (its head's Open task leads to its steps and Done).
+fn body_focus(a: &Ask) -> Option<Act> {
+    if a.human || matches!(a.act, Some(Act::Focus(_) | Act::AskAgain(_))) {
+        return None;
+    }
+    Some(Act::Focus(a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default()))
 }
 
 fn small_btn(t: &Theme, id: SharedString, label: &'static str) -> Stateful<Div> {
@@ -1195,6 +1202,22 @@ mod tests {
         assert_eq!(a.task.as_ref().map(|t| t.0.as_str()), Some("H218"));
         assert_eq!(a.act, Some(Act::OpenTask("H218".into())));
         assert_eq!(a.act.as_ref().map(Act::label), Some("Open task"));
+        assert!(a.answer && a.human);
+        assert_eq!(body_focus(&a), None, "a human task has no terminal to open");
+    }
+
+    #[test]
+    fn a_human_task_never_offers_a_terminal() {
+        let h = json!({"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "H218: Which account?", "task": "T218",
+            "card": card(json!({"ref": "H218", "kind": "human", "status": "needs", "needs_reason": "question", "question": "Which account?", "terminal_open": true}))});
+        let a = ask_vm(&h);
+        assert_eq!(a.act, Some(Act::OpenTask("H218".into())));
+        assert_eq!(body_focus(&a), None);
+        let q = ask_vm(&json!({"id": "a2", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep it?", "task": "T5",
+            "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "question", "question": "Keep it?", "terminal_open": true}))}));
+        assert_eq!((q.act.clone(), body_focus(&q)), (Some(Act::Focus("T5".into())), None));
+        let agent = Ask { act: Some(Act::OpenTask("T5".into())), ..q };
+        assert_eq!(body_focus(&agent), Some(Act::Focus("T5".into())), "an agent task keeps Open terminal");
     }
 
     #[test]
