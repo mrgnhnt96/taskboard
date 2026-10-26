@@ -16,6 +16,7 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 const PAGE_X: f32 = 36.;
 const PROJECT_FILTER: &str = "home-project";
@@ -25,6 +26,38 @@ thread_local! {
     static FLIPPED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// A picker's choices so far by task ref, (question, option), until Send.
     static PICKED: RefCell<HashMap<String, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
+    /// The page's items, built once per answer.
+    static BUILT: RefCell<Option<Built>> = const { RefCell::new(None) };
+}
+
+/// The home, state and today answers the items were built from, and the items.
+#[derive(Clone)]
+struct Built {
+    from: [Option<Rc<Value>>; 3],
+    asks: Rc<Vec<Ask>>,
+    stats: Rc<Vec<Stat>>,
+    names: Rc<Vec<String>>,
+}
+
+impl Built {
+    /// The items for what `m` holds now: the ones built last when it holds the same answers.
+    fn of(m: &MainWindow) -> Built {
+        let from = [m.data.home.clone(), m.data.state.clone(), m.data.today.clone()];
+        let same = |b: &Built| b.from.iter().zip(&from).all(|(a, b)| crate::ui::same(a, b));
+        if let Some(b) = BUILT.with(|b| b.borrow().clone()).filter(same) {
+            return b;
+        }
+        let home = m.data.home.clone().unwrap_or_default();
+        // A break's urgent alert is already its "Master is red" line.
+        let st = m.state_rc();
+        let needs: Vec<&Value> = arr(&home, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).collect();
+        let asks = asks_vm(&json!({ "needs": needs, "goals": home["goals"] }));
+        let stats = m.data.today.as_deref().map(stats_vm).unwrap_or_default();
+        let names = crate::app::project_names(&st, arr(&home, "goals").iter().map(|e| &e["goal"]));
+        let b = Built { from, asks: Rc::new(asks), stats: Rc::new(stats), names: Rc::new(names) };
+        BUILT.with(|c| *c.borrow_mut() = Some(b.clone()));
+        b
+    }
 }
 
 // ================================================================== view models
@@ -657,15 +690,9 @@ fn flip(key: String) {
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let home = m.data.home.clone().unwrap_or_default();
-    // A break's urgent alert is already its "Master is red" line.
-    let st = m.state_rc();
-    let needs: Vec<Value> = arr(&home, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).cloned().collect();
-    let all = asks_vm(&json!({ "needs": needs, "goals": home["goals"] }));
-    let stats = m.data.today.as_ref().map(stats_vm).unwrap_or_default();
+    let Built { asks: all, stats, names, .. } = Built::of(m);
 
     let project = m.filters.project.clone();
-    let names = crate::app::project_names(&st, arr(&home, "goals").iter().map(|e| &e["goal"]));
     let asks: Vec<&Ask> = all.iter().filter(|a| project == "all" || a.project == project).collect();
     let (answers, acts): (Vec<&Ask>, Vec<&Ask>) = asks.iter().partition(|a| a.answer);
 
@@ -697,7 +724,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 
     if !stats.is_empty() {
         let mut row = div().flex().gap(px(10.)).mt(px(16.));
-        for x in &stats {
+        for x in stats.iter() {
             row = row.child(
                 div()
                     .flex_1()
@@ -1399,5 +1426,29 @@ mod tests {
         assert!(st[3].warn && !st[0].warn);
         let calm = stats_vm(&json!({"day": {"wait_min": 0.0}}));
         assert!(!calm[3].warn);
+    }
+
+    #[gpui_kit::test]
+    fn the_asks_are_built_once_per_answer(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        crate::parity::settle(cx);
+        draw(cx);
+        let built = || BUILT.with(|b| b.borrow().clone()).expect("home was built");
+        let first = built();
+        draw(cx);
+        let again = built();
+        assert!(Rc::ptr_eq(&first.asks, &again.asks) && Rc::ptr_eq(&first.stats, &again.stats), "a redraw keeps what was built");
+
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert!(!Rc::ptr_eq(&first.asks, &built().asks), "a new answer builds the asks again");
     }
 }

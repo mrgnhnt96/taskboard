@@ -14,6 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 const PAGE_X: f32 = 28.;
 const PROJECT_FILTER: &str = "goals-project";
@@ -32,11 +33,53 @@ pub struct State {
     pub earlier: bool,
     /// `GET /goals/:id` for each goal in progress, by ref.
     pub details: HashMap<String, Value>,
+    /// Counts each change to `details`.
+    rev: u64,
+    built: Option<Rc<Built>>,
 }
 
 impl State {
     pub fn project(&self) -> &str {
         if self.project.is_empty() { "all" } else { &self.project }
+    }
+
+    /// Goal `r` in full, as `GET /goals/:id` answered.
+    pub fn land(&mut self, r: String, g: Value) {
+        self.details.insert(r, g);
+        self.rev += 1;
+    }
+}
+
+/// What the page shows of a goal list, built once per list, project picked and set of details.
+struct Built {
+    goals: Rc<Vec<Value>>,
+    asked: (String, bool, u64),
+    /// Each project's tab and how many goals it has.
+    tabs: Vec<(String, usize)>,
+    /// The project shown: the one picked, or "all" when it has no goals left.
+    project: String,
+    /// No goal outside the archive, and none in the project shown.
+    none: bool,
+    none_shown: bool,
+    going: Vec<String>,
+    rows: Vec<GoalRow>,
+    shelves: Vec<Shelf>,
+}
+
+impl Built {
+    fn of(goals: &Rc<Vec<Value>>, details: &HashMap<String, Value>, asked: (String, bool, u64), now: DateTime<Utc>) -> Built {
+        let all: Vec<&Value> = goals.iter().filter(|g| !fmt::b(g, "archived")).collect();
+        let tabs = projects(goals);
+        let (picked, loaded, _) = &asked;
+        let mut project = picked.clone();
+        if project != "all" && !tabs.iter().any(|(p, _)| *p == project) && *loaded {
+            project = "all".into();
+        }
+        let shown: Vec<&Value> = all.iter().copied().filter(|g| in_project(g, &project)).collect();
+        let going = in_progress(goals, &project);
+        let rows = going.iter().filter_map(|r| shown.iter().find(|g| fmt::ref_of(g, "G") == *r)).map(|g| goal_row(g, details.get(&fmt::ref_of(g, "G")))).collect();
+        let shelves = shelves(&shown, now);
+        Built { goals: goals.clone(), asked, tabs, project, none: all.is_empty(), none_shown: shown.is_empty(), going, rows, shelves }
     }
 }
 
@@ -721,14 +764,17 @@ fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, roomy: bool, cx: &mut C
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let now = fmt::now();
-    let all: Vec<Value> = m.data.goals.iter().filter(|g| !fmt::b(g, "archived")).cloned().collect();
-    let tabs = projects(&all);
-    let mut project = m.goals.project().to_string();
-    if project != "all" && !tabs.iter().any(|(p, _)| *p == project) && m.goals_loaded() {
-        project = "all".into();
-    }
-    let shown: Vec<&Value> = all.iter().filter(|g| in_project(g, &project)).collect();
-    let going = in_progress(&all, &project);
+    let goals = m.data.goals.clone();
+    let asked = (m.goals.project().to_string(), m.goals_loaded(), m.goals.rev);
+    let b = match &m.goals.built {
+        Some(b) if Rc::ptr_eq(&b.goals, &goals) && b.asked == asked => b.clone(),
+        _ => {
+            let b = Rc::new(Built::of(&goals, &m.goals.details, asked, now));
+            m.goals.built = Some(b.clone());
+            b
+        }
+    };
+    let (project, going) = (b.project.clone(), &b.going);
 
     let mut right = div().flex().flex_none().gap(px(6.));
     if !going.is_empty() {
@@ -748,8 +794,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .items_center()
         .gap(px(16.))
         .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Goals"))
-        .when(tabs.len() > 1, |d| {
-            d.child(ip::project_filter(&t, PROJECT_FILTER, &project, &tabs, cx, |m, p, cx| {
+        .when(b.tabs.len() > 1, |d| {
+            d.child(ip::project_filter(&t, PROJECT_FILTER, &project, &b.tabs, cx, |m, p, cx| {
                 m.goals.project = p;
                 m.refresh(cx);
             }))
@@ -760,26 +806,23 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
     let shell = div().id("goals-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter);
 
-    if !m.goals_loaded() && all.is_empty() {
+    if !m.goals_loaded() && b.none {
         let msg = if m.down.is_some() { "Can’t load the board." } else { "Loading…" };
         return shell.child(page.child(kit::empty(&t, msg))).into_any_element();
     }
-    if shown.is_empty() {
+    if b.none_shown {
         return shell.child(page.child(kit::empty(&t, "No goals"))).into_any_element();
     }
     if !going.is_empty() {
         let mut list = div().flex().flex_col().gap(px(8.)).child(div().mb(px(2.)).child(group_label(&t, "In progress", going.len())));
-        for r in &going {
-            let Some(g) = shown.iter().find(|g| fmt::ref_of(g, "G") == *r) else { continue };
-            let d = m.goals.details.get(r);
-            let row = goal_row(g, d);
-            list = list.child(goal_card(&t, &row, d, m.goals.open.contains(r), now, cx));
+        for row in &b.rows {
+            let d = m.goals.details.get(&row.r);
+            list = list.child(goal_card(&t, row, d, m.goals.open.contains(&row.r), now, cx));
         }
         page = page.child(list);
     }
-    let strip = shelves(&shown, now);
-    if !strip.is_empty() {
-        page = page.child(shelf_strip(&t, &strip, m.goals.earlier, going.is_empty(), cx));
+    if !b.shelves.is_empty() {
+        page = page.child(shelf_strip(&t, &b.shelves, m.goals.earlier, going.is_empty(), cx));
     }
     shell.child(page).into_any_element()
 }
@@ -924,5 +967,38 @@ mod tests {
         assert_eq!(wave_meta(&wave(3, "waiting", 1, json!({})), &[], now), "After wave 2");
         assert_eq!(day(fmt::parse(&noon(2026, 10, 15)).unwrap(), now), "12:00 PM");
         assert_eq!(day(fmt::parse(&noon(2026, 10, 1)).unwrap(), now), "Oct 1");
+    }
+
+    #[gpui_kit::test]
+    fn the_shelves_are_built_once_per_answer_and_project(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(crate::app::Page::Goals, cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let built = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| m.goals.built.clone().expect("the goals were built")).unwrap();
+        let first = built(cx);
+        draw(cx);
+        assert!(Rc::ptr_eq(&first, &built(cx)), "a redraw keeps what was built");
+
+        w.update(cx, |m, _, cx| {
+            m.goals.project = "nowhere".into();
+            cx.notify();
+        })
+        .unwrap();
+        draw(cx);
+        let picked = built(cx);
+        assert!(!Rc::ptr_eq(&first, &picked), "picking a project builds the shelves again");
+
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert!(!Rc::ptr_eq(&picked, &built(cx)), "a new answer builds the shelves again");
     }
 }
