@@ -152,6 +152,17 @@ fn only_leftovers(path: &str) -> bool {
     std::fs::read_dir(path).is_ok_and(|d| d.flatten().all(|e| LEFTOVERS.contains(&e.file_name().to_string_lossy().as_ref())))
 }
 
+/// Has the slot uncommitted changes? Untracked `LEFTOVERS` don't count: a slot holding only those is
+/// free to take. True when git fails.
+fn dirty(path: &str) -> bool {
+    let r = git(path, &["status", "--porcelain"], GIT_SECS);
+    r.code != 0
+        || r.out.lines().filter(|l| !l.trim().is_empty()).any(|l| {
+            let top = l.strip_prefix("?? ").and_then(|f| f.trim_matches('"').split('/').next());
+            !top.is_some_and(|t| LEFTOVERS.contains(&t))
+        })
+}
+
 /// Adds the worktree at `path`, detached at `start`, and checks git sees it as one.
 fn add(repo: &str, path: &str, start: &str) -> Result<()> {
     let r = crate::progress::waiting("git worktree add", crate::progress::WAITING_EVERY, || git(repo, &["worktree", "add", "--detach", path, start], GIT_SECS));
@@ -298,8 +309,7 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
         if !live(&path) && !repair(app, t, &s, repo, start)? {
             continue;
         }
-        let status = git(&path, &["status", "--porcelain"], GIT_SECS);
-        if status.code != 0 || !status.out.trim().is_empty() {
+        if dirty(&path) {
             app.info(format!("worktrees: passed over {path}: it has uncommitted changes"));
             dirty_alert(app, &s)?;
             continue;
@@ -403,8 +413,7 @@ pub fn release_refusal(app: &App, t: &Row) -> Result<Option<String>> {
     }
     let me = rf("task", t.id());
     let n = s.i("n").unwrap_or(0);
-    let status = git(&path, &["status", "--porcelain"], GIT_SECS);
-    if status.code != 0 || !status.out.trim().is_empty() {
+    if dirty(&path) {
         return Ok(Some(format!(
             "{me} can't give back its worktree slot-{n} ({path}): it has uncommitted changes. Commit and push them, or discard them, then run this again."
         )));
@@ -556,5 +565,24 @@ mod tests {
         other.join().unwrap();
         let e = out.expect_err("a claim holding the database can't wait on another claim");
         assert_eq!((e.status, e.message.as_str()), (409, WAIT));
+    }
+
+    #[test]
+    fn untracked_review_leftovers_leave_a_slot_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let run = |args: &[&str]| assert_eq!(git(path, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        std::fs::write(dir.path().join("app.rs"), "one").unwrap();
+        run(&["add", "app.rs"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"]);
+        std::fs::create_dir_all(dir.path().join(".review/pr-640")).unwrap();
+        std::fs::write(dir.path().join(".review/pr-640/notes.md"), "lens").unwrap();
+        assert!(!dirty(path), "a slot holding only .review leftovers is free to take");
+        std::fs::write(dir.path().join("new.rs"), "two").unwrap();
+        assert!(dirty(path), "another untracked file still counts");
+        std::fs::remove_file(dir.path().join("new.rs")).unwrap();
+        std::fs::write(dir.path().join("app.rs"), "two").unwrap();
+        assert!(dirty(path), "a changed tracked file still counts");
     }
 }
