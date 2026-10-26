@@ -238,6 +238,7 @@ impl MainWindow {
     pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> MainWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        cx.set_global(ui::select::CopyFocus(focus.clone()));
         let mut m = MainWindow {
             backend,
             data: Data::default(),
