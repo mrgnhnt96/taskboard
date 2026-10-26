@@ -831,9 +831,11 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         _ => String::new(),
     };
 
-    // The buttons stay in the head open or shut, so opening only adds the body.
+    // The buttons stay in the head open or shut, so opening only adds the body. An alert you can
+    // dismiss keeps its actions beside Dismiss in the body instead.
+    let beside_dismiss = !question && a.dismiss;
     let acts = [("act", a.act.clone()), ("also", a.also.clone())].into_iter().filter_map(|(part, act)| act.map(|act| (part, act)));
-    let mut buttons: Vec<_> = acts.map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
+    let mut buttons: Vec<_> = acts.filter(|_| !beside_dismiss).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
     if a.snooze {
         let menu = format!("{SNOOZE_MENU}{}", a.id);
         buttons.insert(
@@ -953,7 +955,18 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
                 kit::btn(t, id(&format!("fix-{n}")), label.clone()).on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
             })
             .collect();
-        let buttons = (!fixes.is_empty() || dismiss_btn.is_some()).then(|| div().flex().flex_wrap().items_center().gap(px(8.)).children(fixes).children(dismiss_btn));
+        // The alert's own action leads, filled so it doesn't read as another Dismiss.
+        let acts: Vec<_> = [("act", a.act.clone()), ("also", a.also.clone())]
+            .into_iter()
+            .filter(|_| beside_dismiss)
+            .filter_map(|(part, act)| act.map(|act| (part, act)))
+            .map(|(part, act)| {
+                let b = if part == "act" { kit::btn_primary(t, id(part), act.label()) } else { kit::btn(t, id(part), act.label()) };
+                b.on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)))
+            })
+            .collect();
+        let buttons = (!acts.is_empty() || !fixes.is_empty() || dismiss_btn.is_some())
+            .then(|| div().flex().flex_wrap().items_center().gap(px(8.)).children(acts).children(fixes).children(dismiss_btn));
         let mut body = body.child(div().text_size(px(13.)).text_color(t.text_2).child(ref_text(t, id("text"), &a.text, cx)));
         for (n, line) in a.help.iter().enumerate() {
             body = body.child(div().text_size(px(12.)).text_color(t.muted).child(ref_text(t, id(&format!("help-{n}")), line, cx)));
