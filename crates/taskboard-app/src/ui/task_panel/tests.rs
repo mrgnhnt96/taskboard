@@ -167,6 +167,9 @@ fn write_an_answer_opens_its_terminal_or_a_new_one() {
     // With its terminal open, the terminal is the action.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
     assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+    // A human task has no terminal to answer in: its box holds Done and Talk it over instead.
+    let a = acts(json!({"ref": "H5", "id": 5, "kind": "human", "status": "needs", "needs_reason": "human", "question": "Your task: Sign it. Follow its steps, then press Done.", "detail": "1. Sign it."}));
+    assert!(a.contains("\"did\"") && a.contains("\"talk\"") && !a.contains("\"focus\"") && !a.contains("\"resume"), "{a}");
 }
 
 #[::core::prelude::v1::test]
@@ -1320,6 +1323,19 @@ fn a_long_log_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContex
     let rows = w.update(cx, |m, _, _| m.task_panel.log_list.as_ref().unwrap().rows.clone()).unwrap();
     assert_eq!(rows.iter().filter(|e| e["text"].as_str().unwrap_or("").starts_with("Entry ")).count(), 150);
     assert!(rows.iter().all(|e| view::log_group(e["kind"].as_str().unwrap()) == "turn"));
+}
+
+/// A human task's box offers Talk it over beside Done, which asks the board for a terminal.
+#[gpui_kit::test]
+fn a_human_task_talks_it_over(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    let t = rec.board().post("tasks", json!({"title": "Sign the form", "detail": "1. Open https://example.com and sign.", "project": "webapp", "kind": "human", "status": "queued"})).unwrap();
+    let r = format!("T{}", t["id"].as_i64().or_else(|| t["task"]["id"].as_i64()).expect("new task id"));
+    open(cx, &w, &r);
+    let a = control(cx, &w, "talk", None);
+    w.update(cx, |m, _, cx| act(m, &a, cx)).unwrap();
+    settle(cx);
+    assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/talk")).count(), 1, "{:?}", rec.posts());
 }
 
 /// A human task's Done reads "Sending…" until the box turns to "Done by you", with no note beside it.

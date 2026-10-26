@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::board::{self, OWNER};
 use crate::util::*;
-use crate::{dispatch, fields, reports};
+use crate::{dig, dispatch, fields, midna, reports, waitsfor};
 
 pub const KIND: &str = "human";
 
@@ -92,6 +92,57 @@ pub fn done(app: &App, id: i64, body: &Value) -> Result<()> {
         dispatch::clear_alert_key(app, &alert_key(id))?;
         dispatch::clear_alerts(app, Some(id), None)
     })
+}
+
+/// `POST /tasks/:id/talk`: a Claude terminal to ask about a human task in, opened in its project's
+/// checkout (the home folder when it has none) with the task's steps in its context. Claude helps the
+/// owner through them; it never does them or marks the task done. Refused for a task that isn't a
+/// human one, one that's done, or while Midna is down.
+pub fn talk(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let r = task_ref(&t);
+    if !is(&t) {
+        return err(409, format!("{r} isn't a human task."));
+    }
+    if t.s("status") == Some("done") {
+        return err(409, format!("{r} is done already."));
+    }
+    if !midna::up(app) {
+        return err(409, "Midna isn't running, so the board can't open a terminal.");
+    }
+    let cwd = match dig::checkout(app, &t.st("project"))? {
+        Some(p) => p,
+        None => dirs::home_dir().unwrap_or_default(),
+    };
+    let args = json!({"cwd": cwd, "title": short(&format!("Ask: {}", t.st("title")), 40), "prompt": "", "draft": "",
+                      "context": talk_context(app, &t)?, "focus": true, "queue": false});
+    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "human_talk", Some(json!({"task": id}))))?;
+    Ok(json!({"ok": true, "job": rf("job", j)}))
+}
+
+fn talk_context(app: &App, t: &Row) -> Result<String> {
+    let owner = &app.cfg.owner;
+    let r = task_ref(t);
+    let mut parts = vec![format!(
+        "{owner} opened this terminal from the task board to ask about {r}, a human task: something only they can do, \
+         following its steps. Help them with it: explain a step, find what a step needs (in the code, the board or on \
+         the web), or draft text they'll paste. Don't do the steps for them and don't change code. Wait for {owner}; \
+         don't start on anything by yourself. You aren't on a task: don't take one. You can't mark {r} done; {owner} \
+         presses Done in the app when it is."
+    )];
+    let mut task = format!("{r}: {}", t.st("title"));
+    if !t.st("project").is_empty() {
+        task.push_str(&format!(" (project {})", t.st("project")));
+    }
+    task.push_str(&format!("\nIts steps:\n{}", t.st("detail").trim()));
+    parts.push(task);
+    let waiting: Vec<String> =
+        waitsfor::waiting_on(app, t)?.iter().map(|o| format!("- {} {}", task_ref(o), short(&o.st("title"), 80))).collect();
+    if !waiting.is_empty() {
+        parts.push(format!("Waiting for it to be done:\n{}", waiting.join("\n")));
+    }
+    parts.push(format!("For all of it as it stands now: tb task show {r}"));
+    Ok(parts.join("\n\n"))
 }
 
 /// What the owner said when they pressed Done.

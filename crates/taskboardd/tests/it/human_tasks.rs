@@ -216,3 +216,39 @@ fn it_needs_its_steps() {
     assert_eq!(status, 400);
     assert!(msg.contains("steps"), "{msg}");
 }
+
+#[test]
+fn talking_it_over_opens_claude_in_its_checkout_with_its_steps() {
+    let b = new_board();
+    b.session("s1");
+    let h = b.human("s1", json!({}));
+    let id = id_of(&h);
+    let waiter = b.task("Deploy to Oracle Cloud");
+    b.post(&format!("/tasks/T{waiter}"), json!({"waits_for": [id]})).unwrap();
+
+    b.app.shared.lock().midna_seen_at = None;
+    let (code, msg) = b.post(&format!("/tasks/{h}/talk"), json!({})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("Midna isn't running"), "{msg}");
+    b.app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
+
+    let out = b.post(&format!("/tasks/{h}/talk"), json!({})).unwrap();
+    let jid: i64 = out["job"].as_str().unwrap()[1..].parse().unwrap();
+    let j = b.app.db.q1("SELECT purpose, task_id, args FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap();
+    assert_eq!(j.st("purpose"), "human_talk");
+    assert!(j.i("task_id").is_none(), "the talk isn't the task's terminal");
+    let args: Value = serde_json::from_str(&j.st("args")).unwrap();
+    assert_eq!(args["cwd"], json!(b.dir.path().join("webapp")));
+    let ctx = args["context"].as_str().unwrap();
+    for want in [h.as_str(), "Create an Oracle Cloud account", "Pick the home region.", "Deploy to Oracle Cloud", "presses Done in the app"] {
+        assert!(ctx.contains(want), "{want} in {ctx}");
+    }
+
+    // Not for an agent's task, nor once it's done.
+    let (code, _) = b.post(&format!("/tasks/T{waiter}/talk"), json!({})).unwrap_err();
+    assert_eq!(code, 409);
+    b.from_app(&format!("/tasks/{h}/did"), json!({})).unwrap();
+    let (code, msg) = b.post(&format!("/tasks/{h}/talk"), json!({})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("done already"), "{msg}");
+}
