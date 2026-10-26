@@ -136,12 +136,14 @@ fn serve(cfg: Config) -> i32 {
             }
         };
         once_cell::sync::Lazy::force(&taskboardd::server::STARTED);
+        taskboardd::runmark::install_panic_hook(&app);
         app.info(format!(
             "taskboardd {} on http://{addr}/tasks/ · data {} · runner {}",
             env!("CARGO_PKG_VERSION"),
             app.cfg.data.display(),
             if app.cfg.runner { "on" } else { "off" }
         ));
+        taskboardd::runmark::begin(&app);
         // Who counts as Taskboard.app this launch (`apporigin`): the signed app on the app socket, or,
         // in a build with no team signature, whoever has this launch's token file (`apptoken`).
         let trust = taskboardd::apporigin::Trust::detect(&app.cfg);
@@ -175,18 +177,21 @@ fn serve(cfg: Config) -> i32 {
         let shutdown = async move {
             // ctrl-c in a terminal, SIGTERM from launchd (logout, the app unregistering the agent).
             let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = term.recv() => {}
-            }
+            let why = tokio::select! {
+                _ = tokio::signal::ctrl_c() => "ctrl-c (SIGINT)",
+                _ = term.recv() => "SIGTERM from launchd (logout, the app restarting or upgrading the daemon, or turning it off)",
+            };
+            taskboardd::runmark::stopping(&stop, why);
             stop.stop();
         };
         let served = axum::serve(listener, router).with_graceful_shutdown(shutdown).await;
         let _ = std::fs::remove_file(&socket);
         if let Err(e) = served {
-            app.info(format!("server stopped: {e}"));
+            taskboardd::runmark::stopping(&app, &format!("server stopped: {e}"));
+            taskboardd::runmark::stopped(&app);
             return 1;
         }
+        taskboardd::runmark::stopped(&app);
         0
     })
 }
