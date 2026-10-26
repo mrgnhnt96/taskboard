@@ -250,8 +250,10 @@ pub struct MainWindow {
     /// The generation when a change was last sent or answered: a refresh asked at or before it may
     /// have read the board before the change, so its answer is dropped whole.
     posted: u64,
-    /// The fingerprint of the last answer that landed whole: a poll answering the same skips the redraw.
-    shown: Option<u64>,
+    /// The refresh each part of the view (`state`, `home`, `goal_row/G3`, …) last swapped in from
+    /// and the fingerprint of what it brought ([`Got::fingerprint`]): an older answer landing late
+    /// doesn't put back what a newer one showed, and a poll's part answering the same skips the redraw.
+    shown: std::collections::HashMap<String, (u64, u64)>,
     /// When the window last drew.
     drawn: Instant,
     /// What waits for the board's first answer after a change (see [`settle`](Self::settle)): the
@@ -322,7 +324,7 @@ impl MainWindow {
             generation: 0,
             answered: 0,
             posted: 0,
-            shown: None,
+            shown: Default::default(),
             drawn: Instant::now(),
             settling: Vec::new(),
             panel_fetch: None,
@@ -937,7 +939,9 @@ impl MainWindow {
         .detach();
     }
 
-    /// Fetch everything the current view shows, then swap it in (see [`landed`](Self::landed)).
+    /// Fetch everything the current view shows, every call at once, each swapping in as it answers
+    /// (see [`part`](Self::part)) so a page's own answer doesn't wait behind `GET /state`. Once all
+    /// have, the refresh has answered (see [`landed`](Self::landed)).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.ask(false, cx);
     }
@@ -946,36 +950,91 @@ impl MainWindow {
     fn ask(&mut self, poll: bool, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
-        let backend = self.backend.clone();
-        let want = Wants::of(self, cx);
-        let asked = want.clone();
+        let asked = Wants::of(self, cx);
+        let (tx, rx) = async_channel::unbounded();
+        for (key, call) in asked.clone().calls() {
+            let (backend, tx, asked) = (self.backend.clone(), tx.clone(), asked.clone());
+            cx.background_executor()
+                .spawn(async move {
+                    let mut got = call(&*backend);
+                    got.print = got.fingerprint(&asked);
+                    tx.send((key, got)).await.ok()
+                })
+                .detach();
+        }
+        drop(tx);
         cx.spawn(async move |this, cx| {
-            let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
-            let _ = this.update(cx, |m, cx| m.landed(generation, asked, got, poll, cx));
+            // While the board is down only the banner speaks (`S.stateErr`): a page's error waits
+            // for `GET /state`, and is dropped when that failed too.
+            let (mut up, mut held) = (None, Vec::new());
+            while let Ok((key, got)) = rx.recv().await {
+                let failed = got.failed();
+                if let Some(s) = &got.state {
+                    up = Some(s.is_ok());
+                }
+                match up {
+                    None if failed => {
+                        held.push((key, got));
+                        continue;
+                    }
+                    Some(false) if failed => continue,
+                    _ => {}
+                }
+                let mut now = vec![(key, got)];
+                if up == Some(true) {
+                    now.append(&mut held);
+                }
+                let landed = this.update(cx, |m, cx| {
+                    for (key, got) in now {
+                        m.part(generation, &asked, key, got, poll, cx);
+                    }
+                });
+                if landed.is_err() {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |m, cx| m.landed(generation, &asked, poll, cx));
         })
         .detach();
     }
 
-    /// The refresh asked at `generation` (for `asked`) answered. The newest one swaps in whole. One
-    /// a page or panel change outdated still swaps in what the view asks for now (the board, the
-    /// goals) instead of waiting a whole round trip for the newer one; one from before a change
-    /// (or under a newer answer) is dropped. A poll that brings nothing new skips the redraw (but
-    /// for ages, every [`AGES`]).
-    fn landed(&mut self, generation: u64, asked: Wants, got: Got, poll: bool, cx: &mut Context<Self>) {
-        let newest = generation > self.answered;
-        self.answered = self.answered.max(generation);
-        if self.generation != generation {
-            if newest && generation > self.posted {
-                got.still(&asked, &Wants::of(self, cx)).apply(self, cx);
-                cx.notify();
-            }
+    /// One call of the refresh asked at `generation` (for `asked`) answered, filling the part named
+    /// `key`. The newest refresh's swaps in. One a page or panel change outdated still swaps in what
+    /// the view asks for now (the board, the goals) instead of waiting a whole round trip for the
+    /// newer one; one from before a change, or under a newer answer, is dropped. A poll's part that
+    /// brings nothing new skips the redraw (but for ages, every [`AGES`]).
+    fn part(&mut self, generation: u64, asked: &Wants, key: String, got: Got, poll: bool, cx: &mut Context<Self>) {
+        let outdated = self.generation != generation;
+        let got = if !outdated {
+            got
+        } else if generation > self.answered && generation > self.posted {
+            got.still(asked, &Wants::of(self, cx))
+        } else {
+            return;
+        };
+        let (at, print) = self.shown.entry(key).or_default();
+        if *at > generation {
             return;
         }
-        let asked_rows: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
-        let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
-        let redraw = !poll || self.shown != Some(got.print) || !self.settling.is_empty() || self.drawn.elapsed() >= AGES;
-        self.shown = Some(got.print);
+        let redraw = outdated || !poll || *print != got.print || !self.settling.is_empty() || self.drawn.elapsed() >= AGES;
+        // What an outdated answer keeps isn't what its fingerprint covers, so the next one redraws.
+        (*at, *print) = (generation, if outdated { 0 } else { got.print });
         got.apply(self, cx);
+        if redraw {
+            cx.notify();
+        }
+    }
+
+    /// Every call of the refresh asked at `generation` (for `asked`) has answered. After the newest
+    /// one, what waited on it runs and a page that learned of more to fetch asks for it.
+    fn landed(&mut self, generation: u64, asked: &Wants, poll: bool, cx: &mut Context<Self>) {
+        self.answered = self.answered.max(generation);
+        if self.generation != generation {
+            return;
+        }
+        let asked_rows = &asked.goal_rows;
+        let asked_releases: Vec<String> = asked.releases.iter().map(|(p, _)| p.clone()).chain(asked.release_rows.iter().cloned()).collect();
+        let redraw = !poll || !self.settling.is_empty();
         self.settled(generation, cx);
         if redraw {
             cx.notify();
@@ -1127,6 +1186,9 @@ struct Wants {
 /// One fetch's answer: the value, or the board's sentence for why it failed.
 type Answer = Result<Value, String>;
 
+/// One call of a refresh, answering with just its part of a [`Got`].
+type Call = Box<dyn FnOnce(&dyn Backend) -> Got + Send>;
+
 #[derive(Default)]
 struct Got {
     state: Option<Result<Value, CallError>>,
@@ -1197,82 +1259,78 @@ impl Wants {
         }
     }
 
-    /// Every call at once, so the page's own answer doesn't wait behind `GET /state`.
-    fn fetch(self, be: &dyn Backend) -> Got {
-        fn join<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
-            h.join().expect("fetch thread")
+    /// Every call on its own, keyed by the part of the view it fills.
+    fn calls(self) -> Vec<(String, Call)> {
+        fn get(be: &dyn Backend, p: &str, q: &[(&str, String)]) -> Answer {
+            be.get(p, q).map_err(|e| e.message)
         }
-        let get = |p: &str, q: &[(&str, String)]| -> Answer { be.get(p, q).map_err(|e| e.message) };
-        let asked = self.clone();
-        let got = std::thread::scope(|s| {
-            let state = s.spawn(|| be.get("state", &self.state_q));
-            let goals = s.spawn(|| get("goals", &[]));
-            let task = self.task.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("tasks/{r}"), &[]))));
-            let issue = self.issue.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("backlog/{r}"), &[]))));
-            let goal = self.goal.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("goals/{r}"), &[]))));
-            let goal_rows: Vec<_> = self.goal_rows.iter().map(|r| s.spawn(move || (r.clone(), get(&format!("goals/{r}"), &[])))).collect();
-            let sessions = self.sessions.then(|| s.spawn(move || get("sessions", &[("project", "all".into())])));
-            let closed = self.sessions.then(|| s.spawn(move || get("sessions/closed", &[("project", "all".into())])));
-            let session = self.session.as_ref().map(|id| s.spawn(move || (id.clone(), get(&format!("sessions/{id}"), &[]))));
-            let days = self.days_q.as_ref().map(|q| s.spawn(move || get("days", q)));
-            let today = self.home.is_some().then(|| s.spawn(move || get("days", &[])));
-            let home = self.home.as_ref().map(|p| s.spawn(move || get("home", &[("project", p.clone())])));
-            let palette = self.palette.as_ref().map(|q| s.spawn(move || ui::search::ask(be, q).ok().map(|v| (q.clone(), v))));
-            let task_page = self.task_page.map(|ids| s.spawn(move || ui::paged::Paged::fetch(be, "tasks", "tasks", &[], ui::tasks::PAGE, ids)));
-            let reviews = self.review.map(|id| {
-                s.spawn(move || {
-                    let mut list = get("reviews", &[]);
-                    // Before the first review the page shows this week so far, kept on the list as `this_week`.
-                    if let Ok(l) = list.as_mut() && arr(l, "reviews").is_empty() {
-                        l["this_week"] = get("reviews/now", &[("week", "this".into())]).unwrap_or(Value::Null);
-                    }
-                    let newest = list.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
-                    let one = id.or(newest).map(|id| (id, get(&format!("reviews/{id}"), &[])));
-                    (list, one)
-                })
+        fn add(c: &mut Vec<(String, Call)>, key: impl Into<String>, f: impl FnOnce(&dyn Backend) -> Got + Send + 'static) {
+            c.push((key.into(), Box::new(f)));
+        }
+        let mut c = Vec::new();
+        let Wants { state_q, task, issue, goal, goal_rows, sessions, session, days_q, home, palette, task_page, review, releases, release_rows, ideas, idea } = self;
+        add(&mut c, "state", move |be| Got { state: Some(be.get("state", &state_q)), ..Got::default() });
+        add(&mut c, "goals", |be| Got { goals: get(be, "goals", &[]).ok(), ..Got::default() });
+        if let Some(r) = task {
+            add(&mut c, "task", move |be| Got { task: Some((r.clone(), get(be, &format!("tasks/{r}"), &[]))), ..Got::default() });
+        }
+        if let Some(r) = issue {
+            add(&mut c, "issue", move |be| Got { issue: Some((r.clone(), get(be, &format!("backlog/{r}"), &[]))), ..Got::default() });
+        }
+        if let Some(r) = goal {
+            add(&mut c, "goal", move |be| Got { goal: Some((r.clone(), get(be, &format!("goals/{r}"), &[]))), ..Got::default() });
+        }
+        for r in goal_rows {
+            add(&mut c, format!("goal_row/{r}"), move |be| Got { goal_rows: vec![(r.clone(), get(be, &format!("goals/{r}"), &[]))], ..Got::default() });
+        }
+        if sessions {
+            add(&mut c, "sessions", |be| Got { sessions: Some(get(be, "sessions", &[("project", "all".into())])), ..Got::default() });
+            add(&mut c, "closed", |be| Got { closed: get(be, "sessions/closed", &[("project", "all".into())]).ok(), ..Got::default() });
+        }
+        if let Some(id) = session {
+            add(&mut c, "session", move |be| Got { session: Some((id.clone(), get(be, &format!("sessions/{id}"), &[]))), ..Got::default() });
+        }
+        if let Some(q) = days_q {
+            add(&mut c, "days", move |be| Got { days: Some(get(be, "days", &q)), ..Got::default() });
+        }
+        if let Some(p) = home {
+            add(&mut c, "today", |be| Got { today: get(be, "days", &[]).ok(), ..Got::default() });
+            add(&mut c, "home", move |be| Got { home: get(be, "home", &[("project", p)]).ok(), ..Got::default() });
+        }
+        if let Some(q) = palette {
+            add(&mut c, "palette", move |be| Got { palette: ui::search::ask(be, &q).ok().map(|v| (q, v)), ..Got::default() });
+        }
+        if let Some(ids) = task_page {
+            add(&mut c, "task_page", move |be| Got { task_page: Some(ui::paged::Paged::fetch(be, "tasks", "tasks", &[], ui::tasks::PAGE, ids)), ..Got::default() });
+        }
+        if let Some(id) = review {
+            add(&mut c, "reviews", move |be| {
+                let mut list = get(be, "reviews", &[]);
+                // Before the first review the page shows this week so far, kept on the list as `this_week`.
+                if let Ok(l) = list.as_mut() && arr(l, "reviews").is_empty() {
+                    l["this_week"] = get(be, "reviews/now", &[("week", "this".into())]).unwrap_or(Value::Null);
+                }
+                let newest = list.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
+                let review = id.or(newest).map(|id| (id, get(be, &format!("reviews/{id}"), &[])));
+                Got { reviews: Some(list), review, ..Got::default() }
             });
-            let releases: Vec<_> = self.releases.iter().map(|(p, n)| s.spawn(move || (p.clone(), get("releases", &[("project", p.clone()), ("limit", n.to_string())])))).collect();
-            let release_rows: Vec<_> = self
-                .release_rows
-                .iter()
-                .map(|k| {
-                    s.spawn(move || {
-                        let (path, q) = ui::releases::detail_call(k);
-                        (k.clone(), get(&path, &q))
-                    })
-                })
-                .collect();
-            let ideas = self.ideas.map(|ids| s.spawn(move || ui::paged::Paged::fetch(be, "ideas", "ideas", &ui::ideas::query(), ui::ideas::PAGE, ids)));
-            let idea = self.idea.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("ideas/{r}"), &[]))));
-            let (reviews, review) = reviews.map(join).map_or((None, None), |(l, one)| (Some(l), one));
-            Got {
-                state: Some(join(state)),
-                goals: join(goals).ok(),
-                task: task.map(join),
-                issue: issue.map(join),
-                goal: goal.map(join),
-                goal_rows: goal_rows.into_iter().map(join).collect(),
-                sessions: sessions.map(join),
-                closed: closed.map(join).and_then(Result::ok),
-                session: session.map(join),
-                days: days.map(join),
-                today: today.map(join).and_then(Result::ok),
-                home: home.map(join).and_then(Result::ok),
-                palette: palette.and_then(join),
-                task_page: task_page.map(join),
-                reviews,
-                review,
-                releases: releases.into_iter().map(join).collect(),
-                release_rows: release_rows.into_iter().map(join).collect(),
-                ideas: ideas.map(join),
-                idea: idea.map(join),
-                print: 0,
-            }
-        });
-        // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
-        let mut got = if got.state.as_ref().is_some_and(|r| r.is_ok()) { got } else { Got { state: got.state, ..Got::default() } };
-        got.print = got.fingerprint(&asked);
-        got
+        }
+        for (p, n) in releases {
+            add(&mut c, format!("releases/{p}"), move |be| Got { releases: vec![(p.clone(), get(be, "releases", &[("project", p), ("limit", n.to_string())]))], ..Got::default() });
+        }
+        for k in release_rows {
+            add(&mut c, format!("release_row/{k}"), move |be| {
+                let (path, q) = ui::releases::detail_call(&k);
+                Got { release_rows: vec![(k, get(be, &path, &q))], ..Got::default() }
+            });
+        }
+        if let Some(ids) = ideas {
+            add(&mut c, "ideas", move |be| Got { ideas: Some(ui::paged::Paged::fetch(be, "ideas", "ideas", &ui::ideas::query(), ui::ideas::PAGE, ids)), ..Got::default() });
+        }
+        if let Some(r) = idea {
+            add(&mut c, "idea", move |be| Got { idea: Some((r.clone(), get(be, &format!("ideas/{r}"), &[]))), ..Got::default() });
+        }
+        c
     }
 }
 
@@ -1307,6 +1365,24 @@ impl Got {
         f.skip = fingerprint::DAY_CLOCKS;
         f.add(&self.days).add(&self.today);
         f.finish()
+    }
+
+    /// Whether a page would show this answer's error (the board's own, `state`, is the banner's).
+    fn failed(&self) -> bool {
+        fn err<T, E>(r: Option<&Result<T, E>>) -> bool {
+            r.is_some_and(Result::is_err)
+        }
+        err(self.task.as_ref().map(|(_, a)| a))
+            || err(self.issue.as_ref().map(|(_, a)| a))
+            || err(self.goal.as_ref().map(|(_, a)| a))
+            || err(self.sessions.as_ref())
+            || err(self.session.as_ref().map(|(_, a)| a))
+            || err(self.days.as_ref())
+            || err(self.task_page.as_ref())
+            || err(self.reviews.as_ref())
+            || err(self.review.as_ref().map(|(_, a)| a))
+            || err(self.ideas.as_ref())
+            || err(self.idea.as_ref().map(|(_, a)| a))
     }
 
     /// What of an answer asked for `asked` still holds for a view that asks for `now`. Answers for one
@@ -2513,12 +2589,64 @@ mod tests {
         m.generation += 1;
         let out = m.generation;
         let asked = super::Wants::of(m, cx);
-        let mut got = asked.clone().fetch(rec);
-        got.state.as_mut().unwrap().as_mut().unwrap()["marker"] = json!("slow");
-        got.goals = Some(json!([{"ref": "G99", "title": "Slow"}]));
-        got.home.as_mut().unwrap()["marker"] = json!("slow");
+        let mut parts: Vec<_> = asked.clone().calls().into_iter().map(|(k, call)| (k, call(rec))).collect();
+        for (_, got) in &mut parts {
+            if let Some(Ok(s)) = got.state.as_mut() {
+                s["marker"] = json!("slow");
+            }
+            if got.goals.is_some() {
+                got.goals = Some(json!([{"ref": "G99", "title": "Slow"}]));
+            }
+            if let Some(h) = got.home.as_mut() {
+                h["marker"] = json!("slow");
+            }
+        }
         then(m, cx);
-        m.landed(out, asked, got, false, cx);
+        for (k, got) in parts {
+            m.part(out, &asked, k, got, false, cx);
+        }
+        m.landed(out, &asked, false, cx);
+    }
+
+    /// Each call's answer swaps in as it lands: the Days page fills while `/state` is still out,
+    /// and the refresh counts as answered only once all have.
+    #[gpui_kit::test]
+    fn a_page_answer_lands_before_the_board(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.page = Page::Days;
+            m.generation += 1;
+            let out = m.generation;
+            let asked = super::Wants::of(m, cx);
+            let before = m.data.state.clone();
+            m.part(out, &asked, "days".into(), super::Got { days: Some(Ok(json!({"marker": "days"}))), ..Default::default() }, false, cx);
+            assert_eq!(m.data.days.as_ref().map(|d| d["marker"].clone()), Some(json!("days")));
+            assert!(std::rc::Rc::ptr_eq(m.data.state.as_ref().unwrap(), before.as_ref().unwrap()), "the board hasn't answered yet");
+            assert!(m.answered < out, "the refresh is still out");
+            m.landed(out, &asked, false, cx);
+            assert_eq!(m.answered, out);
+        })
+        .unwrap();
+    }
+
+    /// An older refresh's answer that lands after a newer one's doesn't put the old one back.
+    #[gpui_kit::test]
+    fn an_older_answer_landing_late_is_dropped(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let home = |marker: &str| super::Got { home: Some(json!({"marker": marker})), ..Default::default() };
+            m.generation += 1;
+            let old = m.generation;
+            let asked = super::Wants::of(m, cx);
+            m.generation += 1;
+            let new = m.generation;
+            m.part(new, &asked, "home".into(), home("new"), false, cx);
+            m.part(old, &asked, "home".into(), home("old"), false, cx);
+            assert_eq!(m.data.home.as_ref().map(|h| h["marker"].clone()), Some(json!("new")));
+        })
+        .unwrap();
     }
 
     /// Opening a page while a slow refresh is out keeps the board and goals it read instead of
