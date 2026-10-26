@@ -5,6 +5,7 @@
 //! Every page lives in its own module under `ui/` with a `State` struct held here and a
 //! `render(m, window, cx)` function. They read `m.data` and act through [`MainWindow::post`].
 use crate::backend::{Backend, CallError};
+use crate::fingerprint::{self, Fingerprint};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
 use crate::ui::{self, kit};
@@ -16,6 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_secs(3);
+/// A poll that brings nothing new still redraws after this long without one, so ages ("5m ago",
+/// "running 2h 5m") keep up.
+const AGES: Duration = Duration::from_secs(15);
 /// How long a toast stays (the web's `toast`): 3 s, an error 6 s.
 const TOAST_OK: Duration = Duration::from_secs(3);
 const TOAST_ERR: Duration = Duration::from_secs(6);
@@ -242,6 +246,10 @@ pub struct MainWindow {
     /// The generation when a change was last sent or answered: a refresh asked at or before it may
     /// have read the board before the change, so its answer is dropped whole.
     posted: u64,
+    /// The fingerprint of the last answer that landed whole: a poll answering the same skips the redraw.
+    shown: Option<u64>,
+    /// When the window last drew.
+    drawn: Instant,
     /// What waits for the board's first answer after a change (see [`settle`](Self::settle)): the
     /// generation it was asked at, when the button was clicked, and what to do.
     settling: Vec<(u64, Instant, Settle)>,
@@ -296,6 +304,8 @@ impl MainWindow {
             generation: 0,
             answered: 0,
             posted: 0,
+            shown: None,
+            drawn: Instant::now(),
             settling: Vec::new(),
             panel_fetch: None,
             goal_fetch: None,
@@ -836,7 +846,7 @@ impl MainWindow {
         // A poll waits for a refresh that's still out (a page just opened) instead of starting over
         // and throwing its answer away.
         if self.answered == self.generation {
-            self.refresh(cx);
+            self.ask(true, cx);
         }
         self.check_hooks(cx);
     }
@@ -886,6 +896,11 @@ impl MainWindow {
 
     /// Fetch everything the current view shows, then swap it in (see [`landed`](Self::landed)).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.ask(false, cx);
+    }
+
+    /// A refresh. One for a `poll` redraws only when its answer differs from the one shown.
+    fn ask(&mut self, poll: bool, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
         let backend = self.backend.clone();
@@ -893,7 +908,7 @@ impl MainWindow {
         let asked = want.clone();
         cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
-            let _ = this.update(cx, |m, cx| m.landed(generation, asked, got, cx));
+            let _ = this.update(cx, |m, cx| m.landed(generation, asked, got, poll, cx));
         })
         .detach();
     }
@@ -901,8 +916,9 @@ impl MainWindow {
     /// The refresh asked at `generation` (for `asked`) answered. The newest one swaps in whole. One
     /// a page or panel change outdated still swaps in what the view asks for now (the board, the
     /// goals) instead of waiting a whole round trip for the newer one; one from before a change
-    /// (or under a newer answer) is dropped.
-    fn landed(&mut self, generation: u64, asked: Wants, got: Got, cx: &mut Context<Self>) {
+    /// (or under a newer answer) is dropped. A poll that brings nothing new skips the redraw (but
+    /// for ages, every [`AGES`]).
+    fn landed(&mut self, generation: u64, asked: Wants, got: Got, poll: bool, cx: &mut Context<Self>) {
         let newest = generation > self.answered;
         self.answered = self.answered.max(generation);
         if self.generation != generation {
@@ -914,9 +930,13 @@ impl MainWindow {
         }
         let asked_rows: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
         let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
+        let redraw = !poll || self.shown != Some(got.print) || !self.settling.is_empty() || self.drawn.elapsed() >= AGES;
+        self.shown = Some(got.print);
         got.apply(self, cx);
         self.settled(generation, cx);
-        cx.notify();
+        if redraw {
+            cx.notify();
+        }
         // A linked release whose project the page didn't know: its answer says which.
         if let Some(p) = ui::releases::focus_moves(&self.releases, &self.page) {
             self.go(Page::ReleasesOf(p), cx);
@@ -1033,7 +1053,7 @@ fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, hel
 }
 
 /// What one refresh fetches, decided on the UI thread from the current view.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Hash)]
 struct Wants {
     state_q: Vec<(&'static str, String)>,
     task: Option<String>,
@@ -1086,6 +1106,8 @@ struct Got {
     release_rows: Vec<(String, Answer)>,
     ideas: Option<Result<ui::paged::Fresh, String>>,
     idea: Option<(String, Answer)>,
+    /// What was asked and answered, as one number ([`Got::fingerprint`]).
+    print: u64,
 }
 
 impl Wants {
@@ -1138,6 +1160,7 @@ impl Wants {
             h.join().expect("fetch thread")
         }
         let get = |p: &str, q: &[(&str, String)]| -> Answer { be.get(p, q).map_err(|e| e.message) };
+        let asked = self.clone();
         let got = std::thread::scope(|s| {
             let state = s.spawn(|| be.get("state", &self.state_q));
             let goals = s.spawn(|| get("goals", &[]));
@@ -1200,10 +1223,13 @@ impl Wants {
                 release_rows: release_rows.into_iter().map(join).collect(),
                 ideas: ideas.map(join),
                 idea: idea.map(join),
+                print: 0,
             }
         });
         // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
-        if got.state.as_ref().is_some_and(|r| r.is_ok()) { got } else { Got { state: got.state, ..Got::default() } }
+        let mut got = if got.state.as_ref().is_some_and(|r| r.is_ok()) { got } else { Got { state: got.state, ..Got::default() } };
+        got.print = got.fingerprint(&asked);
+        got
     }
 }
 
@@ -1228,6 +1254,18 @@ fn land_goal(slot: &mut Option<Rc<Value>>, err: &mut Option<String>, answer: Ans
 }
 
 impl Got {
+    /// Everything asked and answered, without the clocks ([`fingerprint::CLOCKS`]).
+    fn fingerprint(&self, asked: &Wants) -> u64 {
+        let mut f = Fingerprint::new(asked);
+        f.add(&self.state).add(&self.goals).add(&self.task).add(&self.issue).add(&self.goal).add(&self.goal_rows);
+        f.add(&self.sessions).add(&self.closed).add(&self.session).add(&self.home).add(&self.palette);
+        f.add(&self.task_page).add(&self.reviews).add(&self.review).add(&self.releases).add(&self.release_rows);
+        f.add(&self.ideas).add(&self.idea);
+        f.skip = fingerprint::DAY_CLOCKS;
+        f.add(&self.days).add(&self.today);
+        f.finish()
+    }
+
     /// What of an answer asked for `asked` still holds for a view that asks for `now`. Answers for one
     /// task, goal, issue and so on keep (`apply` takes them only while that one is still open); the
     /// rest keep only when the view asks for them the same way.
@@ -1432,6 +1470,7 @@ pub fn bind_keys(cx: &mut App) {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn = Instant::now();
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
 
@@ -2323,6 +2362,33 @@ mod tests {
         .unwrap();
     }
 
+    /// A poll that brings nothing new doesn't redraw; one that does, a refresh, or a poll after
+    /// `AGES` without a redraw does.
+    #[gpui_kit::test]
+    fn a_poll_that_brings_nothing_new_skips_the_redraw(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        settle(cx);
+        let e = w.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+        let d2 = drawn.clone();
+        cx.update(|cx| cx.observe(&e, move |_, _| d2.set(d2.get() + 1)).detach());
+        let ask = |cx: &mut gpui_kit::TestAppContext, poll: bool| {
+            drawn.set(0);
+            w.update(cx, |m: &mut MainWindow, _, cx| if poll { m.poll(cx) } else { m.refresh(cx) }).unwrap();
+            settle(cx);
+            drawn.get()
+        };
+        assert_eq!(ask(cx, true), 0, "nothing new");
+        assert!(ask(cx, false) > 0, "a refresh always redraws");
+        rec.fail("state", 503, "down");
+        assert!(ask(cx, true) > 0, "the board went down");
+        assert_eq!(ask(cx, true), 0, "still down");
+        rec.heal();
+        assert!(ask(cx, true) > 0, "back up");
+        w.update(cx, |m: &mut MainWindow, _, _| m.drawn -= super::AGES).unwrap();
+        assert!(ask(cx, true) > 0, "ages are due");
+    }
+
     /// What waits on a change runs once the refresh after it lands, not before.
     #[gpui_kit::test]
     fn settle_waits_for_the_refresh_after_the_change(cx: &mut gpui_kit::TestAppContext) {
@@ -2364,7 +2430,7 @@ mod tests {
         got.goals = Some(json!([{"ref": "G99", "title": "Slow"}]));
         got.home.as_mut().unwrap()["marker"] = json!("slow");
         then(m, cx);
-        m.landed(out, asked, got, cx);
+        m.landed(out, asked, got, false, cx);
     }
 
     /// Opening a page while a slow refresh is out keeps the board and goals it read instead of

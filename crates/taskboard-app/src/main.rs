@@ -16,6 +16,7 @@
 //!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips).
 mod app;
 mod backend;
+mod fingerprint;
 mod fmt;
 mod hooks;
 mod install;

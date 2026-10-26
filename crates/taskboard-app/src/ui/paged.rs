@@ -22,6 +22,12 @@ impl Fresh {
     }
 }
 
+impl crate::fingerprint::Print for Fresh {
+    fn print(&self, f: &mut crate::fingerprint::Fingerprint) {
+        f.add(&self.first).add(&self.asked).add(&self.again);
+    }
+}
+
 #[derive(Default)]
 pub struct Paged {
     /// In the board's order as the pages came, each once.
