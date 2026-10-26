@@ -1,5 +1,5 @@
 //! The main window: what the board last answered (`Data`), where the reader is (`Page`, the side
-//! panel, a modal), the 3-second poll, and the chrome around the pages: the header (the pages as tabs),
+//! panel, a modal), the poll (every 3 s, slower while the window is away), and the chrome around the pages: the header (the pages as tabs),
 //! the alert banner, toasts and the status bar.
 //!
 //! Every page lives in its own module under `ui/` with a `State` struct held here and a
@@ -20,6 +20,10 @@ const POLL: Duration = Duration::from_secs(3);
 /// A poll that brings nothing new still redraws after this long without one, so ages ("5m ago",
 /// "running 2h 5m") keep up.
 const AGES: Duration = Duration::from_secs(15);
+/// The poll while the window shows but another app is in front.
+const POLL_AWAY: Duration = Duration::from_secs(15);
+/// The poll while none of the window is on screen: minimized, covered, on another Space, the app hidden.
+const POLL_HIDDEN: Duration = Duration::from_secs(30);
 /// How long a toast stays (the web's `toast`): 3 s, an error 6 s.
 const TOAST_OK: Duration = Duration::from_secs(3);
 const TOAST_ERR: Duration = Duration::from_secs(6);
@@ -262,6 +266,20 @@ pub struct MainWindow {
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
+    /// How often the poll asks now ([`pace`]), and its loop.
+    every: Duration,
+    poller: Option<Task<()>>,
+}
+
+/// How often to poll: slower while the window is away.
+fn pace(window: &Window) -> Duration {
+    if !window.is_visible() {
+        POLL_HIDDEN
+    } else if !window.is_window_active() {
+        POLL_AWAY
+    } else {
+        POLL
+    }
 }
 
 impl MainWindow {
@@ -312,6 +330,8 @@ impl MainWindow {
             recent_goals: Vec::new(),
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
+            every: pace(window),
+            poller: None,
         };
         if let Ok(p) = std::env::var("TASKBOARD_PAGE") {
             m.page = match p.as_str() {
@@ -371,6 +391,9 @@ impl MainWindow {
             }
         })
         .detach();
+        // Poll slower while the window is away; catch up when it's back.
+        cx.observe_window_activation(window, |m, window, cx| m.repace(window, cx)).detach();
+        cx.observe_window_visibility(window, |m, _, window, cx| m.repace(window, cx)).detach();
         m.start_polling(cx);
         // Dev: `TASKBOARD_SEARCH=pass` opens the ⌘K palette with that query (screenshots).
         if let Ok(q) = std::env::var("TASKBOARD_SEARCH") {
@@ -828,9 +851,15 @@ impl MainWindow {
     fn start_polling(&mut self, cx: &mut Context<Self>) {
         self.refresh(cx);
         self.check_hooks(cx);
-        cx.spawn(async move |this, cx| {
+        self.schedule(cx);
+    }
+
+    /// Poll every `self.every` from now on. Replacing the held loop drops (cancels) the old one.
+    fn schedule(&mut self, cx: &mut Context<Self>) {
+        let every = self.every;
+        self.poller = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(POLL).await;
+                cx.background_executor().timer(every).await;
                 if this
                     .update(cx, |m, cx| m.poll(cx))
                     .is_err()
@@ -838,8 +867,22 @@ impl MainWindow {
                     break;
                 }
             }
-        })
-        .detach();
+        }));
+    }
+
+    /// The window came forward, went behind another app or left the screen: poll at its pace,
+    /// and at once when it came back (it may have shown a 30 s old board).
+    fn repace(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let every = pace(window);
+        if every == self.every {
+            return;
+        }
+        let back = every < self.every;
+        self.every = every;
+        if back {
+            self.poll(cx);
+        }
+        self.schedule(cx);
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
@@ -2387,6 +2430,51 @@ mod tests {
         assert!(ask(cx, true) > 0, "back up");
         w.update(cx, |m: &mut MainWindow, _, _| m.drawn -= super::AGES).unwrap();
         assert!(ask(cx, true) > 0, "ages are due");
+    }
+
+    /// Behind another app the poll slows to 15 s, off screen to 30 s; back in front it refreshes at once
+    /// and goes back to every 3 s.
+    #[gpui_kit::test]
+    fn the_poll_slows_while_the_window_is_away(cx: &mut gpui_kit::TestAppContext) {
+        use super::{POLL, POLL_AWAY, POLL_HIDDEN};
+        let (w, _rec) = window(cx);
+        let asked = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m: &mut MainWindow, _, _| m.generation).unwrap();
+        let tick = |cx: &mut gpui_kit::TestAppContext, d: std::time::Duration| {
+            cx.executor().advance_clock(d);
+            settle(cx);
+        };
+        let vcx = &mut gpui_kit::VisualTestContext::from_window(w.into(), cx);
+        vcx.update(|window, _| window.activate_window());
+        settle(vcx);
+        assert_eq!(w.update(vcx, |m: &mut MainWindow, _, _| m.every).unwrap(), POLL);
+        let g = asked(vcx);
+        tick(vcx, POLL);
+        assert_eq!(asked(vcx), g + 1, "in front it polls every 3 s");
+
+        vcx.deactivate_window();
+        settle(vcx);
+        let g = asked(vcx);
+        tick(vcx, POLL * 2);
+        assert_eq!(asked(vcx), g, "behind another app 3 s isn't enough");
+        tick(vcx, POLL_AWAY - POLL * 2);
+        assert_eq!(asked(vcx), g + 1, "it polls at 15 s");
+
+        vcx.simulate_visibility_change(gpui_kit::WindowVisibility::Hidden);
+        settle(vcx);
+        let g = asked(vcx);
+        tick(vcx, POLL_AWAY);
+        assert_eq!(asked(vcx), g, "off screen 15 s isn't enough");
+        tick(vcx, POLL_HIDDEN - POLL_AWAY);
+        assert_eq!(asked(vcx), g + 1, "it polls at 30 s");
+
+        let g = asked(vcx);
+        vcx.simulate_visibility_change(gpui_kit::WindowVisibility::Visible);
+        vcx.update(|window, _| window.activate_window());
+        settle(vcx);
+        assert!(asked(vcx) > g, "coming back refreshes at once");
+        let g = asked(vcx);
+        tick(vcx, POLL);
+        assert_eq!(asked(vcx), g + 1, "and polls every 3 s again");
     }
 
     /// What waits on a change runs once the refresh after it lands, not before.
