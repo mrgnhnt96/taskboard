@@ -427,7 +427,20 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             })?;
             issue_detail(app, i)
         }
-        ("POST", ["report"]) => reports::handle(app, body.clone(), false),
+        // A hook's report that needs no answer: queued, so the hook doesn't wait on a busy board.
+        ("POST", ["report"]) if q(query, "queue", "") == "1" => {
+            let body = body.clone();
+            app.queue_report(Box::new(move |a| {
+                if let Err(e) = reports::handle(a, body, false) {
+                    a.info(format!("queued report refused: {}", e.message));
+                }
+            }));
+            Ok(json!({"ok": true, "queued": true}))
+        }
+        ("POST", ["report"]) => {
+            app.take_reports(None);
+            reports::handle(app, body.clone(), false)
+        }
         ("GET", ["home"]) => crate::home::page(app, q(query, "project", "all")),
         ("GET", ["reviews"]) => crate::review::list(app),
         ("GET", ["reviews", "now"]) => {

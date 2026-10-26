@@ -153,6 +153,11 @@ pub fn start_threads(app: &Arc<App>) {
             }
         }
     });
+    spawn(app, "reports", |a| {
+        while !a.stopping() {
+            a.take_reports(Some(Duration::from_secs(5)));
+        }
+    });
     spawn(app, "lens", |a| {
         while !a.stopping() {
             if let Some(f) = a.next_lens(Duration::from_secs(5)) {

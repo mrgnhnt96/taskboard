@@ -122,6 +122,10 @@ pub struct App {
     ai_signal: Signal,
     lens_jobs: Mutex<VecDeque<Deferred>>,
     lens_signal: Signal,
+    report_jobs: Mutex<VecDeque<Deferred>>,
+    report_signal: Signal,
+    /// Held while queued reports are taken, so they're taken one at a time in the order they came.
+    report_turn: Mutex<()>,
     pub inline_deferred: bool,
     /// This launch's app token (`apptoken`): what makes a request the app's own.
     pub app_token: String,
@@ -167,6 +171,9 @@ impl App {
             ai_signal: Signal::new(),
             lens_jobs: Mutex::new(VecDeque::new()),
             lens_signal: Signal::new(),
+            report_jobs: Mutex::new(VecDeque::new()),
+            report_signal: Signal::new(),
+            report_turn: Mutex::new(()),
             inline_deferred: inline,
             app_token: crate::apptoken::fresh(),
             app_origin: once_cell::sync::OnceCell::new(),
@@ -209,6 +216,7 @@ impl App {
         self.hook_signal.set();
         self.ai_signal.set();
         self.lens_signal.set();
+        self.report_signal.set();
     }
 
     pub fn wake_runner(&self) {
@@ -316,6 +324,31 @@ impl App {
         }
         self.hook_signal.wait(timeout);
         self.hook_jobs.lock().pop_front()
+    }
+
+    /// A hook's report that needs no answer (`POST /report?queue=1`): the hook is answered at once and
+    /// the report is taken on the reports thread, so a hook never waits on a busy board.
+    pub fn queue_report(&self, f: Deferred) {
+        if self.inline_deferred {
+            f(self);
+            return;
+        }
+        self.report_jobs.lock().push_back(f);
+        self.report_signal.set();
+    }
+
+    /// Takes the queued reports in the order they came; with `wait`, first waits up to that long for
+    /// one. A report that needs an answer takes the ones queued before it first, so it sees them.
+    pub fn take_reports(&self, wait: Option<Duration>) {
+        if let Some(w) = wait.filter(|_| self.report_jobs.lock().is_empty()) {
+            self.report_signal.wait(w);
+        }
+        let _turn = self.report_turn.lock();
+        loop {
+            let next = self.report_jobs.lock().pop_front();
+            let Some(f) = next else { break };
+            f(self);
+        }
     }
 }
 
