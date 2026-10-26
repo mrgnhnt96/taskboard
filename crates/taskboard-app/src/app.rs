@@ -707,8 +707,8 @@ impl MainWindow {
         }
         match &self.panel {
             Some(Panel::Task { .. }) => return self.close_panel(cx),
-            Some(Panel::Issue { .. }) if matches!(self.page, Page::Board | Page::Backlog) => return self.close_panel(cx),
-            _ => {}
+            Some(Panel::Issue { .. }) => return self.close_panel(cx),
+            None => {}
         }
         if self.page == Page::Board && self.focus.is_focused(window) && (self.filters.goal != "all" || self.filters.project != "all") {
             self.rail_clear(cx);
@@ -2294,14 +2294,15 @@ mod tests {
             m.set_modal(Some(ui::modals::Modal::Alerts), window, cx);
             m.escape(window, cx);
             assert!(m.modal.is_none(), "the alerts dialog closes");
-            // The task panel closes; an issue panel only on the board.
+            // Either panel closes, on any page.
             m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
             m.escape(window, cx);
             assert!(m.panel.is_none());
             m.page = Page::Goal("G1".into());
             m.panel = Some(Panel::Issue { r: "B1".into() });
             m.escape(window, cx);
-            assert!(m.panel.is_some(), "on a goal page the issue stays");
+            assert!(m.panel.is_none(), "on a goal page the issue closes too");
+            m.panel = Some(Panel::Issue { r: "B1".into() });
             m.page = Page::Backlog;
             m.backlog.picked = vec!["B1".into(), "B2".into()];
             m.escape(window, cx);

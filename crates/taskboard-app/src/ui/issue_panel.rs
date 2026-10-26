@@ -1202,12 +1202,11 @@ fn hist_row(t: &Theme, r: &str, n: usize, h: &HistRow, compact: bool) -> Div {
         .child(div().flex_1().min_w_0().child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.text.clone())))
 }
 
-/// The issue panel on the Board and the Backlog page (the Goal page draws [`render_aside`] beside
-/// its list instead).
+/// The issue panel, over whichever page opened it.
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let r = match &m.panel {
-        Some(Panel::Issue { r }) if !matches!(m.page, Page::Goal(_)) => r.clone(),
+        Some(Panel::Issue { r }) => r.clone(),
         _ => return div().into_any_element(),
     };
     let issue = m.data.issue.clone().filter(|b| fmt::ref_of(b, "B") == r);
@@ -1571,5 +1570,19 @@ mod tests {
         let ids: Vec<i64> = rows.iter().map(|e| e["id"].as_i64().unwrap()).collect();
         assert!(ids.windows(2).all(|p| p[0] < p[1]), "oldest first, each once");
         assert_eq!(s(rows.last().unwrap(), "text"), "Entry 449");
+    }
+
+    #[gpui_kit::test]
+    fn an_issue_opened_on_a_goal_page_draws_its_panel(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = parity::window(cx);
+        let r = add_issue(&rec, json!({"title": "Flaky test", "kind": "gap", "project": "webapp"}));
+        w.update(cx, |m, _, cx| {
+            m.page = crate::app::Page::Goal("G1".into());
+            m.open_issue(r.clone(), cx);
+        })
+        .unwrap();
+        parity::settle(cx);
+        draw(cx, &w);
+        w.update(cx, |m, _, _| assert!(m.issue_panel.hist_list.is_some(), "the panel's history list was drawn")).unwrap();
     }
 }
