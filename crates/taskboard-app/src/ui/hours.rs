@@ -162,7 +162,7 @@ pub fn save(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
         body,
         cx,
         |m, v, cx| {
-            if let Some(st) = m.data.state.as_mut() {
+            if let Some(st) = m.data.state.as_mut().map(std::rc::Rc::make_mut) {
                 st["work_hours"] = v;
             }
             m.hours.err = None;

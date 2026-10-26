@@ -79,11 +79,12 @@ pub enum Panel {
     Issue { r: String },
 }
 
-/// What the board last answered. `None` until the first answer.
+/// What the board last answered. `None` until the first answer. The board state, goals and home
+/// answer sit behind `Rc` so pages hold them for a frame without copying them.
 #[derive(Default)]
 pub struct Data {
-    pub state: Option<Value>,
-    pub goals: Vec<Value>,
+    pub state: Option<Rc<Value>>,
+    pub goals: Rc<Vec<Value>>,
     /// `GET /tasks/:id` for the open task panel.
     pub task: Option<Value>,
     /// The open task's row as the page already had it, shown until `task` answers.
@@ -99,7 +100,7 @@ pub struct Data {
     /// `GET /days` for the Days page.
     pub days: Option<Value>,
     /// `GET /home` and today's `GET /days` for the home page.
-    pub home: Option<Value>,
+    pub home: Option<Rc<Value>>,
     pub today: Option<Value>,
     /// The ⌘K palette's best tasks and backlog issues for what's typed (`GET /search?palette=1`).
     pub tasks: Option<Value>,
@@ -968,7 +969,12 @@ impl MainWindow {
 
     pub fn state(&self) -> &Value {
         static NULL: Value = Value::Null;
-        self.data.state.as_ref().unwrap_or(&NULL)
+        self.data.state.as_deref().unwrap_or(&NULL)
+    }
+
+    /// The board state as a handle a page keeps while it borrows the window mutably.
+    pub fn state_rc(&self) -> Rc<Value> {
+        self.data.state.clone().unwrap_or_default()
     }
 
     pub fn jira_on(&self) -> bool {
@@ -982,7 +988,7 @@ impl MainWindow {
     /// `projectNames` over this window's goals (`allGoals`: non-archived).
     #[cfg(test)]
     pub fn project_names(&self) -> Vec<String> {
-        project_names(self.state(), ui::goals::all_goals(self.data.state.as_ref(), self.goals_loaded.then_some(self.data.goals.as_slice())))
+        project_names(self.state(), ui::goals::all_goals(self.data.state.as_deref(), self.goals_loaded.then_some(self.data.goals.as_slice())))
     }
 
 }
@@ -1252,14 +1258,14 @@ impl Got {
                 if arr(&v, "alerts").is_empty() && matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
                     m.modal = None;
                 }
-                m.data.state = Some(v);
+                m.data.state = Some(Rc::new(v));
                 m.down = None;
             }
             Some(Err(e)) => m.down = Some(e.message),
             None => {}
         }
         if let Some(g) = self.goals {
-            m.data.goals = if g.is_array() { g.as_array().cloned().unwrap_or_default() } else { arr(&g, "goals").to_vec() };
+            m.data.goals = Rc::new(if g.is_array() { g.as_array().cloned().unwrap_or_default() } else { arr(&g, "goals").to_vec() });
             m.goals_loaded = true;
         }
         if is_releases(&m.page) {
@@ -1340,7 +1346,7 @@ impl Got {
             }
         }
         if self.home.is_some() {
-            d.home = self.home;
+            d.home = self.home.map(Rc::new);
         }
         if self.today.is_some() {
             d.today = self.today;
@@ -2141,7 +2147,7 @@ mod tests {
         let (w, rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
             dismiss_alert(m, "a1", cx);
-            if let Some(st) = m.data.state.as_mut() {
+            if let Some(st) = m.data.state.as_mut().map(std::rc::Rc::make_mut) {
                 st["alerts"] = json!([{"id": "x1"}, {"id": "x2"}]);
             }
             dismiss_all_alerts(m, cx);
@@ -2497,8 +2503,8 @@ mod tests {
     fn project_names_include_goal_projects(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, _| {
-            m.data.goals.push(json!({"id": 99, "ref": "G99", "name": "x", "project": "Zebra"}));
-            m.data.goals.push(json!({"id": 98, "ref": "G98", "name": "y", "project": "archived-only", "archived": true}));
+            std::rc::Rc::make_mut(&mut m.data.goals).push(json!({"id": 99, "ref": "G99", "name": "x", "project": "Zebra"}));
+            std::rc::Rc::make_mut(&mut m.data.goals).push(json!({"id": 98, "ref": "G98", "name": "y", "project": "archived-only", "archived": true}));
             let names = m.project_names();
             assert!(names.contains(&"Zebra".to_string()), "{names:?}");
             assert!(!names.contains(&"archived-only".to_string()));
