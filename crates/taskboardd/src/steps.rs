@@ -302,8 +302,12 @@ pub fn load(app: &App) -> Vec<Step> {
     load_all(app).0
 }
 
-/// `load`, with the steps left out.
+/// `load`, with the steps left out. Read once per request: every task card asks for them.
 fn load_all(app: &App) -> (Vec<Step>, Vec<Bad>) {
+    crate::reqcache::get("steps", || read_all(app))
+}
+
+fn read_all(app: &App) -> (Vec<Step>, Vec<Bad>) {
     let path = &app.cfg.config_path;
     let Ok(text) = std::fs::read_to_string(path) else { return (vec![], vec![]) };
     let (good, bad) = match parse_lenient(&text) {

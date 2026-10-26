@@ -34,7 +34,7 @@ pub fn new_terminal(app: &App, j: &Row) -> bool {
 }
 
 fn project_roots(app: &App) -> Vec<String> {
-    let mut v: Vec<String> = jloads_arr(app.db.get_setting("midna_projects").ok().flatten().as_deref())
+    let mut v: Vec<String> = jloads_arr(crate::reqcache::setting(app, "midna_projects").ok().flatten().as_deref())
         .iter()
         .filter_map(|p| p.get("path").and_then(|x| x.as_str()))
         .map(real)
@@ -182,7 +182,7 @@ pub fn launch_ready(app: &App, j: &Row) -> Result<bool> {
 }
 
 pub fn alerts(app: &App) -> Vec<Value> {
-    jloads_arr(app.db.get_setting("alerts").ok().flatten().as_deref())
+    jloads_arr(crate::reqcache::setting(app, "alerts").ok().flatten().as_deref())
 }
 
 /// The alerts in the order the app shows them: urgent ones first, then as they came.
@@ -200,6 +200,7 @@ fn keep(app: &App, rows: &[Value]) -> Result<()> {
         .filter(|id| !rows.iter().any(|r| r["id"].as_str() == Some(id)))
         .map(str::to_string)
         .collect();
+    crate::reqcache::forget_setting("alerts");
     app.db.set_setting("alerts", Some(&jdumps(&Value::Array(rows.to_vec()))))?;
     for id in gone {
         withdraw(app, &id);

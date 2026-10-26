@@ -85,6 +85,7 @@ pub mod release_tags;
 pub mod releases;
 pub mod relevance;
 pub mod reproject;
+pub mod reqcache;
 pub mod reports;
 pub mod retro;
 pub mod reviewers;

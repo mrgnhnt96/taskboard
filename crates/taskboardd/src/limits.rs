@@ -111,7 +111,7 @@ fn str_globs(v: Option<&Value>) -> Option<Vec<String>> {
 /// The board's limits: config.toml's, with what `tb limits` changed on top.
 pub fn get(app: &App) -> Limits {
     let mut l = defaults(app);
-    let saved = jloads_obj(app.db.get_setting(KEY).ok().flatten().as_deref());
+    let saved = jloads_obj(crate::reqcache::setting(app, KEY).ok().flatten().as_deref());
     for k in NUMBERS {
         if let Some(n) = saved.get(k).and_then(|v| v.as_i64()) {
             l.set_number(k, n.max(0));
@@ -138,7 +138,7 @@ pub fn get(app: &App) -> Limits {
 /// The gaps `tb limits --review-gap` set between a step's rounds (step key → minutes, 0 for none), over
 /// the steps' `min_gap_mins` in config.toml.
 pub fn review_gaps(app: &App) -> BTreeMap<String, f64> {
-    let saved = jloads_obj(app.db.get_setting(KEY).ok().flatten().as_deref());
+    let saved = jloads_obj(crate::reqcache::setting(app, KEY).ok().flatten().as_deref());
     saved.get("review_gaps").and_then(|v| v.as_object()).map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_f64()?))).collect()).unwrap_or_default()
 }
 
@@ -165,7 +165,7 @@ fn gap_step(app: &App, named: &str) -> Result<String> {
 /// Changes the limits. Numbers are tokens or minutes (0 turns one off, null puts config.toml's back);
 /// `generated` replaces the globs, for `project` when it's given; `reset` forgets every change.
 pub fn set(app: &App, body: &Value) -> Result<Limits> {
-    let mut saved = if as_bool(body.get("reset"), false) { Row::new() } else { jloads_obj(app.db.get_setting(KEY)?.as_deref()) };
+    let mut saved = if as_bool(body.get("reset"), false) { Row::new() } else { jloads_obj(crate::reqcache::setting(app, KEY)?.as_deref()) };
     for k in NUMBERS {
         if !body.as_object().is_some_and(|o| o.contains_key(k)) {
             continue;
@@ -212,6 +212,7 @@ pub fn set(app: &App, body: &Value) -> Result<Limits> {
             saved.insert("project_generated".into(), Value::Object(m));
         }
     }
+    crate::reqcache::forget_setting(KEY);
     app.db.set_setting(KEY, Some(&jdumps(&Value::Object(saved))))?;
     Ok(get(app))
 }

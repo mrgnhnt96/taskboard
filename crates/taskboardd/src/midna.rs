@@ -516,6 +516,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 })
                 .map(|p| json!({"name": p.get("name"), "path": p.get("path")}))
                 .collect();
+            crate::reqcache::forget_setting("midna_projects");
             app.db.set_setting("midna_projects", Some(&jdumps(&Value::Array(list))))?;
         }
         let now = now_iso();

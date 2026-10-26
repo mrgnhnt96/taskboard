@@ -461,7 +461,7 @@ pub fn label(name: &str) -> &'static str {
 }
 
 fn overrides(app: &App) -> Row {
-    jloads_obj(app.db.get_setting(MODES_SETTING).ok().flatten().as_deref())
+    jloads_obj(crate::reqcache::setting(app, MODES_SETTING).ok().flatten().as_deref())
 }
 
 /// A source's mode and where it comes from: `tb stream mode` (override), config.toml (config), or
@@ -496,6 +496,7 @@ pub fn set_mode(app: &App, body: &Value) -> Result<Value> {
         "default" => o.remove(&name),
         _ => return err(400, "mode is board, stream or default."),
     };
+    crate::reqcache::forget_setting(MODES_SETTING);
     app.db.set_setting(MODES_SETTING, Some(&jdumps(&Value::Object(o))))?;
     Ok(overview(app))
 }
