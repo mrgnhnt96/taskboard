@@ -235,7 +235,7 @@ mod tests {
     use gpui_kit::base::{TextSelection, TextSelectionLayer};
     use std::cell::Cell;
     use std::rc::Rc;
-    use gpui_kit::{Context, IntoElement, Modifiers, MouseButton, ParentElement as _, Render, InteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px};
+    use gpui_kit::{Context, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Render, InteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px};
 
     struct View;
 
@@ -271,6 +271,58 @@ mod tests {
             drop(window.draw(cx));
             assert_eq!(TextSelection::selected_text(window, cx), "delta epsilon");
         });
+    }
+
+    /// Press with this click count at `at`.
+    fn press(cx: &mut VisualTestContext, at: gpui_kit::Point<gpui_kit::Pixels>, click_count: usize) {
+        cx.simulate_event(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count, first_mouse: false });
+    }
+
+    fn release(cx: &mut VisualTestContext, at: gpui_kit::Point<gpui_kit::Pixels>, click_count: usize) {
+        cx.simulate_event(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count });
+    }
+
+    /// Two lines of text, each row taller than its line.
+    struct Lines;
+
+    impl Render for Lines {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let t = cx.global::<Theme>().clone();
+            let row = |id: &'static str, text: &'static str| div().h(px(40.)).child(sel(&t, id, text));
+            div().size_full().child(TextSelectionLayer).child(div().flex().flex_col().w(px(240.)).child(row("a", "alpha beta")).child(row("b", "gamma")))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_double_click_drag_selects_whole_words(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::new(ThemeMode::Dark, "Helvetica".into(), "Menlo".into())));
+        let (_, cx) = cx.add_window_view(|_, _| Lines);
+        cx.update(|window, cx| drop(window.draw(cx)));
+        let selected = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                drop(window.draw(cx));
+                TextSelection::selected_text(window, cx)
+            })
+        };
+        let (alpha, gamma) = (point(px(3.), px(10.)), point(px(3.), px(50.)));
+        // Down onto the first letter of "gamma": the whole word comes with it.
+        press(cx, alpha, 1);
+        release(cx, alpha, 1);
+        press(cx, alpha, 2);
+        assert_eq!(selected(cx), "alpha", "the double click picks the word");
+        cx.simulate_mouse_move(gamma, Some(MouseButton::Left), Modifiers::default());
+        release(cx, gamma, 2);
+        assert_eq!(selected(cx), "alpha beta\ngamma");
+        // Back up from "gamma" onto the first letter of "alpha": "gamma" stays whole.
+        press(cx, gamma, 1);
+        release(cx, gamma, 1);
+        press(cx, gamma, 2);
+        cx.simulate_mouse_move(alpha, Some(MouseButton::Left), Modifiers::default());
+        release(cx, alpha, 2);
+        assert_eq!(selected(cx), "alpha beta\ngamma");
+        // The button up ends it: a move after doesn't change the selection.
+        cx.simulate_mouse_move(gamma, None, Modifiers::default());
+        assert_eq!(selected(cx), "alpha beta\ngamma");
     }
 
     #[gpui_kit::test]

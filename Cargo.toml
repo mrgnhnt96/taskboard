@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/taskboardd", "crates/taskboard-cli", "crates/taskboard-app"]
+exclude = ["vendor/gpui-base"]
 
 [workspace.package]
 version = "0.1.0-beta.65"
@@ -16,6 +17,11 @@ ureq = { version = "2", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 once_cell = "1"
+
+# gpui-base 0.7.1 with one change: a double- or triple-click held down drags the selection by
+# whole words or lines (vendor/gpui-base/PATCHES.md). Drop it once upstream does the same.
+[patch.crates-io]
+gpui-base = { path = "vendor/gpui-base" }
 
 [profile.release]
 opt-level = 3
