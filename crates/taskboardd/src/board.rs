@@ -1400,9 +1400,19 @@ pub fn restarts_left(app: &App, t: &Row) -> Result<bool> {
 }
 
 pub fn mark_lost(app: &App, t: &Row, reason: &str) -> Result<()> {
+    mark_lost_with(app, t, reason, None)
+}
+
+/// `mark_lost`, with what Midna knew of how the terminal ended (`midna::exit_detail`) beside the
+/// reason, in the task's history and the log.
+pub fn mark_lost_with(app: &App, t: &Row, reason: &str, detail: Option<&str>) -> Result<()> {
     if t.s("status") == Some("done") || t.b("lost") {
         return Ok(());
     }
+    let why = match detail {
+        Some(d) => format!("{reason}: {d}"),
+        None => reason.to_string(),
+    };
     let closed = format!("The terminal closed at {} before the task was done.", local_clock(None));
     let asked = t.s("status") == Some("needs") && t.s("needs_reason") == Some("question");
     if !DELIBERATE_EXITS.contains(&reason) && !asked && restarts_left(app, t)? {
@@ -1414,8 +1424,8 @@ pub fn mark_lost(app: &App, t: &Row, reason: &str) -> Result<()> {
                     "pickup" => pickup, "pickup_session" => null, "retry_at" => iso(now_ts() + LOST_RESTART_GRACE_SECS),
                     "latest" => format!("{closed} It starts again from its handoff.")],
         )?;
-        log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({reason}) before the task was done; queued to start again from its handoff"))?;
-        app.info(format!("task {} lost ({reason}): queued to start again", rf("task", t.id())));
+        log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done; queued to start again from its handoff"))?;
+        app.info(format!("task {} lost ({why}): queued to start again", rf("task", t.id())));
         return Ok(());
     }
     let saved = task_context(t).get("saved_at").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -1429,12 +1439,16 @@ pub fn mark_lost(app: &App, t: &Row, reason: &str) -> Result<()> {
         fields!["status" => "needs", "lost" => 1, "needs_reason" => "lost", "start_job" => null,
                 "latest" => format!("{closed}{saved_line}"), "looks_finished" => crate::lost_done::lost_now()],
     )?;
-    log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({reason}) before the task was done"))?;
-    app.info(format!("task {} lost: {reason}", rf("task", t.id())));
+    log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done"))?;
+    app.info(format!("task {} lost: {why}", rf("task", t.id())));
     Ok(())
 }
 
 pub fn session_gone(app: &App, sid: &str, reason: &str) -> Result<()> {
+    session_gone_with(app, sid, reason, None)
+}
+
+pub fn session_gone_with(app: &App, sid: &str, reason: &str, detail: Option<&str>) -> Result<()> {
     let t = task_for_session(app, Some(sid))?;
     upsert_session(app, sid, fields!["status" => "gone", "gone_at" => now_iso(), "last_task" => t.as_ref().map(|t| t.id())])?;
     if let Some(t) = t {
@@ -1443,7 +1457,7 @@ pub fn session_gone(app: &App, sid: &str, reason: &str) -> Result<()> {
         } else if closed_by_you(app, sid)? {
             mark_lost(app, &t, CLOSED_BY_YOU)?;
         } else {
-            mark_lost(app, &t, reason)?;
+            mark_lost_with(app, &t, reason, detail)?;
         }
     }
     for b in app.db.q("SELECT id FROM issues WHERE found_by_session = ? AND state = 'open'", p![sid])? {

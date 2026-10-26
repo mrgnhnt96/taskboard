@@ -50,6 +50,8 @@ pub struct Report<'a> {
     pub turn_at: Option<String>,
     /// The checkout the turn committed in and the commit's subject, when the reflog shows a commit.
     pub turn_commit: Option<(String, String)>,
+    /// What Midna knew of how a terminal that ended for no reason Claude named went, read before the transaction.
+    pub exit_detail: Option<String>,
 }
 
 fn s_of(v: &Value, k: &str) -> Option<String> {
@@ -82,6 +84,7 @@ impl<'a> Report<'a> {
             turn_files: vec![],
             turn_at: None,
             turn_commit: None,
+            exit_detail: None,
         }
     }
 
@@ -1305,7 +1308,7 @@ fn on_session_end(r: &mut Report) -> Result<Value> {
     }
     r.touch_session(false)?;
     if let Some(sid) = r.sid.clone() {
-        board::session_gone(r.app, &sid, &reason)?;
+        board::session_gone_with(r.app, &sid, &reason, r.exit_detail.as_deref())?;
     }
     Ok(ok(t.as_ref(), None))
 }
@@ -3249,6 +3252,10 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     }
     if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) {
         r.unshipped = r.task().ok().flatten().and_then(|t| unshipped(&r, &t));
+    }
+    if r.event == "hook.session_end" && !spooled && matches!(r.body["reason"].as_str(), None | Some("" | "other")) {
+        // Midna is asked outside the transaction: it runs its CLI.
+        r.exit_detail = r.sid.clone().and_then(|sid| crate::midna::exit_detail(app, &sid));
     }
     if r.event == "tb.question" && !spooled {
         let t = r.task().ok().flatten();

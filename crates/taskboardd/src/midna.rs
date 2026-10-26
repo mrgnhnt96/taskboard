@@ -549,7 +549,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
             let state = st.st("state");
             if state == "exited" {
                 if cur.as_ref().map(|c| c.s("status") != Some("gone")).unwrap_or(false) {
-                    board::session_gone(app, &sid, "Claude exited")?;
+                    board::session_gone_with(app, &sid, "Claude exited", describe_exit(Some(s), None, now_ts()).as_deref())?;
                     gone.push(sid.clone());
                 }
                 continue;
@@ -1079,6 +1079,52 @@ pub fn sync_loop(app: Arc<App>) {
     }
 }
 
+/// How long each look at a terminal that just ended may take: the hook that reports it waits.
+const EXIT_DETAIL_TIMEOUT: f64 = 0.3;
+const EXIT_LINES: usize = 3;
+
+/// What Midna can tell of a terminal that ended with no reason Claude named: how it exited, how
+/// long it ran and its last lines. Straight to its CLI, so a Midna that's down marks nothing.
+pub fn exit_detail(app: &App, sid: &str) -> Option<String> {
+    let s = call_exe(&app.cfg.midna, "session.get", &json!({"id": sid}), EXIT_DETAIL_TIMEOUT).ok();
+    let read = call_exe(&app.cfg.midna, "session.read", &json!({"id": sid, "lines": 20}), EXIT_DETAIL_TIMEOUT).ok();
+    describe_exit(s.as_ref(), read.as_ref().and_then(|r| r["text"].as_str()), now_ts())
+}
+
+/// `exit 1` or `signal 9 (SIGKILL)`, `ran 12 minutes`, `last lines: a | b`; parts Midna didn't give
+/// are left out.
+pub fn describe_exit(s: Option<&Value>, text: Option<&str>, now: f64) -> Option<String> {
+    let mut parts = vec![];
+    if let Some(code) = s.and_then(|s| s["status"]["exit_code"].as_i64()) {
+        parts.push(match code {
+            129..=192 => format!("signal {}{}", code - 128, signal_name(code - 128).map(|n| format!(" ({n})")).unwrap_or_default()),
+            _ => format!("exit {code}"),
+        });
+    }
+    if let Some(at) = s.and_then(|s| s["created_at"].as_str()).and_then(parse_iso) {
+        parts.push(format!("ran {}", crate::feed::span((now - at).max(0.0))));
+    }
+    // The terminal's own words, not the rules and prompt marks drawn around them.
+    let lines: Vec<String> = text.unwrap_or("").lines().map(|l| one_line(l, 120)).filter(|l| l.chars().any(|c| c.is_alphanumeric())).collect();
+    if !lines.is_empty() {
+        parts.push(format!("last lines: {}", lines[lines.len().saturating_sub(EXIT_LINES)..].join(" | ")));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+fn signal_name(n: i64) -> Option<&'static str> {
+    Some(match n {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,5 +1245,17 @@ mod tests {
         assert_eq!(args, vec!["--model", "opus", "--append-system-prompt", "be brief"]);
         a.insert("flags".into(), json!("--x \"unclosed"));
         assert!(claude_args(&a).is_err());
+    }
+
+    #[test]
+    fn an_ended_terminal_says_how_it_exited() {
+        let now = parse_iso("2026-10-26T17:12:00Z").unwrap();
+        let s = json!({"created_at": "2026-10-26T17:00:00Z", "status": {"state": "exited", "exit_code": 137}});
+        let text = "Error: out of memory\n\n  at worker\n────────\n❯\n  Opus 5.5 · $0.63\n";
+        assert_eq!(describe_exit(Some(&s), Some(text), now).as_deref(),
+                   Some("signal 9 (SIGKILL), ran 12 minutes, last lines: Error: out of memory | at worker | Opus 5.5 · $0.63"));
+        let s = json!({"status": {"state": "exited", "exit_code": 1}});
+        assert_eq!(describe_exit(Some(&s), None, now).as_deref(), Some("exit 1"));
+        assert_eq!(describe_exit(None, Some("───\n❯"), now), None, "nothing Midna knows");
     }
 }
