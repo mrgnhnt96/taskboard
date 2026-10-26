@@ -51,6 +51,20 @@ fn limit_headers(r: &ureq::Response, limited: bool, why: &str) -> Option<super::
     Some(super::limit::Hit { retry_after: num("Retry-After"), reset_at: num("X-RateLimit-Reset"), why: why.to_string() })
 }
 
+/// What a response's headers say about the hour's calls left, when it sends them: its
+/// `X-RateLimit-Limit`, and whether it's near it (`X-RateLimit-NearLimit: true`, or
+/// `X-RateLimit-Remaining` under a fifth of the limit).
+fn headroom(r: &ureq::Response) -> Option<super::limit::Headroom> {
+    let num = |h: &str| r.header(h).and_then(|v| v.trim().parse::<f64>().ok());
+    let (cap, left) = (num("X-RateLimit-Limit"), num("X-RateLimit-Remaining"));
+    let flagged = r.header("X-RateLimit-NearLimit").map(|v| v.trim().eq_ignore_ascii_case("true"));
+    if cap.is_none() && left.is_none() && flagged.is_none() {
+        return None;
+    }
+    let low = matches!((left, cap), (Some(l), Some(c)) if c > 0.0 && l < c * super::limit::NEAR_SHARE);
+    Some(super::limit::Headroom { cap: cap.filter(|c| *c > 0.0).map(|c| c as u32), near: flagged == Some(true) || low, reset_at: num("X-RateLimit-Reset") })
+}
+
 impl Http for BasicHttp {
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
         let svc = self.service;
@@ -63,6 +77,9 @@ impl Http for BasicHttp {
             match res {
                 Ok(r) => {
                     let hit = limit_headers(&r, false, &format!("{svc} said the account has no calls left this hour"));
+                    if let Some(h) = headroom(&r).filter(|_| hit.is_none()) {
+                        self.gate.headroom(&h);
+                    }
                     let text = r.into_string().unwrap_or_default();
                     if text.trim().is_empty() {
                         return Ok((Value::Null, hit));
@@ -671,6 +688,17 @@ pub(crate) mod tests {
         let spent = r("HTTP/1.1 200 OK\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 1800000900\r\n\r\n{}");
         assert_eq!(limit_headers(&spent, false, "x").map(|h| h.reset_at), Some(Some(1_800_000_900.0)));
         assert_eq!(limit_headers(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Remaining: 12\r\n\r\n{}"), false, "x"), None);
+    }
+
+    #[test]
+    fn rate_limit_headers_say_when_the_account_is_near_its_limit() {
+        let r = |raw: &str| raw.parse::<ureq::Response>().unwrap();
+        assert_eq!(headroom(&r("HTTP/1.1 200 OK\r\n\r\n{}")), None, "no headers, nothing to go on");
+        let plenty = headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-NearLimit: false\r\n\r\n{}")).unwrap();
+        assert_eq!((plenty.cap, plenty.near), (Some(1000), false));
+        assert!(headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-NearLimit: true\r\n\r\n{}")).unwrap().near);
+        assert!(headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-Remaining: 150\r\n\r\n{}")).unwrap().near);
+        assert!(!headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-Remaining: 250\r\n\r\n{}")).unwrap().near);
     }
 
     /// Every call: method, URL and body.

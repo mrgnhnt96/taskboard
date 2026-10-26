@@ -523,7 +523,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
             crate::runner::reviews(app)?;
-            Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at}))
+            Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at, "rate_limits": crate::prhost::limit::status()}))
         }
         ("POST", ["alerts"]) => {
             let text = required(body, "text", 300, "The alert")?;
