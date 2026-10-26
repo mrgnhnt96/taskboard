@@ -1942,7 +1942,8 @@ fn bulk_bar(t: &Theme, bb: &BulkBarVm, cx: &mut Context<MainWindow>) -> Div {
         }))
 }
 
-/// `.sgroup-h.sgroup-toggle`: 10px 16px, 13px semibold, the 14px chevron, the count in 12px muted.
+/// `.sgroup-h.sgroup-toggle`: a tinted band between dividers, 6px 16px, the 12px chevron, the project
+/// in 11.5px bold muted caps so it reads as a section rather than a terminal, the count at the right.
 fn group_head(t: &Theme, id: &str, label: &str, count: &str, open: bool) -> Stateful<Div> {
     let hover = t.panel_2;
     // " · N need(s) you" on a collapsed group is `<b>` in warn.
@@ -1955,22 +1956,24 @@ fn group_head(t: &Theme, id: &str, label: &str, count: &str, open: bool) -> Stat
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
+        .gap(px(6.))
         .w_full()
-        .py(px(10.))
+        .py(px(6.))
         .px(px(16.))
-        .text_size(px(13.))
-        .font_weight(FontWeight::SEMIBOLD)
+        .bg(t.col)
+        .border_y_1()
+        .border_color(t.divider)
         .cursor_pointer()
         .hover(move |d| d.bg(hover))
-        .child(glyph(if open { Glyph::ChevDown } else { Glyph::ChevRight }, t.muted, 14.))
-        .child(div().whitespace_nowrap().child(label.to_string()))
+        .child(glyph(if open { Glyph::ChevDown } else { Glyph::ChevRight }, t.faint, 12.))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(t.muted).child(label.to_uppercase()))
         .child(
             div()
                 .flex()
-                .text_size(px(12.))
+                .flex_none()
+                .text_size(px(11.5))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(t.muted)
+                .text_color(t.faint)
                 .whitespace_nowrap()
                 .child(plain)
                 .children(hot.map(|h| div().flex().child(" · ").child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.warn).child(h)))),
