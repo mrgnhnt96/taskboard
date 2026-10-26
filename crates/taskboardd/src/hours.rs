@@ -548,6 +548,14 @@ pub fn blocker(app: &App) -> Option<String> {
     })
 }
 
+/// Work hours that are shut right now, for other modules' tests: one day a week, two days from today.
+#[cfg(test)]
+pub fn shut_for_tests(app: &App) {
+    let day = DAYS[(now_local().weekday().num_days_from_monday() as usize + 2) % 7];
+    set(app, &json!({"on": true, "start": "06:00", "end": "07:00", "days": [day]})).unwrap();
+    assert!(!is_open(app));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
