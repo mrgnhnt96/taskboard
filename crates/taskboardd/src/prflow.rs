@@ -803,13 +803,16 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     Ok(out)
 }
 
-/// One read of a task's PR from its host, as the flow keeps it (`prhost::Record::to_value`).
+/// One read of a task's PR from its host, as the flow keeps it (`prhost::Record::to_value`). The read
+/// time is kept as `read_at`: a PR a stream relay covers is polled again only once it's old
+/// (`feed::pr_poll_skips`).
 pub fn read(app: &App, t: &Row) -> std::result::Result<Value, String> {
     let pr = crate::prhost::PrRef::of(t).ok_or_else(|| "the task has no PR".to_string())?;
     let host = crate::prhost::host_for(app, &pr.host)?;
     // An open PR's stage can change: its reads still go while the account restarts slowly after a limit.
     let mut rec = crate::prhost::limit::priority(|| host.read(&pr))?;
     roster_ids(app, &t.st("project"), &mut rec).map_err(|e| e.message)?;
+    merge_flow(app, t.id(), fields!["read_at" => now_iso()]).map_err(|e| e.message)?;
     Ok(rec.to_value())
 }
 
@@ -852,12 +855,25 @@ pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
     Ok(())
 }
 
-/// A complete stream pr event, stepped as the PR's state without reading its host (stream mode). None
-/// until the PR has been read once: the board's account and the base branch's head come from that read.
+/// A stream pr event, stepped as the PR's state without reading its host (stream mode). A partial one
+/// (state, title, branch and base, without reviewers, threads or checks) keeps the rest of the last
+/// read, and when it moved the head reads only that commit's checks from the host. None until the PR
+/// has been read once (the board's account and the base branch's head come from that read), or when
+/// the host can't read the checks apart: then the caller reads the whole PR.
 pub fn apply_event(app: &App, id: i64, ev: &Value) -> Result<Option<Value>> {
-    let prior = flow(&board::get_task(app, id)?).get("rec").filter(|r| r.is_object()).cloned();
+    let t = board::get_task(app, id)?;
+    let prior = flow(&t).get("rec").filter(|r| r.is_object()).cloned();
     let Some(prior) = prior else { return Ok(None) };
-    let rec = crate::prhost::Record::from_event(ev, &prior).to_value();
+    let mut rec = crate::prhost::Record::from_event(ev, &prior);
+    if crate::prhost::Record::lacks_checks(ev, &prior) {
+        let Some(pr) = crate::prhost::PrRef::of(&t) else { return Ok(None) };
+        let Ok(host) = crate::prhost::host_for(app, &pr.host) else { return Ok(None) };
+        match host.checks(&pr, &rec.head) {
+            Ok(Some(checks)) => rec.checks = checks,
+            _ => return Ok(None),
+        }
+    }
+    let rec = rec.to_value();
     apply(app, id, &rec)?;
     Ok(Some(rec))
 }
@@ -1682,7 +1698,8 @@ pub fn refresh(app: &App) -> Result<i64> {
     refresh_where(app, false)
 }
 
-/// The timed PR poll: [`refresh`], skipping the PRs a healthy stream relay covers (`feed::pr_poll_rests`).
+/// The timed PR poll: [`refresh`], skipping the PRs a healthy stream relay covers until their reconcile
+/// is due (`feed::pr_poll_skips`).
 pub fn poll(app: &App) -> Result<i64> {
     refresh_where(app, true)
 }
@@ -1697,7 +1714,7 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     )?;
     let mut changed = 0;
     for t in tasks {
-        if skip_covered && crate::feed::pr_poll_rests(app, t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or("")) {
+        if skip_covered && crate::feed::pr_poll_skips(app, &t) {
             continue;
         }
         match read(app, &t) {

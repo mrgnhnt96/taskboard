@@ -2322,11 +2322,16 @@ where
 
 /// `tb pr check`'s answer to `POST /prs/refresh`.
 fn pr_check_line(v: &Value) -> String {
-    match v["changed"].as_i64().unwrap_or(0) {
+    let mut line = match v["changed"].as_i64().unwrap_or(0) {
         0 => "Checked the PRs: nothing changed.".to_string(),
         1 => "Checked the PRs: 1 task changed.".to_string(),
         n => format!("Checked the PRs: {n} tasks changed."),
+    };
+    // A board-mode source a healthy relay covers: the command that stops its polling.
+    for hint in v["relay_hints"].as_array().into_iter().flatten().filter_map(|h| h.as_str()) {
+        line += &format!("\n{hint}");
     }
+    line
 }
 
 /// `tb qa [list|waiting] [--goal G2]`'s read of `GET /qa-comments`.
@@ -7198,6 +7203,9 @@ fn stream_lines(v: &Value) -> String {
         for r in &relays {
             lines.push(format!("  {:<width$} {}", r["relay"].as_str().unwrap_or("?"), relay_line(r)));
         }
+        if let Some(hint) = s["relay_hint"].as_str() {
+            lines.push(format!("  {hint}"));
+        }
     }
     lines.join("\n")
 }
@@ -7253,6 +7261,9 @@ fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
         None => {
             let v = c.call("GET", "/prs/feed", None)?;
             out(&feed_line(&v));
+            if let Some(hint) = v["relay_hint"].as_str() {
+                out(hint);
+            }
             for line in rate_lines(&v["rate_limits"]) {
                 out(&line);
             }
@@ -7836,6 +7847,22 @@ mod tests {
         let at = lines[1].split("last heartbeat ").nth(1).unwrap().split(' ').next().unwrap().to_lowercase();
         assert!(at.ends_with("am") || at.ends_with("pm"), "12-hour time: {at}");
         assert_eq!(lines[3], "  all    stuck: prs's relay all hasn't sent a heartbeat for 4 minutes · covers every PR");
+    }
+
+    #[test]
+    fn tb_stream_and_pr_check_say_what_a_covering_relay_could_stop() {
+        let hint = "prs: relay fi covers bitbucket acme/webapp, so the poll reads them again every 60 minutes, but each of its events still reads its PR from the host; `tb stream mode prs stream` would stop that";
+        let v = json!({"sources": [{
+            "source": "prs", "mode": "board", "mode_from": "default", "watched": false, "polling": true, "polling_some": false,
+            "relays": [{"relay": "fi", "problem": null, "idle": false, "last_heartbeat_at": "2026-10-12T22:41:00Z", "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}],
+            "relay_hint": hint
+        }, {"source": "builds", "mode": "board", "polling": true, "relays": [], "relay_hint": null}]});
+        let text = stream_lines(&v);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[2], format!("  {hint}"));
+        assert_eq!(lines[3], "builds  board · polling");
+        assert_eq!(pr_check_line(&json!({"ok": true, "changed": 0, "relay_hints": [hint]})), format!("Checked the PRs: nothing changed.\n{hint}"));
+        assert_eq!(pr_check_line(&json!({"ok": true, "changed": 0, "relay_hints": []})), "Checked the PRs: nothing changed.");
     }
 
     #[test]

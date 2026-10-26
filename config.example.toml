@@ -177,6 +177,7 @@ silent_secs = 3600.0                 # no event or heartbeat this long inside th
 restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the board restarts it
 poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
 settle_secs = 300.0                  # after it comes back or connects, asks, nudges and swaps wait this long while missed events catch up
+reconcile_secs = 3600.0              # a PR a healthy stream relay covers is polled only this often, and once after the relay connects or comes back (0: never)
 
 # A PR host's rate limit: on a 429, `X-RateLimit-Remaining: 0` or GitHub's secondary limit, every
 # call on that account waits until the host's Retry-After / reset (else 5 minutes, doubling up to an

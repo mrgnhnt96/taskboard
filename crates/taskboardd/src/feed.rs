@@ -47,9 +47,13 @@
 //! each timed on its own, so one relay's heartbeat or idle state doesn't cover for another's silence.
 //! A relay that never sent a heartbeat (a webhook relay) is event-only: never stuck or silent, so its
 //! quiet doesn't count against the source, and a source's `restart_cmd` only runs for a listener's
-//! problem. The PR poll then rests only for PRs a healthy, active relay covers by its heartbeats
-//! ([`pr_poll_rests`]); the others are polled as in board mode. The old listener's endpoints
-//! (`POST /prs/heartbeat`, `POST /prs/event`) aren't relays: without stream relays they work as above.
+//! problem. In either mode, a PR a healthy, active relay covers by its heartbeats ([`pr_poll_rests`])
+//! is only read by the poll to reconcile: every `reconcile_secs` (an hour), and once after the relay
+//! comes back from being stuck (`back_at`) or connects ([`pr_poll_skips`]); the others are polled as
+//! in board mode, and so are its PRs again once it goes stuck or silent. In board mode each of its
+//! events still reads its PR from the host, and [`relay_hint`] says so, with the command to switch.
+//! The old listener's endpoints (`POST /prs/heartbeat`, `POST /prs/event`) aren't relays: without
+//! stream relays they work as above.
 //!
 //! # State
 //!
@@ -93,6 +97,9 @@ pub struct FeedConfig {
     /// After the feed comes back or the listener connects, reviewer asks, nudges and swaps wait this
     /// many more seconds while the events it missed catch up.
     pub settle_secs: f64,
+    /// A PR a healthy, active stream relay covers is read by the poll only this often (and once each
+    /// time the relay comes back or connects): its events carry the rest. 0: never while covered.
+    pub reconcile_secs: f64,
 }
 
 impl Default for FeedConfig {
@@ -106,6 +113,7 @@ impl Default for FeedConfig {
             restart_mins: vec![1.0, 5.0, 15.0],
             poll_while_healthy: false,
             settle_secs: 300.0,
+            reconcile_secs: 3600.0,
         }
     }
 }
@@ -398,20 +406,85 @@ pub fn poll_rests(app: &App, name: &str) -> bool {
     problem_of(app, &src).is_none()
 }
 
-/// Whether the timed PR poll skips this PR: a healthy, active stream relay covers its provider and
-/// repo. Without stream relays the whole poll rests or runs ([`poll_due`]), so no PR is skipped.
+/// Whether a healthy, active stream relay covers this PR's provider and repo now, in either mode (none
+/// does with `poll_while_healthy`).
 pub fn pr_poll_rests(app: &App, host: &str, repo: &str) -> bool {
     let src = prs(app);
-    if !src.on || src.poll_while_healthy {
+    !src.poll_while_healthy && relays_of(&state(app, &src)).iter().any(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
+}
+
+/// Whether the timed PR poll skips this PR this round: a healthy, active stream relay covers it
+/// ([`pr_poll_rests`]) and its host was read (`read_at`) since that relay last came back or connected,
+/// less than `reconcile_secs` ago. The relay's events read the PR (board mode) or are its state
+/// (stream mode); the slow reconcile catches what they missed. A relay that goes stuck or silent stops
+/// covering, so its PRs are polled again from the next round.
+pub fn pr_poll_skips(app: &App, t: &Row) -> bool {
+    let src = prs(app);
+    if src.poll_while_healthy {
         return false;
     }
-    relays_of(&state(app, &src)).iter().any(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
+    let (host, repo) = (t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or(""));
+    let back = relays_of(&state(app, &src))
+        .iter()
+        .filter(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
+        .map(|(_, r)| [ts(r, "connected_at"), ts(r, "back_at")].into_iter().flatten().fold(f64::MIN, f64::max))
+        .reduce(f64::max);
+    let (Some(back), Some(read)) = (back, ts(&jloads_obj(t.s("pr_flow")), "read_at")) else { return false };
+    let every = app.cfg.feed.reconcile_secs;
+    read >= back && (every <= 0.0 || now_ts() - read < every)
 }
 
 /// Whether the PR poll runs this round: always without the feed, else while it's unhealthy (or with
-/// `poll_while_healthy`).
+/// `poll_while_healthy`). With stream relays it always runs, and skips the PRs they cover until their
+/// reconcile is due ([`pr_poll_skips`]).
 pub fn poll_due(app: &App) -> bool {
-    !poll_rests(app, "prs")
+    !poll_rests(app, "prs") || !relays_of(&state(app, &prs(app))).is_empty()
+}
+
+/// What a relay says it covers, in words: "every PR", or "bitbucket acme/webapp, github every repo".
+fn covers_words(r: &Row) -> String {
+    match covers_shown(r) {
+        Value::Array(a) => a
+            .iter()
+            .map(|c| format!("{} {}", c["provider"].as_str().unwrap_or("?"), c["repo"].as_str().unwrap_or("every repo")))
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => "every PR".into(),
+    }
+}
+
+/// For a source in board mode that a healthy, active relay covers: what the board still polls
+/// although the relay covers it, and the command that switches the source to stream mode.
+pub fn relay_hint(app: &App, src: &Source) -> Option<String> {
+    if crate::stream::streams(app, &src.name) {
+        return None;
+    }
+    let now = now_ts();
+    let covering: Vec<(String, String)> = relays_of(&state(app, src))
+        .iter()
+        .filter(|(n, r)| {
+            !event_only(r)
+                && r.get("covers").and_then(|c| c.as_array()).is_none_or(|c| !c.is_empty())
+                && !listener_idle(r, now)
+                && relay_problem(app, src, n, r).is_none()
+        })
+        .map(|(n, r)| (n.clone(), covers_words(r)))
+        .collect();
+    let (relay, what) = covering.first()?;
+    let more = if covering.len() > 1 { format!(" (and {} more)", plural(covering.len() as i64 - 1, "relay")) } else { String::new() };
+    let switch = format!("`tb stream mode {} stream` would stop that", src.name);
+    Some(if src.name == "prs" {
+        let every = app.cfg.feed.reconcile_secs;
+        let poll = if every > 0.0 { format!("the poll reads them again every {}", span(every)) } else { "the poll leaves them".into() };
+        format!("prs: relay {relay}{more} covers {what}, so {poll}, but each of its events still reads its PR from the host; {switch}")
+    } else {
+        format!("{}: polling although relay {relay}{more} covers {what}; {switch}", src.name)
+    })
+}
+
+/// [`relay_hint`] for each source that has one.
+pub fn relay_hints(app: &App) -> Vec<String> {
+    crate::stream::SOURCES.iter().filter_map(|name| relay_hint(app, &source(app, name))).collect()
 }
 
 /// `GET /prs/feed` (`tb feed`).
@@ -447,6 +520,7 @@ pub fn health_of(app: &App, src: &Source) -> Value {
         "idle_until": st.v("idle_until"),
         "off_hours": off_hours_of(app, src),
         "relays": relays_of(&st).iter().map(|(name, r)| relay_health(app, src, name, r)).collect::<Vec<_>>(),
+        "relay_hint": relay_hint(app, src),
     })
 }
 
@@ -549,6 +623,10 @@ pub fn note_relay(app: &App, relay: &str, kind: &str, ev: &Value, sources: &[&st
             r.insert("since".into(), json!(now));
         }
         if kind == "heartbeat" {
+            // Back after it was stuck: the PRs it covers are read once more (`pr_poll_skips`).
+            if src.stuck_secs > 0.0 && ts(&r, "last_heartbeat_at").is_some_and(|t| now_ts() - t > src.stuck_secs) {
+                r.insert("back_at".into(), json!(now));
+            }
             beat(&mut r, active, idle_until.as_deref(), connected_at.as_deref());
             match ev.get("covers").filter(|v| v.is_array()) {
                 Some(c) => r.insert("covers".into(), c.clone()),

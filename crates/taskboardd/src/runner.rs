@@ -669,8 +669,8 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
 }
 
 pub fn prs(app: &App) -> Result<()> {
-    // With a healthy PR feed, events refresh each PR as it changes (`feed.rs`); with stream relays,
-    // only the PRs a healthy one covers.
+    // With a healthy PR feed, events refresh each PR as it changes (`feed.rs`); with stream relays the
+    // poll runs, and the PRs a healthy one covers are only read to reconcile (`feed::pr_poll_skips`).
     if crate::feed::poll_due(app) {
         prflow::poll(app)?;
     }

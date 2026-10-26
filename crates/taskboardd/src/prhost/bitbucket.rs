@@ -245,6 +245,10 @@ impl PrHost for BitbucketHost {
         "bitbucket"
     }
 
+    fn checks(&self, pr: &PrRef, head: &str) -> HostResult<Option<Vec<Check>>> {
+        Ok(Some(checks_of(&self.statuses(&pr.repo, head)?)))
+    }
+
     fn read(&self, pr: &PrRef) -> HostResult<Record> {
         let p = self.get(&self.pr_url(pr))?;
         let comments = self.get_all(&format!("{}/comments?pagelen=100", self.pr_url(pr)), 5)?;
@@ -505,9 +509,9 @@ fn comment_of(pr: i64, c: &Value) -> Option<Comment> {
     })
 }
 
-pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Value]) -> Record {
-    let author = uid(&p["author"]);
-    let checks: Vec<Check> = statuses
+/// A commit's statuses as checks.
+fn checks_of(statuses: &[Value]) -> Vec<Check> {
+    statuses
         .iter()
         .map(|s| Check {
             name: s["name"].as_str().filter(|n| !n.is_empty()).or(s["key"].as_str()).unwrap_or("build").to_string(),
@@ -515,7 +519,12 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             url: s["url"].as_str().filter(|u| !u.is_empty()).map(|u| u.to_string()),
             at: status_at(s),
         })
-        .collect();
+        .collect()
+}
+
+pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Value]) -> Record {
+    let author = uid(&p["author"]);
+    let checks = checks_of(statuses);
     let mut reviewers: Vec<Reviewer> = vec![];
     for r in p["reviewers"].as_array().cloned().unwrap_or_default() {
         let user = uid(&r);

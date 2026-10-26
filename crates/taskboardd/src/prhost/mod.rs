@@ -259,21 +259,26 @@ impl Record {
         }
     }
 
-    /// A complete stream pr event (`docs/STREAM.md`) as a read. What the event doesn't carry (the
-    /// board's account, the base branch's head, the PR's tasks) comes from `prior`, the last record.
-    /// An event with no checks on the same head keeps the prior checks: Bitbucket's PR webhooks
-    /// carry no commit statuses, so an empty list there doesn't mean the checks went away.
+    /// A stream pr event (`docs/STREAM.md`) as a read. What the event doesn't carry (the board's
+    /// account, the base branch's head, the PR's tasks, and any field a partial event leaves out)
+    /// comes from `prior`, the last record. An event with no checks on the same head keeps the prior
+    /// checks: Bitbucket's PR webhooks carry no commit statuses, so an empty list there doesn't mean
+    /// the checks went away. One without checks on a new head has none here ([`Record::lacks_checks`]).
     pub fn from_event(ev: &Value, prior: &Value) -> Record {
+        let has = |k: &str| ev.get(k).is_some_and(|v| !v.is_null());
+        let from = |k: &str| if has(k) { ev } else { prior };
         let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
         let opt = |v: &Value, k: &str| v[k].as_str().map(str::to_string);
         let list = |v: &Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
+        let head = s(from("head"), "head");
         let mut checks: Vec<Check> = list(ev, "checks")
             .iter()
             .map(|c| Check { name: s(c, "name"), state: s(c, "state"), url: opt(c, "url"), at: opt(c, "finished_at").or(opt(c, "started_at")) })
             .collect();
-        if checks.is_empty() && !s(ev, "head").is_empty() && s(ev, "head") == s(prior, "head") {
+        if checks.is_empty() && !head.is_empty() && head == s(prior, "head") {
             checks = serde_json::from_value(prior["checks"].clone()).unwrap_or_default();
         }
+        let author = s(from("author"), "author");
         let reviewers: Vec<Reviewer> = list(ev, "reviewers")
             .iter()
             .map(|r| {
@@ -315,18 +320,18 @@ impl Record {
                 })
             })
             .collect();
-        let author = s(ev, "author");
-        let state = match ev["state"].as_str().unwrap_or("") {
-            "merged" => "MERGED",
-            "declined" => "DECLINED",
-            _ => "OPEN",
+        let state = match ev["state"].as_str() {
+            Some("merged") => "MERGED".to_string(),
+            Some("declined") => "DECLINED".to_string(),
+            Some(_) => "OPEN".to_string(),
+            None => prior["state"].as_str().unwrap_or("OPEN").to_string(),
         };
         let mut rec = Record {
-            state: state.into(),
-            title: s(ev, "title"),
-            head: s(ev, "head"),
-            branch: s(ev, "branch"),
-            base: s(ev, "base"),
+            state,
+            title: s(from("title"), "title"),
+            head,
+            branch: s(from("branch"), "branch"),
+            base: s(from("base"), "base"),
             base_head: s(prior, "base_head"),
             checks,
             approvals: reviewers.iter().filter(|r| r.state == "approved" && r.user != author).count() as i64,
@@ -337,12 +342,29 @@ impl Record {
             tasks_open: prior["tasks_open"].as_i64().unwrap_or(0),
             tasks_error: opt(prior, "tasks_error"),
             viewer: s(prior, "viewer"),
-            mergeable: ev["mergeable"].clone(),
+            mergeable: if ev.get("mergeable").is_some() { ev["mergeable"].clone() } else { prior["mergeable"].clone() },
             author,
             ..Default::default()
         };
+        if !has("reviewers") {
+            rec.reviewers = serde_json::from_value(prior["reviewers"].clone()).unwrap_or_default();
+            rec.approvals = prior["approvals"].as_i64().unwrap_or(0);
+            rec.changes_at = opt(prior, "changes_at");
+            rec.review_decision = s(prior, "review_decision");
+        }
+        if !has("threads") {
+            rec.threads = serde_json::from_value(prior["threads"].clone()).unwrap_or_default();
+            rec.comments = prior["comments"].as_i64().unwrap_or(0);
+        }
         rec.leave_out_viewer();
         rec
+    }
+
+    /// Whether this record, made from a stream pr event ([`Record::from_event`]), has no checks only
+    /// because the event moved the head and didn't carry them: they're read from the host.
+    pub fn lacks_checks(ev: &Value, prior: &Value) -> bool {
+        let head = ev["head"].as_str().unwrap_or("");
+        ev.get("checks").is_none_or(|v| v.is_null()) && !head.is_empty() && head != prior["head"].as_str().unwrap_or("")
     }
 
     pub fn failed(&self) -> Vec<String> {
@@ -399,6 +421,11 @@ pub trait PrHost: Send + Sync {
     /// `github` or `bitbucket`.
     fn id(&self) -> &'static str;
     fn read(&self, pr: &PrRef) -> HostResult<Record>;
+    /// The checks on the PR's `head` commit alone, for a stream event that moved the head without
+    /// them; `None` when the host can't read them apart from a whole [`PrHost::read`].
+    fn checks(&self, _pr: &PrRef, _head: &str) -> HostResult<Option<Vec<Check>>> {
+        Ok(None)
+    }
     fn reviewers(&self, pr: &PrRef) -> HostResult<Vec<Reviewer>> {
         Ok(self.read(pr)?.reviewers)
     }
@@ -558,6 +585,10 @@ impl PrHost for FakeHost {
             return Err(e);
         }
         Ok(self.rec.lock().clone())
+    }
+    fn checks(&self, _pr: &PrRef, head: &str) -> HostResult<Option<Vec<Check>>> {
+        self.log(format!("checks {head}"));
+        Ok(Some(self.rec.lock().checks.clone()))
     }
     fn reply(&self, _pr: &PrRef, thread: &Thread, body: &str) -> HostResult<()> {
         self.log(format!("reply {} {body}", thread.id));
