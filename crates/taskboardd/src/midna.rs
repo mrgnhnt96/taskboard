@@ -252,9 +252,12 @@ pub fn claude_args(a: &Row) -> MResult<(Vec<String>, Option<String>)> {
     Ok((parts, resume))
 }
 
-/// Whether this job's terminal opens in Midna's Background group (config.toml's `[terminals]`).
+/// Whether this job's terminal opens in Midna's Background group (config.toml's `[terminals]`): its
+/// purpose is listed, or `<purpose>:<visit>` for the kind of PR visit it is (`pr:merge`).
 pub fn opens_in_background(app: &App, j: &Row) -> bool {
-    j.s("purpose").is_some_and(|p| app.cfg.terminals.background.iter().any(|b| b.trim() == p))
+    let Some(p) = j.s("purpose") else { return false };
+    let visit = board::job_args(j).s("visit").map(|v| format!("{p}:{v}"));
+    app.cfg.terminals.background.iter().any(|b| b.trim() == p || Some(b.trim()) == visit.as_deref())
 }
 
 /// A live terminal whose conversation has gone cold, with its size and idle minutes.

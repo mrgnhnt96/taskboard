@@ -584,7 +584,8 @@ impl Default for AttachmentsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct TerminalsConfig {
-    /// Job purposes (start, pr, plan, reopen, jira_desk) whose terminals open in Midna's Background group.
+    /// Job purposes (start, pr, plan, reopen, jira_desk, slots) whose terminals open in Midna's Background
+    /// group, or one kind of PR visit as `pr:<visit>` (`midna::opens_in_background`).
     pub background: Vec<String>,
     /// A queued task opens its terminal only while fewer than this many of its project's terminals are busy
     /// (`tb project set <name> --max-terminals` changes it for one project).
@@ -596,10 +597,13 @@ pub struct TerminalsConfig {
 
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
 pub const GLOBAL_MAX_TERMINALS: i64 = 8;
+/// What opens in the background unless config.toml says: the Jira desk, and the terminals that need
+/// nobody watching them. A PR visit that fixes checks or answers review comments stays in its project's tabs.
+pub const BACKGROUND: [&str; 8] = ["jira_desk", "slots", "reopen", "pr:rebase", "pr:steps", "pr:merge", "pr:follow", "pr:note"];
 
 impl Default for TerminalsConfig {
     fn default() -> Self {
-        TerminalsConfig { background: vec![crate::jira_desk::PURPOSE.into()], project_max: PROJECT_MAX_TERMINALS, global_max: GLOBAL_MAX_TERMINALS }
+        TerminalsConfig { background: BACKGROUND.map(String::from).to_vec(), project_max: PROJECT_MAX_TERMINALS, global_max: GLOBAL_MAX_TERMINALS }
     }
 }
 
@@ -812,11 +816,13 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
-/// The `[terminals]` line `init` wrote before the Jira desk moved to the Background group by default:
-/// a live empty list that would keep it out. Exactly this line (the owner's own `background = []`
-/// wouldn't carry init's example) becomes `INIT_BACKGROUND`.
-const OLD_INIT_BACKGROUND: &str = r#"background = []                      # example: ["plan"]"#;
-const INIT_BACKGROUND: &str = r#"background = ["jira_desk"]           # example: ["jira_desk", "plan"]"#;
+/// The `[terminals]` lines earlier `init`s wrote: a live empty list from before the Jira desk moved to
+/// the Background group by default, then the Jira desk alone from before PR visits and other quiet
+/// terminals joined it. Exactly these lines (the owner's own list wouldn't carry init's example) become
+/// `INIT_BACKGROUND`.
+const OLD_INIT_BACKGROUND: [&str; 2] =
+    [r#"background = []                      # example: ["plan"]"#, r#"background = ["jira_desk"]           # example: ["jira_desk", "plan"]"#];
+const INIT_BACKGROUND: &str = r#"background = ["jira_desk", "slots", "reopen", "pr:rebase", "pr:steps", "pr:merge", "pr:follow", "pr:note"]"#;
 
 /// The `[jira] claude_tools` values `init` wrote before each Jira op got its own exact tools: whole
 /// servers, which let a status read or a comment job create, edit or delete. Only the line `init`
@@ -836,7 +842,7 @@ fn old_init_tools(line: &str) -> bool {
 
 /// An old `init`'s config.toml brought up to date, or None when there's nothing to change.
 pub fn migrate_text(text: &str) -> Option<String> {
-    if !text.lines().any(|l| l.trim_end() == OLD_INIT_BACKGROUND || old_init_tools(l)) {
+    if !text.lines().any(|l| OLD_INIT_BACKGROUND.contains(&l.trim_end()) || old_init_tools(l)) {
         return None;
     }
     let mut lines: Vec<&str> = Vec::new();
@@ -847,7 +853,7 @@ pub fn migrate_text(text: &str) -> Option<String> {
             continue;
         }
         after_tools = old_init_tools(l);
-        lines.push(if l.trim_end() == OLD_INIT_BACKGROUND {
+        lines.push(if OLD_INIT_BACKGROUND.contains(&l.trim_end()) {
             INIT_BACKGROUND
         } else if after_tools {
             INIT_TOOLS
@@ -1131,20 +1137,22 @@ mod tests {
     }
 
     #[test]
-    fn the_jira_desk_opens_in_the_background_by_default() {
+    fn the_jira_desk_and_quiet_visits_open_in_the_background_by_default() {
         let f: FileConfig = toml::from_str("").unwrap();
-        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, vec!["jira_desk"]);
+        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, BACKGROUND);
         let f: FileConfig = toml::from_str("[terminals]\nbackground = []").unwrap();
         assert!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background.is_empty());
     }
 
     #[test]
-    fn an_old_init_s_empty_background_gets_the_jira_desk() {
+    fn an_old_init_s_background_line_gets_today_s() {
         let old = "[terminals]\nbackground = []                      # example: [\"plan\"]\n\n[limits]\n";
         let new = migrate_text(old).unwrap();
         assert_eq!(new, format!("[terminals]\n{INIT_BACKGROUND}\n\n[limits]\n"));
         let f: FileConfig = toml::from_str(&new).unwrap();
-        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, vec!["jira_desk"]);
+        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, BACKGROUND);
+        let desk_only = "[terminals]\nbackground = [\"jira_desk\"]           # example: [\"jira_desk\", \"plan\"]\n";
+        assert_eq!(migrate_text(desk_only), Some(format!("[terminals]\n{INIT_BACKGROUND}\n")), "the next init's line moves on too");
         assert_eq!(migrate_text("[terminals]\nbackground = []\n"), None, "the owner's own empty list stays");
         assert_eq!(migrate_text(EXAMPLE), None, "today's init has nothing to change");
     }

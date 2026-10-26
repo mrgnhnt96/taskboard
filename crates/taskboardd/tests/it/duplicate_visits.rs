@@ -141,7 +141,7 @@ fn a_merged_pr_isnt_visited_again_on_a_stale_open_record() {
 }
 
 #[test]
-fn a_merge_visit_opens_in_the_background() {
+fn quiet_pr_visits_open_in_the_background() {
     let b = board();
     let id = b.pr_task();
     b.add_session("s1", "idle");
@@ -150,10 +150,13 @@ fn a_merge_visit_opens_in_the_background() {
         let jid = b.app.db.tx(|| prflow::wake(&b.app, &t, phase, rec, None)).unwrap().expect("a visit");
         let j = b.app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap();
         b.app.db.x("DELETE FROM jobs WHERE id = ?", p![jid]).unwrap();
-        board::job_args(&j).get("background").cloned()
+        midna::opens_in_background(&b.app, &j)
     };
-    assert_eq!(background("merge", &approved()), Some(json!(true)));
-    assert_eq!(background("fix", &failing("h1")), None, "a fix is work the owner may want to watch");
+    assert!(background("merge", &approved()));
+    assert!(background("rebase", &approved()));
+    assert!(background("steps", &approved()));
+    assert!(!background("fix", &failing("h1")), "a fix is work the owner may want to watch");
+    assert!(!background("comments", &approved()), "so is answering a reviewer");
 }
 
 #[test]
