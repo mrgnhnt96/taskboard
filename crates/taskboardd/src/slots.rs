@@ -25,6 +25,9 @@ static CLAIMS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 /// Slot sizes as `du` last measured them, by path. `du` over a slot's build output takes seconds, so
 /// `GET /slots` answers from here and a background pass measures the slots not measured lately.
 static SIZES: parking_lot::Mutex<BTreeMap<String, Size>> = parking_lot::Mutex::new(BTreeMap::new());
+/// `live`'s answers by path, with the `.git` link they were read from. Every `/state` and `/goals`
+/// asks it for each task's slot, and the `git rev-parse` behind it is a process each time.
+static LIVE: parking_lot::Mutex<BTreeMap<String, (Link, bool)>> = parking_lot::Mutex::new(BTreeMap::new());
 /// How long a measured size stands before it's measured again.
 const SIZE_SECS: f64 = 600.0;
 /// `tb project set --min-slots` and the rest: name → the `[worktrees]` keys it sets.
@@ -142,12 +145,41 @@ fn slot_path(repo: &str, n: i64) -> String {
 /// Is `path` a worktree git knows, with its own `.git`? A folder without one (its worktree removed
 /// under it, then made again by a tool writing there) or one git has pruned walks up to the shared
 /// checkout, so every git command run in it would hit that instead.
+/// Asked again only when the slot's `.git` link changes: it's made, pruned or made again.
 pub(crate) fn live(path: &str) -> bool {
-    if !Path::new(path).join(".git").exists() {
+    let Some(link) = link(path) else {
+        LIVE.lock().remove(path);
         return false;
+    };
+    if let Some((seen, was)) = LIVE.lock().get(path) {
+        if *seen == link {
+            return *was;
+        }
     }
     let r = git(path, &["rev-parse", "--show-toplevel"], GIT_SECS);
-    r.code == 0 && crate::worktrees::real(r.out.trim()) == crate::worktrees::real(path)
+    let now = r.code == 0 && crate::worktrees::real(r.out.trim()) == crate::worktrees::real(path);
+    LIVE.lock().insert(path.to_string(), (link, now));
+    now
+}
+
+/// What a folder's `.git` says about the repository behind it: a worktree's `gitdir:` line and whether
+/// that folder is still there (`git worktree prune` and a removed worktree take it away), or a
+/// repository's own `.git` folder. None without a `.git`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Link {
+    Repo,
+    Worktree { gitdir: String, there: bool },
+}
+
+fn link(path: &str) -> Option<Link> {
+    let dot = Path::new(path).join(".git");
+    if dot.is_dir() {
+        return Some(Link::Repo);
+    }
+    let text = std::fs::read_to_string(&dot).ok()?;
+    let gitdir = text.trim().strip_prefix("gitdir:").map(str::trim).unwrap_or(text.trim()).to_string();
+    let there = Path::new(path).join(&gitdir).join("HEAD").exists();
+    Some(Link::Worktree { gitdir, there })
 }
 
 /// Leftovers a tool writes into a slot it runs in, safe to drop when the worktree under them is gone.
@@ -671,5 +703,26 @@ mod tests {
         std::fs::remove_file(dir.path().join("new.rs")).unwrap();
         std::fs::write(dir.path().join("app.rs"), "two").unwrap();
         assert!(dirty(path), "a changed tracked file still counts");
+    }
+
+    #[test]
+    fn a_slot_stays_live_until_its_worktree_goes_and_again_once_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap();
+        let run = |args: &[&str]| assert_eq!(git(repo, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let slot = slot_path(repo, 1);
+        assert!(!live(&slot), "no folder yet");
+        run(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+        assert!(live(&slot) && live(&slot), "a worktree git knows, asked twice");
+        std::fs::remove_dir_all(Path::new(repo).join(".git/worktrees/slot-1")).unwrap();
+        assert!(!live(&slot), "its git folder pruned under it");
+        std::fs::remove_dir_all(&slot).unwrap();
+        run(&["worktree", "prune"]);
+        run(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+        assert!(live(&slot), "made again in place");
     }
 }
