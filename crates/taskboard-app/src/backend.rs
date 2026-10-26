@@ -56,12 +56,15 @@ pub struct Daemon {
     /// The daemon's app socket (`taskboardd::apporigin`), where the app's posts go: a team-signed
     /// daemon takes them as the app's from the signed app only. None with `TASKBOARD_URL`.
     socket: Option<std::path::PathBuf>,
+    /// Why the board was last out of reach (None: it answered). Logged when it changes, not on
+    /// every poll.
+    down: std::sync::Mutex<Option<String>>,
 }
 
 impl Daemon {
     #[cfg(test)]
     pub fn at(base: &str) -> Daemon {
-        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build(), token: None, socket: None }
+        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build(), token: None, socket: None, down: Default::default() }
     }
 
     pub fn new() -> Daemon {
@@ -74,10 +77,14 @@ impl Daemon {
             base: base.unwrap_or_else(|| format!("http://{host}:{port}")),
             agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(2)).timeout(Duration::from_secs(20)).build(),
             token: cfg.as_ref().map(taskboardd::apptoken::path),
+            down: Default::default(),
         }
     }
 
-    fn answer(&self, r: Result<ureq::Response, ureq::Error>) -> CallResult {
+    fn answer(&self, path: &str, r: Result<ureq::Response, ureq::Error>) -> CallResult {
+        if !matches!(r, Err(ureq::Error::Transport(_))) {
+            self.reached();
+        }
         match r {
             // As the web board's `api()`: an OK answer that isn't JSON is just empty.
             Ok(resp) => Ok(resp.into_json::<Value>().unwrap_or(Value::Null)),
@@ -85,7 +92,32 @@ impl Daemon {
                 let msg = resp.into_json::<Value>().ok().and_then(|v| v["error"].as_str().map(str::to_string));
                 Err(CallError { status: code, message: msg.unwrap_or_else(|| format!("The board answered {code}.")) })
             }
-            Err(_) => Err(CallError { status: 0, message: "Can’t reach the task board server.".into() }),
+            Err(ureq::Error::Transport(t)) => {
+                let mut why = t.kind().to_string();
+                if let Some(m) = t.message() {
+                    why += &format!(": {m}");
+                }
+                if let Some(s) = std::error::Error::source(&t) {
+                    why += &format!(": {s}");
+                }
+                Err(self.unreachable(path, why))
+            }
+        }
+    }
+
+    /// The UI's "can't reach" error; the real reason goes to `app.log` when it's new.
+    fn unreachable(&self, path: &str, why: String) -> CallError {
+        let mut down = self.down.lock().unwrap_or_else(|e| e.into_inner());
+        if down.as_deref() != Some(why.as_str()) {
+            crate::log::info(format!("can't reach the board at {} ({path}): {why}", self.base));
+            *down = Some(why);
+        }
+        CallError { status: 0, message: "Can’t reach the task board server.".into() }
+    }
+
+    fn reached(&self) {
+        if self.down.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
+            crate::log::info(format!("reached the board at {} again", self.base));
         }
     }
 }
@@ -101,7 +133,7 @@ impl Backend for Daemon {
         for (k, v) in query {
             req = req.query(k, v);
         }
-        self.answer(req.call())
+        self.answer(path, req.call())
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
@@ -119,16 +151,19 @@ impl Backend for Daemon {
             // A stale socket (nothing listens) falls back to the port; a post that got there doesn't
             // go twice.
             match taskboardd::apporigin::post(sock, path, &headers, &bytes, Duration::from_secs(20)) {
-                Ok((status, answer)) => return socket_answer(status, &answer),
+                Ok((status, answer)) => {
+                    self.reached();
+                    return socket_answer(status, &answer);
+                }
                 Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {}
-                Err(_) => return Err(CallError { status: 0, message: "Can’t reach the task board server.".into() }),
+                Err(e) => return Err(self.unreachable(path, format!("app socket {}: {e}", sock.display()))),
             }
         }
         let mut req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
         if let Some(token) = token {
             req = req.set("X-Task-Board-Token", &token);
         }
-        self.answer(req.send_json(body))
+        self.answer(path, req.send_json(body))
     }
 }
 
@@ -350,6 +385,19 @@ mod tests {
         let e = d.get("state", &[]).unwrap_err();
         assert_eq!(e.message, "Can’t reach the task board server.");
         assert_eq!(e.status, 0);
+    }
+
+    /// The UI keeps its sentence; the log gets why (refused, timed out…), once until it changes.
+    #[::core::prelude::v1::test]
+    fn unreachable_keeps_the_reason() {
+        let d = Daemon::at("http://127.0.0.1:9");
+        d.get("state", &[]).unwrap_err();
+        let why = d.down.lock().unwrap().clone().expect("a reason");
+        assert!(why.contains("refused"), "{why}");
+        d.get("board", &[]).unwrap_err();
+        assert_eq!(d.down.lock().unwrap().as_deref(), Some(why.as_str()));
+        d.reached();
+        assert!(d.down.lock().unwrap().is_none());
     }
 
     /// Posts go to the app socket when there's one, saying they're the app's and carrying the token

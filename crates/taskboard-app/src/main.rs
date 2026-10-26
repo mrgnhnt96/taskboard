@@ -19,6 +19,7 @@ mod backend;
 mod fmt;
 mod hooks;
 mod install;
+mod log;
 mod prefs;
 mod settings;
 #[cfg(test)]
@@ -49,10 +50,12 @@ fn export_for_debugging() {
 
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    log::init();
     if let Some(code) = install::headless(&std::env::args().collect::<Vec<_>>()) {
         std::process::exit(code);
     }
     let backend = backend::from_env();
+    log::info(format!("started v{} ({} backend)", env!("CARGO_PKG_VERSION"), backend.label()));
     // The reader's UI state (the web board's localStorage); the sample board keeps it in memory.
     prefs::init(backend.label() != "fake");
     let size_env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);

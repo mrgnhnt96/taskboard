@@ -62,7 +62,7 @@ fn check_in_the_way() -> bool {
     let taken = port.is_some();
     let found: Vec<String> = port.into_iter().chain(taskboardd::cutover::other_problems(&agent_path(), &crate::hooks::claude_dir())).collect();
     for p in &found {
-        eprintln!("taskboard-app: {p}");
+        crate::log::info(p);
     }
     if let Ok(mut g) = IN_THE_WAY.lock() {
         *g = found;
@@ -184,7 +184,7 @@ pub fn register(bundle: &Path) -> LoginItem {
     let stale = matches!(unsafe { svc.status() }, SMAppServiceStatus::Enabled)
         && agent_label(&plist).and_then(|l| launchd_job(&l)).is_some_and(|p| stale_registration(&p));
     if stale {
-        eprintln!("taskboard-app: launchd can't start the daemon under its old registration; registering it again");
+        crate::log::info("launchd can't start the daemon under its old registration; registering it again");
         let _ = unsafe { svc.unregisterAndReturnError() };
         // macOS drops the registration in the background; registering before it's gone is a no-op.
         for _ in 0..50 {
@@ -270,12 +270,12 @@ pub fn headless(args: &[String]) -> Option<i32> {
     match args.get(1).map(String::as_str) {
         Some("--uninstall") => {
             let Some(bundle) = bundle_of(&std::env::current_exe().ok()?) else {
-                eprintln!("taskboard-app: --uninstall only works from inside Taskboard.app");
+                crate::log::info("--uninstall only works from inside Taskboard.app");
                 return Some(2);
             };
             let mut code = 0;
             if let Err(e) = unregister(&bundle) {
-                eprintln!("taskboard-app: unregistering the daemon failed: {e}");
+                crate::log::info(format!("unregistering the daemon failed: {e}"));
                 code = 1;
             }
             let link = tb_link();
@@ -315,7 +315,7 @@ pub fn start(backend: &str) {
                 return;
             }
             if let Err(e) = link_tb(&bundle) {
-                eprintln!("taskboard-app: couldn't link tb: {e}");
+                crate::log::info(format!("couldn't link tb: {e}"));
             }
         })
         .ok();
