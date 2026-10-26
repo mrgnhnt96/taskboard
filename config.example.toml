@@ -24,6 +24,10 @@ claude_projects = "~/.claude/projects"
 # directory and off for any other (so a test board never opens terminals). env TASKBOARD_RUNNER=1|0
 # runner = true
 
+# Routine lines (a terminal gone from Midna, the Mac waking from sleep) stay out of server.log
+# unless this is on. server.log rolls over at 4 MB, keeping server.log.1 and .2. env TASKBOARD_DEBUG_LOG=1|0
+# debug_log = false
+
 # Your commit emails: a push of yours is cancelled while PR builds are stopped (`tb pr-builds stop`),
 # and a red default branch ([master]) is yours when your commits are among its suspects.
 # owner_emails = ["alex@acme.dev"]     # example

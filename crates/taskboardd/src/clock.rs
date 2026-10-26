@@ -179,7 +179,7 @@ pub fn watch(app: Arc<App>) {
             let now = now_ts();
             note_sleep(now - slept, now);
             save(&app);
-            app.info(format!("clock: the Mac slept for {} minutes", (slept / 60.0).round() as i64));
+            app.debug(format!("clock: the Mac slept for {} minutes", (slept / 60.0).round() as i64));
             app.wake_runner();
         }
         check_away(&app);

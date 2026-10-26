@@ -58,6 +58,7 @@ pub mod limits;
 pub mod lines;
 pub mod lost_done;
 pub mod locks;
+pub mod logfile;
 pub mod mdcopy;
 pub mod merged_note;
 pub mod midna;
