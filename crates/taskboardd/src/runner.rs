@@ -647,6 +647,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
     app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;
+    app.db.tx(|| crate::devices::top_up(app).map(|_| ()))?;
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
     close_compacted(app)?;

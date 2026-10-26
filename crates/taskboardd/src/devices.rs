@@ -282,6 +282,11 @@ pub fn take_needs(app: &App, kind: &str, id: i64, body: &Value, who: &str) -> Re
     };
     if kind == "task" {
         board::log_event(app, id, who, "note", &text)?;
+        // A task that's already running gets what it now asks for, as it would have at its start.
+        let t = board::get_task(app, id)?;
+        if is_active(app, id)? {
+            relend(app, &t, true)?;
+        }
         board::bump_ctx(app, id)?;
     } else {
         for t in board::goal_tasks(app, id)? {
@@ -567,6 +572,50 @@ pub fn lend(app: &App, t: &Row) -> Result<Vec<String>> {
     Ok(picked)
 }
 
+fn is_active(app: &App, task_id: i64) -> Result<bool> {
+    Ok(app.db.count(&format!("SELECT COUNT(*) FROM tasks t WHERE t.id = ? AND {ACTIVE_SQL}"), p![task_id])? > 0)
+}
+
+/// Lends a running task what it asks for and lacks from the free devices. `fresh` (its needs just
+/// changed): gives back those it no longer asks for, as a start would. Otherwise it keeps all it has,
+/// switched off or not, and only gains. The names newly lent.
+fn relend(app: &App, t: &Row, fresh: bool) -> Result<Vec<String>> {
+    let needs = needs(app, t)?;
+    let had = lent(app, t.id())?;
+    let (seen, ours) = view(app, t.i("goal_id"))?;
+    let mut free = free_in(app, &seen, t.id())?;
+    if !fresh {
+        free.extend(seen.iter().filter(|d| d.b("off") && had.contains(&d.st("name"))).cloned());
+    }
+    let (picked, _) = fill(&needs, &free, &had, &ours);
+    let now = now_iso();
+    if fresh {
+        for d in had.iter().filter(|d| !picked.contains(d)) {
+            app.db.x("UPDATE device_loans SET released_at = ? WHERE task_id = ? AND device = ? AND released_at IS NULL", p![now, t.id(), d])?;
+        }
+    }
+    let new: Vec<String> = picked.into_iter().filter(|d| !had.contains(d)).collect();
+    for d in &new {
+        app.db.insert("device_loans", crate::fields!["device" => d, "task_id" => t.id(), "at" => now])?;
+    }
+    if !new.is_empty() {
+        board::log_event(app, t.id(), board::BOARD, "note", &format!("Lent it {}", new.join(", ")))?;
+        board::bump_ctx(app, t.id())?;
+    }
+    Ok(new)
+}
+
+/// Lends running tasks that are short of what they ask for the devices that have come free.
+pub fn top_up(app: &App) -> Result<usize> {
+    let mut n = 0;
+    for t in app.db.q(&format!("SELECT t.* FROM tasks t WHERE {ACTIVE_SQL} ORDER BY t.id"), p![])? {
+        if !needs(app, &t)?.is_empty() {
+            n += relend(app, &t, false)?.len();
+        }
+    }
+    Ok(n)
+}
+
 /// Takes back the devices of tasks that aren't active any more.
 pub fn release_idle(app: &App) -> Result<usize> {
     let rows = app.db.q(
@@ -621,12 +670,14 @@ fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value>
               "start_cmd": d.v("start_cmd"), "stop_cmd": d.v("stop_cmd"), "held_by": holder, "goals": goals, "reserved_for": reserved_for}))
 }
 
-/// `GET /devices`: the pool, who has each device, and the queued tasks waiting for one.
+/// `GET /devices`: the pool, who has each device, and the tasks waiting for one: queued ones, and
+/// running ones short of what they ask for.
 pub fn overview(app: &App) -> Result<Value> {
     let held = held(app)?;
     let devices = pool(app)?.iter().map(|d| device_dict(d, &held, app)).collect::<Result<Vec<_>>>()?;
     let mut waiting = vec![];
-    for t in app.db.q("SELECT * FROM tasks WHERE status = 'queued' AND start_job IS NULL ORDER BY id", p![])? {
+    let sql = format!("SELECT t.* FROM tasks t WHERE (t.status = 'queued' AND t.start_job IS NULL) OR {ACTIVE_SQL} ORDER BY t.id");
+    for t in app.db.q(&sql, p![])? {
         if let Some(why) = blocker(app, &t)? {
             waiting.push(json!({"ref": rf("task", t.id()), "title": t.v("title"), "goal": rf_opt("goal", t.i("goal_id")),
                                 "needs": needs_text(&needs(app, &t)?), "why": why}));
