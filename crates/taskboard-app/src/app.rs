@@ -101,9 +101,10 @@ pub struct Data {
     pub issue: Option<Value>,
     /// `GET /goals/:id` for the goal page, shared with what the page builds from it.
     pub goal: Option<Rc<Value>>,
-    /// `GET /sessions`, `GET /sessions/closed`, `GET /sessions/:id` for the Sessions page.
-    pub sessions: Option<Value>,
-    pub closed: Option<Value>,
+    /// `GET /sessions`, `GET /sessions/closed`, `GET /sessions/:id` for the Sessions page; the
+    /// lists behind `Rc` so the page builds its rows once per answer.
+    pub sessions: Option<Rc<Value>>,
+    pub closed: Option<Rc<Value>>,
     pub session: Option<Value>,
     /// `GET /days` for the Days page, shared with the view the page builds from it.
     pub days: Option<Rc<Value>>,
@@ -1498,10 +1499,10 @@ impl Got {
             }
         }
         if let Some(v) = self.sessions {
-            land(&mut d.sessions, &mut d.errs.sessions, v, |v| v);
+            land_rc(&mut d.sessions, &mut d.errs.sessions, v, |v| v);
         }
         if self.closed.is_some() {
-            d.closed = self.closed;
+            d.closed = self.closed.map(Rc::new);
         }
         if let Some(v) = self.days {
             if m.page == Page::Days {

@@ -13,9 +13,18 @@ pub struct Fresh {
     first: Value,
     asked: Vec<i64>,
     again: Option<Value>,
+    /// All of it hashed, clocks too, off the UI thread: the same stamp lands the same rows.
+    stamp: u64,
 }
 
 impl Fresh {
+    fn new(first: Value, asked: Vec<i64>, again: Option<Value>) -> Fresh {
+        let mut f = crate::fingerprint::Fingerprint::new("paged");
+        f.skip = &[];
+        let stamp = f.add(&first).add(&asked).add(&again).finish();
+        Fresh { first, asked, again, stamp }
+    }
+
     /// The first page as the board sent it, for what else it says about the list.
     pub fn first(&self) -> &Value {
         &self.first
@@ -44,6 +53,8 @@ pub struct Paged {
     pub loading: bool,
     /// Bumped whenever `rows` change, so a view built from them knows to rebuild.
     pub version: u64,
+    /// The last refresh's stamp, while the rows are still what it landed.
+    stamp: Option<u64>,
 }
 
 fn id(v: &Value) -> i64 {
@@ -71,12 +82,16 @@ impl Paged {
             q.push(("ids", asked.iter().map(i64::to_string).collect::<Vec<_>>().join(",")));
             Some(be.get(path, &q).map_err(|e| e.message)?)
         };
-        Ok(Fresh { first, asked, again })
+        Ok(Fresh::new(first, asked, again))
     }
 
     /// Land a refresh: its first page on top, then the older rows held, swapped for what came back
-    /// by id (a row asked for that didn't come back is gone).
+    /// by id (a row asked for that didn't come back is gone). One like the last lands nothing new.
     pub fn land(&mut self, key: &str, f: Fresh) {
+        self.loaded = true;
+        if self.stamp == Some(f.stamp) {
+            return;
+        }
         let page = arr(&f.first, key);
         let again: Vec<&Value> = f.again.as_ref().map(|a| arr(a, key).iter().collect()).unwrap_or_default();
         let ids: HashSet<i64> = page.iter().map(id).collect();
@@ -93,7 +108,7 @@ impl Paged {
         if !self.older {
             self.next = f.first["next"].as_str().map(String::from);
         }
-        self.loaded = true;
+        self.stamp = Some(f.stamp);
         self.set(rows);
     }
 
@@ -117,13 +132,47 @@ impl Paged {
         rows.extend(page.iter().cloned());
         self.older = true;
         self.next = v["next"].as_str().map(String::from);
+        self.stamp = None;
         self.set(rows);
     }
 
     fn set(&mut self, rows: Vec<Value>) {
-        if *self.rows != rows {
-            self.rows = Rc::new(rows);
-            self.version += 1;
-        }
+        self.rows = Rc::new(rows);
+        self.version += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn page(rows: Value, next: Option<&str>) -> Value {
+        json!({"tasks": rows, "total": 3, "next": next})
+    }
+
+    #[test]
+    fn the_same_refresh_lands_nothing_new() {
+        let mut p = Paged::default();
+        p.land("tasks", Fresh::new(page(json!([{"id": 3}, {"id": 2}]), Some("2")), vec![], None));
+        let (rows, version) = (p.rows.clone(), p.version);
+        p.land("tasks", Fresh::new(page(json!([{"id": 3}, {"id": 2}]), Some("2")), vec![], None));
+        assert!(Rc::ptr_eq(&rows, &p.rows) && p.version == version, "an unchanged poll keeps the rows");
+
+        // A clock moving is still a change: the rows show it as an age.
+        p.land("tasks", Fresh::new(page(json!([{"id": 3, "seen_at": "x"}, {"id": 2}]), Some("2")), vec![], None));
+        assert_eq!((p.version, p.rows[0]["seen_at"].as_str()), (version + 1, Some("x")));
+    }
+
+    #[test]
+    fn an_older_page_then_the_same_refresh_keeps_the_older_rows() {
+        let mut p = Paged::default();
+        let first = || Fresh::new(page(json!([{"id": 3}, {"id": 2}]), Some("2")), vec![], None);
+        p.land("tasks", first());
+        p.land_older("tasks", "2", Ok(json!({"tasks": [{"id": 1}], "next": null})));
+        let version = p.version;
+        p.land("tasks", first());
+        assert_eq!(p.rows.iter().map(id).collect::<Vec<_>>(), [3, 2, 1]);
+        assert_eq!((p.version, p.next.as_deref()), (version + 1, None));
     }
 }
