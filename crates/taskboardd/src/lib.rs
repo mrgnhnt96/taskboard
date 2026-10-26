@@ -99,6 +99,7 @@ pub mod review_fixes;
 pub mod slot_ageing;
 pub mod slot_tidy;
 pub mod slots;
+pub mod slowlog;
 pub mod spans;
 pub mod tidy;
 pub mod stack;

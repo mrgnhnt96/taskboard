@@ -2,8 +2,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::time::Instant;
 
-use parking_lot::ReentrantMutex;
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use rusqlite::types::ValueRef;
 use rusqlite::{params_from_iter, Connection};
 use serde_json::{Number, Value};
@@ -407,9 +408,20 @@ impl Db {
         self.inner.is_owned_by_current_thread()
     }
 
+    /// Takes the connection for `what`, noting in server.log when another thread kept it waiting long.
+    fn lock(&self, what: &str) -> ReentrantMutexGuard<'_, Inner> {
+        if let Some(g) = self.inner.try_lock() {
+            return g;
+        }
+        let asked = Instant::now();
+        let g = self.inner.lock();
+        crate::slowlog::db_wait(asked.elapsed(), what);
+        g
+    }
+
     /// Runs `f` in one transaction. Nested calls join the outer transaction.
     pub fn tx<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let g = self.inner.lock();
+        let g = self.lock("a transaction");
         if g.depth.get() == 0 {
             g.conn.borrow().execute_batch("BEGIN IMMEDIATE")?;
         }
@@ -449,7 +461,7 @@ impl Db {
     }
 
     pub fn x(&self, sql: &str, params: Vec<Value>) -> Result<i64> {
-        let g = self.inner.lock();
+        let g = self.lock(sql);
         let c = g.conn.borrow();
         c.execute(sql, params_from_iter(params.iter().map(param)))?;
         Ok(c.last_insert_rowid())
@@ -457,13 +469,13 @@ impl Db {
 
     /// Like `x`, but returns how many rows the statement changed.
     pub fn changed(&self, sql: &str, params: Vec<Value>) -> Result<i64> {
-        let g = self.inner.lock();
+        let g = self.lock(sql);
         let c = g.conn.borrow();
         Ok(c.execute(sql, params_from_iter(params.iter().map(param)))? as i64)
     }
 
     pub fn q(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
-        let g = self.inner.lock();
+        let g = self.lock(sql);
         let c = g.conn.borrow();
         let mut st = c.prepare_cached(sql)?;
         let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
@@ -484,7 +496,7 @@ impl Db {
     }
 
     pub fn val(&self, sql: &str, params: Vec<Value>) -> Result<Value> {
-        let g = self.inner.lock();
+        let g = self.lock(sql);
         let c = g.conn.borrow();
         let mut st = c.prepare_cached(sql)?;
         let mut rows = st.query(params_from_iter(params.iter().map(param)))?;
@@ -519,7 +531,7 @@ impl Db {
 
     /// Whether this thread is inside `tx`: what it reads there may yet roll back.
     pub fn in_tx(&self) -> bool {
-        self.inner.lock().depth.get() > 0
+        self.lock("a transaction check").depth.get() > 0
     }
 
     /// Changes when anything is written: this connection's writes, or another's commit. A rollback
