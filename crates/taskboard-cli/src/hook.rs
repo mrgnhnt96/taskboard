@@ -3,6 +3,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
@@ -138,7 +139,7 @@ fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) ->
     if repo_of(&place).is_none() {
         return false;
     }
-    let Ok(v) = client::request(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Ok(v) = board_call(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
     let Some(task) = v["task"].as_str() else { return false };
     let vars = &v["vars"];
     let Some(home) = ["repo", "worktree"].iter().filter_map(|k| vars[*k].as_str()).find(|p| !p.is_empty()) else { return false };
@@ -151,7 +152,7 @@ fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) ->
     };
     deny(&why);
     let text = format!("{task} tried to work in {}, a repository it doesn't own ({task} is {project}'s). The board refused it.", top.display());
-    let _ = client::request(cfg, "POST", "/alerts", Some(&json!({"text": text, "key": format!("elsewhere:{task}"), "task": task})), hook_timeout());
+    let _ = board_call(cfg, "POST", "/alerts", Some(&json!({"text": text, "key": format!("elsewhere:{task}"), "task": task})), hook_timeout());
     true
 }
 
@@ -173,15 +174,12 @@ fn note_edit(data: &Path, task: &str, session: &str, file: &Path) {
     if task.is_empty() || task.contains(['/', '.']) {
         return;
     }
-    let (dir, line) = (ledger_dir(data), format!("{session}\t{}", file.display()));
-    let path = dir.join(task);
+    let line = format!("{session}\t{}", file.display());
+    let path = ledger_dir(data).join(task);
     if std::fs::read_to_string(&path).is_ok_and(|t| t.lines().any(|l| l == line)) {
         return;
     }
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = f.write_all(format!("{line}\n").as_bytes());
-    }
+    append_line(data, &path, &line);
 }
 
 /// `tb hook EditDone` (PostToolUse on an edit): appends the patch Claude made the file with to the
@@ -194,11 +192,18 @@ fn note_patch(data: &Path, task: &str, file: &Path, response: &Value) {
     if task.is_empty() || task.contains(['/', '.']) {
         return;
     }
-    let dir = data.join("hunks");
-    let _ = std::fs::create_dir_all(&dir);
     let line = json!({"file": file.display().to_string(), "patch": patch}).to_string();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(task)) {
-        let _ = f.write_all(format!("{line}\n").as_bytes());
+    append_line(data, &data.join("hunks").join(task), &line);
+}
+
+/// Appends `line` to a ledger file, making its folder first. A write that fails goes to `hook.log`.
+fn append_line(data: &Path, path: &Path, line: &str) {
+    let start = Instant::now();
+    let wrote = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
+        std::fs::OpenOptions::new().create(true).append(true).open(path)?.write_all(format!("{line}\n").as_bytes())
+    });
+    if let Err(e) = wrote {
+        log_failure(data, &format!("write {}", path.display()), &e.to_string(), start.elapsed());
     }
 }
 
@@ -208,7 +213,7 @@ fn edit_done(payload: &Value, session: &str) {
     let cwd = payload["cwd"].as_str().unwrap_or("");
     let Some(file) = EDIT_TOOLS.contains(&tool).then(|| work_place(tool, &payload["tool_input"], cwd)).flatten() else { return };
     let cfg = client::config();
-    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return };
+    let Ok(v) = board_call(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return };
     if let Some(task) = v["task"].as_str() {
         note_patch(&cfg.data, task, &file, &payload["tool_response"]);
     }
@@ -584,12 +589,12 @@ fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &s
     if !SHARED_GIT_RE.is_match(cmd) || ledger(&cfg.data).is_empty() {
         return false;
     }
-    let Ok(v) = client::request(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Ok(v) = board_call(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
     let own = v["task"].as_str();
     let Some((verb, top, mut theirs)) = shared_conflicts(cmd, cwd, &cfg.data, own) else { return false };
     // Only a task still on its terminal is working there; a finished one's ledger is done with.
     theirs.retain(|(task, terminal, _)| {
-        let on = client::request(cfg, "GET", &format!("/steps?session={terminal}"), None, hook_timeout()).is_ok_and(|v| v["task"].as_str() == Some(task.as_str()));
+        let on = board_call(cfg, "GET", &format!("/steps?session={terminal}"), None, hook_timeout()).is_ok_and(|v| v["task"].as_str() == Some(task.as_str()));
         if !on {
             let _ = std::fs::remove_file(ledger_dir(&cfg.data).join(task));
         }
@@ -687,7 +692,7 @@ fn stray_worktree_refused(payload: &Value, session: &str, cfg: &Config, cwd: &st
     if stray_worktree(tool, input, cwd, None).is_none() {
         return false;
     }
-    let Ok(v) = client::request(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Ok(v) = board_call(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
     let Some(task) = v["task"].as_str() else { return false };
     let Some(what) = stray_worktree(tool, input, cwd, v["vars"]["worktree"].as_str()) else { return false };
     deny(&stray_refusal(task, &what, &tb_path()));
@@ -841,7 +846,7 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
         }
     }
     let what = if opening { "opening the PR" } else { "pushing to the open PR" };
-    let Ok(mut v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Ok(mut v) = board_call(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
     if opening && !GITLAB_RE.is_match(payload["tool_input"]["command"].as_str().unwrap_or("")) {
         if let Some(reason) = board_opens_pr(&v, &tb_path()) {
             deny(&reason);
@@ -854,7 +859,7 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
     }
     // Per-head steps are judged on the task's own checkout, not on whichever folder this call runs in.
     if let Some(head) = own_head(&v["vars"]).filter(|h| v["head"].as_str() != Some(h.as_str())) {
-        match client::request(&cfg, "GET", &format!("/steps?session={session}&head={head}"), None, hook_timeout()) {
+        match board_call(&cfg, "GET", &format!("/steps?session={session}&head={head}"), None, hook_timeout()) {
             Ok(at) => v = at,
             Err(_) => return false,
         }
@@ -938,7 +943,7 @@ fn tool_window(payload: &Value, session: &str, event: &str) {
     let Some(body) = tool_window_body(payload, session, event) else { return };
     let left = (hook_timeout() + SLACK - start.elapsed().as_secs_f64()).min(hook_timeout());
     if left > 0.05 {
-        let _ = client::request(&client::config(), "POST", "/report", Some(&body), left);
+        let _ = board_call(&client::config(), "POST", "/report", Some(&body), left);
     }
 }
 
@@ -1033,6 +1038,59 @@ fn tool_output(resp: &Value) -> String {
     }
 }
 
+/// `hook.log` in the board's data folder: a line for each board call or ledger write a hook couldn't
+/// make. The hooks carry on past those so they never get in Claude's way; this says what was dropped.
+const HOOK_LOG: &str = "hook.log";
+/// Past this many bytes the log moves to `hook.log.1` (dropping the one before) and starts over.
+const HOOK_LOG_CAP: u64 = 1024 * 1024;
+
+/// The terminal and hook event this run is for, set once by `run`, for `hook.log`'s lines.
+static RUN: OnceLock<(String, String)> = OnceLock::new();
+
+/// `client::request`, with a failure written to `hook.log`.
+fn board_call(cfg: &Config, method: &str, path: &str, body: Option<&Value>, timeout: f64) -> Result<Value, CallError> {
+    let start = Instant::now();
+    let r = client::request(cfg, method, path, body, timeout);
+    if let Err(e) = &r {
+        let why = match e {
+            CallError::Refused(m) => format!("refused: {m}"),
+            CallError::Unreachable(m) => format!("unreachable: {m}"),
+            CallError::TimedOut(m) => format!("timed out: {m}"),
+        };
+        // The query holds the terminal, which the line names already.
+        log_failure(&cfg.data, &format!("{method} {}", path.split('?').next().unwrap_or(path)), &why, start.elapsed());
+    }
+    r
+}
+
+/// Appends a failure to `hook.log`. Logging is never why a hook fails: a line that can't be written
+/// is dropped.
+fn log_failure(data: &Path, endpoint: &str, error: &str, elapsed: Duration) {
+    let (session, event) = RUN.get().map_or(("", ""), |(s, e)| (s.as_str(), e.as_str()));
+    let at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    append_capped(&data.join(HOOK_LOG), &failure_line(&at, session, event, endpoint, error, elapsed), HOOK_LOG_CAP);
+}
+
+/// One `hook.log` line: when, the terminal, the hook event, what failed, how long it took, and why,
+/// on one line however the error reads.
+fn failure_line(at: &str, session: &str, event: &str, endpoint: &str, error: &str, elapsed: Duration) -> String {
+    let or_dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+    let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{at} session={} event={} {endpoint} failed after {}ms: {error}\n", or_dash(session), or_dash(event), elapsed.as_millis())
+}
+
+/// Appends `line` to `path`, first moving a file past `cap` bytes to `<path>.1`.
+fn append_capped(path: &Path, line: &str, cap: u64) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= cap) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = std::fs::rename(path, old);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 pub fn hook_timeout() -> f64 {
     std::env::var("TASKBOARD_HOOK_TIMEOUT").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0).unwrap_or(1.0)
 }
@@ -1083,7 +1141,7 @@ fn say_hello(cfg: &Config, base: &Value, version: &str, path: &str, left: f64) {
     hello["event"] = json!("tb.hello");
     hello["tb_path"] = json!(path);
     hello["plugin_version"] = json!(version);
-    if client::request(cfg, "POST", "/report", Some(&hello), left).is_ok() {
+    if board_call(cfg, "POST", "/report", Some(&hello), left).is_ok() {
         let _ = std::fs::create_dir_all(&cfg.data);
         let tmp = hello_marker(cfg).with_extension(format!("{}.tmp", std::process::id()));
         if std::fs::write(&tmp, want).is_ok() {
@@ -1110,6 +1168,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     let _ = std::io::stdin().read_to_string(&mut raw);
     let payload: Value = serde_json::from_str(&raw).ok().filter(|v: &Value| v.is_object()).unwrap_or(json!({}));
     let hook = event_arg.map(|s| s.to_string()).filter(|s| !s.is_empty()).or_else(|| payload["hook_event_name"].as_str().map(|s| s.to_string())).unwrap_or_default();
+    let _ = RUN.set((session.clone(), hook.clone()));
     if hook == "PreToolUse" {
         let tool = payload["tool_name"].as_str().unwrap_or("");
         // A subagent's prompt isn't a read: its own tool calls meet the guard.
@@ -1230,7 +1289,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         post_timeout = post_timeout.min(SESSION_END_POST_CAP);
     }
     let resp = if post_timeout > 0.05 {
-        match client::request(&cfg, "POST", "/report", Some(&body), post_timeout) {
+        match board_call(&cfg, "POST", "/report", Some(&body), post_timeout) {
             Ok(v) => Some(v),
             Err(CallError::Refused(..)) => Some(json!({})),
             Err(CallError::Unreachable(_) | CallError::TimedOut(_)) => None,
@@ -1239,7 +1298,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         None
     };
     let Some(resp) = resp else {
-        let _ = client::spool_write(&cfg, &body);
+        spool(&cfg, &body);
         return 0;
     };
     if hook == "SessionStart" {
@@ -1280,12 +1339,21 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         ack["event"] = json!("hook.delivered");
         ack["ids"] = Value::Array(ids);
         let l = left();
-        let sent = l > 0.05 && !matches!(client::request(&cfg, "POST", "/report", Some(&ack), l), Err(CallError::Unreachable(_) | CallError::TimedOut(_)));
+        let sent = l > 0.05 && !matches!(board_call(&cfg, "POST", "/report", Some(&ack), l), Err(CallError::Unreachable(_) | CallError::TimedOut(_)));
         if !sent {
-            let _ = client::spool_write(&cfg, &ack);
+            spool(&cfg, &ack);
         }
     }
     0
+}
+
+/// Keeps a report the board didn't get for it to read later. One that can't be kept is lost, and
+/// `hook.log` says so.
+fn spool(cfg: &Config, body: &Value) {
+    let start = Instant::now();
+    if let Err(e) = client::spool_write(cfg, body) {
+        log_failure(&cfg.data, "spool", &e.to_string(), start.elapsed());
+    }
 }
 
 fn status_text(v: &Value) -> String {
@@ -1806,6 +1874,51 @@ mod tests {
         assert!(headless(Some("sdk-ts")), "the Agent SDK");
         assert!(!headless(Some("cli")), "the terminal's own claude");
         assert!(!headless(None));
+    }
+
+    #[test]
+    fn a_hook_log_line_says_who_what_why_and_how_long() {
+        let line = failure_line("2026-10-26 14:03:11", "7", "PreToolUse", "GET /steps", "timed out:\n  read  timed out", Duration::from_millis(1003));
+        assert_eq!(line, "2026-10-26 14:03:11 session=7 event=PreToolUse GET /steps failed after 1003ms: timed out: read timed out\n");
+        assert!(failure_line("t", "", "", "spool", "x", Duration::ZERO).starts_with("t session=- event=- spool"), "{}", failure_line("t", "", "", "spool", "x", Duration::ZERO));
+    }
+
+    #[test]
+    fn the_hook_log_starts_over_past_its_cap_keeping_the_one_before() {
+        let root = std::env::temp_dir().join(format!("tb-hook-log-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join(HOOK_LOG);
+        append_capped(&log, "one\n", 8);
+        append_capped(&log, "two\n", 8);
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "one\ntwo\n");
+        append_capped(&log, "three\n", 8);
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "three\n");
+        assert_eq!(std::fs::read_to_string(root.join("hook.log.1")).unwrap(), "one\ntwo\n");
+        append_capped(&root.join("gone").join(HOOK_LOG), "x\n", 8);
+        assert!(!root.join("gone").exists(), "a log that can't be written is dropped, not made");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_board_call_or_ledger_write_that_fails_goes_to_the_hook_log() {
+        let root = std::env::temp_dir().join(format!("tb-hook-log-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut cfg = Config::for_tests(&root);
+        // A port nothing listens on: the board is down.
+        cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        assert!(board_call(&cfg, "GET", "/steps?session=7", None, 0.5).is_err());
+        // `edits` is a file, so the ledger's folder can't be made.
+        std::fs::write(root.join("edits"), "").unwrap();
+        note_edit(&root, "T1", "7", Path::new("/w/a.rs"));
+        let log = std::fs::read_to_string(root.join(HOOK_LOG)).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        assert!(lines[0].contains(" GET /steps failed after ") && lines[0].contains("ms: unreachable: "), "{}", lines[0]);
+        assert!(!lines[0].contains("session=7&"), "the query isn't repeated: {}", lines[0]);
+        assert!(lines[1].contains(&format!(" write {} failed after ", root.join("edits").join("T1").display())), "{}", lines[1]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
