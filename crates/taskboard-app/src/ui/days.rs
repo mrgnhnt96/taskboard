@@ -631,7 +631,7 @@ fn swatch(c: Hsla, size: f32) -> Div {
     div().flex_none().w(px(size)).h(px(size)).rounded(px(2.)).bg(c)
 }
 
-fn legend_item(t: &Theme, mark: Div, label: impl Into<SharedString>) -> Div {
+fn legend_item(t: &Theme, mark: impl IntoElement, label: impl Into<SharedString>) -> Div {
     div().flex().items_center().gap(px(6.)).text_size(px(12.)).text_color(t.text_2).child(mark).child(label.into())
 }
 
@@ -647,15 +647,22 @@ fn bar_colors(t: &Theme, kind: &str) -> (Hsla, Hsla) {
 }
 
 /// A timeline mark: colour and shape (circle, square or ring) so it never rests on colour alone.
-fn mark_el(t: &Theme, kind: &str, size: f32) -> Div {
-    let d = div().flex_none().w(px(size)).h(px(size));
+/// Painted, not a div: a busy day has a hundred or more, and each div is another node to lay out.
+fn mark_quad(t: &Theme, kind: &str, size: f32) -> PaintQuad {
+    let b = Bounds::new(point(px(0.), px(0.)), gpui_kit::size(px(size), px(size)));
+    let round = px(size / 2.);
     match kind {
-        "commit" => d.rounded_full().bg(t.faint),
-        "question" => d.rounded(px(1.)).bg(t.warn),
-        "pr" => d.rounded_full().border_2().border_color(t.text_2),
-        "done" => d.rounded_full().bg(t.up),
-        _ => d.rounded(px(1.)).bg(t.results),
+        "commit" => fill(b, t.faint).corner_radii(round),
+        "question" => fill(b, t.warn).corner_radii(px(1.)),
+        "pr" => outline(b, t.text_2, BorderStyle::Solid).border_widths(px(2.)).corner_radii(round),
+        "done" => fill(b, t.up).corner_radii(round),
+        _ => fill(b, t.results).corner_radii(px(1.)),
     }
+}
+
+fn mark_el(t: &Theme, kind: &str, size: f32) -> impl IntoElement {
+    let q = mark_quad(t, kind, size);
+    canvas(|_, _, _| {}, move |b, _, window, _| window.paint_quad(PaintQuad { bounds: b, ..q.clone() })).flex_none().w(px(size)).h(px(size))
 }
 
 const MARKS: &[(&str, &str)] = &[("commit", "Commit"), ("question", "Question"), ("pr", "PR"), ("done", "Done"), ("found", "Issue found")];
@@ -845,6 +852,9 @@ fn week_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<
         )
 }
 
+/// The narrowest bar, as a share of the timeline, that gets a label.
+const LABEL_MIN: f32 = 0.03;
+
 fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<MainWindow>) -> Div {
     const LABEL: f32 = 104.;
     let hours: Vec<i64> = (v.from_hour..=v.to_hour).collect();
@@ -853,12 +863,30 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
         let x = (*h - v.from_hour) as f32 / span;
         div().absolute().left(relative(x)).ml(px(-16.)).w(px(32.)).flex().justify_center().text_size(px(11.)).text_color(t.muted).child(hour_label(*h))
     })));
-    let gridlines = |h: f32| {
-        hours.iter().map(move |hh| (*hh - v.from_hour) as f32 / span).map(move |x| div().absolute().top_0().h(px(h)).left(relative(x)).w(px(1.))).collect::<Vec<_>>()
-    };
+    let grid_x: Vec<f32> = hours.iter().map(|h| (*h - v.from_hour) as f32 / span).collect();
     let lanes = v.lanes.iter().map(|l| {
         const ROW: f32 = 32.;
+        const MARK: f32 = 8.;
         let lane_h = l.rows as f32 * ROW + 26.;
+        // Gridlines go under the bars, marks and the now line over them; both are painted.
+        let (xs, line) = (grid_x.clone(), t.divider);
+        let under = canvas(|_, _, _| {}, move |b, _, window, _| {
+            for x in &xs {
+                window.paint_quad(fill(Bounds::new(point(b.origin.x + b.size.width * *x, b.origin.y), gpui_kit::size(px(1.), b.size.height)), line));
+            }
+        });
+        let marks: Vec<(f32, PaintQuad)> = l.marks.iter().map(|mk| (mk.x, mark_quad(t, &mk.kind, MARK))).collect();
+        let (now_x, now_c) = (v.now_x, t.accent);
+        let over = canvas(|_, _, _| {}, move |b, _, window, _| {
+            let y = b.origin.y + px(lane_h - 12. - MARK / 2.);
+            for (x, q) in &marks {
+                let at = point(b.origin.x + b.size.width * *x - px(MARK / 2.), y);
+                window.paint_quad(PaintQuad { bounds: Bounds::new(at, q.bounds.size), ..q.clone() });
+            }
+            if let Some(x) = now_x {
+                window.paint_quad(fill(Bounds::new(point(b.origin.x + b.size.width * x, b.origin.y), gpui_kit::size(px(2.), b.size.height)), now_c));
+            }
+        });
         let bars = l.bars.iter().map(|b| {
             let (bg, fg) = bar_colors(t, &b.kind);
             let r = b.task.clone();
@@ -881,11 +909,14 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .cursor_pointer()
-                .child(b.label.clone())
+                // Most bars are minutes long, too narrow for a letter: shaping their text is the
+                // page's biggest layout cost, and the tooltip names them anyway.
+                .when(b.x1 - b.x0 >= LABEL_MIN, |d| d.child(b.label.clone()))
                 .tooltip(kit::tip(b.tip.clone()))
                 .on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)))
         });
-        let marks = l.marks.iter().enumerate().map(|(k, mk)| {
+        // Bare hover targets for the marks' tooltips.
+        let targets = l.marks.iter().enumerate().map(|(k, mk)| {
             div()
                 .id(SharedString::from(format!("days-mark-{}-{k}", l.project)))
                 .absolute()
@@ -894,13 +925,8 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
                 .ml(px(-6.))
                 .w(px(12.))
                 .h(px(12.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(mark_el(t, &mk.kind, 8.))
                 .tooltip(kit::tip(mk.tip.clone()))
         });
-        let lines = gridlines(lane_h).into_iter().map(|g| g.bg(t.divider));
         div()
             .flex()
             .border_t_1()
@@ -911,10 +937,10 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
                     .relative()
                     .flex_1()
                     .h(px(lane_h))
-                    .children(lines)
+                    .child(under.absolute().top_0().left_0().size_full())
                     .children(bars)
-                    .children(marks)
-                    .children(v.now_x.map(|x| div().absolute().top_0().bottom_0().left(relative(x)).w(px(2.)).bg(t.accent))),
+                    .child(over.absolute().top_0().left_0().size_full())
+                    .children(targets),
             )
     });
     let peak = v.peak.max(3) as f32;
