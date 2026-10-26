@@ -88,6 +88,7 @@ pub mod reports;
 pub mod retro;
 pub mod reviewers;
 pub mod runner;
+pub mod runmark;
 pub mod screen;
 pub mod seed;
 pub mod server;
@@ -121,88 +122,65 @@ use std::time::Duration;
 
 use app::App;
 
+/// Starts a named board thread on `f`, logging when the thread can't be made (its work would
+/// otherwise just never run).
+fn spawn(app: &Arc<App>, name: &str, f: impl FnOnce(Arc<App>) + Send + 'static) {
+    let a = app.clone();
+    if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(move || f(a)) {
+        app.info(format!("can't start the {name} thread: {e}; its work won't run until the daemon restarts"));
+    }
+}
+
 /// Starts the board's background threads: the md writer, deferred work, Midna sync and, with the
 /// runner on, Midna jobs and the runner.
 pub fn start_threads(app: &Arc<App>) {
-    let a = app.clone();
-    std::thread::Builder::new().name("clock".into()).spawn(move || clock::watch(a)).ok();
-    let a = app.clone();
-    std::thread::Builder::new().name("md".into()).spawn(move || mdcopy::writer_loop(a)).ok();
-    let a = app.clone();
-    std::thread::Builder::new()
-        .name("deferred".into())
-        .spawn(move || {
-            while !a.stopping() {
-                if let Some(f) = a.next_deferred(Duration::from_secs(5)) {
-                    f(&a);
-                }
+    spawn(app, "clock", clock::watch);
+    spawn(app, "md", mdcopy::writer_loop);
+    spawn(app, "deferred", |a| {
+        while !a.stopping() {
+            if let Some(f) = a.next_deferred(Duration::from_secs(5)) {
+                f(&a);
             }
-        })
-        .ok();
-    let a = app.clone();
-    std::thread::Builder::new()
-        .name("hooks".into())
-        .spawn(move || {
-            while !a.stopping() {
-                if let Some(f) = a.next_hook(Duration::from_secs(5)) {
-                    f(&a);
-                }
+        }
+    });
+    spawn(app, "hooks", |a| {
+        while !a.stopping() {
+            if let Some(f) = a.next_hook(Duration::from_secs(5)) {
+                f(&a);
             }
-        })
-        .ok();
-    let a = app.clone();
-    std::thread::Builder::new()
-        .name("lens".into())
-        .spawn(move || {
-            while !a.stopping() {
-                if let Some(f) = a.next_lens(Duration::from_secs(5)) {
-                    f(&a);
-                }
+        }
+    });
+    spawn(app, "lens", |a| {
+        while !a.stopping() {
+            if let Some(f) = a.next_lens(Duration::from_secs(5)) {
+                f(&a);
             }
-        })
-        .ok();
-    let a = app.clone();
-    std::thread::Builder::new().name("history".into()).spawn(move || days::cleanup_loop(a)).ok();
-    let a = app.clone();
-    std::thread::Builder::new()
-        .name("backlog-ai".into())
-        .spawn(move || {
-            while !a.stopping() {
-                if let Some(f) = a.next_ai(Duration::from_secs(5)) {
-                    f(&a);
-                }
+        }
+    });
+    spawn(app, "history", days::cleanup_loop);
+    spawn(app, "backlog-ai", |a| {
+        while !a.stopping() {
+            if let Some(f) = a.next_ai(Duration::from_secs(5)) {
+                f(&a);
             }
-        })
-        .ok();
-    let a = app.clone();
-    std::thread::Builder::new().name("midna-sync".into()).spawn(move || midna::sync_loop(a)).ok();
+        }
+    });
+    spawn(app, "midna-sync", midna::sync_loop);
     if app.cfg.runner {
-        let a = app.clone();
-        std::thread::Builder::new().name("midna-jobs".into()).spawn(move || midna::jobs_loop(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("runner".into()).spawn(move || runner::run(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("feed-listener".into()).spawn(move || feed::listener_loop(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("checkin".into()).spawn(move || checkin::run(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("suggest".into()).spawn(move || suggest::run(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("spans".into()).spawn(move || spans::run(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("review".into()).spawn(move || review::run(a)).ok();
-        let a = app.clone();
-        std::thread::Builder::new().name("lens-sweep".into()).spawn(move || lens_sweep::run(a)).ok();
+        spawn(app, "midna-jobs", midna::jobs_loop);
+        spawn(app, "runner", runner::run);
+        spawn(app, "feed-listener", feed::listener_loop);
+        spawn(app, "checkin", checkin::run);
+        spawn(app, "suggest", suggest::run);
+        spawn(app, "spans", spans::run);
+        spawn(app, "review", review::run);
+        spawn(app, "lens-sweep", lens_sweep::run);
     } else {
-        let a = app.clone();
-        std::thread::Builder::new()
-            .name("spool".into())
-            .spawn(move || {
-                while !a.stopping() {
-                    let _ = reports::ingest_spool(&a);
-                    a.sleep(a.cfg.intervals.spool);
-                }
-            })
-            .ok();
+        spawn(app, "spool", |a| {
+            while !a.stopping() {
+                let _ = reports::ingest_spool(&a);
+                a.sleep(a.cfg.intervals.spool);
+            }
+        });
     }
 }
