@@ -2,7 +2,10 @@
 //! selected section's rows, grouped in cards; a row is its name, what it does and its control.
 //! "Agent commands" adds under the rows the exact command an agent would run (copyable).
 //!
-//! Accounts is the one section so far: GitHub, Bitbucket and Slack, so the board and its agents can
+//! Worktrees shows each project's slot pool (`GET /slots`), read-only: its settings, each slot with
+//! the task holding it, its size and last use, and the tasks waiting for one.
+//!
+//! Accounts: GitHub, Bitbucket and Slack, so the board and its agents can
 //! check PRs, comment, push and assign reviewers. The daemon owns them (`taskboardd::accounts`): each
 //! is Taskboard's own token, checked with the service and kept in the Keychain, never the Mac's `gh`
 //! or git sign-in. GitHub's comes from a browser code, a pasted token or a copy of gh's. Tokens go to
@@ -50,10 +53,11 @@ enum Sec {
     History,
     Qa,
     Reviewers,
+    Worktrees,
     System,
 }
 
-const SECS: [Sec; 5] = [Sec::Accounts, Sec::History, Sec::Qa, Sec::Reviewers, Sec::System];
+const SECS: [Sec; 6] = [Sec::Accounts, Sec::History, Sec::Qa, Sec::Reviewers, Sec::Worktrees, Sec::System];
 
 impl Sec {
     fn label(self) -> &'static str {
@@ -62,6 +66,7 @@ impl Sec {
             Sec::History => "History",
             Sec::Qa => "QA",
             Sec::Reviewers => "Reviewers",
+            Sec::Worktrees => "Worktrees",
             Sec::System => "System",
         }
     }
@@ -72,6 +77,7 @@ impl Sec {
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
+            Sec::Worktrees => "Each project's reusable worktree slots, kept warm between tasks. tb project set sizes a project's pool.",
             Sec::System => "Updates, and the versions of the app and the daemon.",
         }
     }
@@ -82,6 +88,7 @@ impl Sec {
             Sec::History => "◷",
             Sec::Qa => "✓",
             Sec::Reviewers => "☺",
+            Sec::Worktrees => "⑂",
             Sec::System => "⚙",
         }
     }
@@ -145,6 +152,8 @@ pub struct SettingsWindow {
     qa_note: Option<(String, bool)>,
     /// `GET /reviewers?project=all`.
     reviewers: Option<Value>,
+    /// `GET /slots`: every project's slots and pool settings.
+    slots: Option<Value>,
     /// `GET /info`: the daemon's version, uptime and pid.
     info: Option<Value>,
     /// The daemon is restarting, and the line under the System card.
@@ -183,6 +192,7 @@ impl SettingsWindow {
             qa_busy: false,
             qa_note: None,
             reviewers: None,
+            slots: None,
             info: None,
             sys_busy: false,
             sys_note: None,
@@ -205,6 +215,9 @@ impl SettingsWindow {
                 }
                 // the updater runs on its own thread: redraw System as its state moves
                 let _ = this.update(cx, |s, cx| {
+                    if s.view == Sec::Worktrees && tick % IDLE_TICKS == 0 {
+                        s.load_slots(cx);
+                    }
                     if s.view == Sec::System {
                         if tick % IDLE_TICKS == 0 {
                             s.load_info(cx);
@@ -238,6 +251,21 @@ impl SettingsWindow {
             let r = cx.background_executor().spawn(async move { backend.get("info", &[]) }).await;
             let _ = this.update(cx, |s, cx| {
                 s.info = r.ok();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `GET /slots` measures the slots on disk, so it's asked only while Worktrees shows.
+    fn load_slots(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("slots", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(v) = r {
+                    s.slots = Some(v);
+                }
                 cx.notify();
             });
         })
@@ -496,6 +524,7 @@ impl Render for SettingsWindow {
             Sec::History => self.history_page(&t, cx).into_any_element(),
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
             Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
+            Sec::Worktrees => self.worktrees_page(&t).into_any_element(),
             Sec::System => self.system_page(&t, cx).into_any_element(),
         };
         div()
@@ -563,6 +592,9 @@ impl SettingsWindow {
                         s.view = sec;
                         if sec == Sec::System {
                             s.load_info(cx);
+                        }
+                        if sec == Sec::Worktrees {
+                            s.load_slots(cx);
                         }
                         cx.notify();
                     })),
@@ -1264,6 +1296,120 @@ impl SettingsWindow {
     }
 }
 
+impl SettingsWindow {
+    fn worktrees_page(&self, t: &Theme) -> impl IntoElement {
+        let mut list = div().id("worktree-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let Some(v) = self.slots.as_ref() else {
+            return list.child(kit::empty(t, "Asking the board…"));
+        };
+        let pools = pools_vm(v);
+        if pools.is_empty() {
+            return list.child(kit::empty(t, "No worktree slots"));
+        }
+        for p in pools {
+            let mut card = kit::card(t).overflow_hidden().child(line(t, &format!("pool-{}", p.project), true, false, "Pool", &p.settings, None));
+            for r in &p.slots {
+                let pill = match &r.held_by {
+                    Some(task) => kit::tone_pill(t, "working", task.clone()).id(SharedString::from(format!("slot-tip-{}", r.key))).when_some(r.tip.clone(), |d, tip| d.tooltip(kit::tip(tip))).into_any_element(),
+                    None => kit::tone_pill(t, "neutral", "Free").into_any_element(),
+                };
+                card = card.child(line(t, &format!("slot-{}", r.key), false, false, &r.name, &r.note, None).child(controls().child(pill)));
+            }
+            if !p.waiting.is_empty() {
+                card = card.child(line(t, &format!("waiting-{}", p.project), false, true, &format!("{} waiting", p.waiting.len()), &p.waiting.join(", "), None));
+            }
+            let heading = div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(format!("{} · {}", p.project, p.count));
+            list = list.child(div().flex().flex_col().gap(px(8.)).child(heading).child(card));
+        }
+        list
+    }
+}
+
+/// One project's pool in Worktrees.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PoolVm {
+    pub project: String,
+    /// "6 slots".
+    pub count: String,
+    /// "Keeps 2 to 10 slots. Build output is cleared after 2 idle days, the slot removed after 7."
+    pub settings: String,
+    pub slots: Vec<SlotVm>,
+    /// The tasks waiting for a slot of this project.
+    pub waiting: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SlotVm {
+    pub key: String,
+    pub name: String,
+    /// "7.7 GB · last used 10:08 AM".
+    pub note: String,
+    /// "T12", the task holding it; None when it's free.
+    pub held_by: Option<String>,
+    /// The holder's title.
+    pub tip: Option<String>,
+}
+
+/// `GET /slots` grouped by project, in the daemon's order (project, then slot number).
+pub(crate) fn pools_vm(v: &Value) -> Vec<PoolVm> {
+    let mut out: Vec<PoolVm> = vec![];
+    for x in v["slots"].as_array().cloned().unwrap_or_default() {
+        let project = x["project"].as_str().unwrap_or("").to_string();
+        let i = match out.iter().position(|p| p.project == project) {
+            Some(i) => i,
+            None => {
+                out.push(PoolVm { project: project.clone(), count: String::new(), settings: pool_settings(&v["pools"][&project]), slots: vec![], waiting: vec![] });
+                out.len() - 1
+            }
+        };
+        let p = &mut out[i];
+        let held = x["held_by"].as_str().map(str::to_string);
+        let size = x["size_kb"].as_i64().map(disk_size);
+        let used = x["used_at"].as_str().map(used_at).filter(|u| !u.is_empty()).map(|u| format!("last used {u}"));
+        p.slots.push(SlotVm {
+            key: x["path"].as_str().unwrap_or("").to_string(),
+            name: x["name"].as_str().unwrap_or("").to_string(),
+            note: [size, used].into_iter().flatten().collect::<Vec<_>>().join(" · "),
+            tip: held.as_ref().and_then(|_| x["title"].as_str()).filter(|t| !t.is_empty()).map(str::to_string),
+            held_by: held,
+        });
+        // Every slot of a repo lists the same waiting tasks; each shows once.
+        for w in x["waiting"].as_array().cloned().unwrap_or_default().iter().filter_map(|w| w.as_str()) {
+            if !p.waiting.iter().any(|have| have == w) {
+                p.waiting.push(w.to_string());
+            }
+        }
+    }
+    for p in &mut out {
+        p.count = crate::fmt::plural(p.slots.len() as i64, "slot", "slots");
+    }
+    out
+}
+
+/// "Keeps 2 to 10 slots. Build output is cleared after 2 idle days, the slot removed after 7."
+fn pool_settings(c: &Value) -> String {
+    let (Some(min), Some(max), Some(trim), Some(remove)) = (c["min_slots"].as_i64(), c["max_slots"].as_i64(), c["idle_trim_days"].as_i64(), c["idle_remove_days"].as_i64()) else {
+        return String::new();
+    };
+    format!("Keeps {min} to {max} slots. Build output is cleared after {}, the slot removed after {remove}.", crate::fmt::plural(trim, "idle day", "idle days"))
+}
+
+/// "512 KB", "840 MB", "2.3 GB".
+fn disk_size(kb: i64) -> String {
+    match kb {
+        k if k >= 1024 * 1024 => format!("{:.1} GB", k as f64 / (1024.0 * 1024.0)),
+        k if k >= 1024 => format!("{} MB", k / 1024),
+        k => format!("{k} KB"),
+    }
+}
+
+/// "3:05 PM" today, "Oct 7, 3:05 PM" another day.
+fn used_at(iso: &str) -> String {
+    let Some(t) = crate::fmt::parse(iso) else { return String::new() };
+    let l = crate::fmt::local(t);
+    if crate::fmt::is_today(t) { l.format("%-I:%M %p").to_string() } else { l.format("%b %-d, %-I:%M %p").to_string() }
+}
+
 // ------------------------------------------------------------------ rows
 
 /// A row's shell: padding and the line above every row but the first.
@@ -1476,6 +1622,46 @@ mod tests {
             assert!(s.notes.get("github").is_some_and(|(n, bad)| !bad && n.starts_with("Using gh's sign-in")));
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    use serde_json::{Value, json};
+
+    fn pool() -> Value {
+        let today = crate::fmt::now().format("%Y-%m-%dT14:30:00Z").to_string();
+        let slot = |project: &str, n: i64, held: Value, title: &str, used: &str, kb: Value, waiting: Value| {
+            json!({"name": format!("slot-{n}"), "n": n, "project": project, "repo": format!("/{project}"), "path": format!("/{project}/slot-{n}"),
+                   "held_by": held, "title": title, "used_at": used, "size_kb": kb, "waiting": waiting})
+        };
+        json!({
+            "slots": [
+                slot("board", 1, json!("T12"), "Slot pool view", &today, json!(2_411_725), json!(["T13", "T14"])),
+                slot("board", 2, Value::Null, "", "2026-10-07T15:05:00Z", json!(860_160), json!(["T13", "T14"])),
+                slot("lens", 2, Value::Null, "", "", Value::Null, json!([])),
+            ],
+            "pools": {
+                "board": {"min_slots": 2, "max_slots": 10, "idle_trim_days": 1, "idle_remove_days": 7, "low_disk_gb": 50},
+                "lens": {"min_slots": 0, "max_slots": 3, "idle_trim_days": 2, "idle_remove_days": 7, "low_disk_gb": 50},
+            },
+        })
+    }
+
+    #[test]
+    fn slots_group_by_project_with_their_pool_and_waiting_tasks() {
+        let pools = super::pools_vm(&pool());
+        assert_eq!(pools.iter().map(|p| (p.project.as_str(), p.count.as_str())).collect::<Vec<_>>(), [("board", "2 slots"), ("lens", "1 slot")]);
+        let board = &pools[0];
+        assert_eq!(board.settings, "Keeps 2 to 10 slots. Build output is cleared after 1 idle day, the slot removed after 7.");
+        assert_eq!(board.waiting, ["T13", "T14"], "each waiting task once");
+        assert_eq!(board.slots[0].note, "2.3 GB · last used 2:30 PM");
+        assert_eq!((board.slots[0].held_by.as_deref(), board.slots[0].tip.as_deref()), (Some("T12"), Some("Slot pool view")));
+        assert_eq!((board.slots[1].note.as_str(), board.slots[1].held_by.as_deref()), ("840 MB · last used Oct 7, 3:05 PM", None));
+        let lens = &pools[1];
+        assert_eq!((lens.slots[0].name.as_str(), lens.slots[0].note.as_str()), ("slot-2", ""), "not measured or used yet");
+        assert!(lens.waiting.is_empty());
+        assert!(super::pools_vm(&json!({"slots": []})).is_empty());
     }
 }
 

@@ -983,6 +983,7 @@ fn submitting_gives_the_slot_back_detached_with_its_branch_kept() {
     assert_eq!(slots[0]["name"], "slot-1");
     assert_eq!(slots[0]["held_by"], format!("T{one}"));
     assert_eq!(slots[0]["waiting"], json!([format!("T{two}")]), "{slots}");
+    assert_eq!(b.get("slots")["pools"]["webapp"]["max_slots"], 1, "each project's pool settings come along");
     // Sizes are measured in the background: the first ask answers without one.
     let sized = (0..200).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(25));
