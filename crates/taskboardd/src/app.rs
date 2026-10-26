@@ -51,8 +51,8 @@ pub struct Shared {
     pub git_emails: std::collections::HashMap<String, (Instant, Option<String>)>,
     /// `projects::list_projects` as of a `Db::mark`: every task card asks for its project's path.
     pub projects: Option<((i64, i64), Vec<serde_json::Value>)>,
-    /// `board::goal_dict` by goal as of a `Db::mark`: when each was made and the goal row it was made from.
-    pub goal_dicts: Option<((i64, i64), HashMap<i64, (Instant, crate::util::Row, Value)>)>,
+    /// `board::goal_dict` by goal.
+    pub goal_dicts: HashMap<i64, crate::board::GoalDict>,
     /// Claude is grouping new backlog issues; and when it last failed (it waits before trying again).
     pub grouping: bool,
     pub group_failed_at: Option<Instant>,

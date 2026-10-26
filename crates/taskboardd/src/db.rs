@@ -1,8 +1,10 @@
 //! SQLite storage. Rows come back as JSON objects so the board logic can read them by name.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::{Mutex, ReentrantMutex, ReentrantMutexGuard};
@@ -318,7 +320,13 @@ fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Res
 struct Inner {
     conn: RefCell<Connection>,
     depth: Cell<u32>,
+    /// The rows written since the last commit, as SQLite's update hook reports them.
+    changed: Arc<Mutex<Vec<(String, i64)>>>,
 }
+
+/// How many recent writes `changed_since` can answer for, and how many rows one can list.
+const LOGGED_WRITES: usize = 512;
+const LOGGED_ROWS: usize = 256;
 
 /// Read-only connections to the board's file, so a read outside a transaction doesn't queue behind
 /// one: in WAL mode it sees the last commit while the writer works.
@@ -373,6 +381,9 @@ pub struct Db {
     readers: Option<Readers>,
     /// Bumped once each write is committed, for `mark`.
     writes: AtomicI64,
+    /// The recent writes by number (the first part of `mark`) with the rows each changed; None for
+    /// one that changed too many to list.
+    log: Mutex<VecDeque<(i64, Option<Vec<(String, i64)>>)>>,
 }
 
 // The connection is only touched while the re-entrant lock is held.
@@ -452,10 +463,14 @@ impl Db {
         add_columns(&conn, crate::review::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
         conn.execute_batch(BACKFILL_LANES)?;
+        let changed: Arc<Mutex<Vec<(String, i64)>>> = Default::default();
+        let hooked = changed.clone();
+        conn.update_hook(Some(move |_, _: &str, table: &str, rowid: i64| hooked.lock().push((table.to_string(), rowid))));
         Ok(Db {
-            inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }),
+            inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0), changed }),
             readers: path.map(|path| Readers { path, idle: Mutex::new(vec![]), marker: Mutex::new(None) }),
             writes: AtomicI64::new(0),
+            log: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -496,8 +511,33 @@ impl Db {
     /// Notes a write that is now committed: one outside a transaction, or a transaction's end.
     fn wrote(&self, g: &Inner) {
         if g.depth.get() == 0 {
-            self.writes.fetch_add(1, Ordering::Release);
+            let rows = std::mem::take(&mut *g.changed.lock());
+            let mut log = self.log.lock();
+            let n = self.writes.load(Ordering::Acquire) + 1;
+            log.push_back((n, (rows.len() <= LOGGED_ROWS).then_some(rows)));
+            if log.len() > LOGGED_WRITES {
+                log.pop_front();
+            }
+            self.writes.store(n, Ordering::Release);
         }
+    }
+
+    /// The rows this board's writes changed after the one `mark` counted as `since`, as (table, rowid).
+    /// None once that's no longer known: too many writes ago, or one too big to list. SQLite doesn't
+    /// report a WITHOUT ROWID table's rows, nor rows a `DELETE` with no WHERE clears.
+    pub fn changed_since(&self, since: i64) -> Option<Vec<(String, i64)>> {
+        let log = self.log.lock();
+        if self.writes.load(Ordering::Acquire) <= since {
+            return Some(vec![]);
+        }
+        if log.front().map_or(true, |(n, _)| *n > since + 1) {
+            return None;
+        }
+        let mut out = vec![];
+        for (_, rows) in log.iter().filter(|(n, _)| *n > since) {
+            out.extend(rows.as_ref()?.iter().cloned());
+        }
+        Some(out)
     }
 
     /// Runs `f` in one transaction. Nested calls join the outer transaction.
@@ -520,6 +560,7 @@ impl Db {
                 self.inner.depth.set(self.inner.depth.get() - 1);
                 if self.inner.depth.get() == 0 {
                     let _ = self.inner.conn.borrow().execute_batch("ROLLBACK");
+                    self.inner.changed.lock().clear();
                 }
             }
         }
@@ -532,11 +573,13 @@ impl Db {
             if out.is_ok() {
                 if let Err(e) = c.execute_batch("COMMIT") {
                     let _ = c.execute_batch("ROLLBACK");
+                    g.changed.lock().clear();
                     return Err(e.into());
                 }
                 self.wrote(&g);
             } else {
                 let _ = c.execute_batch("ROLLBACK");
+                g.changed.lock().clear();
             }
         }
         out
@@ -637,7 +680,9 @@ impl Db {
 
     pub fn set_setting(&self, key: &str, value: Option<&str>) -> Result<()> {
         self.x(
-            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            // An unchanged value isn't written, so `changed_since` doesn't list a setting rewritten as it was.
+            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value \
+             WHERE value IS NOT excluded.value",
             p![key, value],
         )?;
         Ok(())
@@ -675,6 +720,23 @@ mod tests {
         assert_eq!(db.val("SELECT title FROM tasks", p![]).unwrap(), "B");
         db.set_setting("k", Some("v")).unwrap();
         assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn changed_since_lists_the_rows_of_committed_writes() {
+        let db = Db::memory().unwrap();
+        let (since, _) = db.mark().unwrap();
+        let id = db.insert("tasks", vec![("title", "A".into())]).unwrap();
+        let _: Result<()> = db.tx(|| {
+            db.x("INSERT INTO goals(name) VALUES('dropped')", p![])?;
+            Err(crate::util::ApiError::new(400, "no"))
+        });
+        db.tx(|| db.update("tasks", &id.into(), vec![("title", "B".into())])).unwrap();
+        let rows = db.changed_since(since).unwrap();
+        assert!(rows.iter().all(|(t, _)| t != "goals"), "{rows:?}");
+        assert_eq!(rows.iter().filter(|r| *r == &("tasks".to_string(), id)).count(), 2);
+        assert_eq!(db.changed_since(db.mark().unwrap().0), Some(vec![]));
+        assert_eq!(db.changed_since(since - 1), None);
     }
 
     #[test]

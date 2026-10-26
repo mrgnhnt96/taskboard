@@ -844,33 +844,104 @@ pub fn goal_state_line(c: &Value) -> String {
 /// PR state) moves with the clock or outside the database.
 const GOAL_DICT_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// A goal's summary for the app and `tb`. Every poll asks for all of them, so each is kept until the
-/// database is written to (`Db::mark`) or it ages out.
+/// A goal's summary as `goal_dict` keeps it: the `Db::mark` it holds for, when it was made and the goal
+/// row it was made from.
+pub struct GoalDict {
+    mark: (i64, i64),
+    made: std::time::Instant,
+    row: Row,
+    dict: Value,
+    /// A finished goal's tasks: its counted ones, and those its misses became. Its summary holds through
+    /// writes to other goals and tasks. None for any other goal, which any write makes stale.
+    watch: Option<Vec<i64>>,
+}
+
+/// Tables a finished goal's summary never reads, so writing them leaves it as it was.
+const UNREAD: &[&str] = &[
+    "sessions", "session_events", "jobs", "events", "stream_events", "spans", "span_files", "task_states",
+    "task_terminals", "task_path_reads", "goal_notes", "worktree_slots",
+];
+
+/// A goal's summary for the app and `tb`. Every poll asks for all of them, so each is kept until a
+/// write could change it (any write, unless the goal is finished) or it ages out.
 pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
     if app.db.in_tx() {
-        return read_goal_dict(app, g);
+        return read_goal_dict(app, g).map(|(d, _)| d);
     }
     let mark = app.db.mark()?;
-    if let Some((at, dicts)) = &app.shared.lock().goal_dicts {
-        if let Some((made, row, d)) = dicts.get(&g.id()).filter(|_| *at == mark) {
-            if row == g && made.elapsed() < GOAL_DICT_TTL {
-                return Ok(d.clone());
+    let kept = app.shared.lock().goal_dicts.get(&g.id())
+        .filter(|k| k.row == *g && k.made.elapsed() < GOAL_DICT_TTL)
+        .map(|k| (k.mark, k.dict.clone(), k.watch.clone()));
+    if let Some((at, d, watch)) = kept {
+        if at == mark {
+            return Ok(d);
+        }
+        if let Some(watch) = watch {
+            if still_holds(app, g.id(), &watch, at, mark)? {
+                if let Some(k) = app.shared.lock().goal_dicts.get_mut(&g.id()).filter(|k| k.mark == at) {
+                    k.mark = mark;
+                }
+                return Ok(d);
             }
         }
     }
-    let d = read_goal_dict(app, g)?;
+    let (dict, watch) = read_goal_dict(app, g)?;
     let mut shared = app.shared.lock();
-    let dicts = match &mut shared.goal_dicts {
-        Some((at, dicts)) if *at == mark => dicts,
-        slot => &mut slot.insert((mark, Default::default())).1,
-    };
-    dicts.insert(g.id(), (std::time::Instant::now(), g.clone(), d.clone()));
-    Ok(d)
+    shared.goal_dicts.retain(|_, k| k.made.elapsed() < GOAL_DICT_TTL);
+    let made = std::time::Instant::now();
+    shared.goal_dicts.insert(g.id(), GoalDict { mark, made, row: g.clone(), dict: dict.clone(), watch });
+    Ok(dict)
 }
 
-fn read_goal_dict(app: &App, g: &Row) -> Result<Value> {
+/// Whether a finished goal's summary made at `at` still holds at `now`: no write since touched its tasks,
+/// moved a task into it, or wrote a table it reads.
+fn still_holds(app: &App, goal: i64, watch: &[i64], at: (i64, i64), now: (i64, i64)) -> Result<bool> {
+    if at.0 == now.0 {
+        // The database moved with no write of the board's own: another process wrote it.
+        return Ok(false);
+    }
+    let Some(changed) = app.db.changed_since(at.0) else { return Ok(false) };
+    let mut others = std::collections::BTreeSet::new();
+    for (table, id) in changed {
+        match table.as_str() {
+            "tasks" if watch.contains(&id) => return Ok(false),
+            "tasks" => {
+                others.insert(id);
+            }
+            "goals" if id == goal => return Ok(false),
+            "goals" => {}
+            t if UNREAD.contains(&t) || t.starts_with("search") => {}
+            _ => return Ok(false),
+        }
+    }
+    if others.len() > 500 {
+        return Ok(false);
+    }
+    if others.is_empty() {
+        return Ok(true);
+    }
+    let marks = vec!["?"; others.len()].join(",");
+    let mut args = p![goal];
+    args.extend(others.into_iter().map(Value::from));
+    Ok(app.db.count(&format!("SELECT COUNT(*) FROM tasks WHERE goal_id = ? AND id IN ({marks})"), args)? == 0)
+}
+
+/// The goal's summary, and the tasks to watch when it's finished (`GoalDict::watch`).
+fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
     let order = GoalOrder::read(app, g)?;
     let rows = crate::shared::counted_tasks(app, g.id())?;
+    let finished = crate::chain::ids(g).is_empty()
+        && rows.iter().all(|t| matches!(t.s("status"), Some("done") | Some("planned")));
+    let watch = match finished {
+        true => {
+            let misses = app.db.q(
+                "SELECT task_id FROM issues WHERE goal_id = ? AND misses_goal = 1 AND task_id IS NOT NULL",
+                p![g.id()],
+            )?;
+            Some(rows.iter().map(|t| t.id()).chain(misses.iter().filter_map(|r| r.i("task_id"))).collect())
+        }
+        false => None,
+    };
     let c = counts_in(app, g.id(), &rows, Some(&order))?;
     // A goal stopped at a wave for the owner (a review stop, or a failed task): one line.
     let stopped = crate::waves::stopped_line(order.waves()?);
@@ -896,7 +967,7 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<Value> {
             o.insert(k.clone(), v.clone());
         }
     }
-    Ok(d)
+    Ok((d, watch))
 }
 
 /// The owner's word to finish the goal with failed tasks in it, for the app and `tb goal show`.
