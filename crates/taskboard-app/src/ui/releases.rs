@@ -408,7 +408,7 @@ fn goal_card(t: &Theme, at: &str, g: &Value, cx: &mut Context<MainWindow>) -> Di
     let tasks = arr(g, "tasks");
     let head = div()
         .flex()
-        .items_baseline()
+        .items_center()
         .gap(px(8.))
         .px(px(16.))
         .py(px(10.))

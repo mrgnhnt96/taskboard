@@ -1262,11 +1262,12 @@ fn issue_piece(t: &Theme, Issue { r, title, misses_goal }: Issue, ix: usize, las
     let row = div()
         .id(SharedString::from(format!("goal-issue-{r}")))
         .flex()
+        .items_center()
         .gap(px(8.))
         .text_size(px(13.))
         .cursor_pointer()
         .hover(move |s| s.text_color(hover))
-        .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).pt(px(2.)).child(r))
+        .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r))
         .child(div().flex_1().min_w_0().truncate().child(title))
         .when(misses_goal, |d| d.child(kit::pill(t.warn_text, t.warn_soft, "Misses goal")))
         .on_click(cx.listener(move |m, _, _, cx| m.open_issue(target.clone(), cx)));

@@ -982,7 +982,7 @@ fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context
                     .flex_none()
                     .flex()
                     .gap(px(6.))
-                    .items_baseline()
+                    .items_center()
                     .text_size(px(13.))
                     .overflow_hidden()
                     .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.task.clone()))

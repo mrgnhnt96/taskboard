@@ -804,14 +804,16 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         .child(
             div()
                 .flex()
-                .items_baseline()
+                .items_center()
                 .gap(px(8.))
                 .min_w_0()
                 .when(!r.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.clone())))
                 .child(link),
         )
-        // Open, the body says it in full.
-        .when(!a.line.is_empty() && !(question && a.line == a.text) && (question || !open), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(a.line.clone())));
+        // Open, the body says it in full; the line keeps its room so the head doesn't move.
+        .when(!a.line.is_empty() && !(question && a.line == a.text), |d| {
+            d.child(div().text_size(px(12.)).text_color(t.muted).truncate().when(open && !question && a.line == a.text, |d| d.invisible()).child(a.line.clone()))
+        });
 
     // A goal's own alert already has the goal for its title.
     let goal = match (&a.goal, &a.task) {
@@ -824,9 +826,9 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         _ => String::new(),
     };
 
-    // Open, the buttons sit at the bottom right (a question's signals under its field).
-    let acts = |open: bool| [("act", a.act.clone()), ("also", a.also.clone())].into_iter().filter(move |_| !open).filter_map(|(part, act)| act.map(|act| (part, act)));
-    let mut buttons: Vec<_> = acts(open).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
+    // The buttons stay in the head open or shut, so opening only adds the body.
+    let acts = [("act", a.act.clone()), ("also", a.also.clone())].into_iter().filter_map(|(part, act)| act.map(|act| (part, act)));
+    let mut buttons: Vec<_> = acts.map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
     if a.snooze {
         let menu = format!("{SNOOZE_MENU}{}", a.id);
         buttons.insert(
@@ -877,8 +879,14 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
     let body = div().flex().flex_col().gap(px(10.)).pl(px(58.)).pr(px(20.)).pb(px(16.));
     if question {
         let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        let act = a.act.clone().filter(|x| matches!(x, Act::Focus(_) | Act::AskAgain(_))).unwrap_or_else(|| Act::Focus(r.clone()));
-        let focus = kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)));
+        // The head's button already opens the terminal when that's what it does.
+        let focus = match &a.act {
+            Some(Act::Focus(_) | Act::AskAgain(_)) => None,
+            _ => {
+                let act = Act::Focus(r.clone());
+                Some(kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx))))
+            }
+        };
         // An option answers in one click, and so does a picker's when it asks one single-select
         // question; otherwise its options toggle and Send presses them. The alert's suggested
         // answers answer like options.
@@ -931,7 +939,7 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         card = card.child(
             body.child(div().text_size(px(15.)).text_color(t.warn_text).child(a.text.clone()))
                 .when(!rows.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).children(rows)))
-                .child(div().flex().items_center().gap(px(8.)).children(send).child(focus)),
+                .when(send.is_some() || focus.is_some(), |d| d.child(div().flex().items_center().gap(px(8.)).children(send).children(focus))),
         );
     } else {
         let dismiss_btn = a.dismiss.then(|| {
@@ -947,9 +955,7 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
                 kit::btn(t, id(&format!("fix-{n}")), label.clone()).on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
             })
             .collect();
-        let acts: Vec<_> = acts(false).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
-        let buttons = (!fixes.is_empty() || dismiss_btn.is_some() || !acts.is_empty())
-            .then(|| div().flex().flex_wrap().items_center().gap(px(8.)).children(fixes).children(dismiss_btn).child(div().flex().gap(px(6.)).ml_auto().children(acts)));
+        let buttons = (!fixes.is_empty() || dismiss_btn.is_some()).then(|| div().flex().flex_wrap().items_center().gap(px(8.)).children(fixes).children(dismiss_btn));
         let mut body = body.child(div().text_size(px(13.)).text_color(t.text_2).child(ref_text(t, id("text"), &a.text, cx)));
         for (n, line) in a.help.iter().enumerate() {
             body = body.child(div().text_size(px(12.)).text_color(t.muted).child(ref_text(t, id(&format!("help-{n}")), line, cx)));
