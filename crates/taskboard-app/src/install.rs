@@ -20,6 +20,7 @@ use objc2_foundation::NSString;
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoginItem {
@@ -37,6 +38,8 @@ pub enum LoginItem {
 
 static STATUS: Mutex<LoginItem> = Mutex::new(LoginItem::Checking);
 static IN_THE_WAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// When the app last looked at launchd because it couldn't reach the daemon (see [`daemon_unreachable`]).
+static RECHECKED: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// What this launch found in the way of the board (another board on its port, another `tb` first
 /// on the PATH, another task-board plugin), one sentence each, for the banner.
@@ -191,7 +194,7 @@ pub fn register(bundle: &Path) -> LoginItem {
             if !matches!(unsafe { svc.status() }, SMAppServiceStatus::Enabled) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
     match unsafe { svc.status() } {
@@ -291,6 +294,24 @@ pub fn headless(args: &[String]) -> Option<i32> {
         }
         _ => None,
     }
+}
+
+/// The app can't reach the daemon. Launch only checks the registration once, and launchd can start
+/// failing after that (a dev reinstall's bootout racing the launch), so look again, at most every
+/// 20s: a registration launchd can't start is made again (see [`register`]).
+pub fn daemon_unreachable() {
+    if status() != LoginItem::Enabled {
+        return;
+    }
+    let Some(bundle) = installed_bundle() else { return };
+    {
+        let mut last = RECHECKED.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(20)) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    std::thread::Builder::new().name("install-recheck".into()).spawn(move || set_status(register(&bundle))).ok();
 }
 
 /// Start the install / login-item work for this launch (installed apps only).

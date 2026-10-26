@@ -112,6 +112,7 @@ impl Daemon {
             crate::log::info(format!("can't reach the board at {} ({path}): {why}", self.base));
             *down = Some(why);
         }
+        crate::install::daemon_unreachable();
         CallError { status: 0, message: "Can’t reach the task board server.".into() }
     }
 
