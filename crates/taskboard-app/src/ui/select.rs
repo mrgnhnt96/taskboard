@@ -5,7 +5,7 @@
 //! reading order. Unlike gpui-base's `SelectableText`, a [`Sel`] keeps highlights (a bold name,
 //! markdown's `code` and *italic*) and opens its links on a plain click.
 use crate::theme::Theme;
-use gpui_kit::base::{TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
+use gpui_kit::base::{TextSelection, TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 use gpui_kit::*;
 use std::cell::Cell;
 use std::ops::Range;
@@ -35,11 +35,12 @@ pub struct Sel {
     order: u64,
 }
 
-/// What a [`Sel`] keeps between frames: its selection handle, the link a press went down on and
-/// the link the mouse is over.
+/// What a [`Sel`] keeps between frames: its selection handle, the redraw that follows a drag
+/// across it, the link a press went down on and the link the mouse is over.
 #[derive(Clone)]
 pub struct Kept {
     handle: TextSelectionHandle,
+    _redraw: Rc<Subscription>,
     pressed: Rc<Cell<Option<usize>>>,
     hovered: Rc<Cell<Option<usize>>>,
 }
@@ -60,6 +61,40 @@ impl Sel {
         let ix = layout.index_for_position(at).ok()?;
         links.iter().position(|(r, _)| r.contains(&ix))
     }
+}
+
+/// The focus ⌘C copies a selection from: the main window's own. A text field binds ⌘C to copy
+/// its own text, so a field the reader typed in last would swallow it if it kept focus.
+pub struct CopyFocus(pub FocusHandle);
+
+impl Global for CopyFocus {}
+
+/// Starting a selection takes the focus back from any text field, like a click outside it.
+fn take_copy_focus(window: &mut Window, cx: &mut App) {
+    if let Some(focus) = cx.try_global::<CopyFocus>().map(|f| f.0.clone()) {
+        window.focus(&focus, cx);
+    }
+}
+
+/// A drag moves the selection without drawing a frame: redraw when its ends move in this text, so
+/// the highlight follows the mouse. Only then: from frame to frame a run can drop out of the
+/// selection and back in with the same ends, and redrawing on that would never stop. (A cleared
+/// selection repaints on its own.)
+fn redraw_on_change(handle: &TextSelectionHandle, window: &Window, cx: &mut App) -> Subscription {
+    let win = window.window_handle();
+    let mut last = None;
+    handle.subscribe(
+        move |event, cx| {
+            if let TextSelectionEvent::SelectionChanged(Some(snapshot)) = event {
+                let ends = Some((snapshot.anchor(), snapshot.cursor()));
+                if ends != last {
+                    last = ends;
+                    _ = win.update(cx, |_, window, _| window.refresh());
+                }
+            }
+        },
+        cx,
+    )
 }
 
 impl IntoElement for Sel {
@@ -83,8 +118,13 @@ impl Element for Sel {
     }
 
     fn request_layout(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Kept) {
-        let kept = window.with_element_state(id.expect("Sel has an id"), |kept: Option<Kept>, _| {
-            let kept = kept.unwrap_or_else(|| Kept { handle: TextSelectionHandle::new(self.text.clone(), cx), pressed: Rc::default(), hovered: Rc::default() });
+        let kept = window.with_element_state(id.expect("Sel has an id"), |kept: Option<Kept>, window| {
+            let kept = kept.unwrap_or_else(|| {
+                let handle = TextSelectionHandle::new(self.text.clone(), cx);
+                let redraw = Rc::new(redraw_on_change(&handle, window, cx));
+                handle.focus_with(take_copy_focus, cx);
+                Kept { handle, _redraw: redraw, pressed: Rc::default(), hovered: Rc::default() }
+            });
             (kept.clone(), kept)
         });
         let (layout, ()) = self.styled.request_layout(id, inspector, window, cx);
@@ -186,6 +226,8 @@ mod tests {
     use super::sel;
     use crate::theme::{Theme, ThemeMode};
     use gpui_kit::base::{TextSelection, TextSelectionLayer};
+    use std::cell::Cell;
+    use std::rc::Rc;
     use gpui_kit::{Context, IntoElement, Modifiers, MouseButton, ParentElement as _, Render, InteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px};
 
     struct View;
@@ -248,5 +290,33 @@ mod tests {
         assert!(!picked.is_empty() && title.starts_with(&picked), "selected {picked:?} of {title:?}");
         cx.dispatch_action(crate::app::CopySelection);
         assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()), Some(picked));
+    }
+
+    /// Counts its renders: a frame the window drew.
+    struct Counted(Rc<Cell<usize>>);
+
+    impl Render for Counted {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.0.set(self.0.get() + 1);
+            let t = cx.global::<Theme>().clone();
+            div().size_full().child(TextSelectionLayer).child(div().w(px(240.)).h(px(20.)).child(sel(&t, "a", "alpha beta gamma")))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_drag_repaints_as_it_moves(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::new(ThemeMode::Dark, "Helvetica".into(), "Menlo".into())));
+        let renders = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let renders = renders.clone();
+            move |_, _| Counted(renders)
+        });
+        cx.update(|window, cx| drop(window.draw(cx)));
+        cx.simulate_mouse_down(point(px(1.), px(10.)), MouseButton::Left, Modifiers::default());
+        for x in [40., 80., 120.] {
+            let before = renders.get();
+            cx.simulate_mouse_move(point(px(x), px(10.)), Some(MouseButton::Left), Modifiers::default());
+            assert!(renders.get() > before, "the highlight follows the mouse to {x}px before the button comes up");
+        }
     }
 }

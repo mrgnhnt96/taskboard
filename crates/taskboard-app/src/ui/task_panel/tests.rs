@@ -230,6 +230,35 @@ fn sent_note(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>) ->
 }
 
 #[gpui_kit::test]
+fn cmd_c_copies_a_selection_made_after_typing_in_a_field(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton, VisualTestContext, point, px};
+    let (w, rec) = parity::window(cx);
+    rec.board().post("tasks/T2/meta", json!({"meta": [["Owner", "Sam"]]})).unwrap();
+    open(cx, &w, "T2");
+    press(cx, &w, "tab", Some("context"));
+    let cx = &mut VisualTestContext::from_window(w.into(), cx);
+    let width = cx.update(|window, cx| {
+        drop(window.draw(cx));
+        window.viewport_size().width
+    });
+    // The reader typed in one of the panel's fields: it still has focus.
+    w.update(cx, |m, window, cx| {
+        let field = m.task_panel.fields["meta:T2:0:1"].focus.clone();
+        window.focus(&field, cx);
+    })
+    .unwrap();
+    // Drag across the title: 24px in from the panel's left edge, under the pills.
+    let left = width - px(super::WIDTH) + px(24.);
+    cx.simulate_mouse_down(point(left + px(2.), px(68.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(point(left + px(80.), px(68.)), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(point(left + px(80.), px(68.)), MouseButton::Left, Modifiers::default());
+    let picked = cx.update(|window, cx| gpui_kit::base::TextSelection::selected_text(window, cx));
+    assert!(!picked.is_empty(), "the drag selected some of the title");
+    cx.simulate_keystrokes("cmd-c");
+    assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()), Some(picked));
+}
+
+#[gpui_kit::test]
 fn a_task_opens_from_its_row_and_loads_on_its_own(cx: &mut gpui_kit::TestAppContext) {
     let (w, rec) = parity::window(cx);
     let title = rec.board().get("tasks/T3", &[]).unwrap()["title"].as_str().unwrap().to_string();
