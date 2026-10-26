@@ -223,13 +223,21 @@ fn cold_conversations_and_background_purposes() {
     b.transcript(20_000, 10);
     assert!(!taskboardd::limits::is_cold(&b.app, &taskboardd::limits::conversation(&b.app, "", "c-s1", None)));
 
-    let job = |purpose: &str| {
+    let job = |purpose: &str, visit: Option<&str>| {
         let mut j = Row::new();
         j.insert("purpose".into(), json!(purpose));
+        j.insert("args".into(), json!(json!({"visit": visit}).to_string()));
         j
     };
-    assert!(midna::opens_in_background(&b.app, &job("plan")));
-    assert!(!midna::opens_in_background(&b.app, &job("start")));
+    assert!(midna::opens_in_background(&b.app, &job("plan", None)));
+    assert!(!midna::opens_in_background(&b.app, &job("start", None)));
+    assert!(!midna::opens_in_background(&b.app, &job("pr", Some("merge"))), "the owner's list leaves PR visits out");
+
+    let b = board_with(|c| c.terminals.background = vec!["pr:note".into(), "pr:follow".into()]);
+    assert!(midna::opens_in_background(&b.app, &job("pr", Some("note"))));
+    assert!(midna::opens_in_background(&b.app, &job("pr", Some("follow"))));
+    assert!(!midna::opens_in_background(&b.app, &job("pr", Some("comments"))), "one visit, not every PR visit");
+    assert!(!midna::opens_in_background(&b.app, &job("pr", None)));
 }
 
 #[test]

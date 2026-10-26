@@ -795,12 +795,9 @@ pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -
     if let Some(e) = extra {
         text += &format!("\n{e}");
     }
-    let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "prompt": text, "queue": false});
-    let mut args = if app.cfg.models.fresh_pr_visits && MECHANICAL.contains(&phase) { fresh_visit(app, t, phase, args)? } else { resume_or_fresh(app, t, args)? };
-    // A merge needs nobody watching it: a new terminal for it opens in Midna's Background group.
-    if phase == "merge" {
-        args["background"] = json!(true);
-    }
+    // `visit` names the kind of visit, for `[terminals] background` (`pr:merge`).
+    let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "prompt": text, "queue": false, "visit": phase});
+    let args = if app.cfg.models.fresh_pr_visits && MECHANICAL.contains(&phase) { fresh_visit(app, t, phase, args)? } else { resume_or_fresh(app, t, args)? };
     let jid = board::create_job(app, "agent", args, Some(t.id()), "pr", None)?;
     board::log_event(app, t.id(), board::BOARD, "handoff", &format!("Brought the conversation back for PR #{}: {}", t.i0("pr_num"), label(phase).to_lowercase()))?;
     Ok(Some(jid))
@@ -815,7 +812,7 @@ pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     let Some(cwd) = wake_cwd(app, t, Again::Nothing)? else { return Ok(None) };
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
-    let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "queue": false,
+    let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "queue": false, "visit": "follow",
                       "prompt": format!("{text}\nPush with git push --force-with-lease, then run {tb} pr wait {r}. Don't take another task here, and don't run tb submit: the task is already submitted.")});
     let args = resume_or_fresh(app, t, args)?;
     Ok(Some(board::create_job(app, "agent", args, Some(t.id()), "pr", None)?))
@@ -828,7 +825,7 @@ pub fn ask_for_note(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
         return Ok(None);
     }
     let Some(cwd) = wake_cwd(app, t, Again::Nothing)? else { return Ok(None) };
-    let args = json!({"cwd": cwd, "title": short(&format!("Note for testers: {}", t.st("title")), 40), "prompt": text, "queue": false});
+    let args = json!({"cwd": cwd, "title": short(&format!("Note for testers: {}", t.st("title")), 40), "prompt": text, "queue": false, "visit": "note"});
     let args = resume_or_fresh(app, t, args)?;
     let jid = board::create_job(app, "agent", args, Some(t.id()), "pr", None)?;
     board::log_event(app, t.id(), board::BOARD, "handoff", "Brought the conversation back to write the note for testers")?;
