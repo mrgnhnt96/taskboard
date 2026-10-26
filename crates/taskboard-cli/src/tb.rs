@@ -6555,6 +6555,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             PrCmd::Check => {
                 let v = c.call("POST", "/prs/refresh", Some(json!({})))?;
                 out(&pr_check_line(&v));
+                for line in pr_check_rate_lines(&v["rate_limits"]) {
+                    out(&line);
+                }
                 Ok(0)
             }
             PrCmd::Status { task } => {
@@ -7111,7 +7114,8 @@ fn feed_line(v: &Value) -> String {
 }
 
 /// `GET /prs/feed`'s `rate_limits`: one line per account the board has called, saying whether the
-/// host has it rate-limited and how many calls the board made on it in the last hour.
+/// host has it rate-limited or the board is slowing down on it, how many calls the board made on it
+/// in the last hour, and its share of the calls in the hour before the last limit.
 fn rate_lines(v: &Value) -> Vec<String> {
     let mut lines = vec![];
     for a in v.as_array().into_iter().flatten() {
@@ -7125,12 +7129,21 @@ fn rate_lines(v: &Value) -> Vec<String> {
         if let Some(f) = a["stretch"].as_f64() {
             line += &format!(" · polling {f:.1}× slower to fit");
         }
-        if let Some(why) = a["why"].as_str() {
-            line += &format!("\n  {why}");
+        for key in ["why", "slow_text", "share_text"] {
+            if let Some(more) = a[key].as_str() {
+                line += &format!("\n  {more}");
+            }
         }
         lines.push(line);
     }
     lines
+}
+
+/// `tb pr check`'s rate-limit lines: only the accounts that are limited, slowing down, or were
+/// limited in the last day.
+fn pr_check_rate_lines(v: &Value) -> Vec<String> {
+    let said = |a: &&Value| ["text", "slow_text", "share_text"].iter().any(|k| a[*k].is_string());
+    rate_lines(&json!(v.as_array().into_iter().flatten().filter(said).collect::<Vec<_>>()))
 }
 
 /// One line per source: its mode (and where it's set), its stream's health and whether its poll runs,
@@ -7808,6 +7821,22 @@ mod tests {
             ]
         );
         assert!(rate_lines(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn tb_pr_check_says_the_board_s_share_of_the_calls_before_a_limit() {
+        let share = "The board made 464 calls in the hour before Bitbucket limited the account at 7:28am. The rest came from other tools on the same account.";
+        let v = json!([
+            {"label": "Bitbucket", "text": null, "why": null, "calls_last_hour": 470, "max_per_hour": null,
+             "slow_text": "Bitbucket limited the account until 7:33am; the board is easing back in; reads other than the PR poll's wait until 7:38am",
+             "share_text": share},
+            {"label": "GitHub", "text": null, "why": null, "slow_text": null, "share_text": null, "calls_last_hour": 40},
+        ]);
+        let lines = pr_check_rate_lines(&v);
+        assert_eq!(lines.len(), 1, "only the account with something to say: {lines:?}");
+        assert!(lines[0].starts_with("Bitbucket isn't rate-limited · the board's calls in the last hour: 470\n  Bitbucket limited the account until 7:33am"), "{}", lines[0]);
+        assert!(lines[0].ends_with(&format!("\n  {share}")), "{}", lines[0]);
+        assert!(pr_check_rate_lines(&Value::Null).is_empty());
     }
 
     #[test]

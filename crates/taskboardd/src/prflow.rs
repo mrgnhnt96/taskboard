@@ -807,7 +807,8 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
 pub fn read(app: &App, t: &Row) -> std::result::Result<Value, String> {
     let pr = crate::prhost::PrRef::of(t).ok_or_else(|| "the task has no PR".to_string())?;
     let host = crate::prhost::host_for(app, &pr.host)?;
-    let mut rec = host.read(&pr)?;
+    // An open PR's stage can change: its reads still go while the account restarts slowly after a limit.
+    let mut rec = crate::prhost::limit::priority(|| host.read(&pr))?;
     roster_ids(app, &t.st("project"), &mut rec).map_err(|e| e.message)?;
     Ok(rec.to_value())
 }

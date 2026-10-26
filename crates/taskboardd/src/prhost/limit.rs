@@ -7,12 +7,23 @@
 //!
 //! When the host says the account is limited (a 429; GitHub's "API rate limit exceeded" or secondary
 //! limit; `X-RateLimit-Remaining: 0`), every call on that account stops until the host's
-//! `Retry-After` / `X-RateLimit-Reset`, else for 5 minutes, doubling up to an hour while the limit
-//! keeps coming back. A call made meanwhile fails at once with "Bitbucket rate-limited until 3:40pm"
-//! instead of reaching the host. Each backoff logs a line with the board's own calls in the last hour,
-//! so it's clear whether the board used the limit up. [`check`] (every runner tick) raises the
-//! `rate-limit:<host>` alert once a limit has lasted 30 minutes inside the work hours, and clears it
-//! when the limit ends.
+//! `Retry-After` / `X-RateLimit-Reset`, else for 5 minutes. Each limit that comes back doubles the
+//! backoff, up to an hour (never shorter than the host's time); only an hour with no limit starts it
+//! over at 5 minutes, since calls getting through between limits is what keeps the account limited.
+//! A call made meanwhile fails at once with "Bitbucket rate-limited until 3:40pm" instead of reaching
+//! the host. Each backoff logs a line with the board's own calls in the last hour, so it's clear
+//! whether the board used the limit up. [`check`] (every runner tick) raises the `rate-limit:<host>`
+//! alert once a run of limits has lasted 30 minutes inside the work hours, and clears it once the
+//! account is past its limit and the slow restart.
+//!
+//! # Slowing down
+//!
+//! After a backoff, the account restarts slowly for as long as it backed off: only writes and the
+//! reads marked [`priority`] (the PR poll's reads of the board's open PRs, whose stage can change) go;
+//! every other read (the review sweep, master breaks, CI reads, …) waits, and [`stretch`] doubles the
+//! PR poll's interval. The same happens before a limit when the host's headers say the account is
+//! near it (Bitbucket's `X-RateLimit-NearLimit`, or `X-RateLimit-Remaining` under a fifth of
+//! `X-RateLimit-Limit`), until its `X-RateLimit-Reset` or for 5 minutes.
 //!
 //! # Budget
 //!
@@ -22,9 +33,12 @@
 //!
 //! # Showing it
 //!
-//! [`status`]: each account's host, its limit (`limited_until`, `why`), the board's calls in the last
-//! hour and its budget, on `/state` (`rate_limits`) and `GET /prs/feed` (`tb feed`).
+//! [`status`]: each account's host, its limit (`limited_until`, `why`), its slow restart (`slow_text`),
+//! the board's calls in the last hour and its budget, and the board's share of the calls in the hour
+//! before the last limit (`share_text`), on `/state` (`rate_limits`), `GET /prs/feed` (`tb feed`) and
+//! `POST /prs/refresh` (`tb pr check`).
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::OnceLock;
 
@@ -47,6 +61,16 @@ pub struct HostConfig {
 const FIRST_BACKOFF_SECS: f64 = 300.0;
 const MAX_BACKOFF_SECS: f64 = 3600.0;
 const HOUR: f64 = 3600.0;
+/// This long past a limit with no other limit starts the backoff over at 5 minutes.
+const QUIET_SECS: f64 = HOUR;
+/// Near the limit with no reset time from the host: slow down for this long.
+const NEAR_SECS: f64 = 300.0;
+/// Near the limit: under this share of the hour's calls left.
+pub const NEAR_SHARE: f64 = 0.2;
+/// How much wider the PR poll is while an account restarts slowly.
+const SLOW_STRETCH: f64 = 2.0;
+/// The board's share at the last limit is shown for a day.
+const SHARE_SECS: f64 = 24.0 * HOUR;
 /// The window the pace for [`stretch`] is read over.
 const PACE_SECS: f64 = 600.0;
 /// Aim under the budget, so the hard cap rarely bites.
@@ -65,12 +89,20 @@ struct Account {
     calls: VecDeque<f64>,
     /// Calls stop until then.
     until: Option<f64>,
-    /// When this run of limits started (kept across a doubling).
+    /// When this run of limits started (kept until a quiet hour).
     since: Option<f64>,
-    /// Limits in a row without a call getting through: what doubles the backoff.
+    /// Limits with less than [`QUIET_SECS`] between them: what doubles the backoff.
     strikes: u32,
     why: String,
     alerted: bool,
+    /// Only writes and [`priority`] reads go until then: the slow restart after a backoff, or the host
+    /// saying the account is near its limit.
+    slow_until: Option<f64>,
+    slow_why: String,
+    /// When the last limit came, and the board's calls in the hour before it.
+    share: Option<(f64, usize)>,
+    /// The account's calls an hour, when the host says (`X-RateLimit-Limit`).
+    cap: Option<u32>,
 }
 
 impl Account {
@@ -79,6 +111,63 @@ impl Account {
             self.calls.pop_front();
         }
     }
+
+    /// Past its limit and the slow restart after it.
+    fn over(&self, now: f64) -> bool {
+        self.until.is_none_or(|u| u <= now) && self.slow(now).is_none()
+    }
+
+    fn slow(&self, now: f64) -> Option<f64> {
+        self.slow_until.filter(|s| *s > now && self.until.is_none_or(|u| u <= now))
+    }
+
+    /// The account's calls an hour: the host's word, else what the host documents.
+    fn cap(&self) -> Option<u32> {
+        self.cap.or(match self.host.as_str() {
+            "bitbucket" => Some(1000),
+            "github" => Some(5000),
+            _ => None,
+        })
+    }
+
+    /// "The board made 464 calls in the hour before Bitbucket limited the account …".
+    fn share_text(&self, now: f64) -> Option<String> {
+        let (at, calls) = self.share.filter(|(at, _)| now - at < SHARE_SECS)?;
+        let mut text = format!("The board made {} in the hour before {} limited the account at {}.", plural(calls as i64, "call"), label(&self.host), local_clock(Some(&iso(at))));
+        match self.cap() {
+            Some(cap) if calls >= cap as usize => text += &format!(" That's the account's {cap} an hour: the board used it up itself."),
+            _ => text += " The rest came from other tools on the same account.",
+        }
+        Some(text)
+    }
+}
+
+/// What a host's headers say about the hour's calls left on a call that went through.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Headroom {
+    /// `X-RateLimit-Limit`.
+    pub cap: Option<u32>,
+    /// Under [`NEAR_SHARE`] left, or the host flags it.
+    pub near: bool,
+    /// `X-RateLimit-Reset`, epoch seconds.
+    pub reset_at: Option<f64>,
+}
+
+thread_local! {
+    static PRIORITY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with its reads marked as the highest value: they still go while an account restarts
+/// slowly after a limit, or is near one.
+pub fn priority<T>(f: impl FnOnce() -> T) -> T {
+    let was = PRIORITY.with(|p| p.replace(true));
+    let out = f();
+    PRIORITY.with(|p| p.set(was));
+    out
+}
+
+fn is_priority() -> bool {
+    PRIORITY.with(|p| p.get())
 }
 
 /// Every account's limits and calls.
@@ -127,8 +216,9 @@ impl Limits {
         self.budgets.lock().get(host).copied().filter(|b| *b > 0)
     }
 
-    /// Whether a call on `key` may go out now; counts it when it does. Err: why it waits.
-    pub fn admit(&self, key: &str, host: &str, write: bool, now: f64) -> std::result::Result<(), String> {
+    /// Whether a call on `key` may go out now; counts it when it does. `priority`: a read that still
+    /// goes while the account restarts slowly. Err: why it waits.
+    pub fn admit(&self, key: &str, host: &str, write: bool, priority: bool, now: f64) -> std::result::Result<(), String> {
         let budget = self.budget(host);
         let mut all = self.accounts.lock();
         let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
@@ -136,6 +226,11 @@ impl Limits {
         if let Some(u) = a.until {
             if u > now {
                 return Err(format!("{}; the board holds its calls until then", until_text(host, u)));
+            }
+        }
+        if let Some(s) = a.slow(now) {
+            if !write && !priority {
+                return Err(format!("{}; reads other than the PR poll's wait until {}", a.slow_why, local_clock(Some(&iso(s)))));
             }
         }
         if let Some(b) = budget {
@@ -152,19 +247,8 @@ impl Limits {
         Ok(())
     }
 
-    /// The host answered: the limit (if there was one) is over.
-    pub fn answered(&self, key: &str, now: f64) {
-        if let Some(a) = self.accounts.lock().get_mut(key) {
-            if a.until.is_none_or(|u| u <= now) {
-                a.strikes = 0;
-                a.until = None;
-                a.since = None;
-            }
-        }
-    }
-
-    /// The host says `key` is rate-limited: stop its calls until the host says, else back off.
-    /// Answers the time calls start again.
+    /// The host says `key` is rate-limited: stop its calls until the host says, else back off, and
+    /// restart slowly for as long after. Answers the time calls start again.
     pub fn hit(&self, key: &str, host: &str, hit: &Hit, now: f64) -> f64 {
         let mut all = self.accounts.lock();
         let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
@@ -175,19 +259,28 @@ impl Limits {
             _ => None,
         };
         let standing = a.until.filter(|u| *u > now);
+        if standing.is_none() && a.until.is_none_or(|u| now - u >= QUIET_SECS) {
+            a.strikes = 0;
+            a.since = None;
+        }
+        let doubled = now + (FIRST_BACKOFF_SECS * 2f64.powi(a.strikes.min(8) as i32)).min(MAX_BACKOFF_SECS);
         // A limit already standing doesn't back off again for the calls that were already out; only
-        // a later time from the host moves it.
+        // a later time from the host moves it. A limit that came back waits at least the doubled time.
         let until = match (standing, told) {
             (Some(u), t) => u.max(t.unwrap_or(u)),
-            (None, Some(t)) => t,
-            (None, None) => now + (FIRST_BACKOFF_SECS * 2f64.powi(a.strikes.min(8) as i32)).min(MAX_BACKOFF_SECS),
+            (None, Some(t)) if a.strikes == 0 => t,
+            (None, Some(t)) => t.max(doubled),
+            (None, None) => doubled,
         };
         if standing.is_none() {
             a.strikes += 1;
+            a.share = Some((now, a.calls.len()));
         }
         a.until = Some(until);
         a.since.get_or_insert(now);
         a.why = hit.why.clone();
+        a.slow_until = Some(until + (until - now).max(FIRST_BACKOFF_SECS));
+        a.slow_why = format!("{} limited the account until {}; the board is easing back in", label(host), local_clock(Some(&iso(until))));
         let budget = self.budget(host).map(|b| format!(" (budget {b})")).unwrap_or_default();
         self.log.lock().push(format!(
             "rate limit: {} answered \"{}\"; the board backs off until {} ({}); it made {} calls on this account in the last hour{budget}",
@@ -198,6 +291,31 @@ impl Limits {
             a.calls.len(),
         ));
         until
+    }
+
+    /// What the host's headers said on a call that went through: notes the account's hourly limit and,
+    /// near it, slows down until the host's reset (else for [`NEAR_SECS`]).
+    pub fn headroom(&self, key: &str, host: &str, h: &Headroom, now: f64) {
+        let mut all = self.accounts.lock();
+        let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
+        if h.cap.is_some() {
+            a.cap = h.cap;
+        }
+        if !h.near {
+            return;
+        }
+        let until = h.reset_at.filter(|t| *t > now).unwrap_or(now + NEAR_SECS);
+        if a.slow(now).is_none() {
+            a.forget_old(now);
+            self.log.lock().push(format!(
+                "rate limit: {} says the account is near its limit; the board holds reads other than the PR poll's until {}; it made {} calls on this account in the last hour",
+                label(host),
+                local_clock(Some(&iso(until))),
+                a.calls.len()
+            ));
+            a.slow_why = format!("{} says the account is near its rate limit", label(host));
+        }
+        a.slow_until = Some(a.slow_until.filter(|s| *s > now).unwrap_or(now).max(until));
     }
 
     /// How much wider the PR poll should be so the board's pace on every budgeted host fits its
@@ -220,6 +338,9 @@ impl Limits {
             };
             out = out.max(f);
         }
+        if self.accounts.lock().values().any(|a| a.slow(now).is_some()) {
+            out = out.max(SLOW_STRETCH);
+        }
         out
     }
 
@@ -232,12 +353,16 @@ impl Limits {
             .map(|a| {
                 a.forget_old(now);
                 let limited = a.until.filter(|u| *u > now);
+                let slow = a.slow(now);
                 json!({
                     "host": a.host, "label": label(&a.host),
                     "limited_until": limited.map(iso),
                     "limited_since": limited.and(a.since).map(iso),
                     "why": limited.map(|_| a.why.clone()),
                     "text": limited.map(|u| until_text(&a.host, u)),
+                    "slow_until": slow.map(iso),
+                    "slow_text": slow.map(|s| format!("{}; reads other than the PR poll's wait until {}", a.slow_why, local_clock(Some(&iso(s))))),
+                    "share_text": a.share_text(now),
                     "calls_last_hour": a.calls.len(),
                     "max_per_hour": self.budget(&a.host),
                     "stretch": stretch.get(&a.host).map(|(f, _)| *f).filter(|f| *f > 1.0),
@@ -263,19 +388,19 @@ impl Limits {
         out
     }
 
-    /// Hosts with no account limited any more, whose alert can go.
+    /// Hosts with no account limited or restarting slowly any more, whose alert can go.
     fn lifted(&self, now: f64) -> Vec<String> {
         let all = self.accounts.lock();
         let mut hosts: Vec<String> = all.values().map(|a| a.host.clone()).collect();
         hosts.sort();
         hosts.dedup();
-        hosts.retain(|h| !all.values().any(|a| &a.host == h && a.until.is_some_and(|u| u > now)));
+        hosts.retain(|h| !all.values().any(|a| &a.host == h && !a.over(now)));
         hosts
     }
 
     fn reset_alerts(&self, now: f64) {
         for a in self.accounts.lock().values_mut() {
-            if a.until.is_none_or(|u| u <= now) {
+            if a.over(now) {
                 a.alerted = false;
             }
         }
@@ -316,18 +441,15 @@ impl Gate {
         Gate { key, host: host.to_string() }
     }
 
-    /// Makes the call unless the account is limited (or out of budget for a read); notes a limit the
-    /// call's answer reports (`limited` reads it from the error), and a call that got through.
+    /// Makes the call unless the account is limited (or out of budget, or restarting slowly, for a
+    /// read); notes a limit the call's answer reports (`limited` reads it from the error).
     pub fn call<T>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         let l = limits();
-        l.admit(&self.key, &self.host, write, now_ts())?;
+        l.admit(&self.key, &self.host, write, is_priority(), now_ts())?;
         match f() {
             Ok((v, hit)) => {
-                match hit {
-                    Some(h) => {
-                        l.hit(&self.key, &self.host, &h, now_ts());
-                    }
-                    None => l.answered(&self.key, now_ts()),
+                if let Some(h) = hit {
+                    l.hit(&self.key, &self.host, &h, now_ts());
                 }
                 Ok(v)
             }
@@ -337,6 +459,11 @@ impl Gate {
             }
             Err((e, None)) => Err(e),
         }
+    }
+
+    /// The host's headers on a call that went through ([`Limits::headroom`]).
+    pub fn headroom(&self, h: &Headroom) {
+        limits().headroom(&self.key, &self.host, h, now_ts());
     }
 }
 
@@ -385,14 +512,14 @@ mod tests {
     #[test]
     fn a_limit_stops_every_call_on_the_account_until_the_host_says() {
         let l = Limits::default();
-        l.admit("bb:1", "bitbucket", false, T0).unwrap();
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
         let until = l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(120.0), ..hit("429") }, T0);
         assert_eq!(until, T0 + 120.0);
-        let e = l.admit("bb:1", "bitbucket", false, T0 + 60.0).unwrap_err();
+        let e = l.admit("bb:1", "bitbucket", false, false, T0 + 60.0).unwrap_err();
         assert!(e.starts_with("Bitbucket rate-limited until "), "{e}");
-        assert!(l.admit("bb:1", "bitbucket", true, T0 + 60.0).is_err(), "writes wait too: the host would refuse them");
-        assert!(l.admit("bb:2", "bitbucket", false, T0 + 60.0).is_ok(), "another account isn't limited");
-        assert!(l.admit("bb:1", "bitbucket", false, T0 + 121.0).is_ok());
+        assert!(l.admit("bb:1", "bitbucket", true, false, T0 + 60.0).is_err(), "writes wait too: the host would refuse them");
+        assert!(l.admit("bb:2", "bitbucket", false, false, T0 + 60.0).is_ok(), "another account isn't limited");
+        assert!(l.admit("bb:1", "bitbucket", false, true, T0 + 121.0).is_ok(), "the PR poll's reads go once it lifts");
     }
 
     #[test]
@@ -412,8 +539,93 @@ mod tests {
             t = u + 1.0;
         }
         assert_eq!(waits, vec![5, 10, 20, 40, 60, 60]);
-        l.answered("gh:1", t);
-        assert_eq!(l.hit("gh:1", "github", &hit("again"), t) - t, 300.0, "a call that got through starts the doubling over");
+    }
+
+    #[test]
+    fn calls_getting_through_between_limits_don_t_start_the_doubling_over() {
+        let l = Limits::default();
+        let mut t = T0;
+        let mut waits = vec![];
+        for _ in 0..3 {
+            let u = l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), t);
+            waits.push(((u - t) / 60.0).round() as i64);
+            // The slow restart lets the PR poll through, and the limit comes back 20 minutes later.
+            l.admit("bb:1", "bitbucket", false, true, u + 1.0).unwrap();
+            t = u + 1200.0;
+        }
+        assert_eq!(waits, vec![5, 10, 20]);
+        let until = l.hit("bb:1", "bitbucket", &hit("429"), t);
+        let quiet = until + HOUR;
+        assert_eq!(l.hit("bb:1", "bitbucket", &hit("429"), quiet) - quiet, 300.0, "an hour with no limit starts it over");
+    }
+
+    #[test]
+    fn a_limit_that_comes_back_waits_at_least_the_doubled_time_whatever_the_host_says() {
+        let l = Limits::default();
+        let u = l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(60.0), ..hit("429") }, T0);
+        assert_eq!(u, T0 + 60.0, "the host's time, the first time");
+        let t = u + 120.0;
+        assert_eq!(l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(60.0), ..hit("429") }, t), t + 600.0);
+    }
+
+    #[test]
+    fn after_a_backoff_only_the_pr_poll_s_reads_and_writes_go_for_as_long() {
+        let l = Limits::default();
+        let until = l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), T0);
+        let t = until + 1.0;
+        let e = l.admit("bb:1", "bitbucket", false, false, t).unwrap_err();
+        assert!(e.contains("Bitbucket limited the account until") && e.contains("reads other than the PR poll's wait until"), "{e}");
+        assert!(l.admit("bb:1", "bitbucket", false, true, t).is_ok(), "a priority read goes");
+        assert!(l.admit("bb:1", "bitbucket", true, false, t).is_ok(), "a write goes");
+        assert_eq!(l.stretch(t), SLOW_STRETCH, "the poll runs slower meanwhile");
+        let st = l.status(t);
+        assert!(st[0]["slow_text"].as_str().unwrap().contains("easing back in"), "{}", st[0]);
+        assert!(st[0]["text"].is_null());
+        assert!(l.lifted(t).is_empty(), "the alert stays through the slow restart");
+        let done = until + 301.0;
+        assert!(l.admit("bb:1", "bitbucket", false, false, done).is_ok(), "every read goes after as long as it backed off");
+        assert_eq!(l.stretch(done), 1.0);
+        assert_eq!(l.lifted(done), vec!["bitbucket".to_string()]);
+    }
+
+    #[test]
+    fn priority_marks_the_reads_inside_it() {
+        assert!(!is_priority());
+        assert!(priority(|| priority(is_priority) && is_priority()));
+        assert!(!is_priority());
+    }
+
+    #[test]
+    fn near_the_limit_it_slows_down_before_reaching_it() {
+        let l = Limits::default();
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
+        l.headroom("bb:1", "bitbucket", &Headroom { cap: Some(1000), near: false, reset_at: None }, T0);
+        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + 1.0).is_ok(), "plenty left");
+        l.headroom("bb:1", "bitbucket", &Headroom { cap: Some(1000), near: true, reset_at: Some(T0 + 900.0) }, T0 + 2.0);
+        let e = l.admit("bb:1", "bitbucket", false, false, T0 + 3.0).unwrap_err();
+        assert!(e.starts_with("Bitbucket says the account is near its rate limit"), "{e}");
+        assert!(l.admit("bb:1", "bitbucket", false, true, T0 + 3.0).is_ok());
+        let log = l.take_log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(log[0].contains("near its limit"), "{}", log[0]);
+        l.headroom("bb:1", "bitbucket", &Headroom { cap: Some(1000), near: true, reset_at: None }, T0 + 4.0);
+        assert!(l.take_log().is_empty(), "logged once");
+        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + 901.0).is_ok(), "the host's reset ends it");
+    }
+
+    #[test]
+    fn status_says_the_board_s_share_of_the_hour_before_the_limit() {
+        let l = Limits::default();
+        for i in 0..464 {
+            l.admit("bb:1", "bitbucket", false, false, T0 + i as f64).unwrap();
+        }
+        l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), T0 + 600.0);
+        let text = l.status(T0 + 700.0)[0]["share_text"].as_str().unwrap().to_string();
+        assert!(text.starts_with("The board made 464 calls in the hour before Bitbucket limited the account at "), "{text}");
+        assert!(text.ends_with("The rest came from other tools on the same account."), "{text}");
+        l.headroom("bb:1", "bitbucket", &Headroom { cap: Some(400), ..Default::default() }, T0 + 700.0);
+        assert!(l.status(T0 + 700.0)[0]["share_text"].as_str().unwrap().ends_with("the board used it up itself."));
+        assert!(l.status(T0 + 600.0 + SHARE_SECS)[0]["share_text"].is_null(), "shown for a day");
     }
 
     #[test]
@@ -427,7 +639,7 @@ mod tests {
     fn each_backoff_logs_the_board_s_own_calls() {
         let l = Limits::default();
         for i in 0..3 {
-            l.admit("bb:1", "bitbucket", false, T0 + i as f64).unwrap();
+            l.admit("bb:1", "bitbucket", false, false, T0 + i as f64).unwrap();
         }
         l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), T0 + 5.0);
         let log = l.take_log();
@@ -441,14 +653,14 @@ mod tests {
     fn the_budget_holds_reads_but_not_writes() {
         let l = Limits::default();
         l.set_budgets([("bitbucket".to_string(), 2)].into());
-        l.admit("bb:1", "bitbucket", false, T0).unwrap();
-        l.admit("bb:1", "bitbucket", false, T0 + 10.0).unwrap();
-        let e = l.admit("bb:1", "bitbucket", false, T0 + 20.0).unwrap_err();
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
+        l.admit("bb:1", "bitbucket", false, false, T0 + 10.0).unwrap();
+        let e = l.admit("bb:1", "bitbucket", false, false, T0 + 20.0).unwrap_err();
         assert!(e.contains("[hosts.bitbucket] max_per_hour"), "{e}");
-        assert!(l.admit("bb:1", "bitbucket", true, T0 + 20.0).is_ok(), "a write still goes");
-        assert!(l.admit("gh:1", "github", false, T0 + 20.0).is_ok(), "GitHub has no budget");
-        assert!(l.admit("bb:1", "bitbucket", false, T0 + HOUR + 5.0).is_err(), "the write counts too");
-        assert!(l.admit("bb:1", "bitbucket", false, T0 + HOUR + 11.0).is_ok(), "the hour's first two calls aged out");
+        assert!(l.admit("bb:1", "bitbucket", true, false, T0 + 20.0).is_ok(), "a write still goes");
+        assert!(l.admit("gh:1", "github", false, false, T0 + 20.0).is_ok(), "GitHub has no budget");
+        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + HOUR + 5.0).is_err(), "the write counts too");
+        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + HOUR + 11.0).is_ok(), "the hour's first two calls aged out");
     }
 
     #[test]
@@ -458,7 +670,7 @@ mod tests {
         l.set_budgets([("bitbucket".to_string(), 900)].into());
         // 300 calls in ten minutes: 1,800 an hour against 900 (aiming at 810).
         for i in 0..300 {
-            l.admit("bb:1", "bitbucket", true, T0 + i as f64 * 2.0).unwrap();
+            l.admit("bb:1", "bitbucket", true, false, T0 + i as f64 * 2.0).unwrap();
         }
         let f = l.stretch(T0 + 600.0);
         assert!((f - 1800.0 / 810.0).abs() < 0.01, "{f}");
@@ -471,7 +683,7 @@ mod tests {
     #[test]
     fn status_says_who_is_limited_until_when() {
         let l = Limits::default();
-        l.admit("bb:1", "bitbucket", false, T0).unwrap();
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
         l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(600.0), ..hit("Bitbucket answered 429") }, T0);
         let st = l.status(T0 + 1.0);
         assert_eq!(st[0]["label"], "Bitbucket");
@@ -494,6 +706,7 @@ mod tests {
         assert_eq!(due[0].0, "bitbucket");
         assert!(l.due_alerts(T0 + 32.0 * 60.0).is_empty(), "once");
         assert!(l.lifted(T0 + 32.0 * 60.0).is_empty());
-        assert_eq!(l.lifted(t + 1.0), vec!["bitbucket".to_string()]);
+        assert!(l.lifted(t + 1.0).is_empty(), "still restarting slowly");
+        assert_eq!(l.lifted(t + HOUR + 1.0), vec!["bitbucket".to_string()]);
     }
 }
