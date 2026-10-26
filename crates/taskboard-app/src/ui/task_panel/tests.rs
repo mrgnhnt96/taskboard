@@ -1321,3 +1321,24 @@ fn a_long_log_fetches_older_pages_as_it_scrolls(cx: &mut gpui_kit::TestAppContex
     assert_eq!(rows.iter().filter(|e| e["text"].as_str().unwrap_or("").starts_with("Entry ")).count(), 150);
     assert!(rows.iter().all(|e| view::log_group(e["kind"].as_str().unwrap()) == "turn"));
 }
+
+/// A human task's Done reads "Sending…" until the box turns to "Done by you", with no note beside it.
+#[gpui_kit::test]
+fn a_human_tasks_done_turns_the_box_without_a_note(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    let t = rec.board().post("tasks", json!({"title": "Sign the form", "detail": "1. Open https://example.com and sign.", "project": "webapp", "kind": "human", "status": "queued"})).unwrap();
+    let r = format!("T{}", t["id"].as_i64().or_else(|| t["task"]["id"].as_i64()).expect("new task id"));
+    open(cx, &w, &r);
+    let a = control(cx, &w, "did", None);
+    w.update(cx, |m, _, cx| act(m, &a, cx)).unwrap();
+    w.update(cx, |m, _, _| assert!(view::acts(&build(m).unwrap()).contains(&"did!".to_string()), "busy while sending")).unwrap();
+    settle(cx);
+    assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/did")).count(), 1, "{:?}", rec.posts());
+    assert_eq!(note(&format!("did:{r}")), None);
+    w.update(cx, |m, _, _| {
+        let tree = build(m).unwrap();
+        assert!(!view::acts(&tree).iter().any(|x| x.starts_with("did")), "Done is gone once it's done: {:?}", view::acts(&tree));
+        assert!(ui(|u| u.busy.is_empty()));
+    })
+    .unwrap();
+}

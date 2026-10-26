@@ -600,16 +600,21 @@ pub fn run(
     }
     m.issue_panel.notes.remove(&grp);
     let (k1, k2, g1, g2) = (key.clone(), key, grp.clone(), grp);
+    let since = std::time::Instant::now();
     m.post_or(
         path,
         body,
         cx,
         move |m, v, cx| {
-            m.issue_panel.busy.remove(&k1);
-            if let Some(msg) = ok(m, &v, cx).filter(|x| !x.is_empty()) {
-                set_note(m, &g1, msg, false, cx);
-            }
+            let msg = ok(m, &v, cx).filter(|x| !x.is_empty());
             crate::ui::backlog::stale(m);
+            // "Sending…" stays until the board's answer shows the change, so it doesn't flash back.
+            m.settle(since, move |m, cx| {
+                m.issue_panel.busy.remove(&k1);
+                if let Some(msg) = msg {
+                    set_note(m, &g1, msg, false, cx);
+                }
+            });
         },
         move |m, e, cx| {
             m.issue_panel.busy.remove(&k2);
