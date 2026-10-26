@@ -548,7 +548,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                 };
                 if let Some(sid) = sid {
                     let detail = t.as_ref().map(|t| crate::midna::task_detail(t, &text)).unwrap_or_else(|| text.clone());
-                    crate::midna::set_tab(app, &sid, "alert", Some(detail));
+                    let tab = if a["urgent"] == true { "urgent" } else { "alert" };
+                    crate::midna::set_tab(app, &sid, tab, Some(detail));
                 }
                 Ok(a)
             })?;

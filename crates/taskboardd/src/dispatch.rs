@@ -292,6 +292,9 @@ fn push_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>,
     if let Some(flag) = extra {
         new[flag] = json!(true);
     }
+    if waits_for_hours(app, &new) {
+        new["held"] = json!(true);
+    }
     let new_id = new["id"].clone();
     rows.push(new);
     // The newest 20 alerts, plus every one that stays, however many others came after it.
@@ -303,10 +306,16 @@ fn push_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>,
     let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
     keep(app, &rows)?;
     let kept = rows.into_iter().find(|a| a["id"] == new_id);
-    if let Some(a) = kept.as_ref().filter(|a| !digest::holds(app, a)) {
+    if let Some(a) = kept.as_ref().filter(|a| !digest::holds(app, a) && a["held"] != true) {
         notify_alert(app, a);
     }
     Ok(kept)
+}
+
+/// Whether a new alert's notification waits for the work hours to open (`deliver_held`): outside them
+/// only an urgent alert notifies at once.
+fn waits_for_hours(app: &App, a: &Value) -> bool {
+    a["urgent"] != true && !quiet(a) && !hours::is_open(app)
 }
 
 /// An alert raised through `POST /alerts` (`tb alert raise`): with a `key`, raising it again while it's up
@@ -528,6 +537,26 @@ pub fn snoozed(a: &Value) -> bool {
     }
 }
 
+/// Notifies each alert held outside the work hours (`waits_for_hours`) once they open, once. One that
+/// cleared meanwhile was pruned before this; a snoozed one notifies when its snooze ends instead.
+fn deliver_held(app: &App) -> Result<()> {
+    let mut rows = alerts(app);
+    if !rows.iter().any(|a| a["held"] == true) || !hours::is_open(app) {
+        return Ok(());
+    }
+    for a in rows.iter_mut().filter(|a| a["held"] == true) {
+        a["held"] = Value::Null;
+        if digest::holds(app, a) || snoozed(a) {
+            continue;
+        }
+        a["notified_at"] = json!(now_iso());
+        a["snoozed_until"] = Value::Null;
+        a["snoozed_back"] = Value::Null;
+        notify_alert(app, a);
+    }
+    keep(app, &rows)
+}
+
 fn repeat_alerts(app: &App) -> Result<()> {
     let every = hours::get(app).alert_every_mins as f64 * 60.0;
     let open = hours::is_open(app);
@@ -746,7 +775,7 @@ fn tend_waiters(app: &App) {
     let (midna, inbox) = (app.cfg.midna.clone(), app.shared.lock().notify_inbox.clone());
     let mut up: Vec<(String, String, String)> = vec![];
     if !snooze_actions(app).is_empty() {
-        for a in rows.iter().filter(|a| !digest::holds(app, a) && !quiet(a)) {
+        for a in rows.iter().filter(|a| !digest::holds(app, a) && !quiet(a) && a["held"] != true) {
             let (Some(id), Some(at)) = (a["id"].as_str(), a["notified_at"].as_str().or(a["at"].as_str())) else { continue };
             up.push((id.to_string(), at.to_string(), notification_id(id)));
         }
@@ -1030,6 +1059,7 @@ pub fn tick(app: &App) -> Result<()> {
     take_responses(app)?;
     prune_asks(app)?;
     prune_alerts(app)?;
+    deliver_held(app)?;
     repeat_alerts(app)?;
     digest::tick(app)?;
     tend_waiters(app);
@@ -1052,6 +1082,57 @@ mod tests {
         assert_eq!(alert_url(&app, None, Some(3), None), "taskboard://goal/G3");
         assert_eq!(alert_url(&app, Some(12), None, Some("abc")), "taskboard://session/abc");
         assert_eq!(alert_url(&app, None, None, None), "taskboard://");
+    }
+
+    fn quiet_app() -> (tempfile::TempDir, std::sync::Arc<App>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.alerts.digest_mins = 0;
+        let app = App::for_tests(cfg);
+        hours::shut_for_tests(&app);
+        (dir, app)
+    }
+
+    fn alert_for(app: &App, task: &str) -> Value {
+        alerts(app).into_iter().find(|a| a["task"] == task).unwrap()
+    }
+
+    #[test]
+    fn alerts_outside_hours_wait_for_them_to_open() {
+        let (_d, app) = quiet_app();
+        add_alert(&app, "T1: which port?", Some(1), None, None, None).unwrap();
+        raise(&app, "main is red", Some(2), None, Some("master:1"), true).unwrap();
+        assert_eq!(alert_for(&app, "T1")["held"], true);
+        assert!(alert_for(&app, "T2")["held"].is_null(), "an urgent alert notifies at once");
+
+        deliver_held(&app).unwrap();
+        assert_eq!(alert_for(&app, "T1")["held"], true, "still shut");
+
+        hours::set(&app, &json!({"on": false})).unwrap();
+        let before = alert_for(&app, "T1");
+        deliver_held(&app).unwrap();
+        let after = alert_for(&app, "T1");
+        assert!(after["held"].is_null());
+        assert!(after["notified_at"].as_str() >= before["notified_at"].as_str());
+        add_alert(&app, "T3: which color?", Some(3), None, None, None).unwrap();
+        assert!(alert_for(&app, "T3")["held"].is_null(), "inside the hours an alert notifies at once");
+    }
+
+    #[test]
+    fn a_held_alert_that_clears_or_snoozes_isnt_delivered_at_open() {
+        let (_d, app) = quiet_app();
+        add_alert(&app, "T1: which port?", Some(1), None, None, None).unwrap();
+        add_alert(&app, "T2: which color?", Some(2), None, None, None).unwrap();
+        clear_alerts(&app, Some(1), None).unwrap();
+        let t2 = alert_for(&app, "T2");
+        snooze_alert(&app, t2["id"].as_str().unwrap(), 30).unwrap();
+
+        hours::set(&app, &json!({"on": false})).unwrap();
+        deliver_held(&app).unwrap();
+        assert_eq!(alerts(&app).len(), 1);
+        let t2 = alert_for(&app, "T2");
+        assert!(t2["held"].is_null());
+        assert!(t2["snoozed_until"].is_string(), "its snooze notifies it when it ends");
     }
 
     #[test]

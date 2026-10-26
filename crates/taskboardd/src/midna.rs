@@ -764,11 +764,12 @@ fn register_menus(app: &App, run: &str) {
 
 /// The tab statuses the board gives a task's terminal: what it sends, the label, its color and the
 /// state Midna sorts and notifies by. Each comes off with the terminal's next prompt.
-pub const TAB_STATUSES: [(&str, &str, &str, &str); 6] = [
+pub const TAB_STATUSES: [(&str, &str, &str, &str); 7] = [
     ("in_review", "In review", "purple", "done"),
     ("done", "Done", "green", "done"),
     ("question", "Question", "amber", "needs_you"),
     ("alert", "Alert", "red", "needs_you"),
+    ("urgent", "Alert", "red", "needs_you"),
     ("failed", "Task failed", "red", "failed"),
     ("waiting", "Waiting", "blue", "idle"),
 ];
@@ -783,9 +784,11 @@ pub fn tab_field(field: &str) -> bool {
 
 /// The Midna call that puts a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) on terminal `sid`.
 /// `detail` says what it's waiting on; Midna shows it on the needs-you card a needs_you status raises.
-pub fn tab_call(sid: &str, tab: &str, detail: Option<&str>) -> (&'static str, Value) {
+/// A `held` one goes on with an idle base, so Midna raises no needs-you item for it (`held_tab`).
+pub fn tab_call(sid: &str, tab: &str, detail: Option<&str>, held: bool) -> (&'static str, Value) {
     match TAB_STATUSES.iter().find(|(t, ..)| *t == tab) {
         Some((_, label, color, base)) => {
+            let base = if held { "idle" } else { base };
             let mut params = json!({"id": sid, "label": label, "color": color, "base": base, "clear_on": "prompt"});
             if let Some(d) = detail.filter(|d| !d.is_empty()) {
                 params["detail"] = json!(d);
@@ -936,14 +939,52 @@ pub fn set_tab(app: &App, sid: &str, tab: &'static str, detail: Option<String>) 
     app.notify_jobs();
 }
 
+/// Whether tab status `tab` waits for the work hours to open before it raises a needs-you item in
+/// Midna: a needs_you one outside them, except an urgent alert's.
+fn held_tab(app: &App, tab: &str) -> bool {
+    tab != "urgent" && TAB_STATUSES.iter().any(|(t, .., base)| *t == tab && *base == "needs_you") && !crate::hours::is_open(app)
+}
+
+/// Puts the needs_you base back on the tab statuses held outside the work hours (`held_tab`) once
+/// they open, on the terminals still showing them; one taken down meanwhile (a prompt there) or
+/// with a newer status queued stays as it is.
+fn release_tabs(app: &App) {
+    if app.shared.lock().midna_held_tabs.is_empty() || !crate::hours::is_open(app) {
+        return;
+    }
+    let held: Vec<_> = app.shared.lock().midna_held_tabs.drain().collect();
+    for (sid, (tab, detail)) in held {
+        if app.shared.lock().midna_tabs.iter().any(|(q, ..)| *q == sid) {
+            continue;
+        }
+        let label = TAB_STATUSES.iter().find(|(t, ..)| *t == tab).map(|(_, label, ..)| *label);
+        match call_timeout(app, "session.get", json!({"id": sid}), 5.0) {
+            Ok(s) if s["custom_status"]["label"].as_str() == label => set_tab(app, &sid, tab, detail),
+            Ok(_) | Err(MidnaError::Refused(_)) => {}
+            Err(MidnaError::Down(_)) => {
+                app.shared.lock().midna_held_tabs.insert(sid, (tab, detail));
+            }
+        }
+    }
+}
+
 /// Sends the queued tab statuses, in order. One Midna won't take is logged and dropped; with Midna
 /// down they wait. A Midna too old for `session.set_status` is logged once and its tabs show none.
 pub fn send_tabs(app: &App) {
     static TOO_OLD: AtomicBool = AtomicBool::new(false);
+    release_tabs(app);
     loop {
         let Some((sid, tab, detail)) = app.shared.lock().midna_tabs.pop_front() else { return };
-        let (method, params) = tab_call(&sid, tab, detail.as_deref());
-        match call_timeout(app, method, params, 5.0) {
+        let held = held_tab(app, tab);
+        let (method, params) = tab_call(&sid, tab, detail.as_deref(), held);
+        let sent = call_timeout(app, method, params, 5.0);
+        let mut s = app.shared.lock();
+        match held && sent.is_ok() {
+            true => s.midna_held_tabs.insert(sid.clone(), (tab, detail.clone())),
+            false => s.midna_held_tabs.remove(&sid),
+        };
+        drop(s);
+        match sent {
             Ok(_) => {}
             Err(MidnaError::Down(_)) => {
                 app.shared.lock().midna_tabs.push_front((sid, tab, detail));
@@ -1065,6 +1106,23 @@ mod tests {
         let app = App::for_tests(cfg);
         assert_eq!(links_owner(&app), "Taskboard Dev");
         assert_eq!(link_patterns(&app)[3], r"\b(B\d+)\b = taskboard-dev://issue/$1 agents");
+    }
+
+    #[test]
+    fn needs_you_tabs_go_on_idle_outside_hours_except_urgent_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        crate::hours::shut_for_tests(&app);
+        assert!(held_tab(&app, "question"));
+        assert!(held_tab(&app, "alert"));
+        assert!(!held_tab(&app, "urgent"));
+        assert!(!held_tab(&app, "done"));
+        let (_, held) = tab_call("s1", "question", Some("T1 · Fix: which port?"), true);
+        assert_eq!((held["base"].as_str(), held["label"].as_str()), (Some("idle"), Some("Question")));
+        let (_, urgent) = tab_call("s1", "urgent", None, false);
+        assert_eq!((urgent["base"].as_str(), urgent["label"].as_str()), (Some("needs_you"), Some("Alert")));
+        crate::hours::set(&app, &json!({"on": false})).unwrap();
+        assert!(!held_tab(&app, "question"));
     }
 
     #[test]

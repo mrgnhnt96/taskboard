@@ -1,6 +1,6 @@
 //! The running board: config, database, log, and the signals its threads share.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,6 +39,9 @@ pub struct Shared {
     /// Tab statuses waiting to go to Midna: each terminal, what its tab shows and what it's waiting
     /// on, if anything (`midna::set_tab`).
     pub midna_tabs: VecDeque<(String, &'static str, Option<String>)>,
+    /// Needs-you tab statuses sent outside the work hours without their needs_you base, by terminal,
+    /// to put it back once they open (`midna::release_tabs`).
+    pub midna_held_tabs: HashMap<String, (&'static str, Option<String>)>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,
