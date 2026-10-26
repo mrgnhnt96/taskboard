@@ -235,11 +235,14 @@ pub struct MainWindow {
     generation: u64,
     /// The newest refresh that has answered: behind `generation` while one is still out.
     answered: u64,
+    /// The generation when a change was last sent or answered: a refresh asked at or before it may
+    /// have read the board before the change, so its answer is dropped whole.
+    posted: u64,
     /// What waits for the board's first answer after a change (see [`settle`](Self::settle)): the
     /// generation it was asked at, when the button was clicked, and what to do.
     settling: Vec<(u64, Instant, Settle)>,
-    /// The task whose own `GET /tasks/:id` is out (it opened just now): a refresh leaves it out.
-    task_fetch: Option<String>,
+    /// The task or issue whose own `GET` is out (its panel opened just now): a refresh leaves it out.
+    panel_fetch: Option<String>,
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
@@ -284,8 +287,9 @@ impl MainWindow {
             goals_loaded: false,
             generation: 0,
             answered: 0,
+            posted: 0,
             settling: Vec::new(),
-            task_fetch: None,
+            panel_fetch: None,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
         };
@@ -521,7 +525,7 @@ impl MainWindow {
                 self.data.task_card = task_card(&self.data, &self.goals.details, &self.tasks.held.rows, &r);
                 self.data.errs.task = None;
                 self.task_panel = Default::default();
-                self.fetch_task(r.clone(), cx);
+                self.fetch_panel(r.clone(), format!("tasks/{r}"), cx);
                 TaskTab::Overview
             }
         };
@@ -529,21 +533,24 @@ impl MainWindow {
         self.refresh(cx);
     }
 
-    /// `GET /tasks/:id` on its own, so a task just opened doesn't wait for the rest of a refresh.
-    fn fetch_task(&mut self, r: String, cx: &mut Context<Self>) {
-        self.task_fetch = Some(r.clone());
+    /// A panel's own `GET` (`tasks/:id` or `backlog/:id`), so a task or issue just opened doesn't
+    /// wait for the rest of a refresh.
+    fn fetch_panel(&mut self, r: String, path: String, cx: &mut Context<Self>) {
+        self.panel_fetch = Some(r.clone());
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let path = format!("tasks/{r}");
             let v: Answer = cx.background_executor().spawn(async move { backend.get(&path, &[]).map_err(|e| e.message) }).await;
             let _ = this.update(cx, |m, cx| {
-                if m.task_fetch.as_ref() == Some(&r) {
-                    m.task_fetch = None;
+                if m.panel_fetch.as_ref() == Some(&r) {
+                    m.panel_fetch = None;
                 }
-                if matches!(&m.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
-                    land(&mut m.data.task, &mut m.data.errs.task, v, |v| v);
-                    cx.notify();
+                let d = &mut m.data;
+                match &m.panel {
+                    Some(Panel::Task { r: cur, .. }) if *cur == r => land(&mut d.task, &mut d.errs.task, v, |v| v),
+                    Some(Panel::Issue { r: cur }) if *cur == r => land(&mut d.issue, &mut d.errs.issue, v, unwrap_issue),
+                    _ => return,
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -555,6 +562,7 @@ impl MainWindow {
             self.data.issue = None;
             self.data.errs.issue = None;
             self.issue_panel = Default::default();
+            self.fetch_panel(r.clone(), format!("backlog/{r}"), cx);
         }
         self.panel = Some(Panel::Issue { r });
         self.refresh(cx);
@@ -743,9 +751,12 @@ impl MainWindow {
         // (polls wait meanwhile) so it can't put back what the click just changed. The refresh
         // after the change answers instead.
         self.generation += 1;
+        self.posted = self.generation;
         cx.spawn(async move |this, cx| {
             let r = cx.background_executor().spawn(async move { backend.post(&path, body) }).await;
             let _ = this.update(cx, |m, cx| {
+                // So may one asked (a page opened) while the change was out.
+                m.posted = m.generation;
                 match r {
                     Ok(v) => ok(m, v, cx),
                     Err(e) => fail(m, e, cx),
@@ -827,43 +838,56 @@ impl MainWindow {
         .detach();
     }
 
-    /// Fetch everything the current view shows, then swap it in (unless a newer refresh started).
+    /// Fetch everything the current view shows, then swap it in (see [`landed`](Self::landed)).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
         let backend = self.backend.clone();
         let want = Wants::of(self, cx);
+        let asked = want.clone();
         cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
-            let _ = this.update(cx, |m, cx| {
-                m.answered = m.answered.max(generation);
-                if m.generation == generation {
-                    let asked: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
-                    let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
-                    got.apply(m, cx);
-                    m.settled(generation, cx);
-                    cx.notify();
-                    // A linked release whose project the page didn't know: its answer says which.
-                    if let Some(p) = ui::releases::focus_moves(&m.releases, &m.page) {
-                        m.go(Page::ReleasesOf(p), cx);
-                    }
-                    // The Goals page learns which goals are in progress from this answer; fetch the
-                    // ones it didn't ask for now rather than on the next poll.
-                    if m.page == Page::Goals && ui::goals_page::in_progress(&m.data.goals, m.goals.project()).iter().any(|r| !asked.contains(r)) {
-                        m.refresh(cx);
-                    }
-                    // So does the Projects page, for the picked project's goals.
-                    if m.page == Page::Projects && ui::projects::wanted(&m.projects, m.state(), &m.data.goals).iter().any(|r| !asked.contains(r)) {
-                        m.refresh(cx);
-                    }
-                    // Likewise the Releases page learns which projects have releases from the state.
-                    if is_releases(&m.page) && releases_wanted(m).iter().any(|k| !asked_releases.contains(k)) {
-                        m.refresh(cx);
-                    }
-                }
-            });
+            let _ = this.update(cx, |m, cx| m.landed(generation, asked, got, cx));
         })
         .detach();
+    }
+
+    /// The refresh asked at `generation` (for `asked`) answered. The newest one swaps in whole. One
+    /// a page or panel change outdated still swaps in what the view asks for now (the board, the
+    /// goals) instead of waiting a whole round trip for the newer one; one from before a change
+    /// (or under a newer answer) is dropped.
+    fn landed(&mut self, generation: u64, asked: Wants, got: Got, cx: &mut Context<Self>) {
+        let newest = generation > self.answered;
+        self.answered = self.answered.max(generation);
+        if self.generation != generation {
+            if newest && generation > self.posted {
+                got.still(&asked, &Wants::of(self, cx)).apply(self, cx);
+                cx.notify();
+            }
+            return;
+        }
+        let asked_rows: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
+        let asked_releases: Vec<String> = got.releases.iter().map(|(p, _)| p.clone()).chain(got.release_rows.iter().map(|(k, _)| k.clone())).collect();
+        got.apply(self, cx);
+        self.settled(generation, cx);
+        cx.notify();
+        // A linked release whose project the page didn't know: its answer says which.
+        if let Some(p) = ui::releases::focus_moves(&self.releases, &self.page) {
+            self.go(Page::ReleasesOf(p), cx);
+        }
+        // The Goals page learns which goals are in progress from this answer; fetch the
+        // ones it didn't ask for now rather than on the next poll.
+        if self.page == Page::Goals && ui::goals_page::in_progress(&self.data.goals, self.goals.project()).iter().any(|r| !asked_rows.contains(r)) {
+            self.refresh(cx);
+        }
+        // So does the Projects page, for the picked project's goals.
+        if self.page == Page::Projects && ui::projects::wanted(&self.projects, self.state(), &self.data.goals).iter().any(|r| !asked_rows.contains(r)) {
+            self.refresh(cx);
+        }
+        // Likewise the Releases page learns which projects have releases from the state.
+        if is_releases(&self.page) && releases_wanted(self).iter().any(|k| !asked_releases.contains(k)) {
+            self.refresh(cx);
+        }
     }
 
     /// Run `f` once the board's answer after a change has landed (the clicked button shows what
@@ -958,6 +982,7 @@ fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, hel
 }
 
 /// What one refresh fetches, decided on the UI thread from the current view.
+#[derive(Clone, PartialEq)]
 struct Wants {
     state_q: Vec<(&'static str, String)>,
     task: Option<String>,
@@ -1017,13 +1042,13 @@ impl Wants {
         let state_q = crate::ui::board::state_query(&m.filters, &m.board.keep);
         Wants {
             state_q,
-            // A task that just opened is fetched on its own (`fetch_task`).
+            // A task or issue that just opened is fetched on its own (`fetch_panel`).
             task: match &m.panel {
-                Some(Panel::Task { r, .. }) if m.task_fetch.as_ref() != Some(r) => Some(r.clone()),
+                Some(Panel::Task { r, .. }) if m.panel_fetch.as_ref() != Some(r) => Some(r.clone()),
                 _ => None,
             },
             issue: match &m.panel {
-                Some(Panel::Issue { r }) => Some(r.clone()),
+                Some(Panel::Issue { r }) if m.panel_fetch.as_ref() != Some(r) => Some(r.clone()),
                 _ => None,
             },
             goal: match &m.page {
@@ -1140,6 +1165,31 @@ fn land(slot: &mut Option<Value>, err: &mut Option<String>, answer: Answer, map:
 }
 
 impl Got {
+    /// What of an answer asked for `asked` still holds for a view that asks for `now`. Answers for one
+    /// task, goal, issue and so on keep (`apply` takes them only while that one is still open); the
+    /// rest keep only when the view asks for them the same way.
+    fn still(mut self, asked: &Wants, now: &Wants) -> Got {
+        if asked.state_q != now.state_q {
+            self.state = None;
+        }
+        if asked.days_q != now.days_q {
+            self.days = None;
+        }
+        if asked.home != now.home {
+            self.home = None;
+        }
+        if asked.task_page != now.task_page {
+            self.task_page = None;
+        }
+        if asked.ideas != now.ideas {
+            self.ideas = None;
+        }
+        if asked.releases != now.releases {
+            self.releases.clear();
+        }
+        self
+    }
+
     fn apply(self, m: &mut MainWindow, cx: &App) {
         match self.state {
             Some(Ok(v)) => {
@@ -1187,8 +1237,7 @@ impl Got {
         }
         if let Some((r, v)) = self.issue {
             if matches!(&m.panel, Some(Panel::Issue { r: cur }) if *cur == r) {
-                // The board may wrap it: `b.issue || b`.
-                land(&mut d.issue, &mut d.errs.issue, v, |v| if v["issue"].is_object() { v["issue"].clone() } else { v });
+                land(&mut d.issue, &mut d.errs.issue, v, unwrap_issue);
             }
         }
         if let Some((r, v)) = self.goal {
@@ -1264,6 +1313,11 @@ impl Got {
             }
         }
     }
+}
+
+/// The board may wrap an issue: `b.issue || b`.
+fn unwrap_issue(v: Value) -> Value {
+    if v["issue"].is_object() { v["issue"].clone() } else { v }
 }
 
 /// The contract allows `{"goal": {...}, ...rest}`; flatten it.
@@ -2234,6 +2288,65 @@ mod tests {
         .unwrap();
         settle(cx);
         w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.answered, m.generation, "the refresh after the post answers")).unwrap();
+    }
+
+    /// A refresh asked now whose answer lands only after `then` ran (a slow board), with the board
+    /// and goals it read marked "slow".
+    fn slow_refresh(m: &mut MainWindow, rec: &crate::parity::Recording, cx: &mut gpui_kit::Context<MainWindow>, then: impl FnOnce(&mut MainWindow, &mut gpui_kit::Context<MainWindow>)) {
+        m.generation += 1;
+        let out = m.generation;
+        let asked = super::Wants::of(m, cx);
+        let mut got = asked.clone().fetch(rec);
+        got.state.as_mut().unwrap().as_mut().unwrap()["marker"] = json!("slow");
+        got.goals = Some(json!([{"ref": "G99", "title": "Slow"}]));
+        got.home.as_mut().unwrap()["marker"] = json!("slow");
+        then(m, cx);
+        m.landed(out, asked, got, cx);
+    }
+
+    /// Opening a page while a slow refresh is out keeps the board and goals it read instead of
+    /// waiting a whole round trip for the newer one; the old page's own answer is dropped.
+    #[gpui_kit::test]
+    fn a_page_change_keeps_the_board_from_the_refresh_out(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            slow_refresh(m, &rec, cx, |m, cx| m.go(Page::Tasks, cx));
+            assert_eq!(m.state()["marker"], "slow", "the board it read lands");
+            assert!(m.data.goals.iter().any(|g| g["ref"] == "G99"), "so do the goals");
+            assert!(m.data.home.as_ref().is_none_or(|h| h["marker"] != "slow"), "the Board page's own answer doesn't");
+        })
+        .unwrap();
+    }
+
+    /// A slow refresh out when a change is posted may put back what the click changed: none of it lands.
+    #[gpui_kit::test]
+    fn a_post_drops_all_of_the_slow_refresh_out(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            slow_refresh(m, &rec, cx, |m, cx| m.post("alerts/a1/dismiss", json!({}), cx, |_, _, _| {}));
+            assert_ne!(m.state()["marker"], "slow");
+            assert!(!m.data.goals.iter().any(|g| g["ref"] == "G99"));
+        })
+        .unwrap();
+    }
+
+    /// An issue's panel fills from its own fetch rather than with the rest of a refresh (here
+    /// `/state` fails, which holds the rest back).
+    #[gpui_kit::test]
+    fn an_issue_panel_does_not_wait_for_the_refresh(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        rec.fail("state", 503, "slow");
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.open_issue("B1", cx);
+            assert_eq!(super::Wants::of(m, cx).issue, None, "the refresh leaves it to its own fetch");
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert!(m.data.issue.as_ref().is_some_and(|b| b["title"].is_string()), "B1 loaded");
+            assert_eq!(super::Wants::of(m, cx).issue.as_deref(), Some("B1"), "later refreshes keep it current");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
