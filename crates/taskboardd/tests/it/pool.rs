@@ -228,8 +228,9 @@ fn a_held_wave_waits_and_so_does_everything_after_it_until_continued() {
     assert_eq!(w[0]["state"], "ready");
     assert!(w[0]["released_at"].is_null(), "continuing a held wave lets it start, it doesn't skip it");
     assert_eq!(w[1]["state"], "waiting");
+    // Once One starts, wave 1 has nothing left to start, so wave 2 goes on in the same pass.
     runner::start_queued(&b.app).unwrap();
-    assert_eq!(b.started(), vec![one]);
+    assert_eq!(b.started(), vec![one, two]);
 
     b.post(&format!("goals/G{g}/waves/2/hold"), json!({}));
     b.post(&format!("goals/G{g}/waves/2/hold"), json!({"on": false}));
