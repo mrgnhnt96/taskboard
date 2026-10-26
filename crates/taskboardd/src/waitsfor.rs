@@ -575,8 +575,9 @@ pub fn follow_ups(app: &App) -> Result<i64> {
                 deliver::add(app, "follow", &text, t.id(), None, None)?;
             } else if prflow::waking(app, &t)? || !hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
                 continue;
-            } else {
-                prflow::follow_wake(app, &t, &text)?;
+            } else if prflow::follow_wake(app, &t, &text)?.is_none() {
+                // No slot or a visit under way: left unrecorded, so the next poll wakes it.
+                continue;
             }
             board::log_event(
                 app,

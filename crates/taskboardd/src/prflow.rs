@@ -718,11 +718,10 @@ pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     })
 }
 
-/// What a wake that had to wait for its slot does once the claim is made.
+/// What a wake that had to wait for its slot does once the claim is made. A follow-up or a note ask
+/// isn't sent from the worker: its caller records it only once it's sent, so the next poll sends it.
 enum Again {
     Step,
-    Follow(String),
-    Note(String),
     Nothing,
 }
 
@@ -730,8 +729,6 @@ impl Again {
     fn key(&self, id: i64) -> String {
         match self {
             Again::Step => format!("{id}:step"),
-            Again::Follow(text) => format!("{id}:follow:{text}"),
-            Again::Note(text) => format!("{id}:note:{text}"),
             Again::Nothing => format!("{id}:claim"),
         }
     }
@@ -782,12 +779,6 @@ fn claimed_then(app: &App, id: i64, again: Again) -> Result<()> {
                 app.db.tx(|| step(app, &t, rec))?;
             }
         }
-        Again::Follow(text) => {
-            app.db.tx(|| follow_wake(app, &t, &text))?;
-        }
-        Again::Note(text) => {
-            app.db.tx(|| ask_for_note(app, &t, &text))?;
-        }
         Again::Nothing => {}
     }
     Ok(())
@@ -815,11 +806,13 @@ pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -
     Ok(Some(jid))
 }
 
+/// Brings a done task's PR conversation back to rebase. None when it can't yet (a visit is live, or
+/// there's no slot for it): the caller asks again later.
 pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     if visit_live(app, t)? {
         return Ok(None);
     }
-    let Some(cwd) = wake_cwd(app, t, Again::Follow(text.to_string()))? else { return Ok(None) };
+    let Some(cwd) = wake_cwd(app, t, Again::Nothing)? else { return Ok(None) };
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
     let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "queue": false,
@@ -829,11 +822,12 @@ pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
 }
 
 /// Brings a merged task's conversation back to write its note for testers (`[jira] merged_note`).
+/// None when it can't yet, as with `follow_wake`.
 pub fn ask_for_note(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     if visit_live(app, t)? {
         return Ok(None);
     }
-    let Some(cwd) = wake_cwd(app, t, Again::Note(text.to_string()))? else { return Ok(None) };
+    let Some(cwd) = wake_cwd(app, t, Again::Nothing)? else { return Ok(None) };
     let args = json!({"cwd": cwd, "title": short(&format!("Note for testers: {}", t.st("title")), 40), "prompt": text, "queue": false});
     let args = resume_or_fresh(app, t, args)?;
     let jid = board::create_job(app, "agent", args, Some(t.id()), "pr", None)?;
@@ -2022,6 +2016,8 @@ mod tests {
         assert!(app.next_deferred(std::time::Duration::ZERO).is_none(), "the same wake queues one claim");
         claim(&app);
         assert!(Path::new(&slot).is_dir(), "the worker made the slot");
+        assert!(jobs().is_empty(), "the worker only claims; the caller's next poll wakes");
+        assert!(app.db.tx(|| follow_wake(&app, &t, "Rebase")).unwrap().is_some());
         let made = jobs();
         assert_eq!(made.len(), 1, "then woke the task in it");
         let args: Value = serde_json::from_str(&made[0].st("args")).unwrap();

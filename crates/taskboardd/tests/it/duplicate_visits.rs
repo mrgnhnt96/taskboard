@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{board, midna, p, prflow, reports};
+use taskboardd::{board, fields, midna, p, prflow, reports, waitsfor};
 
 struct Board {
     app: Arc<App>,
@@ -154,4 +154,25 @@ fn a_merge_visit_opens_in_the_background() {
     };
     assert_eq!(background("merge", &approved()), Some(json!(true)));
     assert_eq!(background("fix", &failing("h1")), None, "a fix is work the owner may want to watch");
+}
+
+#[test]
+fn a_follow_up_that_cant_wake_yet_is_sent_once_it_can() {
+    let b = board();
+    let id = b.pr_task();
+    b.add_session("s1", "idle");
+    let base = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Base", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE tasks SET status = 'done', pr_flow = '{\"head\": \"h1\"}' WHERE id = ?", p![base]).unwrap();
+    b.app.db.x("UPDATE tasks SET waits_for = ? WHERE id = ?", p![json!([base]).to_string(), id]).unwrap();
+    let follow = || b.app.db.tx(|| waitsfor::follow_ups(&b.app)).unwrap();
+    assert_eq!(follow(), 0, "the first look only notes where the base is");
+    b.app.db.x("UPDATE tasks SET pr_flow = '{\"head\": \"h2\"}' WHERE id = ?", p![base]).unwrap();
+    // A visit still under way: the follow-up can't come in yet, so it isn't marked as told.
+    b.app.db.insert("jobs", fields!["kind" => "agent", "purpose" => "pr", "task_id" => id, "state" => "pending", "args" => "{}"]).unwrap();
+    assert_eq!(follow(), 0);
+    assert_eq!(follow(), 0);
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", p![]).unwrap();
+    assert_eq!(follow(), 1, "the base's move still reaches it once the visit ends");
+    assert_eq!(b.visits(), 2);
+    assert_eq!(follow(), 0, "and only once");
 }

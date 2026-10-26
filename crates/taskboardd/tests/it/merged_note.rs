@@ -187,6 +187,25 @@ fn a_merge_without_a_note_holds_the_ticket_until_one_is_written() {
 }
 
 #[test]
+fn a_note_ask_that_cant_wake_yet_is_sent_once_it_can() {
+    let b = board_with(|_| {});
+    let t = b.ticketed();
+    let asks = || b.app.db.count("SELECT COUNT(*) FROM jobs WHERE purpose = 'pr' AND json_extract(args, '$.title') LIKE 'Note for testers%'", p![]).unwrap();
+    // A PR visit still under way when the PR merges: the ask can't come in yet.
+    b.app.db.insert("jobs", fields!["kind" => "agent", "purpose" => "pr", "task_id" => t, "state" => "pending", "args" => "{}"]).unwrap();
+    b.merge(t);
+    assert_eq!(asks(), 0);
+    b.run_jira();
+    assert_eq!(asks(), 0);
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", vec![]).unwrap();
+    b.run_jira();
+    assert_eq!(asks(), 1, "the sweep asks once the visit ends");
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", vec![]).unwrap();
+    b.run_jira();
+    assert_eq!(asks(), 1, "and only once");
+}
+
+#[test]
 fn tb_jira_shows_the_note_guide() {
     let b = board_with(|_| {});
     let guide = b.dir.path().join("note.md");
