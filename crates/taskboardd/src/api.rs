@@ -142,7 +142,15 @@ fn hook_payload(app: &App, query: &Query) -> Result<Value> {
     Ok(v)
 }
 
+/// A read shares the settings and steps it loads across everything it builds (`reqcache`).
 pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
+    if method == "GET" {
+        return crate::reqcache::scope(|| route(app, method, path, query, body));
+    }
+    route(app, method, path, query, body)
+}
+
+fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
     let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
     let r = match (method, segs.as_slice()) {
         ("GET", ["state"]) => get_state(app, query),

@@ -33,7 +33,7 @@ pub fn agents_merge_default(app: &App) -> bool {
 
 /// What `tb project agents-merge` (or an import) set on the board, if anything.
 pub fn agents_merge_set(app: &App) -> Option<bool> {
-    match app.db.get_setting(AGENTS_MERGE_SETTING).ok().flatten()?.as_str() {
+    match crate::reqcache::setting(app, AGENTS_MERGE_SETTING).ok().flatten()?.as_str() {
         "true" => Some(true),
         "false" => Some(false),
         _ => None,
@@ -42,6 +42,7 @@ pub fn agents_merge_set(app: &App) -> Option<bool> {
 
 /// Sets the board's word on `pr.agents_merge`; None goes back to config.toml's.
 pub fn set_agents_merge(app: &App, on: Option<bool>) -> Result<()> {
+    crate::reqcache::forget_setting(AGENTS_MERGE_SETTING);
     app.db.set_setting(AGENTS_MERGE_SETTING, on.map(|b| if b { "true" } else { "false" }))
 }
 
@@ -58,7 +59,7 @@ pub fn owner_review_default(app: &App) -> bool {
 
 /// What `tb project owner-review` set on the board, if anything.
 pub fn owner_review_set(app: &App) -> Option<bool> {
-    match app.db.get_setting(OWNER_REVIEW_SETTING).ok().flatten()?.as_str() {
+    match crate::reqcache::setting(app, OWNER_REVIEW_SETTING).ok().flatten()?.as_str() {
         "true" => Some(true),
         "false" => Some(false),
         _ => None,
@@ -67,6 +68,7 @@ pub fn owner_review_set(app: &App) -> Option<bool> {
 
 /// Sets the board's word on `pr.owner_review`; None goes back to config.toml's.
 pub fn set_owner_review(app: &App, on: Option<bool>) -> Result<()> {
+    crate::reqcache::forget_setting(OWNER_REVIEW_SETTING);
     app.db.set_setting(OWNER_REVIEW_SETTING, on.map(|b| if b { "true" } else { "false" }))
 }
 
@@ -101,7 +103,7 @@ fn read_projects(app: &App) -> Result<Vec<Value>> {
             None => seen.push((name.to_string(), path)),
         }
     };
-    for p in jloads_arr(app.db.get_setting("midna_projects")?.as_deref()) {
+    for p in jloads_arr(crate::reqcache::setting(app, "midna_projects")?.as_deref()) {
         add(p.get("name").and_then(|v| v.as_str()), p.get("path").and_then(|v| v.as_str()));
     }
     for (sql, pc) in [
@@ -151,7 +153,7 @@ pub fn has_remote(app: &App, name: &str) -> Result<Option<bool>> {
 }
 
 pub fn pr_flow_overrides(app: &App) -> Result<Row> {
-    Ok(jloads_obj(app.db.get_setting(PR_FLOW_SETTING)?.as_deref()))
+    Ok(jloads_obj(crate::reqcache::setting(app, PR_FLOW_SETTING)?.as_deref()))
 }
 
 pub fn pr_flow(app: &App, name: &str) -> Result<String> {
@@ -165,6 +167,7 @@ pub fn set_pr_flow(app: &App, name: &str, flow: &str) -> Result<()> {
     } else {
         flows.insert(name.into(), json!(flow));
     }
+    crate::reqcache::forget_setting(PR_FLOW_SETTING);
     app.db.set_setting(PR_FLOW_SETTING, Some(&jdumps(&Value::Object(flows))))?;
     if !ships_prs(app, name)? {
         crate::jira::drop_pending_creates(app, name)?;
@@ -173,7 +176,7 @@ pub fn set_pr_flow(app: &App, name: &str, flow: &str) -> Result<()> {
 }
 
 fn pr_rule_overrides(app: &App) -> Result<Row> {
-    Ok(jloads_obj(app.db.get_setting(PR_RULES_SETTING)?.as_deref()))
+    Ok(jloads_obj(crate::reqcache::setting(app, PR_RULES_SETTING)?.as_deref()))
 }
 
 /// The rules `tb project set` put on a project (only the keys it set).
@@ -268,12 +271,13 @@ pub fn set_pr_rules(app: &App, name: &str, body: &Value) -> Result<bool> {
     } else {
         all.insert(name.into(), Value::Object(set));
     }
+    crate::reqcache::forget_setting(PR_RULES_SETTING);
     app.db.set_setting(PR_RULES_SETTING, Some(&jdumps(&Value::Object(all))))?;
     Ok(true)
 }
 
 fn max_terminals_overrides(app: &App) -> Result<Row> {
-    Ok(jloads_obj(app.db.get_setting(MAX_TERMINALS_SETTING)?.as_deref()))
+    Ok(jloads_obj(crate::reqcache::setting(app, MAX_TERMINALS_SETTING)?.as_deref()))
 }
 
 /// What `tb project set --max-terminals` put on a project, if anything.
@@ -304,12 +308,13 @@ pub fn set_max_terminals(app: &App, name: &str, body: &Value) -> Result<bool> {
         Some(n) => all.insert(name.into(), json!(n)),
         None => all.remove(name),
     };
+    crate::reqcache::forget_setting(MAX_TERMINALS_SETTING);
     app.db.set_setting(MAX_TERMINALS_SETTING, Some(&jdumps(&Value::Object(all))))?;
     Ok(true)
 }
 
 fn waits_on_overrides(app: &App) -> Result<Row> {
-    Ok(jloads_obj(app.db.get_setting(WAITS_ON_SETTING)?.as_deref()))
+    Ok(jloads_obj(crate::reqcache::setting(app, WAITS_ON_SETTING)?.as_deref()))
 }
 
 /// The other projects a project's tasks may wait for (`tb project set <name> --waits-on <other>`). None unless set.
@@ -348,6 +353,7 @@ pub fn set_waits_on(app: &App, name: &str, body: &Value) -> Result<bool> {
     } else {
         all.insert(name.into(), json!(names));
     }
+    crate::reqcache::forget_setting(WAITS_ON_SETTING);
     app.db.set_setting(WAITS_ON_SETTING, Some(&jdumps(&Value::Object(all))))?;
     Ok(true)
 }
@@ -508,7 +514,7 @@ pub fn project_for_path(app: &App, path: Option<&str>) -> Result<Option<String>>
 /// None when Midna has no project there.
 pub fn midna_project_at(app: &App, path: Option<&str>) -> Result<Option<String>> {
     let Some(path) = path.filter(|p| !p.is_empty()) else { return Ok(None) };
-    Ok(deepest(&jloads_arr(app.db.get_setting("midna_projects")?.as_deref()), path))
+    Ok(deepest(&jloads_arr(crate::reqcache::setting(app, "midna_projects")?.as_deref()), path))
 }
 
 /// The main checkout of the git worktree at `path` (its `.git` file points into `<main>/.git/worktrees/`);
