@@ -66,21 +66,27 @@ impl Golden {
 
 // ------------------------------------------------------------------ recording backend
 
-/// The in-process sample board, recording every POST (path, body) in order.
+/// The in-process sample board, recording every POST (path, body) and every GET path in order.
 pub struct Recording {
     inner: Fake,
     pub posts: Mutex<Vec<(String, Value)>>,
+    pub gets: Mutex<Vec<String>>,
     /// GET paths that fail with this (status, sentence) until cleared.
     fail: Mutex<Vec<(String, u16, String)>>,
 }
 
 impl Recording {
     pub fn new() -> Arc<Recording> {
-        Arc::new(Recording { inner: Fake::new(), posts: Mutex::new(Vec::new()), fail: Mutex::new(Vec::new()) })
+        Arc::new(Recording { inner: Fake::new(), posts: Mutex::new(Vec::new()), gets: Mutex::new(Vec::new()), fail: Mutex::new(Vec::new()) })
     }
 
     pub fn posts(&self) -> Vec<(String, Value)> {
         self.posts.lock().unwrap().clone()
+    }
+
+    /// The GET paths asked since the last [`take_gets`](Self::take_gets), in order; clears them.
+    pub fn take_gets(&self) -> Vec<String> {
+        std::mem::take(&mut *self.gets.lock().unwrap())
     }
 
     /// The last POST to `path`.
@@ -112,6 +118,7 @@ impl Backend for Recording {
         "recording"
     }
     fn get(&self, path: &str, query: &[(&str, String)]) -> CallResult {
+        self.gets.lock().unwrap().push(path.to_string());
         if let Some((_, status, msg)) = self.fail.lock().unwrap().iter().find(|(p, _, _)| p == path) {
             return Err(crate::backend::CallError { status: *status, message: msg.clone() });
         }
