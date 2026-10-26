@@ -7,6 +7,7 @@
 //! `[worktrees]` in config.toml sizes the pool and ages idle slots, and `tb project set` changes that for
 //! one project.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,11 @@ pub const WAIT: &str = "Waits for a worktree slot";
 /// One claim at a time: the runner and API requests claim on their own threads, and a slot picked as
 /// free must still be free when it's taken.
 static CLAIMS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+/// Slot sizes as `du` last measured them, by path. `du` over a slot's build output takes seconds, so
+/// `GET /slots` answers from here and a background pass measures the slots not measured lately.
+static SIZES: parking_lot::Mutex<BTreeMap<String, Size>> = parking_lot::Mutex::new(BTreeMap::new());
+/// How long a measured size stands before it's measured again.
+const SIZE_SECS: f64 = 600.0;
 /// `tb project set --min-slots` and the rest: name → the `[worktrees]` keys it sets.
 const SETTING: &str = "project_worktree_slots";
 pub const KEYS: [&str; 5] = ["min_slots", "max_slots", "idle_trim_days", "idle_remove_days", "low_disk_gb"];
@@ -480,6 +486,7 @@ pub(crate) fn give_back(app: &App, t: &Row) -> Result<bool> {
             git(&path, &["switch", "--detach"], GIT_SECS);
         }
     }
+    resized(&path);
     app.db.tx(|| {
         app.db.x("UPDATE worktree_slots SET task_id = NULL, used_at = ? WHERE id = ?", p![now_iso(), s.id()])?;
         let mut ctx = board::task_context(&board::get_task(app, t.id())?);
@@ -505,18 +512,72 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
             }
         }
     }
+    let shown: Vec<&Row> = all.iter().filter(|s| project.is_none() || s.s("project") == project).collect();
+    let sizes = sizes(&shown.iter().map(|s| s.st("path")).collect::<Vec<_>>());
     let mut out = vec![];
-    for s in all.iter().filter(|s| project.is_none() || s.s("project") == project) {
+    for (s, size_kb) in shown.into_iter().zip(sizes) {
         let repo = s.st("repo");
         let held = holder(app, s)?;
         out.push(json!({
             "name": format!("slot-{}", s.i0("n")), "n": s.v("n"), "project": s.v("project"), "repo": repo, "path": s.v("path"),
             "held_by": held.as_ref().map(|t| rf("task", t.id())), "title": held.as_ref().map(|t| t.v("title")),
-            "used_at": s.v("used_at"), "made_at": s.v("made_at"), "size_kb": size_kb(&s.st("path")),
+            "used_at": s.v("used_at"), "made_at": s.v("made_at"), "size_kb": size_kb,
             "waiting": waiting.iter().filter(|(r, _)| *r == repo).map(|(_, t)| t.clone()).collect::<Vec<_>>(),
         }));
     }
     Ok(json!({"slots": out}))
+}
+
+#[derive(Default)]
+struct Size {
+    kb: Option<i64>,
+    /// When it was last measured; `None` until then, or once it's known to have changed.
+    at: Option<f64>,
+    measuring: bool,
+    /// Changed while it was being measured: measure it again on the next ask.
+    again: bool,
+}
+
+/// The last known size of each slot, in KB (`None` before its first measuring ends). The missing and
+/// stale ones are measured on a background thread, so asking never waits on `du`.
+fn sizes(paths: &[String]) -> Vec<Option<i64>> {
+    let now = now_ts();
+    let mut due = vec![];
+    let out = {
+        let mut m = SIZES.lock();
+        paths
+            .iter()
+            .map(|p| {
+                let s = m.entry(p.clone()).or_default();
+                if !s.measuring && s.at.is_none_or(|at| now - at >= SIZE_SECS) {
+                    s.measuring = true;
+                    due.push(p.clone());
+                }
+                s.kb
+            })
+            .collect()
+    };
+    if !due.is_empty() {
+        std::thread::spawn(move || {
+            for p in due {
+                let (kb, at) = (size_kb(&p), now_ts());
+                let mut m = SIZES.lock();
+                let s = m.entry(p).or_default();
+                s.kb = kb;
+                s.measuring = false;
+                s.at = if std::mem::take(&mut s.again) { None } else { Some(at) };
+            }
+        });
+    }
+    out
+}
+
+/// A slot's contents changed (used, given back, its build output cleared): measure it again next time.
+pub(crate) fn resized(path: &str) {
+    if let Some(s) = SIZES.lock().get_mut(path) {
+        s.at = None;
+        s.again = s.measuring;
+    }
 }
 
 fn size_kb(path: &str) -> Option<i64> {
@@ -565,6 +626,32 @@ mod tests {
         other.join().unwrap();
         let e = out.expect_err("a claim holding the database can't wait on another claim");
         assert_eq!((e.status, e.message.as_str()), (409, WAIT));
+    }
+
+    /// Asks until the background measuring gives a size other than `not`.
+    fn measured(path: &str, not: Option<i64>) -> Option<i64> {
+        for _ in 0..200 {
+            let kb = sizes(&[path.to_string()])[0];
+            if kb.is_some() && kb != not {
+                return kb;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("{path} was never measured");
+    }
+
+    #[test]
+    fn slot_sizes_come_from_the_last_measuring_until_the_slot_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        assert_eq!(sizes(std::slice::from_ref(&path)), vec![None], "the first ask doesn't wait on du");
+        let first = measured(&path, None);
+        std::fs::write(dir.path().join("build"), vec![1u8; 4 << 20]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(sizes(std::slice::from_ref(&path)), vec![first], "a recent size stands without measuring again");
+        resized(&path);
+        let after = measured(&path, first);
+        assert!(after.unwrap() >= first.unwrap() + 4096, "{first:?} → {after:?}");
     }
 
     #[test]

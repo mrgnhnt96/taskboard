@@ -50,7 +50,10 @@ fn trim(app: &App, path: &str, why: &str) {
         return;
     }
     match std::fs::remove_dir_all(&target) {
-        Ok(()) => app.info(format!("worktrees: cleared the build output of {path}: {why}")),
+        Ok(()) => {
+            slots::resized(path);
+            app.info(format!("worktrees: cleared the build output of {path}: {why}"))
+        }
         Err(e) => app.info(format!("worktrees: couldn't clear the build output of {path}: {e}")),
     }
 }
