@@ -1,11 +1,11 @@
-//! The Sessions page: live Claude terminals (grouped by project), closed ones, and one terminal's detail.
+//! The Sessions page: live Claude terminals (grouped by project) and one terminal's detail.
 //!
 //! A one-to-one port of the web board's `sessions.js` (and the rename helpers in `app.js`), checked
 //! against it by the `sessions` parity golden (`parity/gen/sessions.mjs`). What each part shows is
 //! worked out by pure view-model functions ([`list_vm`], [`row_vm`], [`header_vm`], [`menu_items`],
 //! [`detail_vm`], [`bulk_vm`], [`name_vm`]) that the render code draws from, so the tests see exactly
 //! what's on screen. The list sits on the left (search, status filter, collapsible project groups,
-//! picking idle terminals to close together, the Closed group) and the selected terminal on the
+//! picking idle terminals to close together) and the selected terminal on the
 //! right (status, path / branch / diff, Show in Midna, Close or press-and-hold Force close, rename by
 //! double-clicking its name, its task, the last prompt and reply, stats and the timeline). Right-click
 //! a row for its menu. Under the project groups sits the worktree slot pool (`GET /slots`): each
@@ -77,7 +77,6 @@ pub struct State {
     /// Collapsed project groups, in the order they were collapsed (saved as `tb.sessCollapsed`).
     collapsed: Vec<String>,
     collapsed_loaded: bool,
-    closed_open: bool,
     /// A selection that sits in a group the reader collapsed: it doesn't force that group open.
     hide_sel: Option<String>,
     /// Picking idle terminals to close together, and the picks in the order they were made.
@@ -401,9 +400,6 @@ pub struct ListCtx<'a> {
     pub live: Option<&'a [Value]>,
     /// `SS.listErr`: why the list couldn't be fetched (shown instead of "Loading…").
     pub list_err: Option<&'a str>,
-    pub closed: &'a [Value],
-    /// `GET /sessions/closed` `total` (all closed rows before the 50-row cut).
-    pub closed_total: i64,
     pub sel: Option<&'a str>,
     pub filter: &'a str,
     /// The search box as typed.
@@ -412,7 +408,6 @@ pub struct ListCtx<'a> {
     pub hide_sel: Option<&'a str>,
     pub selecting: bool,
     pub picked: &'a [String],
-    pub closed_open: bool,
     pub flash: &'a HashMap<String, Flash>,
 }
 
@@ -448,7 +443,6 @@ pub struct RowVm {
     pub status: String,
     pub on: bool,
     pub closing: bool,
-    pub closed: bool,
     pub pick: Pick,
 }
 
@@ -494,7 +488,6 @@ pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
         name: name_vm(x, "", c.flash.get(&id)),
         pick: if !c.selecting { Pick::None } else if can { Pick::Box(c.picked.contains(&id)) } else { Pick::Spacer },
         closing: b(x, "closing"),
-        closed: false,
         id,
         sub,
         state,
@@ -503,37 +496,14 @@ pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
     }
 }
 
-/// `ssClosedRow`.
-pub fn closed_row_vm(x: &Value, c: &ListCtx) -> RowVm {
-    let id = s(x, "id").to_string();
-    let task = match opt_s(x, "task_ref") {
-        Some(r) => format!("{r} · {}", s(x, "task_title")),
-        None => "No task".into(),
-    };
-    let sub = [s(x, "project"), task.as_str()].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" · ");
-    RowVm {
-        on: c.sel == Some(id.as_str()),
-        name: NameVm { text: s(x, "name").to_string(), kind: NameKind::Plain, title: s(x, "name").to_string() },
-        sub,
-        state: "Closed".into(),
-        when: fmt::ago(s(x, "closed_at")),
-        status: "gone".into(),
-        closing: false,
-        closed: true,
-        pick: if c.selecting { Pick::Spacer } else { Pick::None },
-        id,
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct GroupVm {
-    /// The project ("" for the Closed group).
+    /// The project.
     pub key: String,
     pub label: String,
     /// "3 terminals", plus " · 1 needs you" on a collapsed group.
     pub count: String,
     pub open: bool,
-    pub closed: bool,
     pub rows: Vec<RowVm>,
 }
 
@@ -662,7 +632,6 @@ pub struct ListVm {
     pub bulk: Option<BulkBarVm>,
     pub groups: Vec<GroupVm>,
     pub empty: Option<String>,
-    pub closed: Option<GroupVm>,
 }
 
 #[cfg(test)]
@@ -686,10 +655,6 @@ impl ListVm {
             p.extend(g.rows.iter().map(RowVm::text));
         }
         p.extend(self.empty.clone());
-        if let Some(g) = &self.closed {
-            p.push(format!("{} {}", g.label, g.count));
-            p.extend(g.rows.iter().map(RowVm::text));
-        }
         squash(&p.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
@@ -707,8 +672,8 @@ impl ListVm {
                 a.push("ss-bulk");
             }
         }
-        for g in self.groups.iter().chain(self.closed.iter()) {
-            a.push(if g.closed { "ss-closed" } else { "ss-group" });
+        for g in &self.groups {
+            a.push("ss-group");
             a.extend(g.rows.iter().map(|_| "ss-open"));
         }
         a
@@ -722,7 +687,7 @@ fn close_label(n: usize) -> String {
 /// `ssList`.
 pub fn list_vm(c: &ListCtx) -> ListVm {
     let Some(live) = c.live else {
-        return ListVm { loading: Some(c.list_err.unwrap_or("Loading…").to_string()), stale_btn: None, bulk: None, groups: Vec::new(), empty: None, closed: None };
+        return ListVm { loading: Some(c.list_err.unwrap_or("Loading…").to_string()), stale_btn: None, bulk: None, groups: Vec::new(), empty: None };
     };
     let f = c.f();
     let q = c.q.trim();
@@ -744,7 +709,7 @@ pub fn list_vm(c: &ListCtx) -> ListVm {
             if !open && needs > 0 {
                 count.push_str(&format!(" · {needs} need{} you", if needs == 1 { "s" } else { "" }));
             }
-            GroupVm { label: proj.clone(), key: proj, count, open, closed: false, rows: if open { rows.iter().map(|x| row_vm(x, c)).collect() } else { Vec::new() } }
+            GroupVm { label: proj.clone(), key: proj, count, open, rows: if open { rows.iter().map(|x| row_vm(x, c)).collect() } else { Vec::new() } }
         })
         .collect();
     let empty = groups.is_empty().then(|| {
@@ -756,24 +721,7 @@ pub fn list_vm(c: &ListCtx) -> ListVm {
             "None right now.".into()
         }
     });
-    let closed = (!c.closed.is_empty() && f == "all")
-        .then(|| {
-            let shown: Vec<&Value> = c.closed.iter().filter(|x| matches(x, q)).collect();
-            (!shown.is_empty()).then(|| {
-                let open = c.closed_open || c.holds_sel(&shown);
-                let total = if !q.is_empty() { shown.len() as i64 } else if c.closed_total > 0 { c.closed_total } else { c.closed.len() as i64 };
-                GroupVm {
-                    key: String::new(),
-                    label: "Closed".into(),
-                    count: fmt::plural(total, "terminal", "terminals"),
-                    open,
-                    closed: true,
-                    rows: if open { shown.iter().take(50).map(|x| closed_row_vm(x, c)).collect() } else { Vec::new() },
-                }
-            })
-        })
-        .flatten();
-    ListVm { loading: None, stale_btn, bulk, groups, empty, closed }
+    ListVm { loading: None, stale_btn, bulk, groups, empty }
 }
 
 #[derive(Clone, Debug)]
@@ -1171,9 +1119,6 @@ fn closed_list(m: &MainWindow) -> Vec<Value> {
     m.data.closed.as_ref().map(|v| arr(v, "sessions").to_vec()).unwrap_or_default()
 }
 
-fn closed_total(m: &MainWindow) -> i64 {
-    m.data.closed.as_ref().map(|v| i(v, "total")).unwrap_or(0)
-}
 
 fn detail_data(m: &MainWindow) -> Option<Value> {
     m.data.session.as_ref().map(|d| effective(&m.sessions, d))
@@ -1479,15 +1424,6 @@ pub fn toggle_group(m: &mut MainWindow, project: &str, open: bool, cx: &mut Cont
         st.collapsed.retain(|p| p != project);
     }
     crate::prefs::set(COLLAPSED_KEY, json!(st.collapsed));
-    cx.notify();
-}
-
-/// `ss-closed`.
-pub fn toggle_closed(m: &mut MainWindow, open: bool, cx: &mut Context<MainWindow>) {
-    m.sessions.closed_open = !open;
-    if open {
-        m.sessions.hide_sel = m.sessions.selected.clone();
-    }
     cx.notify();
 }
 
@@ -1903,14 +1839,11 @@ fn header(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
 
 fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
     let live = m.data.sessions.as_ref().map(|_| live_list(m));
-    let closed = closed_list(m);
     let q = query(m, cx);
     let st = &m.sessions;
     let vm = list_vm(&ListCtx {
         live: live.as_deref(),
         list_err: m.data.errs.sessions.as_deref(),
-        closed: &closed,
-        closed_total: closed_total(m),
         sel: st.selected.as_deref(),
         filter: &st.filter,
         q: &q,
@@ -1918,7 +1851,6 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         hide_sel: st.hide_sel.as_deref(),
         selecting: st.selecting,
         picked: &st.picked,
-        closed_open: st.closed_open,
         flash: &st.flash,
     });
     let slots = if vm.loading.is_none() && st.filter.is_empty() { slots_vm(st.slots.as_ref(), st.slots_shut, &q) } else { None };
@@ -1935,34 +1867,18 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     if let Some(l) = &vm.loading {
         body = body.child(div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(l.clone()));
     }
-    // Groups, then "None right now." (when no group shows), the worktree slots, then Closed.
-    let mut empty = vm.empty.clone().map(|e| div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(e));
-    let mut slots = slots.map(|sv| slots_group(t, &sv, cx));
-    let mut placed_empty = false;
-    for g in vm.groups.iter().chain(vm.closed.iter()) {
-        if g.closed && !placed_empty {
-            body = body.children(empty.take()).children(slots.take());
-            placed_empty = true;
-        }
-        let (key, open, is_closed) = (g.key.clone(), g.open, g.closed);
-        let id = if is_closed { "ss-closed".to_string() } else { format!("ss-group-{key}") };
-        let head = group_head(t, &id, &g.label, &g.count, open).on_click(cx.listener(move |m, _, _, cx| {
-            if is_closed {
-                toggle_closed(m, open, cx);
-            } else {
-                toggle_group(m, &key, open, cx);
-            }
-        }));
-        // `.sgroup.open` has 4px below it; `.sgroup.closed` 8px above and a divider.
-        let mut group = div().flex().flex_col().flex_none().when(open, |d| d.pb(px(4.))).when(is_closed, |d| d.mt(px(8.)).border_t_1().border_color(t.divider)).child(head);
+    // Groups, then "None right now." (when no group shows), then the worktree slots.
+    for g in &vm.groups {
+        let (key, open) = (g.key.clone(), g.open);
+        let head = group_head(t, &format!("ss-group-{key}"), &g.label, &g.count, open).on_click(cx.listener(move |m, _, _, cx| toggle_group(m, &key, open, cx)));
+        // `.sgroup.open` has 4px below it.
+        let mut group = div().flex().flex_col().flex_none().when(open, |d| d.pb(px(4.))).child(head);
         for r in &g.rows {
             group = group.child(row(t, r, cx));
         }
         body = body.child(group);
     }
-    if !placed_empty {
-        body = body.children(empty).children(slots);
-    }
+    body = body.children(vm.empty.clone().map(|e| div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(e))).children(slots.map(|sv| slots_group(t, &sv, cx)));
 
     // `.spage-grid`: minmax(380px, 460px) next to the detail.
     page_card(t)
@@ -2198,7 +2114,7 @@ fn row(t: &Theme, r: &RowVm, cx: &mut Context<MainWindow>) -> AnyElement {
         .cursor_pointer()
         .when(r.on, |d| d.bg(accent_tint(t)))
         .when(!r.on, |d| d.hover(move |s| s.bg(hover)))
-        .when(r.closing || r.closed, |d| d.opacity(if r.closed { 0.7 } else { 0.6 }))
+        .when(r.closing, |d| d.opacity(0.6))
         .children(check)
         .child(
             div()
@@ -2677,15 +2593,11 @@ mod tests {
     /// One case's list context, the way the web page state was set up for it.
     fn list_case(i: &Value, f: impl FnOnce(&ListCtx) -> Value) -> Value {
         let live = i.get("list").filter(|l| !l.is_null()).map(arr_of);
-        let closed = i.get("closed").map(arr_of).unwrap_or_default();
-        let closed_total = if i.get("closed").is_some() { i["closedTotal"].as_i64().unwrap_or(closed.len() as i64) } else { 0 };
         let (collapsed, picked) = (strs(&i["collapsed"]), strs(&i["picked"]));
         let flash = HashMap::new();
         f(&ListCtx {
             live: live.as_deref(),
             list_err: i["listErr"].as_str().filter(|e| !e.is_empty()),
-            closed: &closed,
-            closed_total,
             sel: i["sel"].as_str(),
             filter: i["f"].as_str().unwrap_or(""),
             q: i["q"].as_str().unwrap_or(""),
@@ -2693,7 +2605,6 @@ mod tests {
             hide_sel: i["hideSel"].as_str(),
             selecting: i["selecting"].as_bool().unwrap_or(false),
             picked: &picked,
-            closed_open: i["closedOpen"].as_bool().unwrap_or(false),
             flash: &flash,
         })
     }
@@ -2772,10 +2683,6 @@ mod tests {
             }
             "ssRow" => list_case(i, |c| {
                 let r = row_vm(&i["session"], c);
-                json!({"text": r.text(), "acts": ["ss-open"]})
-            }),
-            "ssClosedRow" => list_case(i, |c| {
-                let r = closed_row_vm(&i["session"], c);
                 json!({"text": r.text(), "acts": ["ss-open"]})
             }),
             "ssHeader" => {
