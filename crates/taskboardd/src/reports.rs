@@ -1949,10 +1949,6 @@ fn on_done(r: &mut Report) -> Result<Value> {
         board::update_task(r.app, t.id(), fields!["no_evidence" => no_evidence])?;
         r.log(t.id(), "status", &format!("No evidence: {no_evidence}"), None)?;
     }
-    let no_lens = one_line(&r.b("no_lens"), NO_PR_MAX);
-    if !no_lens.is_empty() && crate::lens::applies(r.app, t.s("project")) {
-        r.log(t.id(), "status", &format!("Skipped the lens review: {no_lens}"), None)?;
-    }
     let pr = if no_pr.is_empty() { pr } else { None };
     if let Some(pr) = pr {
         prflow::link_pr(r.app, &t, &pr, &r.name())?;
@@ -2013,15 +2009,6 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
             return err(400, format!("Keep the --no-pr reason to one short line ({NO_PR_MAX} characters or fewer); put the rest in the summary."));
         }
     }
-    if let Some(raw) = r.body.get("no_lens").filter(|v| !v.is_null()) {
-        let why = one_line(raw.as_str().unwrap_or(""), 100_000);
-        if why.is_empty() {
-            return err(400, format!("Say why {me} skips the lens review: {tb} submit \"<summary>\" --no-lens \"<why>\"."));
-        }
-        if why.chars().count() > NO_PR_MAX {
-            return err(400, format!("Keep the --no-lens reason to one short line ({NO_PR_MAX} characters or fewer); put the rest in the summary."));
-        }
-    }
     let no_pr = !r.b("no_pr").is_empty();
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
     let has_pr = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || has(t.s("pr_url")) || !r.b("pr_body").is_empty();
@@ -2070,7 +2057,6 @@ fn finishing(r: &Report) -> Result<()> {
     if board::handed_in(&t) {
         return Ok(());
     }
-    lens_review(r, &t)?;
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
     let with_pr = (find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || board::pr_still_open(&t)) && r.b("no_pr").trim().is_empty();
     let before: &[steps::Before] = if with_pr { &[steps::Before::Pr, steps::Before::Done] } else { &[steps::Before::Done] };
@@ -2101,46 +2087,6 @@ fn finishing(r: &Report) -> Result<()> {
         Ok(())
     })?;
     err(409, format!("{line}. The task is still open: deal with that, then run tb submit again."))
-}
-
-/// lens's local review before `tb submit`, when lens is installed: notes its findings on the task and
-/// refuses while it's missing, stale or has a blocker in the fix loop; an escalated blocker is asked
-/// of the owner. `--no-lens "<why>"` skips it (the reason goes on the task).
-fn lens_review(r: &Report, t: &Row) -> Result<()> {
-    let app = r.app;
-    let Some(cwd) = r.cwd.as_deref().filter(|_| !r.spooled) else { return Ok(()) };
-    if r.away(t)? || !r.b("no_lens").trim().is_empty() {
-        return Ok(());
-    }
-    // Reading a big checkout takes a while: say so, or tb gives up on a quiet board.
-    let Some(review) = crate::progress::waiting("lens's check of the checkout", crate::progress::WAITING_EVERY, || crate::lens::review(app, t, cwd))? else {
-        return Ok(());
-    };
-    app.db.tx(|| {
-        for (_, text) in &review.notes {
-            r.log(t.id(), "note", text, None)?;
-        }
-        crate::lens::remember(app, t.id(), false, &review.notes.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>())?;
-        if let crate::lens::Verdict::Ask { key, question } = &review.verdict {
-            board::update_task(
-                app,
-                t.id(),
-                fields!["status" => "needs", "needs_reason" => "question", "question" => question.as_str(), "answered_at" => null, "lost" => 0],
-            )?;
-            r.log(t.id(), "question", &format!("Asked: {question}"), None)?;
-            crate::lens::remember(app, t.id(), true, std::slice::from_ref(key))?;
-            r.set_session_status("needs")?;
-        }
-        Ok(())
-    })?;
-    match review.verdict {
-        crate::lens::Verdict::Pass => Ok(()),
-        crate::lens::Verdict::Refuse(why) => err(409, format!("{why} The task is still open.")),
-        crate::lens::Verdict::Ask { .. } => err(
-            409,
-            format!("lens couldn't fix a blocker, so {} has been asked. End your turn; the board brings you back with the answer.", app.cfg.owner),
-        ),
-    }
 }
 
 /// Is this report from the terminal working on the task (rather than the owner's, elsewhere)?

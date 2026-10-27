@@ -122,8 +122,8 @@ pub struct App {
     hook_signal: Signal,
     ai_jobs: Mutex<VecDeque<Deferred>>,
     ai_signal: Signal,
-    lens_jobs: Mutex<VecDeque<Deferred>>,
-    lens_signal: Signal,
+    slow_jobs: Mutex<VecDeque<Deferred>>,
+    slow_signal: Signal,
     report_jobs: Mutex<VecDeque<Deferred>>,
     report_signal: Signal,
     /// Held while queued reports are taken, so they're taken one at a time in the order they came.
@@ -171,8 +171,8 @@ impl App {
             hook_signal: Signal::new(),
             ai_jobs: Mutex::new(VecDeque::new()),
             ai_signal: Signal::new(),
-            lens_jobs: Mutex::new(VecDeque::new()),
-            lens_signal: Signal::new(),
+            slow_jobs: Mutex::new(VecDeque::new()),
+            slow_signal: Signal::new(),
             report_jobs: Mutex::new(VecDeque::new()),
             report_signal: Signal::new(),
             report_turn: Mutex::new(()),
@@ -217,7 +217,7 @@ impl App {
         self.deferred_signal.set();
         self.hook_signal.set();
         self.ai_signal.set();
-        self.lens_signal.set();
+        self.slow_signal.set();
         self.report_signal.set();
     }
 
@@ -291,23 +291,23 @@ impl App {
         self.ai_jobs.lock().pop_front()
     }
 
-    /// Lens reviews of new PRs (`lens_pr.rs`) and idea digs (`dig.rs`) run one at a time on their own
-    /// thread: each takes about 15 minutes, too long to wait behind or hold up the other headless calls.
-    pub fn queue_lens(&self, f: Deferred) {
+    /// Slow headless jobs (idea digs, `dig.rs`, and idea plans, `idea_plan.rs`) run one at a time on their own
+    /// thread: each can take about 15 minutes, too long to wait behind or hold up the other headless calls.
+    pub fn queue_slow(&self, f: Deferred) {
         if self.inline_deferred {
             f(self);
             return;
         }
-        self.lens_jobs.lock().push_back(f);
-        self.lens_signal.set();
+        self.slow_jobs.lock().push_back(f);
+        self.slow_signal.set();
     }
 
-    pub fn next_lens(&self, timeout: Duration) -> Option<Deferred> {
-        if let Some(f) = self.lens_jobs.lock().pop_front() {
+    pub fn next_slow(&self, timeout: Duration) -> Option<Deferred> {
+        if let Some(f) = self.slow_jobs.lock().pop_front() {
             return Some(f);
         }
-        self.lens_signal.wait(timeout);
-        self.lens_jobs.lock().pop_front()
+        self.slow_signal.wait(timeout);
+        self.slow_jobs.lock().pop_front()
     }
 
     /// Owner hooks run one at a time on their own thread, in the order the board reached their steps.

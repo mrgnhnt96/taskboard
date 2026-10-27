@@ -9,8 +9,7 @@
 //! `swapped_off` (reviewers taken off the PR, whose requests for changes no longer hold),
 //! `addressed` (the last `tb pr addressed`), `asked` (who was last asked to review, when and by
 //! whom: `asks.rs`; the `ask` stage waits for it), `waiting_since` (reviewer → when the board first saw
-//! the PR waiting on them, for reviewers it didn't ask itself: `prbar.rs`) and `lens` (the lens review of a new PR: `lens_pr.rs`;
-//! the `lens` stage shows it running).
+//! the PR waiting on them, for reviewers it didn't ask itself: `prbar.rs`).
 //!
 //! The `ask` stage (`[reviewers] ask_stage`): once the owner has looked at a green PR ("I reviewed
 //! it"), the PR waits for reviewers to be asked. The agent is brought back to run `tb pr reviewers`;
@@ -32,7 +31,7 @@ pub const WAKE: &[&str] = &["fix", "rebase", "comments", "steps", "merge", "ask"
 const MECHANICAL: &[&str] = &["merge", "ask"];
 /// Steps whose visit works on the PR's host (asks, merges, replies), so it waits out a rate limit.
 const ON_HOST: &[&str] = &["ask", "merge", "comments"];
-pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
+pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
 pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
@@ -50,7 +49,6 @@ pub fn label(phase: &str) -> &str {
         "checks" => "Watching checks",
         "fix" => "Fixing checks",
         "rebase" => "Rebasing",
-        "lens" => "Lens review",
         "ask" => "Asking for reviews",
         "review" => "Awaiting review",
         "rereview" => "Awaiting re-review",
@@ -931,7 +929,6 @@ pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, Str
 
 /// Steps one task's PR with a record, as a read of it would.
 pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
-    crate::lens_pr::kick(app, id, rec)?;
     let t = board::get_task(app, id)?;
     note_expected(app, &t, rec)?;
     let t = board::get_task(app, id)?;
@@ -1346,11 +1343,6 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     let new_comments = if has_threads(rec) { !open_threads(&f, rec).is_empty() } else { rec["comments"].as_i64().unwrap_or(0) > seen };
     if (review.changes && !answered) || new_comments {
         return "comments".into();
-    }
-    // Lens reviewing the PR (`lens_pr.rs`) holds what comes after it until it's done: the review, the
-    // merge. Its findings come back as comments.
-    if crate::lens_pr::holds(app, &f) {
-        return "lens".into();
     }
     let review_skipped = review_skipped(app, t, &f, rec);
     if review.changes && answered && !review_skipped {
@@ -1947,7 +1939,6 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
                 }
             },
         };
-        crate::lens_pr::kick(app, t.id(), &rec)?;
         let t = board::get_task(app, t.id())?;
         note_expected(app, &t, &rec)?;
         gate(app, &board::get_task(app, t.id())?, &rec)?;

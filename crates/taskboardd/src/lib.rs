@@ -48,9 +48,6 @@ pub mod jira_status;
 pub mod jobs;
 pub mod keep_awake;
 pub mod lanes;
-pub mod lens;
-pub mod lens_pr;
-pub mod lens_sweep;
 pub mod ideas;
 pub mod idea_plan;
 pub mod idea_talk;
@@ -161,9 +158,9 @@ pub fn start_threads(app: &Arc<App>) {
             a.take_reports(Some(Duration::from_secs(5)));
         }
     });
-    spawn(app, "lens", |a| {
+    spawn(app, "slow-jobs", |a| {
         while !a.stopping() {
-            if let Some(f) = a.next_lens(Duration::from_secs(5)) {
+            if let Some(f) = a.next_slow(Duration::from_secs(5)) {
                 f(&a);
             }
         }
@@ -185,7 +182,6 @@ pub fn start_threads(app: &Arc<App>) {
         spawn(app, "suggest", suggest::run);
         spawn(app, "spans", spans::run);
         spawn(app, "review", review::run);
-        spawn(app, "lens-sweep", lens_sweep::run);
     } else {
         spawn(app, "spool", |a| {
             while !a.stopping() {

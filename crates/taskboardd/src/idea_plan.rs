@@ -53,7 +53,7 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
     }
     let id = i.id();
     let by = board::caller(app, body, board::OWNER);
-    app.queue_lens(Box::new(move |a: &App| {
+    app.queue_slow(Box::new(move |a: &App| {
         let answer = triage::ask_in_with(a, prompt, schema(a.cfg.models.enabled), Some(&repo), &[], TIMEOUT_SECS)
             .and_then(|v| checked(&v, a.cfg.models.enabled));
         if let Err(e) = finish(a, id, &project, &by, answer) {

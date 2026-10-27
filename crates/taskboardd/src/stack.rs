@@ -224,7 +224,6 @@ pub fn base_hold(app: &App, t: &Row) -> Result<Option<Value>> {
         "checks" if checks.is_empty() => format!("{r}'s checks haven't started"),
         "checks" => format!("{r}'s checks running, {} of {} passed", count("passed"), checks.len()),
         "fix" => format!("{r}'s checks failed ({}), being fixed", count("failed")),
-        "lens" => format!("{r} in lens review"),
         "ask" => format!("{r} waiting for reviewers to be asked"),
         "review" if prflow::awaiting_owner(&p) => format!("{r} waiting on your review"),
         "review" | "rereview" => format!("{r} waiting on review"),

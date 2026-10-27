@@ -149,7 +149,7 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
         }
     };
     let id = i.id();
-    app.queue_lens(Box::new(move |a: &App| {
+    app.queue_slow(Box::new(move |a: &App| {
         let extra: &[&str] = if web { &WEB_TOOLS } else { &[] };
         let answer = triage::ask_in_with(a, prompt, schema(), Some(&repo), extra, TIMEOUT_SECS).and_then(|v| checked(&v, &known));
         if let Err(e) = finish(a, id, round, answer) {
@@ -543,7 +543,7 @@ mod tests {
             {"type": "chart", "data": [1, 2]},
             {"type": "points", "title": "Watch out", "items": [
                 {"short": "Reads secrets", "detail": "The checkout may hold .env files.\n\nClaude reads them.", "tag": "security"},
-                {"short": " ", "detail": "Long runs tie up a lens slot", "tag": "cost"},
+                {"short": " ", "detail": "Long runs tie up a slot", "tag": "cost"},
                 {"short": "", "detail": ""}]},
             {"type": "points", "title": "Empty", "items": []},
             {"type": "question", "id": "Web by default?", "text": "Web on by default?", "choices": ["Yes", "No"]},
@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(blocks[1], json!({"type": "scorecard", "fit": "partly", "size": null, "risk": "medium"}));
         assert_eq!(blocks[2]["items"], json!([
             {"short": "Reads secrets", "detail": "The checkout may hold .env files.\n\nClaude reads them.", "tag": "security"},
-            {"short": "Long runs tie up a lens slot", "detail": "Long runs tie up a lens slot"}]),
+            {"short": "Long runs tie up a slot", "detail": "Long runs tie up a slot"}]),
             "detail keeps its paragraphs; a missing short comes from the detail; an unknown tag is left off");
         assert_eq!((blocks[3]["id"].clone(), blocks[4]["id"].clone()), (json!("web-by-default"), json!("q1")), "ids are unique slugs");
         assert_eq!(blocks[5]["lean"], Value::Null, "a lean that isn't an option is left out");

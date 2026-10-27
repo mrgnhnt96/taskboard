@@ -565,9 +565,8 @@ The card is draggable to Working when it's queued/planned, not starting, and not
   "approvals": {"have": int, "need": int|null}|null,   // approvals so far against the ones it needs (null need: the host decides);
                                  // the panel's Review step reads "1 of 2" from it when there's no `bar`
   "stage": {
-    "phase": "checks"|"fix"|"lens"|"ask"|"review"|"rereview"|"comments"|"merge"|"waits"|"stack"|"merged"|"declined",
+    "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"waits"|"stack"|"merged"|"declined",
                                  // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")
-                                 // lens ([pr.lens]): lens's PR pass is reviewing it and will post its findings inline ("Lens review")
                                  // ask ([reviewers] ask_stage): the owner reviewed it; reviewers are being asked ("Asking for reviews")
     "label": str,                // plain words, e.g. "Watching checks", "Fixing checks", "Awaiting reviews", "Answering comments", "Merging", "Merged"
     "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge/ask (links to it), only while
@@ -600,9 +599,6 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
-    "lens": {"state": "queued"|"running"|"done"|"failed"|"skipped"|"stopped", "head": str, "at": iso, "tries": int,
-             "started_at": iso?, "finished_at": iso?, "error": str?, "log": str?, "reason": str?, "by": str?}|null,   // the lens review of the PR ([pr.lens]); null when lens never ran on it.
-                                 // A run that outlived its timeout reads failed ("didn't finish"). The panel's Lens step sits after Checks
     "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round, or {"name", "bar", "pending": true}
                                  // before the first ("Not reviewed by WD yet"); null when the task doesn't end in a PR or the PR is merged or closed
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
@@ -713,7 +709,6 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
 | `POST /tasks/:id/pr/needs-owner` | `{reason, checks?: [str], who?}` | `tb pr needs-owner`: the current head's failed checks (all of them, or `checks`) are ones only the owner can fix, like a missing secret or variable or a permissions error. `reason` (20–300 characters) says what they have to do. Finishes the visit, alerts the owner, and the card's stage reads "Needs you to fix checks" with `owner` set until a new push. 409 when nothing fails on this push or a named check didn't fail. |
 | `POST /tasks/:id/pr/checks-running` | `{head, checks: [names], who?}` | A merge was refused while these checks ran on the host (`tb pr merge` notes it itself when it refuses for running checks). Kept as `pr_flow.checks_running` `{head (12 chars), checks, at}`: the stage stays `checks` on that head while any of them isn't finished in the record's builds, for at most 30 minutes, then goes back to `merge` with a fresh wake (not a retry). 400 without a head or checks; a note for an older head is ignored (`noted: false`). The merge stage's wake key includes each build's `name=state`, so a build that finishes after the merge retries ran out brings the merge back with fresh tries. |
-| `POST /tasks/:id/pr/lens` | `{retry?: bool, skip?: str, who?, agent?: bool}` | A lens review that holds the PR: `retry` runs a failed (or lost) one again; `skip` (the reason) lets the PR go without it. 403 when an agent skips it; 409 when there's no review, it isn't holding, or (`retry`) it hasn't failed. `tb pr lens [T<n>] --retry\|--skip "<why>"`. |
 | `POST /tasks/:id/pr/skip-checks` | `{reason, all?: bool, who?}` | Counts this push's checks (or every push's) that were stopped, are running or never posted as passed: for builds a hook cancelled. 400 without a `reason`; 409 while a check failed on this push (use `not-ours`), and a later push's failure still counts. The card's `pr.bar.checks` is `skipped`. |
 | `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
 | `POST /tasks/:id/pr/merged` | `{who?}` | `tb pr merged`: the PR was merged outside the board. |
@@ -890,7 +885,7 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
-| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, review: bool, agents_merge: bool, owner_review: bool, set: {…what tb project set changed}}`, `releases: bool`, `releases_set: bool\|null` (what `tb project set --releases` chose; null: config.toml's `[releases] on`) and `release_tags: str\|null` (the tag pattern that cuts releases; see Releases); where lens is installed also `lens: bool` (whether the board runs `lens sweep` for it), `lens_set: bool\|null` and `lens_sweep: {state: "running"\|"done"\|"failed", at: iso, finished_at?: iso, said?: str, report?: str, digest?: str, pr?: str, error?: str}\|null` (its latest sweep; see Lens sweeps) (`tb project show`). |
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, review: bool, agents_merge: bool, owner_review: bool, set: {…what tb project set changed}}`, `releases: bool`, `releases_set: bool\|null` (what `tb project set --releases` chose; null: config.toml's `[releases] on`) and `release_tags: str\|null` (the tag pattern that cuts releases; see Releases) (`tb project show`). |
 | `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null, swap?: bool\|"on"\|"off"\|null, review?: bool\|"on"\|"off"\|null, agents_merge?: bool\|"on"\|"off"\|null, owner_review?: bool\|"on"\|"off"\|null, max_terminals?: int\|"default"\|null, waits_on?: [str]\|str\|null, releases?: bool\|"on"\|"off"\|"default"\|null, release_tags?: str\|"none"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). `max_terminals` (1–50, `tb project set --max-terminals N`; null or `default` goes back to config.toml's `[terminals] project_max`, 5): a queued start (pickup `queue`) opens its terminal only while fewer of the project's terminals are busy (working, needs you, or idle with background commands or agents running; a monitor doesn't count); until then its card's `waiting` says so. `waits_on` (`tb project set --waits-on api,core`; null, `[]` or `"none"` clears it): the other projects whose tasks this project's tasks may wait for (`tb wait-for`, `waits_for`), one way only; unknown names are a 404. Without it, waiting for another project's task is a 409. `releases` (`tb project set --releases on|off|default`): whether the project cuts releases (see Releases); null or `default` goes back to config.toml's `[releases] on` (off). `release_tags` (`tb project set --release-tags 'v*'`; null, `""` or `none` clears it): a git tag pattern; a new matching tag on the default branch cuts a release (see Releases). No spaces, `..` or leading `-`, 100 characters at most (400). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`, `--swap on|off`, `--review on|off`, `--agents-merge on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
 | `GET /terminals` | — | The board-wide cap on task terminals: `{max_terminals, max_terminals_set: int\|null, running, line}`. A task's start opens its terminal only while fewer than `max_terminals` task terminals run across every project (a task's own terminal while the task works or the terminal is busy, plus starts being opened); until then its card's `waiting` reads `Waits for a free slot: 8 of 8 task terminals running across the board` and it starts as slots free. Goal and project limits still apply under it. |
 | `POST /terminals` | `{max_terminals: int\|"default"\|null}` | Sets the cap (1–50, `tb terminals --max N`); null or `default` goes back to config.toml's `[terminals] global_max` (8). **Response read:** as `GET /terminals`. |
@@ -898,7 +893,6 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 | `POST /projects/agents-merge` | `{agents_merge: bool\|"on"\|"off"\|null}` | `tb project agents-merge on\|off\|default`: the board-wide switch, over config.toml's `pr.agents_merge` and under a project's own `agents_merge`; null goes back to config.toml's. `taskboardd import` sets it on unless the board already says or config.toml sets `pr.agents_merge` (unset: off). **Response read:** as `GET /projects/agents-merge`. |
 | `GET /projects/owner-review` | | `tb project owner-review`: `{owner_review: bool, set: bool\|null, config: bool}`: whether a green PR waits for the owner's review on projects whose own rules don't say, what the board set (null: nothing), and config.toml's `pr.owner_review` (unset: on). |
 | `POST /projects/owner-review` | `{owner_review: bool\|"on"\|"off"\|null}` | `tb project owner-review on\|off\|default`: the board-wide switch, over config.toml's `pr.owner_review` and under a project's own `owner_review` (`POST /projects/:name`); null goes back to config.toml's. Off, a done task's green PR that would wait in `review` for the owner is marked reviewed by the board (logged), with no "ready for review" alert. |
-| `GET /projects/lens` | | `tb project lens`: `{lens: bool, set: bool\|null, config: bool, installed: bool, submit: bool}`: whether lens sweeps projects that don't say, what the board set, config.toml's `[lens] on`, whether the lens binary is found, and `[lens] submit` (whether `tb submit` also needs a lens review; off by default). `POST /projects/lens` `{lens: bool\|"on"\|"off"\|null}` sets the board-wide switch. |
 | `POST /areas/backfill` | `{project?: str}` | `tb areas backfill [--project NAME]`: infers the area of each task (every project with areas when none is named; a named one without areas is a 400) whose area wasn't set by hand (`area_source` not `set`), from its PR's files on the host, else its PR's commits, else its worktree while still on its branch, else its repo path below the project's root; then each such goal's, the area most of its tasks share. A file counts for the area whose path covers it most specifically; the area with the most files wins, and a tie or no match leaves it blank. Each change is logged on the task and streamed as a progress stage, so `tb` shows it as it lands. **Response read:** `{projects: [str], tasks: [{ref, title, area, from}], goals: [{ref, name, area}], unsure: int}` (only what changed; `unsure`: tasks left blank). A live task's area is also re-inferred the same way from its checkout on each commit and at `tb submit`, until it's done. |
 
 ### Goals
@@ -1375,18 +1369,6 @@ reviewer's own (`reviewers[].changes_at` against `pr_flow.answered_changes_by`, 
 latest (`pr_flow.answered_changes`). The old review isn't an answer to the new ask, and another reviewer's new
 request for changes doesn't make it one.
 
-**The `lens` stage** (`[pr.lens] on`, off by default; per project `[pr.projects.<name>] lens`). The first time the
-board reads a new, open PR, it queues lens's PR pass (`lens review --pr <n>` from the PR's repo, the binary `[lens] bin` names),
-which posts its verified findings on the PR as inline comments. Runs go one at a time on
-their own thread. The run is kept in `pr_flow.lens` (`pr.bar.lens`), its output in `data/lens/T<id>-pr<n>.log`,
-and its outcome as a `lens` event. Until the run is done, the review holds the PR: its phase is `lens` ahead of
-`review`, `ask` and `merge` (only `fix`, `checks`, `rebase` and `comments` come first), and `tb pr merge` refuses. Its
-findings (comments ending in `<!-- lens:finding key=… -->`) then hold the merge as open threads until each is resolved,
-even when lens posts as the board's own account. A run that fails, or one the board lost (past `timeout_mins`, as after a
-restart), is tried once more (`tries`); a second failure leaves it `failed`, still holding, and alerts the owner, who runs
-it again (`tb pr lens --retry`) or lets the PR go without it (`tb pr lens --skip "<why>"`, owner only). A PR that merges
-or closes first skips (or stops) the run. Each PR is reviewed once: a later push isn't reviewed again.
-
 **The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
 board used the stage). Once the owner has marked a green PR reviewed
@@ -1508,14 +1490,3 @@ step's latest `step_result` on cards as well as in the task detail.
  "findings": [{"id": "F2", "title": str, "severity": str|null, "state": str|null, "file": str|null, "line": int?,
                "detail": str|null, "url": str|null, "note": str?, "commit": str?}]}   // open first, then by severity
 ```
-
-## Lens sweeps
-
-With the lens binary installed (`[lens] bin`), the board's runner checks every `[lens] sweep_mins` (15; 0 turns it off) and runs
-`lens sweep --repo <folder>` for each project lens is on for that has a folder and a git remote, one at a time on their own thread
-(time limit `[lens] sweep_timeout_mins`, 120). lens decides whether a sweep is due (its `.lens.toml` `[sweep] every` and `max_lines`);
-one that isn't says why and the board keeps that line as `said`. A sweep that ran leaves its report and digest paths, and its PR
-when it opened one: the board keeps them in the project's `lens_sweep`, raises an alert for a new sweep PR (with the digest), and
-turns each blocker lens's fixer escalated into a new queued task on the project (once per file and title; never a session brought
-back). Task sessions take no turns for review: the old `tb submit` gate (a fresh `lens review` of the checkout) runs only with
-`[lens] submit = true`.
