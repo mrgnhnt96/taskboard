@@ -52,7 +52,13 @@ fn limit_headers(r: &ureq::Response, limited: bool, why: &str) -> Option<super::
     if !limited && !spent {
         return None;
     }
-    Some(super::limit::Hit { retry_after: num("Retry-After"), reset_at: num("X-RateLimit-Reset"), why: why.to_string() })
+    let headers = r
+        .headers_names()
+        .into_iter()
+        .filter(|h| h.eq_ignore_ascii_case("Retry-After") || h.to_ascii_lowercase().starts_with("x-ratelimit-"))
+        .filter_map(|h| r.header(&h).map(|v| (h.clone(), v.trim().to_string())))
+        .collect();
+    Some(super::limit::Hit { retry_after: num("Retry-After"), reset_at: num("X-RateLimit-Reset"), why: why.to_string(), headers })
 }
 
 /// What a response's headers say about the hour's calls left, when it sends them: its

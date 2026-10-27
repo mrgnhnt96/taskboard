@@ -144,9 +144,15 @@ fn hook_payload(app: &App, query: &Query) -> Result<Value> {
 }
 
 /// A read shares the settings and steps it loads across everything it builds (`reqcache`).
+/// A `tb pr …` command someone asked for makes its reads as the PR poll's: they still go while an
+/// account restarts slowly after a limit (`prhost::limit`).
 pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
     if method == "GET" {
         return crate::reqcache::scope(|| route(app, method, path, query, body));
+    }
+    let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    if matches!(segs.as_slice(), ["tasks", _, "pr", ..]) {
+        return crate::prhost::limit::priority(|| route(app, method, path, query, body));
     }
     route(app, method, path, query, body)
 }
@@ -544,6 +550,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         (_, ["master-breaks", rest @ ..]) => crate::breaks::old_route(app, method, rest, q(query, "limit", "20").parse().unwrap_or(20), body),
         ("GET", ["pr-builds"]) => Ok(crate::prbuilds::status(app)),
         ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),
+        ("POST", ["prs", "limits", "lift"]) => crate::prhost::limit::lift(app, body),
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
             crate::runner::reviews(app)?;

@@ -58,6 +58,10 @@ The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` comma
 3. Push the fixes. If the base branch has moved, rebase onto it first and push with `--force-with-lease`. Don't push only to rebase. A step that runs on every push (`per_head`) has to pass on the new commit first: the push is held until it does (`tb steps`).
 4. Finish every visit with `tb pr wait T<n>` (or `tb pr addressed` / `tb pr merge`, which finish it too): the board closes the terminal and keeps watching the PR. `tb pr merged T<n>` records a PR someone merged outside the board; one closed outside it the board reads on its own. When the owner asks you to check the PRs now, `tb pr check` reads every PR on the board from its host at once, instead of waiting for the next poll.
 
+## Rate limits
+
+Every call to GitHub and Bitbucket goes through the board, which keeps each account under its hourly budget and spaces out its writes, so a `tb pr …` command can take a few seconds longer. When a command says the host has the account rate-limited, or that the board is easing back in, don't sleep and retry or schedule your own retries: replies and resolves are held and posted for you, and the board brings you back when the PR needs you. Finish with `tb pr wait T<n>`. `tb pr lift` ends the board's own hold; run it only on the owner's word.
+
 ## The owner wants changes to a done task's PR
 
 When the owner comes to you in a terminal with changes for a done task whose PR is still open, run `tb take T<n>` first. Make the changes, push them, then `tb submit "<summary>"` again. With owner review on, until a peer has been asked to review, taking it back drops the owner's "reviewed" mark: the PR waits for the owner to look at the new changes before anyone else is asked. With peers already on it, it goes to re-review as it is. A merged or closed PR can't be taken back: open a new task instead.

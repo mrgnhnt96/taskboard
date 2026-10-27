@@ -151,6 +151,33 @@ pub struct Bar {
     pub tip: String,
 }
 
+/// One PR host's stretches the board couldn't work with it on the day.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostRow {
+    pub label: String,
+    /// "held 1h 59m".
+    pub total: String,
+    pub spans: Vec<HostSpan>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostSpan {
+    /// `limited` (the host's limit), `budget` (the board's hour used up), `slow` (easing back in).
+    pub kind: String,
+    pub x0: f32,
+    pub x1: f32,
+    pub tip: String,
+}
+
+/// What each kind of host stretch is called.
+fn host_kind(kind: &str) -> &'static str {
+    match kind {
+        "limited" => "Rate-limited",
+        "budget" => "Hourly budget used up",
+        _ => "Easing back in",
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     pub kind: String,
@@ -243,6 +270,8 @@ pub struct View {
     /// Each usage window's label and its used percentage in the same slots (`None`: no reading or
     /// still to come); empty when there's no reading all day.
     pub usage: Vec<(&'static str, Vec<Option<f64>>)>,
+    /// Each PR host the board couldn't work with for a while on the day; empty on most days.
+    pub hosts: Vec<HostRow>,
     pub tasks: Vec<TaskRow>,
     pub task_median: String,
     pub task_median_x: f32,
@@ -389,6 +418,25 @@ impl View {
                 let all = day["usage"][key].as_array()?;
                 Some((label, ((from_hour * 6) as usize..(to_hour * 6) as usize).map(|k| all.get(k).and_then(|x| x.as_f64())).collect()))
             })
+            .collect();
+
+        let hosts = arr(day, "host_limits")
+            .iter()
+            .map(|h| {
+                let label = s(h, "label").to_string();
+                let spans = arr(h, "spans")
+                    .iter()
+                    .filter_map(|sp| {
+                        let (x0, x1) = (x_of(s(sp, "from"))?, x_of(s(sp, "to"))?);
+                        let kind = s(sp, "kind").to_string();
+                        let why = s(sp, "why");
+                        let tip = format!("{label} · {} {} – {}{}", host_kind(&kind), clock(s(sp, "from")), clock(s(sp, "to")), if why.is_empty() { String::new() } else { format!(" · {why}") });
+                        Some(HostSpan { kind, x0, x1: x1.max(x0 + 0.002), tip })
+                    })
+                    .collect();
+                HostRow { label, total: format!("held {}", dur(f(h, "held_min"))), spans }
+            })
+            .filter(|h: &HostRow| !h.spans.is_empty())
             .collect();
 
         // How long tasks took this week: working, then waiting on you.
@@ -576,6 +624,7 @@ impl View {
             running,
             peak,
             usage,
+            hosts,
             tasks,
             task_median: if med > 0.0 { dur(med) } else { String::new() },
             task_median_x: (med / task_max) as f32,
@@ -1003,7 +1052,53 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
     } else {
         div().flex().flex_col().child(axis).children(lanes).child(running)
     };
-    card(t).child(legend).child(body).children((!v.usage.is_empty()).then(|| usage_row(v, t, LABEL)))
+    card(t).child(legend).child(body).children((!v.usage.is_empty()).then(|| usage_row(v, t, LABEL))).children(v.hosts.iter().map(|h| host_row(h, t, LABEL)))
+}
+
+fn host_color(t: &Theme, kind: &str) -> Hsla {
+    match kind {
+        "limited" => t.down,
+        "budget" => t.warn,
+        _ => t.warn_soft,
+    }
+}
+
+/// A PR host's stretches the board couldn't work with it, over the timeline's hours, each named on hover.
+fn host_row(h: &HostRow, t: &Theme, label_w: f32) -> Div {
+    let mut kinds: Vec<&str> = h.spans.iter().map(|s| s.kind.as_str()).collect();
+    kinds.sort_by_key(|k| ["limited", "budget", "slow"].iter().position(|x| x == k));
+    kinds.dedup();
+    let key = div().flex().flex_col().gap(px(2.)).text_color(t.muted).children(kinds.into_iter().map(|k| legend_item(t, swatch(host_color(t, k), 8.), host_kind(k))));
+    let bands = h.spans.iter().enumerate().map(|(k, sp)| {
+        div()
+            .id(SharedString::from(format!("days-host-{}-{k}", h.label)))
+            .absolute()
+            .top(px(4.))
+            .h(px(14.))
+            .left(relative(sp.x0))
+            .w(relative(sp.x1 - sp.x0))
+            .rounded(px(3.))
+            .bg(host_color(t, &sp.kind))
+            .tooltip(kit::tip(sp.tip.clone()))
+    });
+    div()
+        .flex()
+        .border_t_1()
+        .border_color(t.divider)
+        .pt(px(8.))
+        .child(
+            div()
+                .w(px(label_w))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .text_size(px(12.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(h.label.clone()))
+                .child(div().text_color(t.muted).child(h.total.clone()))
+                .child(key),
+        )
+        .child(div().relative().flex_1().h(px(22.)).children(bands))
 }
 
 /// The usage windows' lines over the timeline's hours, 0 to 100%, with each slot's readings on hover.
@@ -1410,6 +1505,10 @@ mod tests {
         let mut five = vec![Value::Null; 144];
         five[54] = json!(12.0);
         d["usage"] = json!({"five_hour": five});
+        d["host_limits"] = json!([{"host": "bitbucket", "label": "Bitbucket", "held_min": 119.0,
+                                   "spans": [{"kind": "limited", "from": "2026-10-08T09:57:00Z", "to": "2026-10-08T10:56:00Z", "why": "Bitbucket answered 429"},
+                                             {"kind": "slow", "from": "2026-10-08T10:56:00Z", "to": "2026-10-08T11:56:00Z", "why": ""}]},
+                                  {"host": "github", "label": "GitHub", "held_min": 0.0, "spans": []}]);
         d["hourly"] = json!(hourly);
         d["waits"] = waits;
         d["tasks"] = json!([{"ref": "T241", "work_min": 184.0, "wait_min": 58.0}]);
@@ -1449,6 +1548,13 @@ mod tests {
         assert_eq!(v.usage[0].0, "5h");
         assert_eq!(v.usage[0].1.len(), 48);
         assert_eq!(v.usage[0].1[0], Some(12.0), "9 AM's slot");
+        assert_eq!(v.hosts.len(), 1, "a host with no stretch has no row");
+        assert_eq!(v.hosts[0].label, "Bitbucket");
+        assert_eq!(v.hosts[0].total, "held 1h 59m");
+        assert_eq!(v.hosts[0].spans[0].kind, "limited");
+        assert!((v.hosts[0].spans[0].x0 - 0.1188).abs() < 0.001, "9:57 is just before 10: {}", v.hosts[0].spans[0].x0);
+        assert!(v.hosts[0].spans[0].tip.starts_with("Bitbucket · Rate-limited ") && v.hosts[0].spans[0].tip.ends_with(" · Bitbucket answered 429"), "{}", v.hosts[0].spans[0].tip);
+        assert!(v.hosts[0].spans[1].tip.contains("Easing back in") && !v.hosts[0].spans[1].tip.ends_with(" · "), "{}", v.hosts[0].spans[1].tip);
         assert_eq!(v.tasks[0].state, "needs you");
         assert_eq!(v.tasks[0].total, "4h 02m");
         assert_eq!(v.notes[0], ("58m".to_string(), "longest wait on you · T241".to_string()));

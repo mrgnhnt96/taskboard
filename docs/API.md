@@ -460,6 +460,9 @@ the backlog, and kept in `day_stats` (one row per project), so it outlives the c
                         "kind": "working"|"needs"|"done"|"failed"|"lost"|"stopped"}],
               "marks": [{"at": iso, "kind": "commit"|"question"|"pr"|"done"|"found", "task": int, "ref": str, "text": str}]}],
    "waits": [{"task": int, "ref": str, "at": iso, "min": float, "open": bool, "reason": str, "text": str, "title": str, "project": str}],
+   "host_limits": [{"host": str, "label": str,     // each PR host the board couldn't work with for a while (`host_limits`)
+                    "spans": [{"kind": "limited"|"budget"|"slow", "from": iso, "to": iso, "why": str}],   // limited > budget > slow where they overlap
+                    "limited_min": float, "budget_min": float, "slow_min": float, "held_min": float}],
    "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}],
    "finished": [{"task": int, "ref": str, "title": str, "project": str, "at": iso,      // finished that day, in order
                  "pr": {"num": int|null, "url": str, "state": "merged"|"open"|"declined"}|absent}]},   // the task's PR now
@@ -778,9 +781,19 @@ GitHub's "API rate limit exceeded" or secondary limit, `X-RateLimit-Remaining: 0
 it keeps coming back; a call meanwhile fails at once with "Bitbucket rate-limited until 3:40pm". Each backoff logs
 one line with the board's own calls on the account in the last hour. The `rate-limit:<host>` alert goes up once a
 limit has lasted 30 minutes inside the work hours, and clears when it ends. `[hosts.<host>] max_per_hour` caps the
-board's calls on the account: the PR poll and the review sweep stretch (up to 30×) to fit 90% of it, and reads past
-it wait (writes still go). `rate_limits` on `/state` and `GET /prs/feed`: `[{host, label, limited_until,
-limited_since, why, text, calls_last_hour, max_per_hour, stretch}]`; `tb feed` prints a line per account.
+board's calls on the account in any hour (unset: Bitbucket 900, GitHub 4,500; 0: no cap): the PR poll and the review
+sweep stretch (up to 30×) to fit 90% of it, reads stop a tenth short of it and writes stop at it. Writes on an account
+go out one at a time, `[hosts.<host>] write_gap_secs` apart (Bitbucket 2, GitHub 1). After a limit the account eases
+back in for as long as it backed off: background reads wait, while the PR poll, `tb pr …` commands and writes go. A
+429's log line names the `Retry-After` / `X-RateLimit-*` headers the host sent and the board's calls in the last
+minute. The calls and holds are kept in the `prhost_limits` setting across restarts, and each stretch the board
+couldn't work with a host goes in `host_limits` for the Days page. `rate_limits` on `/state` and `GET /prs/feed`:
+`[{host, label, limited_until, limited_since, why, text, calls_last_hour, max_per_hour, stretch}]`; `tb feed` prints
+a line per account.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /prs/limits/lift` | `{host?}` | `tb pr lift [--host <host>]`, on the owner's word: ends the board's own hold on the host's accounts (every host when left out), the slow restart and the limit both, and starts the next backoff over at 5 minutes. **Response:** `{lifted: [<a line per account>], rate_limits}`. |
 
 ### PR builds (`tb pr-builds`)
 A board-wide switch for when CI time is scarce, set only on the owner's word (`prbuilds.rs` documents it).

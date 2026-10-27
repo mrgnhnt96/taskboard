@@ -19,17 +19,41 @@
 //! # Slowing down
 //!
 //! After a backoff, the account restarts slowly for as long as it backed off: only writes and the
-//! reads marked [`priority`] (the PR poll's reads of the board's open PRs, whose stage can change) go;
-//! every other read (the review sweep, master breaks, CI reads, …) waits, and [`stretch`] doubles the
-//! PR poll's interval. The same happens before a limit when the host's headers say the account is
+//! reads marked [`priority`] (the PR poll's reads of the board's open PRs, whose stage can change, and
+//! the reads of a `tb pr …` command someone asked for) go; every other read (the review sweep, master
+//! breaks, CI reads, …) waits, and [`stretch`] doubles the PR poll's interval. A read held meanwhile
+//! says the host's limit is over and it's the board's own hold; `tb pr lift` ([`Limits::lift`]) ends it. The same happens before a limit when the host's headers say the account is
 //! near it (Bitbucket's `X-RateLimit-NearLimit`, or `X-RateLimit-Remaining` under a fifth of
 //! `X-RateLimit-Limit`), until its `X-RateLimit-Reset` or for 5 minutes.
 //!
 //! # Budget
 //!
-//! `[hosts.<host>] max_per_hour` caps the board's own calls on a host. Reads past it wait until the
-//! hour's oldest call ages out (writes still go). Before that, [`stretch`] widens the PR poll and the
+//! `[hosts.<host>] max_per_hour` caps the board's own calls on a host's account in any hour; unset,
+//! it's 90% of what the host allows ([`default_budget`]: Bitbucket 900, GitHub 4,500), leaving the
+//! rest to the owner's other tools; 0 turns it off. Reads stop a tenth short of it, keeping that for
+//! writes; writes stop at it, so the board never runs the account past the cap itself. A call past it
+//! waits until the hour's oldest call ages out. Before that, [`stretch`] widens the PR poll and the
 //! review sweep (`[intervals] prs` and `reviews`) so the last ten minutes' pace fits the budget.
+//!
+//! # Pacing writes
+//!
+//! Hosts limit bursts of writes on top of the hourly count (three merges and five retargets in a few
+//! seconds drew a 429 at 107 calls in the hour), so each account's writes go out one slot at a time,
+//! `[hosts.<host>] write_gap_secs` apart (Bitbucket 2s, GitHub 1s by default): a write whose slot
+//! hasn't come waits for it ([`Limits::write_slot`]). A merge that moves stacked PRs first is a queue
+//! of paced writes, not a burst.
+//!
+//! # On the Days page
+//!
+//! Each stretch the board couldn't work with an account goes in `host_limits` ([`Span`], written on
+//! [`check`]): `limited` (the host's limit), `slow` (easing back in, or near the limit) and `budget`
+//! (the board's own hour used up). A stretch that runs on extends its row; `tb pr lift` ends them.
+//!
+//! # Across restarts
+//!
+//! The hour's calls, the limits and the slow restarts are kept in the `prhost_limits` setting
+//! ([`check`] saves them at most every 30 seconds, and at once after a limit), so a daemon restart
+//! neither forgets the hour's calls nor starts a limited account at full speed.
 //!
 //! # Showing it
 //!
@@ -44,7 +68,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -54,8 +78,30 @@ use crate::util::*;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct HostConfig {
-    /// The most calls the board makes on the host's account in an hour; unset: no cap.
+    /// The most calls the board makes on the host's account in an hour; unset: [`default_budget`];
+    /// 0: no cap.
     pub max_per_hour: Option<u32>,
+    /// The least time between two writes on the account; unset: [`default_write_gap`].
+    pub write_gap_secs: Option<f64>,
+}
+
+/// The board's own hourly budget on a host when `max_per_hour` isn't set: 90% of what the host
+/// allows an account, so the owner's other tools on it keep the rest.
+pub fn default_budget(host: &str) -> Option<u32> {
+    match host {
+        "bitbucket" => Some(900),
+        "github" => Some(4500),
+        _ => None,
+    }
+}
+
+/// The least time between two writes on an account when `write_gap_secs` isn't set.
+pub fn default_write_gap(host: &str) -> f64 {
+    match host {
+        "bitbucket" => 2.0,
+        "github" => 1.0,
+        _ => 0.0,
+    }
 }
 
 /// A limit with no `Retry-After` / reset: 5 minutes, doubling while it keeps coming back.
@@ -80,14 +126,27 @@ const MAX_STRETCH: f64 = 30.0;
 /// A limit this long inside the work hours raises an alert.
 const ALERT_AFTER_SECS: f64 = 1800.0;
 pub const ALERT_PREFIX: &str = "rate-limit:";
+/// Reads stop this share of the budget short of it, keeping the rest for writes.
+const WRITE_RESERVE: f64 = 0.1;
+/// The window a backoff's log line counts the burst before it over.
+const BURST_SECS: f64 = 60.0;
+/// The setting the limits are kept in across restarts.
+const SAVED_KEY: &str = "prhost_limits";
+/// The limits are saved at most this often, unless a limit came.
+const SAVE_EVERY_SECS: f64 = 30.0;
 
 /// One account on a host.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Account {
     /// `github`, `bitbucket`, …
     host: String,
     /// When the board's calls went out, in the last hour.
     calls: VecDeque<f64>,
+    /// When the board's writes went out, in the last hour (also in `calls`).
+    writes: VecDeque<f64>,
+    /// The next write's slot: writes go out no closer than the host's write gap.
+    next_write: f64,
     /// Calls stop until then.
     until: Option<f64>,
     /// When this run of limits started (kept until a quiet hour).
@@ -95,6 +154,7 @@ struct Account {
     /// Limits with less than [`QUIET_SECS`] between them: what doubles the backoff.
     strikes: u32,
     why: String,
+    #[serde(skip)]
     alerted: bool,
     /// Only writes and [`priority`] reads go until then: the slow restart after a backoff, or the host
     /// saying the account is near its limit.
@@ -111,6 +171,25 @@ impl Account {
         while self.calls.front().is_some_and(|t| *t <= now - HOUR) {
             self.calls.pop_front();
         }
+        while self.writes.front().is_some_and(|t| *t <= now - HOUR) {
+            self.writes.pop_front();
+        }
+    }
+
+    /// When the hour's calls fall back under `n`: once the oldest past it ages out.
+    fn under_at(&self, n: usize, now: f64) -> f64 {
+        // Under `n` once the hour's oldest `len - n + 1` calls have aged out; the last of them is at `len - n`.
+        match self.calls.len().checked_sub(n.max(1)) {
+            Some(i) => self.calls[i] + HOUR,
+            None => now,
+        }
+    }
+
+    /// "it made 107 calls on this account in the last hour, 12 in the last minute (8 writes)".
+    fn pace_text(&self, now: f64) -> String {
+        let burst = self.calls.iter().filter(|t| **t > now - BURST_SECS).count();
+        let writes = self.writes.iter().filter(|t| **t > now - BURST_SECS).count();
+        format!("it made {} calls on this account in the last hour, {burst} in the last minute ({})", self.calls.len(), plural(writes as i64, "write"))
     }
 
     /// Past its limit and the slow restart after it.
@@ -142,6 +221,18 @@ impl Account {
         Some(text)
     }
 }
+
+/// A change to the stretches the board couldn't work with a host, for `host_limits`.
+#[derive(Debug, Clone, PartialEq)]
+enum Span {
+    /// `kind` on `host` from `from` to `to`: joins the host's row of that kind it touches, else a new one.
+    Open { host: String, kind: &'static str, from: f64, to: f64, why: String },
+    /// The host's rows of `kind` (every kind when None) end at `at` if they ran past it.
+    Cut { host: String, kind: Option<&'static str>, at: f64 },
+}
+
+/// Rows this close together are one stretch.
+const SPAN_JOIN_SECS: f64 = 60.0;
 
 /// What a host's headers say about the hour's calls left on a call that went through.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -191,8 +282,14 @@ fn is_priority() -> bool {
 #[derive(Debug, Default)]
 pub struct Limits {
     accounts: Mutex<HashMap<String, Account>>,
-    /// `max_per_hour` by host.
-    budgets: Mutex<BTreeMap<String, u32>>,
+    /// `[hosts.<host>]` by host.
+    hosts: Mutex<BTreeMap<String, HostConfig>>,
+    /// Something changed since the limits were last saved, and when they were.
+    dirty: Mutex<(bool, f64)>,
+    /// A limit came since they were saved: save at once.
+    urgent: std::sync::atomic::AtomicBool,
+    /// Changes to `host_limits`, written on the next [`check`].
+    spans: Mutex<Vec<Span>>,
     /// The poll stretch by host, and when it was last worked out.
     stretch: Mutex<HashMap<String, (f64, f64)>>,
     /// Lines for the daemon's log, written on the next [`check`].
@@ -232,6 +329,8 @@ pub struct Hit {
     pub reset_at: Option<f64>,
     /// What the host said, for the log and the alert.
     pub why: String,
+    /// The `Retry-After` and `X-RateLimit-*` headers it sent, as sent, for the log.
+    pub headers: Vec<(String, String)>,
 }
 
 /// The display name of a host id.
@@ -249,12 +348,35 @@ fn until_text(host: &str, until: f64) -> String {
 }
 
 impl Limits {
-    pub fn set_budgets(&self, budgets: BTreeMap<String, u32>) {
-        *self.budgets.lock() = budgets;
+    pub fn set_hosts(&self, hosts: BTreeMap<String, HostConfig>) {
+        *self.hosts.lock() = hosts;
     }
 
+    /// The board's hourly budget on `host`: `max_per_hour`, else [`default_budget`]; None: no cap.
     fn budget(&self, host: &str) -> Option<u32> {
-        self.budgets.lock().get(host).copied().filter(|b| *b > 0)
+        match self.hosts.lock().get(host).and_then(|c| c.max_per_hour) {
+            Some(b) => Some(b).filter(|b| *b > 0),
+            None => default_budget(host),
+        }
+    }
+
+    fn write_gap(&self, host: &str) -> f64 {
+        self.hosts.lock().get(host).and_then(|c| c.write_gap_secs).unwrap_or_else(|| default_write_gap(host)).max(0.0)
+    }
+
+    fn touch(&self) {
+        self.dirty.lock().0 = true;
+    }
+
+    /// Takes the next write slot on `key`: how long a write made now waits for it (0: it goes now).
+    /// Each write takes the slot after the last one's, so writes asked for together go out one by one.
+    pub fn write_slot(&self, key: &str, host: &str, now: f64) -> f64 {
+        let gap = self.write_gap(host);
+        let mut all = self.accounts.lock();
+        let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
+        let at = a.next_write.max(now);
+        a.next_write = at + gap;
+        at - now
     }
 
     /// Whether a call on `key` may go out now; counts it when it does. `priority`: a read that still
@@ -271,20 +393,34 @@ impl Limits {
         }
         if let Some(s) = a.slow(now) {
             if !write && !priority {
-                return Err(format!("{}; reads other than the PR poll's wait until {}", a.slow_why, local_clock(Some(&iso(s)))));
+                return Err(slow_text(&a.slow_why, s));
             }
         }
         if let Some(b) = budget {
-            if !write && a.calls.len() >= b as usize {
-                let free_at = a.calls.front().map(|t| t + HOUR).unwrap_or(now);
+            let (stop, what) = if write { (b as usize, "writes") } else { (read_stop(b), "reads") };
+            if a.calls.len() >= stop {
+                let free_at = a.under_at(stop, now);
+                self.spans.lock().push(Span::Open {
+                    host: host.to_string(),
+                    kind: "budget",
+                    from: now,
+                    to: free_at,
+                    why: format!("The board made {} of its {b} {} calls this hour; {what} waited", a.calls.len(), label(host)),
+                });
                 return Err(format!(
-                    "the board made its {b} {} calls this hour ([hosts.{host}] max_per_hour); reads wait until {}",
+                    "the board made {} of its {b} {} calls this hour ([hosts.{host}] max_per_hour); {what} wait until {}",
+                    a.calls.len(),
                     label(host),
                     local_clock(Some(&iso(free_at)))
                 ));
             }
         }
         a.calls.push_back(now);
+        if write {
+            a.writes.push_back(now);
+        }
+        drop(all);
+        self.touch();
         Ok(())
     }
 
@@ -321,17 +457,56 @@ impl Limits {
         a.since.get_or_insert(now);
         a.why = hit.why.clone();
         a.slow_until = Some(until + (until - now).max(FIRST_BACKOFF_SECS));
-        a.slow_why = format!("{} limited the account until {}; the board is easing back in", label(host), local_clock(Some(&iso(until))));
+        a.slow_why = format!("{}'s limit on the account ended at {}; the board is easing back in", label(host), local_clock(Some(&iso(until))));
         let budget = self.budget(host).map(|b| format!(" (budget {b})")).unwrap_or_default();
+        let source = if told == Some(until) { "the host's time" } else { "the board's backoff" };
+        let headers = match hit.headers.is_empty() {
+            true => "it sent no Retry-After or X-RateLimit headers".to_string(),
+            false => format!("it sent {}", hit.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ")),
+        };
         self.log.lock().push(format!(
-            "rate limit: {} answered \"{}\"; the board backs off until {} ({}); it made {} calls on this account in the last hour{budget}",
+            "rate limit: {} answered \"{}\" ({headers}); the board backs off until {} ({}, {source}); {}{budget}",
             label(host),
             one_line(&hit.why, 160),
             local_clock(Some(&iso(until))),
             dur_text(until - now),
-            a.calls.len(),
+            a.pace_text(now),
         ));
+        let slow_until = a.slow_until.unwrap_or(until);
+        let pace = a.pace_text(now);
+        drop(all);
+        let mut spans = self.spans.lock();
+        spans.push(Span::Cut { host: host.to_string(), kind: Some("slow"), at: now });
+        spans.push(Span::Open { host: host.to_string(), kind: "limited", from: now, to: until, why: format!("{} answered \"{}\"; {pace}", label(host), one_line(&hit.why, 160)) });
+        spans.push(Span::Open { host: host.to_string(), kind: "slow", from: until, to: slow_until, why: format!("The board eased back in after {}'s limit", label(host)) });
+        drop(spans);
+        self.touch();
+        self.urgent.store(true, std::sync::atomic::Ordering::SeqCst);
         until
+    }
+
+    /// `tb pr lift`: ends the board's own hold on `host`'s accounts (every host when None): the slow
+    /// restart after a limit, and a limit the host set, since the owner says it's over. The next limit
+    /// backs off from 5 minutes again. Answers a line per account it lifted.
+    pub fn lift(&self, host: Option<&str>, now: f64) -> Vec<String> {
+        let mut out = vec![];
+        for a in self.accounts.lock().values_mut().filter(|a| host.is_none_or(|h| h == a.host)) {
+            let held = a.until.filter(|u| *u > now).or_else(|| a.slow(now));
+            if let Some(h) = held {
+                out.push(format!("{}: lifted the board's hold, which ran until {}", label(&a.host), local_clock(Some(&iso(h)))));
+            }
+            self.spans.lock().push(Span::Cut { host: a.host.clone(), kind: None, at: now });
+            a.until = a.until.filter(|u| *u <= now);
+            a.slow_until = None;
+            a.strikes = 0;
+            a.since = None;
+        }
+        if !out.is_empty() {
+            self.log.lock().push(format!("rate limit: the owner lifted the board's hold ({})", out.join("; ")));
+            self.touch();
+            self.urgent.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        out
     }
 
     /// What the host's headers said on a call that went through: notes the account's hourly limit and,
@@ -356,15 +531,21 @@ impl Limits {
             ));
             a.slow_why = format!("{} says the account is near its rate limit", label(host));
         }
+        self.spans.lock().push(Span::Open { host: host.to_string(), kind: "slow", from: now, to: until, why: format!("{} said the account was near its rate limit", label(host)) });
         a.slow_until = Some(a.slow_until.filter(|s| *s > now).unwrap_or(now).max(until));
+        drop(all);
+        self.touch();
     }
 
     /// How much wider the PR poll should be so the board's pace on every budgeted host fits its
     /// budget: 1 when it fits (or there's no budget). Worked out at most once a minute per host.
     pub fn stretch(&self, now: f64) -> f64 {
-        let budgets = self.budgets.lock().clone();
+        let mut hosts: Vec<String> = self.accounts.lock().values().map(|a| a.host.clone()).collect();
+        hosts.sort();
+        hosts.dedup();
+        let budgets: Vec<(String, u32)> = hosts.into_iter().filter_map(|h| self.budget(&h).map(|b| (h, b))).collect();
         let mut out: f64 = 1.0;
-        for (host, b) in budgets.iter().filter(|(_, b)| **b > 0) {
+        for (host, b) in budgets.iter() {
             let mut st = self.stretch.lock();
             let (f, at) = st.get(host).copied().unwrap_or((1.0, f64::MIN));
             let f = if now - at < 60.0 {
@@ -394,9 +575,47 @@ impl Limits {
     /// When the account `key` takes calls again: the end of its limit, or of the slow restart after it.
     /// None when it isn't held. Other accounts, and other hosts, don't count.
     pub fn held_until(&self, key: &str, now: f64) -> Option<f64> {
-        let all = self.accounts.lock();
-        let a = all.get(key)?;
-        a.until.filter(|u| *u > now).or_else(|| a.slow(now))
+        let budget = self.budget(&self.accounts.lock().get(key)?.host);
+        let mut all = self.accounts.lock();
+        let a = all.get_mut(key)?;
+        a.forget_old(now);
+        let spent = budget.filter(|b| a.calls.len() >= *b as usize).map(|b| a.under_at(b as usize, now));
+        a.until.filter(|u| *u > now).or_else(|| a.slow(now)).or(spent)
+    }
+
+    /// The accounts as kept across restarts.
+    fn saved(&self) -> Value {
+        json!(&*self.accounts.lock())
+    }
+
+    /// Takes back what [`Limits::saved`] kept, before this daemon made calls of its own: the last
+    /// hour's calls, and limits and slow restarts that haven't ended.
+    fn restore(&self, v: &Value, now: f64) {
+        let Ok(saved) = serde_json::from_value::<HashMap<String, Account>>(v.clone()) else { return };
+        let mut all = self.accounts.lock();
+        for (key, mut a) in saved {
+            a.forget_old(now);
+            let here = all.entry(key).or_insert_with(|| Account { host: a.host.clone(), ..Default::default() });
+            let mut calls: Vec<f64> = a.calls.iter().chain(here.calls.iter()).copied().collect();
+            calls.sort_by(f64::total_cmp);
+            let mut writes: Vec<f64> = a.writes.iter().chain(here.writes.iter()).copied().collect();
+            writes.sort_by(f64::total_cmp);
+            a.calls = calls.into();
+            a.writes = writes.into();
+            a.next_write = a.next_write.max(here.next_write);
+            *here = a;
+        }
+    }
+
+    /// Whether the limits should be saved now; marks them saved.
+    fn due_save(&self, now: f64) -> bool {
+        let urgent = self.urgent.swap(false, std::sync::atomic::Ordering::SeqCst);
+        let mut d = self.dirty.lock();
+        if !d.0 || !(urgent || now - d.1 >= SAVE_EVERY_SECS) {
+            return false;
+        }
+        *d = (false, now);
+        true
     }
 
     pub fn status(&self, now: f64) -> Vec<Value> {
@@ -416,7 +635,7 @@ impl Limits {
                     "why": limited.map(|_| a.why.clone()),
                     "text": limited.map(|u| until_text(&a.host, u)),
                     "slow_until": slow.map(iso),
-                    "slow_text": slow.map(|s| format!("{}; reads other than the PR poll's wait until {}", a.slow_why, local_clock(Some(&iso(s))))),
+                    "slow_text": slow.map(|s| slow_text(&a.slow_why, s)),
                     "share_text": a.share_text(now),
                     "poll_text": polls.get(&a.host).map(Poll::text),
                     "calls_last_hour": a.calls.len(),
@@ -462,9 +681,23 @@ impl Limits {
         }
     }
 
+    fn take_spans(&self) -> Vec<Span> {
+        std::mem::take(&mut *self.spans.lock())
+    }
+
     fn take_log(&self) -> Vec<String> {
         std::mem::take(&mut *self.log.lock())
     }
+}
+
+/// Reads stop here, keeping the rest of budget `b` for writes.
+fn read_stop(b: u32) -> usize {
+    (b as f64 * (1.0 - WRITE_RESERVE)).floor().max(1.0) as usize
+}
+
+/// What a read held by the slow restart says: whose hold it is, and how to end it.
+fn slow_text(why: &str, until: f64) -> String {
+    format!("{why}: it holds its background reads until {} (the PR poll and `tb pr` commands still go; `tb pr lift` ends it)", local_clock(Some(&iso(until))))
 }
 
 fn dur_text(secs: f64) -> String {
@@ -501,6 +734,12 @@ impl Gate {
     /// read); notes a limit the call's answer reports (`limited` reads it from the error).
     pub fn call<T>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         let l = limits();
+        if write {
+            let wait = l.write_slot(&self.key, &self.host, now_ts());
+            if wait > 0.0 {
+                std::thread::sleep(std::time::Duration::from_secs_f64(wait));
+            }
+        }
         l.admit(&self.key, &self.host, write, is_priority(), now_ts())?;
         count(&self.host);
         match f() {
@@ -524,6 +763,53 @@ impl Gate {
     }
 }
 
+/// Writes the changes to `host_limits` ([`Span`]).
+fn write_spans(app: &App, spans: Vec<Span>) -> Result<()> {
+    if spans.is_empty() {
+        return Ok(());
+    }
+    app.db.tx(|| {
+        for s in &spans {
+            match s {
+                Span::Open { host, kind, from, to, why } => {
+                    let near = app.db.q(
+                        "SELECT id, from_at, to_at FROM host_limits WHERE host = ? AND kind = ? AND to_at >= ? AND from_at <= ? ORDER BY to_at DESC LIMIT 1",
+                        crate::p![host, kind, iso(from - SPAN_JOIN_SECS), iso(to + SPAN_JOIN_SECS)],
+                    )?;
+                    match near.first() {
+                        Some(r) => {
+                            let a = r.s("from_at").and_then(parse_iso).unwrap_or(*from).min(*from);
+                            let b = r.s("to_at").and_then(parse_iso).unwrap_or(*to).max(*to);
+                            app.db.changed("UPDATE host_limits SET from_at = ?, to_at = ? WHERE id = ?", crate::p![iso(a), iso(b), r.id()])?;
+                        }
+                        None => {
+                            app.db.insert("host_limits", vec![("host", json!(host)), ("kind", json!(kind)), ("from_at", json!(iso(*from))), ("to_at", json!(iso(*to))), ("why", json!(why))])?;
+                        }
+                    }
+                }
+                Span::Cut { host, kind, at } => {
+                    let at = iso(*at);
+                    app.db.changed("UPDATE host_limits SET to_at = ?1 WHERE host = ?2 AND (?3 IS NULL OR kind = ?3) AND to_at > ?1 AND from_at <= ?1", crate::p![at, host, kind])?;
+                    app.db.changed("DELETE FROM host_limits WHERE host = ?2 AND (?3 IS NULL OR kind = ?3) AND from_at > ?1", crate::p![at, host, kind])?;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Takes back the limits the last daemon kept, once ([`Limits::restore`]). The daemon also calls it
+/// at startup, before its first call goes out.
+pub fn restore(app: &App) {
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        limits().set_hosts(app.cfg.hosts.clone());
+        if let Some(v) = app.db.get_setting(SAVED_KEY).ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+            limits().restore(&v, now_ts());
+        }
+    });
+}
+
 /// `/state`'s `rate_limits`, and `tb feed`'s.
 pub fn status() -> Vec<Value> {
     limits().status(now_ts())
@@ -532,6 +818,26 @@ pub fn status() -> Vec<Value> {
 /// When the account `key` takes the board's calls again, while it's limited ([`Limits::held_until`]).
 pub fn held_until(key: &str) -> Option<f64> {
     limits().held_until(key, now_ts())
+}
+
+/// `POST /prs/limits/lift` (`tb pr lift [--host <host>]`): ends the board's own hold ([`Limits::lift`]).
+pub fn lift(app: &App, body: &Value) -> Result<Value> {
+    let host = body["host"].as_str().map(|h| h.trim().to_lowercase()).filter(|h| !h.is_empty());
+    let lifted = limits().lift(host.as_deref(), now_ts());
+    save(app, now_ts())?;
+    write_spans(app, limits().take_spans())?;
+    for line in limits().take_log() {
+        app.info(line);
+    }
+    for h in limits().lifted(now_ts()) {
+        crate::dispatch::clear_alert_key(app, &format!("{ALERT_PREFIX}{h}"))?;
+    }
+    Ok(json!({"lifted": lifted, "rate_limits": status()}))
+}
+
+fn save(app: &App, now: f64) -> Result<()> {
+    limits().due_save(now);
+    app.db.set_setting(SAVED_KEY, Some(&limits().saved().to_string()))
 }
 
 /// How much to widen the PR poll and the review sweep ([`Limits::stretch`]).
@@ -543,10 +849,15 @@ pub fn stretch() -> f64 {
 /// limit that's lasted 30 minutes inside the work hours, and clears it once the limit is over.
 pub fn check(app: &App) -> Result<()> {
     let l = limits();
-    l.set_budgets(app.cfg.hosts.iter().filter_map(|(h, c)| c.max_per_hour.map(|b| (h.clone(), b))).collect());
+    l.set_hosts(app.cfg.hosts.clone());
+    restore(app);
+    if l.due_save(now_ts()) {
+        app.db.set_setting(SAVED_KEY, Some(&l.saved().to_string()))?;
+    }
     for line in l.take_log() {
         app.info(line);
     }
+    write_spans(app, l.take_spans())?;
     let now = now_ts();
     for host in l.lifted(now) {
         crate::dispatch::clear_alert_key(app, &format!("{ALERT_PREFIX}{host}"))?;
@@ -649,7 +960,8 @@ mod tests {
         let until = l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), T0);
         let t = until + 1.0;
         let e = l.admit("bb:1", "bitbucket", false, false, t).unwrap_err();
-        assert!(e.contains("Bitbucket limited the account until") && e.contains("reads other than the PR poll's wait until"), "{e}");
+        assert!(e.starts_with("Bitbucket's limit on the account ended at "), "says the host's limit is over: {e}");
+        assert!(e.contains("it holds its background reads until") && e.contains("`tb pr lift` ends it"), "{e}");
         assert!(l.admit("bb:1", "bitbucket", false, true, t).is_ok(), "a priority read goes");
         assert!(l.admit("bb:1", "bitbucket", true, false, t).is_ok(), "a write goes");
         assert_eq!(l.stretch(t), SLOW_STRETCH, "the poll runs slower meanwhile");
@@ -724,25 +1036,157 @@ mod tests {
         assert!(l.take_log().is_empty());
     }
 
+    fn budget(host: &str, b: u32) -> BTreeMap<String, HostConfig> {
+        [(host.to_string(), HostConfig { max_per_hour: Some(b), ..Default::default() })].into()
+    }
+
     #[test]
-    fn the_budget_holds_reads_but_not_writes() {
+    fn the_budget_keeps_a_tenth_for_writes_and_stops_writes_at_it() {
         let l = Limits::default();
-        l.set_budgets([("bitbucket".to_string(), 2)].into());
-        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
-        l.admit("bb:1", "bitbucket", false, false, T0 + 10.0).unwrap();
+        l.set_hosts(budget("bitbucket", 20));
+        for i in 0..18 {
+            l.admit("bb:1", "bitbucket", false, false, T0 + i as f64).unwrap();
+        }
         let e = l.admit("bb:1", "bitbucket", false, false, T0 + 20.0).unwrap_err();
-        assert!(e.contains("[hosts.bitbucket] max_per_hour"), "{e}");
-        assert!(l.admit("bb:1", "bitbucket", true, false, T0 + 20.0).is_ok(), "a write still goes");
-        assert!(l.admit("gh:1", "github", false, false, T0 + 20.0).is_ok(), "GitHub has no budget");
-        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + HOUR + 5.0).is_err(), "the write counts too");
-        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + HOUR + 11.0).is_ok(), "the hour's first two calls aged out");
+        assert!(e.contains("made 18 of its 20 Bitbucket calls") && e.contains("[hosts.bitbucket] max_per_hour") && e.contains("reads wait until"), "{e}");
+        l.admit("bb:1", "bitbucket", true, false, T0 + 20.0).unwrap();
+        l.admit("bb:1", "bitbucket", true, false, T0 + 21.0).unwrap();
+        let e = l.admit("bb:1", "bitbucket", true, false, T0 + 22.0).unwrap_err();
+        assert!(e.contains("writes wait until"), "the board never runs past its budget itself: {e}");
+        assert_eq!(l.held_until("bb:1", T0 + 22.0), Some(T0 + HOUR), "a spent budget holds the account until its first call ages out");
+        assert!(l.admit("bb:1", "bitbucket", true, false, T0 + HOUR + 0.5).is_ok(), "the hour's first call aged out");
+        let spans = l.take_spans();
+        assert!(spans.iter().any(|s| matches!(s, Span::Open { kind: "budget", .. })), "{spans:?}");
+    }
+
+    #[test]
+    fn budgets_default_to_nine_tenths_of_the_host_s_and_0_turns_them_off() {
+        let l = Limits::default();
+        assert_eq!(l.budget("bitbucket"), Some(900));
+        assert_eq!(l.budget("github"), Some(4500));
+        assert_eq!(l.budget("azure devops"), None);
+        l.set_hosts(budget("bitbucket", 0));
+        assert_eq!(l.budget("bitbucket"), None);
+        l.set_hosts(budget("bitbucket", 500));
+        assert_eq!(l.budget("bitbucket"), Some(500));
+    }
+
+    #[test]
+    fn writes_on_an_account_go_out_one_slot_apart() {
+        let l = Limits::default();
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0), 0.0, "the first goes now");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 0.5), 1.5, "the next waits out the 2s gap");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 0.5), 3.5, "and the one after, its own slot");
+        assert_eq!(l.write_slot("bb:2", "bitbucket", T0 + 0.5), 0.0, "another account has its own slots");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 60.0), 0.0, "a quiet account writes at once");
+        assert_eq!(l.write_slot("gh:1", "github", T0), 0.0);
+        assert_eq!(l.write_slot("gh:1", "github", T0), 1.0, "GitHub's gap is a second");
+        l.set_hosts([("bitbucket".to_string(), HostConfig { write_gap_secs: Some(5.0), ..Default::default() })].into());
+        assert_eq!(l.write_slot("bb:3", "bitbucket", T0), 0.0);
+        assert_eq!(l.write_slot("bb:3", "bitbucket", T0), 5.0, "write_gap_secs sets it");
+    }
+
+    #[test]
+    fn a_backoff_logs_the_host_s_headers_and_the_burst_before_it() {
+        let l = Limits::default();
+        for i in 0..5 {
+            l.admit("bb:1", "bitbucket", i % 2 == 0, false, T0 + i as f64).unwrap();
+        }
+        let h = Hit { retry_after: Some(120.0), headers: vec![("Retry-After".into(), "120".into()), ("X-RateLimit-Limit".into(), "1000".into())], ..hit("Bitbucket answered 429") };
+        l.hit("bb:1", "bitbucket", &h, T0 + 10.0);
+        let line = l.take_log().remove(0);
+        assert!(line.contains("it sent Retry-After: 120, X-RateLimit-Limit: 1000"), "{line}");
+        assert!(line.contains("the host's time"), "{line}");
+        assert!(line.contains("5 calls on this account in the last hour, 5 in the last minute (3 writes)"), "{line}");
+        l.hit("bb:2", "bitbucket", &hit("Bitbucket answered 429"), T0);
+        let line = l.take_log().remove(0);
+        assert!(line.contains("it sent no Retry-After or X-RateLimit headers") && line.contains("the board's backoff"), "{line}");
+    }
+
+    #[test]
+    fn a_limit_opens_a_limited_stretch_and_the_slow_one_after_it() {
+        let l = Limits::default();
+        let until = l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(600.0), ..hit("429") }, T0);
+        let spans = l.take_spans();
+        assert_eq!(spans[0], Span::Cut { host: "bitbucket".into(), kind: Some("slow"), at: T0 }, "a limit ends the slow stretch it came in");
+        assert!(matches!(&spans[1], Span::Open { kind: "limited", from, to, .. } if *from == T0 && *to == until), "{spans:?}");
+        assert!(matches!(&spans[2], Span::Open { kind: "slow", from, to, .. } if *from == until && *to == until + 600.0), "{spans:?}");
+    }
+
+    #[test]
+    fn lift_ends_the_board_s_hold_and_starts_the_backoff_over() {
+        let l = Limits::default();
+        let mut t = T0;
+        for _ in 0..3 {
+            t = l.hit("bb:1", "bitbucket", &hit("429"), t) + 1.0;
+        }
+        l.hit("gh:1", "github", &hit("x"), t);
+        l.take_spans();
+        assert!(l.admit("bb:1", "bitbucket", false, false, t).is_err(), "easing back in");
+        let lifted = l.lift(Some("bitbucket"), t);
+        assert_eq!(lifted.len(), 1, "{lifted:?}");
+        assert!(lifted[0].starts_with("Bitbucket: lifted the board's hold"), "{}", lifted[0]);
+        assert!(l.admit("bb:1", "bitbucket", false, false, t).is_ok());
+        assert!(l.admit("gh:1", "github", false, false, t).is_err(), "only the host named");
+        assert_eq!(l.take_spans(), vec![Span::Cut { host: "bitbucket".into(), kind: None, at: t }]);
+        assert_eq!(l.hit("bb:1", "bitbucket", &hit("429"), t + 10.0) - (t + 10.0), 300.0, "the next limit backs off from 5 minutes");
+        assert!(l.lift(Some("bitbucket"), T0 + 10.0 * HOUR).is_empty(), "nothing held, nothing lifted");
+    }
+
+    #[test]
+    fn the_hour_s_calls_and_a_hold_survive_a_restart() {
+        let before = Limits::default();
+        for i in 0..40 {
+            before.admit("bb:1", "bitbucket", false, false, T0 + i as f64).unwrap();
+        }
+        let until = before.hit("bb:1", "bitbucket", &hit("429"), T0 + 50.0);
+        let saved = before.saved();
+        let after = Limits::default();
+        after.admit("bb:1", "bitbucket", false, true, T0 - HOUR).unwrap();
+        after.restore(&saved, T0 + 60.0);
+        assert!(after.admit("bb:1", "bitbucket", true, false, T0 + 60.0).is_err(), "still limited after the restart");
+        assert_eq!(after.held_until("bb:1", T0 + 60.0), Some(until));
+        assert_eq!(after.status(T0 + 60.0)[0]["calls_last_hour"], 40, "the hour's calls came back; the one older than an hour aged out");
+        let later = Limits::default();
+        later.restore(&saved, T0 + 2.0 * HOUR + 120.0);
+        assert!(later.admit("bb:1", "bitbucket", false, false, T0 + 2.0 * HOUR + 120.0).is_ok(), "an old hold doesn't come back");
+    }
+
+    #[test]
+    fn stretches_join_the_row_they_touch_and_a_cut_ends_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let open = |kind, from: f64, to: f64| Span::Open { host: "bitbucket".into(), kind, from, to, why: "429".into() };
+        write_spans(&app, vec![open("limited", T0, T0 + 300.0), open("slow", T0 + 300.0, T0 + 600.0)]).unwrap();
+        // The limit came back while it stood: the same row runs on.
+        write_spans(&app, vec![open("limited", T0 + 200.0, T0 + 900.0)]).unwrap();
+        // The budget ran out much later: a row of its own.
+        write_spans(&app, vec![open("budget", T0 + 5000.0, T0 + 5100.0), open("budget", T0 + 5130.0, T0 + 5200.0)]).unwrap();
+        let rows = || {
+            app.db.q("SELECT kind, from_at, to_at FROM host_limits ORDER BY from_at, kind", crate::p![]).unwrap().iter().map(|r| (r.st("kind"), parse_iso(r.s("from_at").unwrap()).unwrap() - T0, parse_iso(r.s("to_at").unwrap()).unwrap() - T0)).collect::<Vec<_>>()
+        };
+        assert_eq!(rows(), vec![("limited".into(), 0.0, 900.0), ("slow".into(), 300.0, 600.0), ("budget".into(), 5000.0, 5200.0)]);
+        write_spans(&app, vec![Span::Cut { host: "bitbucket".into(), kind: None, at: T0 + 400.0 }]).unwrap();
+        assert_eq!(rows(), vec![("limited".into(), 0.0, 400.0), ("slow".into(), 300.0, 400.0)], "lifted at 400: what ran past it ends there, what came after goes");
+    }
+
+    #[test]
+    fn the_limits_are_saved_every_30_seconds_and_at_once_after_a_limit() {
+        let l = Limits::default();
+        assert!(!l.due_save(T0), "nothing changed");
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
+        assert!(l.due_save(T0 + 31.0));
+        l.admit("bb:1", "bitbucket", false, false, T0 + 32.0).unwrap();
+        assert!(!l.due_save(T0 + 40.0), "saved under 30 seconds ago");
+        l.hit("bb:1", "bitbucket", &hit("429"), T0 + 41.0);
+        assert!(l.due_save(T0 + 41.0), "a limit saves at once");
     }
 
     #[test]
     fn the_poll_stretches_to_fit_the_budget() {
         let l = Limits::default();
-        assert_eq!(l.stretch(T0), 1.0, "no budget, no stretch");
-        l.set_budgets([("bitbucket".to_string(), 900)].into());
+        assert_eq!(l.stretch(T0), 1.0, "no calls, no stretch");
+        l.set_hosts(budget("bitbucket", 900));
         // 300 calls in ten minutes: 1,800 an hour against 900 (aiming at 810).
         for i in 0..300 {
             l.admit("bb:1", "bitbucket", true, false, T0 + i as f64 * 2.0).unwrap();

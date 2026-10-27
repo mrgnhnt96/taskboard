@@ -138,6 +138,7 @@ fn serve(cfg: Config) -> i32 {
         once_cell::sync::Lazy::force(&taskboardd::server::STARTED);
         taskboardd::runmark::install_panic_hook(&app);
         taskboardd::slowlog::install(&app);
+        taskboardd::prhost::limit::restore(&app);
         app.info(format!(
             "taskboardd {} on http://{addr}/tasks/ · data {} · runner {}",
             env!("CARGO_PKG_VERSION"),
