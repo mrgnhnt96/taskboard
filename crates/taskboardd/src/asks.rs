@@ -267,13 +267,13 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let on_host = host_name(&pr);
     let rec = match crate::progress::waiting(&format!("PR #{} on {on_host}", pr.num), crate::progress::WAITING_EVERY, || prflow::refresh_task(app, id))? {
         Ok(r) => r,
-        Err(e) => return err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
+        Err(e) => return Err(wait_out_limit(app, id, &pr, body, ApiError::new(502, format!("Couldn't read PR #{}: {e}.", pr.num)))),
     };
     crate::progress::stage(&format!("Read PR #{} from {on_host}", pr.num));
     let t = board::get_task(app, id)?;
     let ends_visit = t.s("pr_phase") == Some("ask");
     let by = who_of(app, body);
-    let fail = |what: &str, e: String| ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num));
+    let fail = |what: &str, e: String| wait_out_limit(app, id, &pr, body, ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num)));
     let drop = body_str(body, "drop");
     let replace = body_str(body, "replace");
     let ask = str_list(body.get("ask"));
@@ -427,6 +427,43 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
         "pr": board::pr_card(app, &t),
     }))
+}
+
+/// A failed ask for reviews while the host has the board rate-limited: the board ends the visit and brings
+/// the agent back to ask once the limit is over (`prflow::wait_out`), so it doesn't wait in its terminal.
+/// Anything else (another failure, a dry run, a swap or drop outside the ask step) stays as it was.
+fn wait_out_limit(app: &App, id: i64, pr: &PrRef, body: &Value, e: ApiError) -> ApiError {
+    let Some(until) = prhost::limit::held_until(&pr.host) else { return e };
+    let ended = || -> Result<bool> {
+        let t = board::get_task(app, id)?;
+        let asking = body_str(body, "drop").is_empty() && body_str(body, "replace").is_empty();
+        if t.s("pr_phase") != Some("ask") || !asking || as_bool(body.get("dry_run"), false) {
+            return Ok(false);
+        }
+        if crate::slots::visit_end_refusal(app, &t, body)?.is_some() {
+            return Ok(false);
+        }
+        app.db.tx(|| {
+            prflow::wait_out(app, &t, until)?;
+            let at = local_clock(Some(&iso(until)));
+            board::log_event(app, id, board::BOARD, "status", &format!("Couldn't ask for reviews on PR #{} while {} has the board rate-limited; bringing the agent back at {at}", pr.num, host_name(pr)))
+        })?;
+        crate::slots::release(app, &board::get_task(app, id)?)?;
+        Ok(true)
+    };
+    match ended() {
+        Ok(true) => ApiError::new(
+            e.status,
+            format!(
+                "{} The board ended this visit and brings you back to ask after {}, once the limit is over. You can stop \
+                 here: don't wait for it or try again in this conversation.",
+                e.message,
+                local_clock(Some(&iso(until)))
+            ),
+        ),
+        Ok(false) => e,
+        Err(x) => x,
+    }
 }
 
 fn host_name(pr: &PrRef) -> &'static str {
