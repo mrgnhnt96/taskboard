@@ -783,12 +783,15 @@ one line with the board's own calls on the account in the last hour. The `rate-l
 limit has lasted 30 minutes inside the work hours, and clears when it ends. `[hosts.<host>] max_per_hour` caps the
 board's calls on the account in any hour (unset: Bitbucket 900, GitHub 4,500; 0: no cap): the PR poll and the review
 sweep stretch (up to 30×) to fit 90% of it, reads stop a tenth short of it and writes stop at it. Writes on an account
-go out one at a time, `[hosts.<host>] write_gap_secs` apart (Bitbucket 2, GitHub 1). After a limit the account eases
+go out one at a time, `[hosts.<host>] write_gap_secs` apart (Bitbucket 2, GitHub 1); once 10 wait, the next fails at once
+with "write queue is full". `[hosts.<host>] max_reads_per_minute` caps the account's reads in any minute (Bitbucket 30,
+GitHub no cap; 0: no cap): `tb pr` commands and the PR poll wait for their turn (a turn over a minute away fails with
+"read queue is full"), while other background reads stop at 80% of it and are skipped after 5 seconds. After a limit the account eases
 back in for as long as it backed off: background reads wait, while the PR poll, `tb pr …` commands and writes go. A
 429's log line names the `Retry-After` / `X-RateLimit-*` headers the host sent and the board's calls in the last
 minute. The calls and holds are kept in the `prhost_limits` setting across restarts, and each stretch the board
 couldn't work with a host goes in `host_limits` for the Days page. `rate_limits` on `/state` and `GET /prs/feed`:
-`[{host, label, limited_until, limited_since, why, text, calls_last_hour, max_per_hour, stretch}]`; `tb feed` prints
+`[{host, label, limited_until, limited_since, why, text, calls_last_hour, max_per_hour, reads_last_minute, max_reads_per_minute, stretch}]`; `tb feed` prints
 a line per account.
 
 | Path | Body | Notes |

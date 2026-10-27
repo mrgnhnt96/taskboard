@@ -907,14 +907,15 @@ impl Gate {
     /// Makes the call unless the account is limited (or out of budget, or restarting slowly, for a
     /// read); notes a limit the call's answer reports (`limited` reads it from the error).
     pub fn call<T>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
-        self.call_on(limits(), write, f)
+        self.call_on(limits(), BACKGROUND_WAIT_SECS, write, f)
     }
 
-    fn call_on<T>(&self, l: &Limits, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+    /// [`Gate::call`] on `l`, a background read asking for its turn for `patience` seconds.
+    fn call_on<T>(&self, l: &Limits, patience: f64, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         let priority = is_priority();
         let wait = match write {
             true => l.write_slot(&self.key, &self.host, now_ts())?,
-            false => self.read_wait(l, priority)?,
+            false => self.read_wait(l, priority, patience)?,
         };
         if wait > 0.0 {
             // Said as progress, so a `tb pr` command queued behind other calls doesn't time out.
@@ -943,9 +944,9 @@ impl Gate {
     }
 
     /// How long a read waits for its turn ([`Limits::read_turn`]); a background read asks again until
-    /// [`BACKGROUND_WAIT_SECS`] have gone by, then is skipped.
-    fn read_wait(&self, l: &Limits, priority: bool) -> std::result::Result<f64, String> {
-        let give_up = now_ts() + BACKGROUND_WAIT_SECS;
+    /// `patience` seconds ([`BACKGROUND_WAIT_SECS`]) have gone by, then is skipped.
+    fn read_wait(&self, l: &Limits, priority: bool, patience: f64) -> std::result::Result<f64, String> {
+        let give_up = now_ts() + patience;
         loop {
             let now = now_ts();
             match l.read_turn(&self.key, &self.host, priority, now) {
@@ -1319,6 +1320,10 @@ mod tests {
         assert!(e.contains("Bitbucket write queue is full") && e.contains("10 writes wait"), "{e}");
         assert!(e.contains("try again in 2s"), "{e}");
         assert_eq!(l.write_slot("bb:2", "bitbucket", T0), Ok(0.0), "another account's line is its own");
+        for now in [T0 + 0.5, T0 + 1.9] {
+            let e = l.write_slot("bb:1", "bitbucket", now).unwrap_err();
+            assert!(e.contains("write queue is full") && e.contains("10 writes wait"), "between slots at {now}: {e}");
+        }
         assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 2.0), Ok(20.0), "a slot that went out lets one more in");
         assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 60.0), Ok(0.0), "the line empties");
     }
@@ -1414,22 +1419,68 @@ mod tests {
         l.set_hosts(reads_a_minute("bitbucket", 1));
         let gate = Gate::new("bitbucket", "bb:skip".into());
         let mut reached = 0;
-        gate.call_on(&l, false, || {
+        gate.call_on(&l, 0.6, false, || {
             reached += 1;
             Ok(((), None))
         })
         .unwrap();
         let start = now_ts();
         let e = gate
-            .call_on(&l, false, || {
+            .call_on(&l, 0.6, false, || {
                 reached += 1;
                 Ok(((), None))
             })
             .unwrap_err();
         let waited = now_ts() - start;
         assert!(e.starts_with("skipped this Bitbucket read") && e.contains("the next poll asks again"), "{e}");
-        assert!((BACKGROUND_WAIT_SECS - 0.1..BACKGROUND_WAIT_SECS + 2.0).contains(&waited), "it waited {waited}s");
+        assert!(waited >= 0.5, "it asked for its turn for {waited}s before giving up");
         assert_eq!(reached, 1, "the skipped read never went out");
+    }
+
+    #[test]
+    fn a_background_read_asks_again_and_goes_once_a_write_has_gone() {
+        let l = Limits::default();
+        l.set_hosts([("bitbucket".to_string(), HostConfig { write_gap_secs: Some(0.6), ..Default::default() })].into());
+        let gate = Gate::new("bitbucket", "bb:later".into());
+        let now = now_ts();
+        l.write_slot("bb:later", "bitbucket", now).unwrap();
+        assert!(l.write_slot("bb:later", "bitbucket", now).unwrap() > 0.0, "a write waits for its slot");
+        let mut reached = 0;
+        gate.call_on(&l, 5.0, false, || {
+            reached += 1;
+            Ok(((), None))
+        })
+        .unwrap();
+        assert!(now_ts() - now >= 0.5, "the read kept asking until the write went");
+        assert_eq!(reached, 1);
+    }
+
+    #[test]
+    fn a_priority_read_sleeps_until_its_turn_and_a_full_write_line_never_runs_the_write() {
+        let l = Limits::default();
+        l.set_hosts(reads_a_minute("bitbucket", 1));
+        let gate = Gate::new("bitbucket", "bb:at".into());
+        let start = now_ts();
+        assert_eq!(l.read_turn("bb:at", "bitbucket", false, start - READ_WINDOW_SECS + 0.5), Turn::Now);
+        let mut reached = 0;
+        priority(|| gate.call_on(&l, 0.0, false, || {
+            reached += 1;
+            Ok(((), None))
+        }))
+        .unwrap();
+        assert!(now_ts() - start >= 0.4, "the priority read waited for the turn that aged out");
+        assert_eq!(reached, 1);
+        for _ in 0..=WRITE_LINE {
+            l.write_slot("bb:at", "bitbucket", now_ts()).unwrap();
+        }
+        let e = gate
+            .call_on(&l, 0.0, true, || {
+                reached += 1;
+                Ok(((), None))
+            })
+            .unwrap_err();
+        assert!(e.contains("write queue is full"), "{e}");
+        assert_eq!(reached, 1, "the write never ran");
     }
 
     #[test]
@@ -1498,6 +1549,17 @@ mod tests {
         let later = Limits::default();
         later.restore(&saved, T0 + 2.0 * HOUR + 120.0);
         assert!(later.admit("bb:1", "bitbucket", false, false, T0 + 2.0 * HOUR + 120.0).is_ok(), "an old hold doesn't come back");
+    }
+
+    #[test]
+    fn a_restore_keeps_the_reads_taken_in_this_process() {
+        let before = Limits::default();
+        before.admit("bb:1", "bitbucket", false, false, T0 - 10.0).unwrap();
+        let saved = before.saved();
+        let after = Limits::default();
+        assert_eq!(after.read_turn("bb:1", "bitbucket", false, T0), Turn::Now);
+        after.restore(&saved, T0 + 1.0);
+        assert_eq!(after.status(T0 + 1.0)[0]["reads_last_minute"], 1, "the turn taken before the restore still counts");
     }
 
     #[test]

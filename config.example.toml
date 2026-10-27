@@ -194,10 +194,14 @@ reconcile_secs = 3600.0              # a PR a healthy stream relay covers is pol
 # the account's writes (merges, retargets, replies) so they never go out in a burst (Bitbucket 2,
 # GitHub 1). The hour's calls and any hold survive a daemon restart; `tb pr lift` ends the board's
 # own hold after a limit. `tb feed` shows the board's calls in the last hour, and the Days page
-# shows the stretches the board couldn't work with a host.
+# shows the stretches the board couldn't work with a host. max_reads_per_minute caps the account's
+# reads in any minute (Bitbucket 30, GitHub no cap; 0: no cap): `tb pr` commands and the PR poll
+# wait for their turn, other background reads stop at 80% of it and are skipped after 5 seconds,
+# and a read whose turn is over a minute away fails with "read queue is full".
 # [hosts.bitbucket]
 # max_per_hour = 900
 # write_gap_secs = 2
+# max_reads_per_minute = 30
 # [hosts.github]
 # max_per_hour = 4500
 
