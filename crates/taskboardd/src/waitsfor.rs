@@ -141,6 +141,47 @@ fn pr_declined(o: &Row) -> bool {
     matches!(o.st("pr_state").to_uppercase().as_str(), "CLOSED" | "DECLINED" | "SUPERSEDED") || o.s("pr_phase") == Some("declined")
 }
 
+/// Done, and its PR is open: neither merged nor declined.
+fn pr_open(o: &Row) -> bool {
+    ready(Some(o)) && o.i("pr_num").is_some() && !pr_merged(o) && !pr_declined(o)
+}
+
+/// Turns a wait on a done task whose PR is still open into a tail-merge stack on that PR (`stack.rs`), so
+/// the task's branch starts from that PR's branch and its PR goes into it and waits for it to merge,
+/// instead of building on unmerged work its own PR into main would carry. Run before the task's
+/// worktree is cut or its conversation carries on. A wait for a merged PR, a `--merged` wait, another
+/// project's task and a task that stacks already stay as they are. The parent's id when it stacked.
+pub fn stack_on_open(app: &App, t: &Row) -> Result<Option<i64>> {
+    if crate::stack::parent_id(t).is_some() {
+        return Ok(None);
+    }
+    let waits = ids(t);
+    let until_merged = merged_ids(t);
+    for n in waits.iter().copied().filter(|n| !until_merged.contains(n)) {
+        let Some(o) = board::find_task(app, Some(n))? else { continue };
+        if o.s("project") != t.s("project") || crate::human::is(&o) || !pr_open(&o) {
+            continue;
+        }
+        let Some(b) = crate::stack::branch(&o) else { continue };
+        let rest: Vec<i64> = waits.iter().copied().filter(|x| *x != n).collect();
+        let rest = if rest.is_empty() { None } else { Some(jdumps(&json!(rest))) };
+        board::update_task(app, t.id(), fields!["waits_for" => rest, "pr_after" => n, "stack_merge" => null])?;
+        let pr = o.i0("pr_num");
+        board::log_event(
+            app,
+            t.id(),
+            board::BOARD,
+            "note",
+            &format!(
+                "Stacks on {}: its PR #{pr} isn't merged yet, so this task's branch starts from {b} and its PR goes into {b} until #{pr} merges",
+                rf("task", n)
+            ),
+        )?;
+        return Ok(Some(n));
+    }
+    Ok(None)
+}
+
 /// Whether the task's PR, once merged, has its work on the main branch: it isn't a head merge (`stack.rs`),
 /// or the parent it merged into is there too. A head merge lands in its parent's branch, so it only
 /// reaches the main branch with the bottom PR of its stack.
@@ -414,6 +455,10 @@ pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
         let other = board::find_task(app, Some(n))?;
         if ready_for(app, t, n, other.as_ref())? {
             let o = other.as_ref().unwrap();
+            if crate::stack::parent_id(t) == Some(n) && !crate::stack::merged(o) {
+                // `stack::handoff_line` says where its branch is and where this task's PR goes.
+                continue;
+            }
             if crate::human::is(o) {
                 owner.push(crate::human::done_line(app, o));
             } else if o.s("project") == t.s("project") {
@@ -487,10 +532,18 @@ pub fn parked(t: &Row) -> Option<Row> {
     board::task_context(t).get("parked").and_then(|v| v.as_object()).cloned()
 }
 
+/// What a task that can go on now is told about the work it builds on: the PR it stacks on, then the
+/// rest it waited for.
+pub fn ready_text(app: &App, t: &Row) -> Result<String> {
+    let stack = crate::stack::handoff_line(app, t, &app.cfg.pr_body.remote)?;
+    let text = bring_in_text(app, t)?;
+    Ok(stack.into_iter().chain(Some(text)).filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n"))
+}
+
 pub fn resume_prompt(app: &App, t: &Row) -> Result<String> {
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
-    let text = bring_in_text(app, t)?;
+    let text = ready_text(app, t)?;
     Ok([
         format!("[task-board:{r}] What this task was waiting for is ready, so it carries on here."),
         text,
@@ -503,6 +556,7 @@ pub fn resume_prompt(app: &App, t: &Row) -> Result<String> {
 }
 
 pub fn started(app: &App, t: &Row) -> Result<()> {
+    stack_on_open(app, t)?;
     let mut ctx = board::task_context(t);
     if ctx.remove("parked").is_some() {
         board::save_context(app, t.id(), &ctx, false)?;

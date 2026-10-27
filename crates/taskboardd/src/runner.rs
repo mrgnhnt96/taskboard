@@ -413,6 +413,11 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         if slot_hold(app, &t)?.is_some() {
             continue;
         }
+        // Before its worktree is cut, so a stack on an open PR starts from that PR's branch.
+        let t = match app.db.tx(|| waitsfor::stack_on_open(app, &t))? {
+            Some(_) => board::get_task(app, tid)?,
+            None => t,
+        };
         if t.s("pickup") != Some("attach") {
             if let Err(e) = worktrees::ensure(app, &t) {
                 app.db.tx(|| jobs::start_failed(app, &t, &format!("Couldn't start: {}", e.message), true, true).map(|_| ()))?;
