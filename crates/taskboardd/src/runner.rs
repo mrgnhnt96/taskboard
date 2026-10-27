@@ -653,6 +653,12 @@ pub fn close_pr_tabs(app: &App) -> Result<()> {
         if !settled(&s) || board::closing_session(app, &s.st("id"))? || !close_worth_trying(app, &s.st("id"), PR_TAB_CLOSE)? {
             continue;
         }
+        // Its terminal is about to go: work it left in the slot moves to a task of its own first.
+        if finished {
+            if let Err(e) = prflow::carry_leftovers(app, &t) {
+                app.info(format!("prflow: couldn't save what {}'s PR visit left in its slot: {}", rf("task", t.id()), e.message));
+            }
+        }
         let why = if finished {
             format!("PR #{} was {}", t.i0("pr_num"), t.st("pr_phase"))
         } else {
