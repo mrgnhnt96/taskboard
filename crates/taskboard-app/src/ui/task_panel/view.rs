@@ -1811,7 +1811,8 @@ fn comments_line(p: &Value, bar: &Value) -> Option<Node> {
 }
 
 /// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them. A
-/// reviewer the PR still waits on says for how long.
+/// reviewer the PR still waits on says for how long; one asked to look again says when, or that the
+/// ask is queued behind the host's rate limit ("Changes asked · Re-review asked Oct 27 8:26am").
 fn reviewer_rows(c: &Ctx, bar: &Value) -> Vec<Node> {
     arr(bar, "reviewer_rows")
         .iter()
@@ -1824,8 +1825,10 @@ fn reviewer_rows(c: &Ctx, bar: &Value) -> Vec<Node> {
                 who.push(reviewer_pop(c, name, user));
             }
             let mut kids = vec![el(K::RevName { open }, who)];
+            let rereview = opt_s(r, "state") == Some("rereview");
             if let Some(st) = opt_s(r, "state") {
                 let (label, tone) = match st {
+                    "rereview" if b(r, "changes") => ("Changes asked", Tone::Needs),
                     "approved" => ("Approved", Tone::Done),
                     "changes" => ("Changes asked", Tone::Needs),
                     "rereview" => ("Re-review waiting", Tone::Review),
@@ -1834,13 +1837,18 @@ fn reviewer_rows(c: &Ctx, bar: &Value) -> Vec<Node> {
                     other => (other, Tone::Neutral),
                 };
                 // How long the PR has waited on them, by when they were asked.
-                let waited = opt_s(r, "asked_at").and_then(fmt::minutes_since).filter(|m| *m >= 1 && matches!(st, "waiting" | "rereview"));
+                let waits = st == "waiting" || (rereview && !b(r, "changes") && !b(r, "rereview_queued"));
+                let waited = opt_s(r, "asked_at").and_then(fmt::minutes_since).filter(|m| *m >= 1 && waits);
                 kids.push(pill(waited.map_or(label.to_string(), |m| format!("{label} {}", fmt::span(m))), tone));
             }
             if let Some(n) = r["swaps"].as_i64().filter(|n| *n > 0) {
                 kids.push(txt(format!("Swapped {}", if n == 1 { "once".to_string() } else { format!("{n} times") }), St::Small));
             }
-            if let Some(at) = opt_s(r, "asked_at").map(crate::fmt::hhmm).filter(|a| !a.is_empty()) {
+            if rereview && b(r, "rereview_queued") {
+                kids.push(txt("Re-review queued", St::Small));
+            } else if let Some(at) = opt_s(r, "rereview_at").map(fmt::day_time).filter(|a| rereview && !a.is_empty()) {
+                kids.push(txt(format!("Re-review asked {at}"), St::Small));
+            } else if let Some(at) = opt_s(r, "asked_at").map(crate::fmt::hhmm).filter(|a| !a.is_empty()) {
                 kids.push(txt(format!("Asked {at}"), St::Small));
             }
             if let Some(u) = opt_s(r, "url").filter(|u| is_web(u)) {

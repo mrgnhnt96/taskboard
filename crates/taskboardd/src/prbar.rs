@@ -93,6 +93,10 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         } else if let Some(at) = since.get(&user).filter(|a| a.is_string()) {
             r["asked_at"] = at.clone();
         }
+        // Asked again: the wait counts from the re-ask.
+        if r["rereview_at"].is_string() {
+            r["asked_at"] = r["rereview_at"].clone();
+        }
     }
     // "x of N": the host's reviewer list when it has one, else approvals plus the reviewers still asked.
     let reviewers = if rec["reviewers"].is_array() { rows.len() as i64 } else { approvals + rec["requested"].as_i64().unwrap_or(0) };
@@ -138,12 +142,13 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
 }
 
 /// One pill per reviewer still on the PR (swapped-off ones aside), from the host's reviewer states:
-/// approved, changes (asked for changes), rereview (asked again after `tb pr addressed`), waiting
-/// (asked, hasn't reviewed) or commented. `swaps` (how many swaps led to this reviewer) and
-/// `asked_at` are filled in by `bar` from the ask ledger.
+/// approved, changes (asked for changes), rereview (asked again by `tb pr addressed` and hasn't
+/// reviewed since: `prflow::rereview_ask`), waiting (asked, hasn't reviewed) or commented. A rereview
+/// row says when it was asked (`rereview_at`), or that the ask waits on the host's rate limit
+/// (`rereview_queued`), and `changes` when the reviewer's last word is still a request for changes.
+/// `swaps` (how many swaps led to this reviewer) and `asked_at` are filled in by `bar` from the ask ledger.
 pub fn reviewer_rows(f: &Row, rec: &Value) -> Vec<Value> {
     let off = prflow::swapped_off(f);
-    let asked_again = str_list(&f.get("addressed").map(|a| a["asked_ids"].clone()).unwrap_or(Value::Null));
     rec["reviewers"]
         .as_array()
         .cloned()
@@ -152,23 +157,25 @@ pub fn reviewer_rows(f: &Row, rec: &Value) -> Vec<Value> {
         .filter(|r| !off.iter().any(|o| r["user"].as_str() == Some(o.as_str())))
         .map(|r| {
             let user = r["user"].as_str().unwrap_or("");
-            let again = r["requested"] == true && asked_again.iter().any(|u| u == user);
+            let ask = prflow::rereview_ask(f, r);
             let state = match r["state"].as_str().unwrap_or("") {
                 "approved" => "approved",
-                "changes" if again => "rereview",
-                "changes" => "changes",
                 "commented" => "commented",
-                _ if again => "rereview",
+                _ if ask.is_some() => "rereview",
+                "changes" => "changes",
                 _ => "waiting",
             };
             let name = r["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(user);
-            json!({"name": name, "user": user, "state": state, "swaps": 0})
+            let mut row = json!({"name": name, "user": user, "state": state, "swaps": 0});
+            if let Some(a) = ask {
+                let queued = a["queued"] == true;
+                row["changes"] = json!(r["state"] == "changes");
+                row["rereview_queued"] = json!(queued);
+                row["rereview_at"] = if queued { Value::Null } else { a["at"].clone() };
+            }
+            row
         })
         .collect()
-}
-
-fn str_list(v: &Value) -> Vec<String> {
-    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default()
 }
 
 #[cfg(test)]

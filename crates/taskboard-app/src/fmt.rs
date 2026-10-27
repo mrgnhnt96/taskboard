@@ -183,6 +183,14 @@ pub fn day_clock(iso: &str) -> String {
     format!("{day}{}", clock12(&l.format("%H:%M").to_string()))
 }
 
+/// A time as "8:26am" today or "Oct 27 8:26am" another day.
+pub fn day_time(iso: &str) -> String {
+    let Some(t) = parse(iso) else { return String::new() };
+    let l = local(t);
+    let day = if is_today(t) { String::new() } else { format!("{} ", l.format("%b %-d")) };
+    format!("{day}{}", clock12(&l.format("%H:%M").to_string()))
+}
+
 /// "Compacting since 3:05 PM" while a terminal (or a task's terminal) is compacting its conversation.
 pub fn compacting(v: &Value) -> Option<String> {
     opt_s(v, "compacting").map(|at| format!("Compacting since {}", hhmm(at)))
