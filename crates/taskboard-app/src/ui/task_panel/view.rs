@@ -1234,7 +1234,7 @@ fn done_node(c: &Ctx, t: &Value) -> Node {
         }
     }
     if !row.is_empty() {
-        body.push(el(K::Row, row));
+        body.push(el(K::TlActs, row));
     }
     body.extend(c.note(&act));
     let name = if failed { "Failed" } else { "Done" };

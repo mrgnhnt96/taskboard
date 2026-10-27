@@ -287,6 +287,7 @@ panel('log: none of kind', task({ log: [log[0]] }), { ...withUi({ log_filter: 'j
 // ---- timeline, terminal menu, footer tabs
 panel('working: terminal menu open', working, withUi({ term_menu: true }));
 panel('idle: terminal menu open', task({ ...live('idle') }), withUi({ term_menu: true }));
+panel('done: terminal menu open, live idle terminal', done({ ...live('idle') }), withUi({ term_menu: true }));
 panel('done, terminal gone: terminal menu open', done({ ...live('gone') }), withUi({ term_menu: true }));
 panel('what tab', working, { ...withUi({}), tab: 'what' });
 panel('what tab: no prompt', task({ ...live('working'), prompt: '' }), { ...withUi({}), tab: 'what' });
