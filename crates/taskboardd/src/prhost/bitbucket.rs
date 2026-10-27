@@ -198,7 +198,7 @@ impl BitbucketHost {
     /// Whether the PR merges cleanly into its base, as a bool: Bitbucket has no such flag, but its diffstat
     /// marks each conflicting file. Null when the diffstat can't be read whole.
     fn mergeable(&self, pr: &PrRef) -> Value {
-        let mut next = Some(format!("{}/diffstat?pagelen=100", self.pr_url(pr)));
+        let mut next = Some(format!("{}/diffstat?pagelen=100&fields=next,values.status", self.pr_url(pr)));
         for _ in 0..DIFFSTAT_PAGES {
             let Some(u) = next.take() else { break };
             let Ok(v) = self.get(&u) else { return Value::Null };
@@ -219,7 +219,7 @@ impl BitbucketHost {
     }
 
     fn statuses(&self, repo: &str, commit: &str) -> HostResult<Vec<Value>> {
-        self.get_all(&format!("{}/commit/{commit}/statuses?pagelen=100", self.repo_url(repo)), 3)
+        self.get_all(&format!("{}/commit/{commit}/statuses?pagelen=100&fields={STATUS_FIELDS}", self.repo_url(repo)), 3)
     }
 
     /// A Pipelines run by its build number (the number in its link).
@@ -258,6 +258,14 @@ const STAMP_BATCH: usize = 50;
 /// What a stamp reads of each PR in the list: whatever a full read would see change, short of its
 /// checks (a build doesn't move `updated_on`).
 const STAMP_FIELDS: &str = "next,values.id,values.state,values.title,values.updated_on,values.source.commit.hash,values.destination.branch.name,values.destination.commit.hash,values.comment_count,values.task_count,values.reviewers.uuid,values.participants.user.uuid,values.participants.approved,values.participants.state,values.participants.participated_on";
+
+/// What a full read uses of the PR (`summarize`): Bitbucket answers only these (#743).
+const PR_FIELDS: &str = "state,title,author.uuid,author.account_id,source.branch.name,source.commit.hash,destination.branch.name,destination.commit.hash,reviewers.uuid,reviewers.account_id,reviewers.display_name,participants.user.uuid,participants.user.account_id,participants.user.display_name,participants.state,participants.approved,participants.participated_on";
+/// What a full read uses of each comment, and of each PR task.
+const COMMENT_FIELDS: &str = "next,values.id,values.parent.id,values.deleted,values.pending,values.inline.path,values.inline.from,values.inline.to,values.resolution,values.content.raw,values.user.uuid,values.user.account_id,values.user.display_name,values.created_on,values.links.html.href";
+const TASK_FIELDS: &str = "next,values.id,values.state,values.content.raw,values.creator.uuid,values.creator.account_id,values.creator.display_name,values.comment.id,values.created_on";
+/// What a check uses of each build status (`checks_of`).
+const STATUS_FIELDS: &str = "next,values.key,values.name,values.state,values.url,values.created_on,values.updated_on";
 
 impl PrHost for BitbucketHost {
     fn id(&self) -> &'static str {
@@ -302,11 +310,11 @@ impl PrHost for BitbucketHost {
     }
 
     fn read(&self, pr: &PrRef) -> HostResult<Record> {
-        let p = self.get(&self.pr_url(pr))?;
-        let comments = self.get_all(&format!("{}/comments?pagelen=100", self.pr_url(pr)), 5)?;
+        let p = self.get(&format!("{}?fields={PR_FIELDS}", self.pr_url(pr)))?;
+        let comments = self.get_all(&format!("{}/comments?pagelen=100&fields={COMMENT_FIELDS}", self.pr_url(pr)), 5)?;
         // PR tasks need a newer token scope on some workspaces. Tasks that can't be read are unknown, not
         // none: the merge waits on them (`prcmds::merge_blockers`).
-        let tasks = self.get_all(&format!("{}/tasks?pagelen=100", self.pr_url(pr)), 3);
+        let tasks = self.get_all(&format!("{}/tasks?pagelen=100&fields={TASK_FIELDS}", self.pr_url(pr)), 3);
         let head = p["source"]["commit"]["hash"].as_str().unwrap_or("");
         let statuses = if head.is_empty() { vec![] } else { self.statuses(&pr.repo, head)? };
         let mut r = summarize(&p, &comments, tasks.as_deref().unwrap_or(&[]), &statuses);
@@ -404,7 +412,7 @@ impl PrHost for BitbucketHost {
     }
 
     fn description(&self, pr: &PrRef) -> HostResult<String> {
-        Ok(self.get(&self.pr_url(pr))?["description"].as_str().unwrap_or("").to_string())
+        Ok(self.get(&format!("{}?fields=description", self.pr_url(pr)))?["description"].as_str().unwrap_or("").to_string())
     }
 
     fn set_description(&self, pr: &PrRef, body: &str) -> HostResult<()> {
@@ -413,7 +421,7 @@ impl PrHost for BitbucketHost {
     }
 
     fn files(&self, pr: &PrRef) -> HostResult<Vec<String>> {
-        let stats = self.get_all(&format!("{}/diffstat?pagelen=100", self.pr_url(pr)), 3)?;
+        let stats = self.get_all(&format!("{}/diffstat?pagelen=100&fields=next,values.new.path,values.old.path", self.pr_url(pr)), 3)?;
         Ok(stats.iter().filter_map(|d| d["new"]["path"].as_str().or_else(|| d["old"]["path"].as_str())).map(str::to_string).collect())
     }
 
@@ -765,7 +773,9 @@ pub(crate) mod tests {
     /// Every call: method, URL and body.
     pub type Calls = Arc<Mutex<Vec<(String, String, Option<Value>)>>>;
 
-    /// Answers each call with the first canned answer whose "METHOD url" contains the key; logs the calls.
+    /// Answers each call with the first canned answer whose "METHOD url" contains the key, cut to the
+    /// URL's `fields=` as Bitbucket cuts it, so a field a read uses but doesn't ask for is missing here
+    /// too; logs the calls.
     pub struct FakeHttp {
         pub answers: Vec<(&'static str, Value)>,
         pub calls: Calls,
@@ -779,8 +789,31 @@ pub(crate) mod tests {
             // A canned `{"error": "…"}` is a failed call.
             match v["error"].as_str() {
                 Some(e) => Err(e.to_string()),
-                None => Ok(v),
+                None => Ok(match url.split(['?', '&']).find_map(|q| q.strip_prefix("fields=")) {
+                    Some(f) => only(&v, &f.split(',').collect::<Vec<_>>()),
+                    None => v,
+                }),
             }
+        }
+    }
+
+    /// The parts of `v` the dotted paths name (`values.user.uuid`); a list keeps the paths for each item.
+    fn only(v: &Value, paths: &[&str]) -> Value {
+        match v {
+            Value::Array(items) => Value::Array(items.iter().map(|x| only(x, paths)).collect()),
+            Value::Object(o) => {
+                let mut out = serde_json::Map::new();
+                for (k, x) in o {
+                    let rest: Vec<&str> = paths.iter().filter_map(|p| if p == k { Some("") } else { p.strip_prefix(k.as_str())?.strip_prefix('.') }).collect();
+                    if rest.contains(&"") {
+                        out.insert(k.clone(), x.clone());
+                    } else if !rest.is_empty() {
+                        out.insert(k.clone(), only(x, &rest));
+                    }
+                }
+                Value::Object(out)
+            }
+            _ => v.clone(),
         }
     }
 
@@ -903,7 +936,7 @@ pub(crate) mod tests {
         assert_eq!(urls.len(), 3, "a list call per repo and one PR's statuses: {urls:?}");
         assert!(urls[0].starts_with("https://api/repositories/ws/repo/pullrequests?q=id%3D7%20OR%20id%3D8%20OR%20id%3D9&state=OPEN&"), "{}", urls[0]);
         assert!(urls[0].contains("values.updated_on") && urls[0].contains("values.source.commit.hash"), "{}", urls[0]);
-        assert_eq!(urls[1], "https://api/repositories/ws/repo/commit/abc123/statuses?pagelen=100", "only #7 waits on checks");
+        assert!(urls[1].starts_with("https://api/repositories/ws/repo/commit/abc123/statuses?pagelen=100&fields="), "only #7 waits on checks: {}", urls[1]);
         assert!(urls[2].starts_with("https://api/repositories/ws/lib/pullrequests?q=id%3D3&"), "{}", urls[2]);
         assert!(stamps[0].as_deref().unwrap().contains("INPROGRESS"), "#7's stamp moves with its checks");
         assert!(stamps[1].is_some() && stamps[2].is_some());
@@ -943,6 +976,23 @@ pub(crate) mod tests {
         assert_eq!(r.comments, 5, "every live comment from someone else, drafts aside");
         assert!(calls.lock().iter().any(|(_, u, _)| u.contains("comments?page=2")), "follows the next page");
         assert_eq!(r.mergeable, json!(false), "a file in merge conflict");
+    }
+
+    #[test]
+    fn a_read_asks_only_for_the_fields_it_uses() {
+        // #743: a full read is six calls; each answers only what the record is made from. A next page's
+        // link is Bitbucket's own, and keeps the first page's fields.
+        let calls = Arc::new(Mutex::new(vec![]));
+        host(calls.clone()).read(&pr()).unwrap();
+        let urls: Vec<String> = calls.lock().iter().map(|(_, u, _)| u.clone()).filter(|u| !u.ends_with("/user") && !u.contains("page=2")).collect();
+        assert!(urls.len() >= 5, "{urls:?}");
+        for u in &urls {
+            assert!(u.contains("fields="), "{u}");
+        }
+        let pr_get = urls.iter().find(|u| u.contains("/pullrequests/7?")).unwrap();
+        assert!(pr_get.contains("participants.approved") && !pr_get.contains("summary"), "{pr_get}");
+        // The fake answers only the fields asked for, so the other read tests catch a list that drops one.
+        assert_eq!(host(calls).files(&pr()).unwrap(), vec!["a.rs", "b.rs"]);
     }
 
     #[test]

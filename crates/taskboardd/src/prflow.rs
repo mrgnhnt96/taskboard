@@ -1864,11 +1864,18 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
 /// a change (a thread resolved on Bitbucket, a base the PR no longer merges into cleanly).
 const FULL_READ_EVERY: f64 = 3600.0;
 
+/// At most this many of a host's PRs are read in full in one poll only because their hourly full read
+/// is due or the host couldn't say what changed, oldest full read first; the rest wait for later polls.
+/// After a start or a backoff nearly every PR is due, and reading them all at once is the burst that
+/// gets the account rate-limited again (#743).
+const CATCH_UP_READS: usize = 3;
+
 /// Polls one host's PRs: what changed on all of them in one batch ([`PrHost::stamps`]), then a full
 /// read of each one that changed, and steps them all. How many stepped to a new stage, and how many
-/// were read in full. When the host can't say what changed, the timed poll (`skip_covered`) leaves
-/// the PRs a healthy relay covers for a later round instead of reading them in full: those reads are
-/// what spends a nearly used-up budget.
+/// were read in full. A PR only due its hourly full read waits its turn ([`CATCH_UP_READS`]). When the
+/// host can't say what changed, a PR whose account is rate-limited waits for the next poll, and the
+/// timed poll (`skip_covered`) leaves the PRs a healthy relay covers for a later round: those reads
+/// are what spends a nearly used-up budget.
 ///
 /// [`PrHost::stamps`]: crate::prhost::PrHost::stamps
 fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result<(i64, usize)> {
@@ -1876,12 +1883,43 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
         Some(s) => (s, false),
         None => (vec![None; tasks.len()], true),
     };
+    let needs: Vec<Need> = tasks
+        .iter()
+        .zip(&stamps)
+        .map(|(t, stamp)| {
+            let rests = || skip_covered && crate::feed::pr_poll_rests(app, host, t.s("pr_repo").unwrap_or(""));
+            let held = || crate::prhost::PrRef::of(t).is_some_and(|pr| host_held(app, &pr).is_some());
+            if unknown && (rests() || held()) { Need::Wait } else { need(t, stamp.as_deref(), unknown) }
+        })
+        .collect();
+    let mut due: Vec<(f64, i64)> = tasks
+        .iter()
+        .zip(&needs)
+        .filter(|(_, n)| matches!(n, Need::Due(_)))
+        // A read that failed goes to the back too, so a PR that can't be read doesn't hold a turn every poll.
+        .map(|(t, _)| {
+            let f = flow(t);
+            let at = |k: &str| f.s(k).and_then(parse_iso).unwrap_or(0.0);
+            (at("full_at").max(at("full_tried_at")), t.id())
+        })
+        .collect();
+    due.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let turn: BTreeSet<i64> = due.iter().take(CATCH_UP_READS).map(|(_, id)| *id).collect();
     let (mut changed, mut full) = (0, 0);
-    for (t, stamp) in tasks.iter().zip(stamps) {
-        if unknown && skip_covered && crate::feed::pr_poll_rests(app, host, t.s("pr_repo").unwrap_or("")) {
-            continue;
-        }
-        let rec = match unchanged(t, stamp.as_deref()) {
+    for ((t, stamp), need) in tasks.iter().zip(stamps).zip(needs) {
+        let last = match need {
+            Need::Wait => continue,
+            Need::Fresh(rec) => Some(rec),
+            // Left for a later poll: stepped with its last record while the host says it hasn't changed.
+            Need::Due(rec) if !turn.contains(&t.id()) => {
+                if unknown {
+                    continue;
+                }
+                Some(rec)
+            }
+            Need::Due(_) | Need::Changed => None,
+        };
+        let rec = match last {
             // The host said it hasn't changed: that counts as a read for the relay's reconcile (`feed::pr_poll_skips`).
             Some(rec) => {
                 merge_flow(app, t.id(), fields!["read_at" => now_iso()])?;
@@ -1895,6 +1933,7 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
                 }
                 Err(e) => {
                     app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url")));
+                    merge_flow(app, t.id(), fields!["full_tried_at" => now_iso()])?;
                     continue;
                 }
             },
@@ -1909,6 +1948,36 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
         }
     }
     Ok((changed, full))
+}
+
+/// What a poll does with one PR, from its stamp and its last full read.
+enum Need {
+    /// Its stamp is the one its last full read had, under [`FULL_READ_EVERY`] ago: step it with that record.
+    Fresh(Value),
+    /// Nothing says it changed, but its full read is due: its last one is [`FULL_READ_EVERY`] old, or
+    /// the host couldn't say what changed. It waits its turn ([`CATCH_UP_READS`]) with its last record.
+    Due(Value),
+    /// Its stamp moved, the host has none for it, or it was never read: read it in full now.
+    Changed,
+    /// The host couldn't say what changed, and its account is rate-limited or a healthy relay covers
+    /// it on the timed poll: left for a later poll.
+    Wait,
+}
+
+fn need(t: &Row, stamp: Option<&str>, unknown: bool) -> Need {
+    let f = flow(t);
+    let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { return Need::Changed };
+    if unknown {
+        return Need::Due(rec);
+    }
+    let Some(stamp) = stamp else { return Need::Changed };
+    if f.get("stamp").and_then(|s| s.as_str()) != Some(stamp) {
+        return Need::Changed;
+    }
+    match f.get("full_at").and_then(|a| a.as_str()).and_then(parse_iso) {
+        Some(at) if now_ts() - at < FULL_READ_EVERY => Need::Fresh(rec),
+        _ => Need::Due(rec),
+    }
 }
 
 /// Each task's PR stamp, in order (None for one the host had none for); None when the host couldn't say.
@@ -1934,18 +2003,6 @@ fn stamps(app: &App, host: &str, tasks: &[Row]) -> Option<Vec<Option<String>>> {
 fn waits_on_checks(t: &Row) -> bool {
     let rec = flow(t).get("rec").cloned().unwrap_or(Value::Null);
     t.s("pr_phase") == Some("checks") || rec["running"].as_i64().unwrap_or(0) > 0 || rec["failed"].as_array().is_some_and(|f| !f.is_empty())
-}
-
-/// The PR's last record, when its stamp is the one its last full read had and that read is under
-/// [`FULL_READ_EVERY`] old.
-fn unchanged(t: &Row, stamp: Option<&str>) -> Option<Value> {
-    let f = flow(t);
-    let stamp = stamp?;
-    let full_at = f.get("full_at").and_then(|a| a.as_str()).and_then(parse_iso)?;
-    if f.get("stamp").and_then(|s| s.as_str()) != Some(stamp) || now_ts() - full_at >= FULL_READ_EVERY {
-        return None;
-    }
-    f.get("rec").filter(|r| r.is_object()).cloned()
 }
 
 /// A wake whose terminal closed before it finished, or whose job failed: try again.
