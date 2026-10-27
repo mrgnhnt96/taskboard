@@ -137,7 +137,7 @@ fn an_unknown_step_is_refused_with_the_names() {
 fn a_step_whose_check_isnt_valid_sh_is_left_out_and_said_everywhere() {
     let bad = r#"
 [[steps]]
-name = "WD review"
+name = "Critic review"
 prompt = "Review it."
 check = '''
 echo ok
@@ -148,13 +148,13 @@ echo "open
     let id = b.new_task();
     let h = handoff::build(&b.app, id).unwrap();
     assert!(h.contains("1. Author-side review"), "the others still apply: {h}");
-    assert!(h.contains("Left out until") && h.contains("WD review (its check script isn't valid sh: line 2:"), "{h}");
+    assert!(h.contains("Left out until") && h.contains("Critic review (its check script isn't valid sh: line 2:"), "{h}");
     let v = b.steps();
-    assert!(v["steps"].as_array().unwrap().iter().all(|s| s["name"] != "WD review"), "{v}");
-    assert_eq!(v["ignored"][0]["name"], "WD review", "{v}");
+    assert!(v["steps"].as_array().unwrap().iter().all(|s| s["name"] != "Critic review"), "{v}");
+    assert_eq!(v["ignored"][0]["name"], "Critic review", "{v}");
     let alerts = taskboardd::dispatch::alerts(&b.app);
-    assert!(alerts.iter().any(|a| a["key"] == "steps:wd review" && a["text"].as_str().unwrap_or("").contains("line 2")), "{alerts:?}");
-    let (code, why) = b.report("tb.step", json!({"name": "wd review"})).unwrap_err();
+    assert!(alerts.iter().any(|a| a["key"] == "steps:critic review" && a["text"].as_str().unwrap_or("").contains("line 2")), "{alerts:?}");
+    let (code, why) = b.report("tb.step", json!({"name": "critic review"})).unwrap_err();
     assert_eq!(code, 400);
     assert!(why.contains("left out until config.toml is fixed"), "{why}");
 }

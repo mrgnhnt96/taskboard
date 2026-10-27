@@ -503,7 +503,7 @@ fn stage_tone(phase: &str) -> Tone {
     match phase {
         "checks" => Tone::Queued,
         "fix" | "rebase" => Tone::Failed,
-        "lens" | "ask" | "review" | "rereview" => Tone::Review,
+        "ask" | "review" | "rereview" => Tone::Review,
         "comments" => Tone::Needs,
         "merge" => Tone::Working,
         "merged" => Tone::Done,
@@ -1639,47 +1639,34 @@ fn step(name: impl Into<String>, st: StepSt, sub: Option<&str>, link: Option<Str
     PrStep { name: name.into(), st, sub: sub.map(str::to_string), link: link.map(Go::Url) }
 }
 
-/// The author-side review step (`wd`: its `bar` name, like WD, and its latest round's headline, which
-/// opens its findings); "Not reviewed by WD yet" before its first round (`pending`).
-pub fn wd_step(wd: &Value) -> PrStep {
-    if b(wd, "pending") {
-        return step(s(wd, "bar"), StepSt::Todo, Some(&format!("Not reviewed by {} yet", s(wd, "bar"))), None);
+/// The author-side review step (`author_review`: its `bar` name and its latest round's headline, which
+/// opens its findings); "Not reviewed by <bar> yet" before its first round (`pending`).
+pub fn author_review_step(r: &Value) -> PrStep {
+    if b(r, "pending") {
+        return step(s(r, "bar"), StepSt::Todo, Some(&format!("Not reviewed by {} yet", s(r, "bar"))), None);
     }
-    let mut out = wd_round(wd);
+    let mut out = author_review_round(r);
     if out.sub.is_some() {
         out.link = Some(Go::Findings);
     }
     out
 }
 
-fn wd_round(wd: &Value) -> PrStep {
-    let headline = opt_s(wd, "headline").unwrap_or("");
-    let open = wd["open"].as_i64().unwrap_or(0);
-    let (st, sub) = if s(wd, "verdict") == "skip" {
+fn author_review_round(r: &Value) -> PrStep {
+    let headline = opt_s(r, "headline").unwrap_or("");
+    let open = r["open"].as_i64().unwrap_or(0);
+    let (st, sub) = if s(r, "verdict") == "skip" {
         (StepSt::Done, headline.to_string())
-    } else if b(wd, "stale") {
+    } else if b(r, "stale") {
         (StepSt::Wait, "Moved since".to_string())
     } else if open > 0 {
         (StepSt::Ask, headline.to_string())
-    } else if b(wd, "passed") {
+    } else if b(r, "passed") {
         (StepSt::Done, headline.to_string())
     } else {
         (StepSt::Fail, headline.to_string())
     };
-    step(s(wd, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None)
-}
-
-/// The Lens step (`pr.bar.lens`): lens's review of a new PR, whose findings are on the PR itself.
-pub fn lens_step(l: &Value) -> PrStep {
-    match s(l, "state") {
-        "queued" => step("Lens", StepSt::Wait, Some("Queued"), None),
-        "running" => step("Lens", StepSt::Now, Some("Reviewing"), None),
-        "done" => step("Lens", StepSt::Done, Some("Posted"), None),
-        // The PR merged or closed first.
-        "skipped" => step("Lens", StepSt::Done, Some("Skipped"), None),
-        "stopped" => step("Lens", StepSt::Done, Some("Stopped"), None),
-        _ => step("Lens", StepSt::Fail, Some("Failed"), None),
-    }
+    step(s(r, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None)
 }
 
 /// The steps row's nodes: each step's name, and its state's words (a link when it has one).
@@ -1697,15 +1684,15 @@ fn step_nodes(list: Vec<PrStep>) -> Node {
     el(K::Steps, steps)
 }
 
-/// The PR bar's steps when the board sends `pr.bar`: the author-side review step (its `bar` name, like
-/// WD), Checks, You, Review and Merge, with the states the old board showed.
+/// The PR bar's steps when the board sends `pr.bar`: the author-side review step (its `bar` name),
+/// Checks, You, Review and Merge, with the states the old board showed.
 pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let [checks, review, merge] = pr_steps(p);
     let stage = &p["stage"];
     let phase = if stage.is_object() { s(stage, "phase") } else { "" };
     let mut out = Vec::new();
-    if let Some(wd) = obj(bar, "wd") {
-        out.push(wd_step(wd));
+    if let Some(r) = obj(bar, "author_review") {
+        out.push(author_review_step(r));
     }
     let build = opt_s(bar, "build_url").filter(|u| is_web(u)).map(str::to_string);
     out.push(match s(bar, "checks") {
@@ -1716,9 +1703,6 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         "none_yet" => step("Checks", StepSt::Todo, Some("None yet"), None),
         _ => step(checks.0, checks.1, checks.2.as_deref(), if checks.1 == StepSt::Todo { None } else { build }),
     });
-    if let Some(l) = obj(bar, "lens") {
-        out.push(lens_step(l));
-    }
     out.push(match s(bar, "you") {
         "waiting" => step("You", StepSt::Ask, Some("Waiting on you"), None),
         "reviewed" => step("You", StepSt::Done, Some("Reviewed"), None),
@@ -2111,7 +2095,7 @@ fn js_lower(v: &Value) -> String {
     }
 }
 
-/// The review step a `step_results` node already shows (its `bar` name, like WD), left out of the PR's steps.
+/// The review step a `step_results` node already shows (its `bar` name), left out of the PR's steps.
 fn shown_bar(t: &Value) -> Option<&str> {
     arr(t, "step_results").iter().find_map(|r| opt_s(r, "bar"))
 }
@@ -2141,8 +2125,8 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
         None => pr_steps(p).into_iter().map(|(name, st, sub)| PrStep { name: name.to_string(), st, sub, link: None }).collect(),
     };
     let merge = list.pop().expect("the PR's steps end with Merge");
-    if let Some(wd) = shown_bar(t) {
-        list.retain(|x| x.name != wd);
+    if let Some(name) = shown_bar(t) {
+        list.retain(|x| x.name != name);
     }
     let st = if list.iter().any(|x| x.st == StepSt::Fail) {
         TlSt::Fail
@@ -2232,10 +2216,10 @@ fn no_pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
         return Vec::new();
     }
     let pr = obj(t, "stack_on").map(|so| stacks_line(c, so)).into_iter().collect();
-    // The whole way the PR will take, as it shows once the PR is open: the review step (WD) runs before
-    // the PR opens ("Not reviewed by WD yet" before its first round; a round it ran is its own node),
+    // The whole way the PR will take, as it shows once the PR is open: the review step runs before the
+    // PR opens ("Not reviewed by <bar> yet" before its first round; a round it ran is its own node),
     // then the steps still ahead.
-    let mut steps: Vec<PrStep> = obj(t, "wd").filter(|_| shown_bar(t).is_none()).map(wd_step).into_iter().collect();
+    let mut steps: Vec<PrStep> = obj(t, "author_review").filter(|_| shown_bar(t).is_none()).map(author_review_step).into_iter().collect();
     steps.extend(["Checks", "You", "Review"].map(|name| step(name, StepSt::Todo, None, None)));
     vec![
         tl_node(TlSt::Todo, tl_head(tl_name("Pull request"), "", ""), pr, false),

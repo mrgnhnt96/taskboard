@@ -1211,8 +1211,8 @@ mod tests {
     #[test]
     fn a_per_head_step_the_pr_shows_is_republished_with_or_without_a_publish_script() {
         let step = |extra: &str| crate::steps::parse(&format!("[[steps]]\nname = \"Owner review\"\nprompt = \"x\"\nper_head = true\n{extra}")).unwrap().remove(0);
-        assert_eq!(republish_line("tb", &step("bar = \"WD\"\n")).as_deref(), Some("publish Owner review's round for the pushed head where the PR shows it"));
-        assert_eq!(republish_line("tb", &step("publish = \"wd review publish\"\n")).as_deref(), Some("tb step publish \"Owner review\""));
+        assert_eq!(republish_line("tb", &step("bar = \"Critic\"\n")).as_deref(), Some("publish Owner review's round for the pushed head where the PR shows it"));
+        assert_eq!(republish_line("tb", &step("publish = \"critic publish\"\n")).as_deref(), Some("tb step publish \"Owner review\""));
         // Nothing on the PR shows it: no advice to republish it.
         assert_eq!(republish_line("tb", &step("")), None);
         let s = crate::steps::parse("[[steps]]\nname = \"Lint\"\nrun = \"make lint\"\nbar = \"L\"\n").unwrap();

@@ -224,7 +224,7 @@ prompt = "Run the review"
 check = "true"
 per_head = true
 min_gap_mins = 10
-bar = "WD"
+bar = "Critic"
 "#;
 
 fn round(b: &Board, head: &str, ok: bool, result: Value, output: &str) {
@@ -259,8 +259,8 @@ fn cards_show_the_review_step_in_the_pr_bar() {
     round(&b, &"b".repeat(40), true, json!({"verdict": "pass"}), "");
     b.link(id, 21, "feat/login");
     let card = board::task_card(&b.app, &b.row(id)).unwrap();
-    assert_eq!(card["pr"]["bar"]["wd"]["bar"], "WD", "{}", card["pr"]["bar"]);
-    assert_eq!(card["pr"]["bar"]["wd"]["headline"], "No findings");
+    assert_eq!(card["pr"]["bar"]["author_review"]["bar"], "Critic", "{}", card["pr"]["bar"]);
+    assert_eq!(card["pr"]["bar"]["author_review"]["headline"], "No findings");
 }
 
 #[test]
@@ -478,17 +478,17 @@ fn a_failed_fetch_shows_all_of_gits_error() {
 fn the_review_step_is_on_the_card_before_the_pr_opens() {
     let b = new_board_with(REVIEW, |_| {});
     let id = b.task("Add login", json!({}));
-    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["wd"], json!({"name": "Author review", "bar": "WD", "pending": true}), "no round yet: Not reviewed by WD yet");
+    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["author_review"], json!({"name": "Author review", "bar": "Critic", "pending": true}), "no round yet: Not reviewed by Critic yet");
     b.take(id);
     round(&b, &"c".repeat(40), false, json!({"verdict": "fail", "findings": [{"id": "F1", "title": "Typo"}]}), "");
     let card = board::task_card(&b.app, &b.row(id)).unwrap();
     assert_eq!(card["pr"], Value::Null);
-    assert_eq!(card["wd"]["bar"], "WD", "{card}");
-    assert_eq!(card["wd"]["headline"], "1 open finding");
+    assert_eq!(card["author_review"]["bar"], "Critic", "{card}");
+    assert_eq!(card["author_review"]["headline"], "1 open finding");
     b.link(id, 21, "feat/login");
     let card = board::task_card(&b.app, &b.row(id)).unwrap();
-    assert_eq!(card["wd"], Value::Null, "once the PR is open it's in the PR bar");
-    assert_eq!(card["pr"]["bar"]["wd"]["bar"], "WD");
+    assert_eq!(card["author_review"], Value::Null, "once the PR is open it's in the PR bar");
+    assert_eq!(card["pr"]["bar"]["author_review"]["bar"], "Critic");
 }
 
 #[test]

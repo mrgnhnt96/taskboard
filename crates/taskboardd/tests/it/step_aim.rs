@@ -176,7 +176,7 @@ fn a_publish_is_recorded_on_the_task() {
     let (code, why) = b.report("tb.step_publish", json!({"name": "Author review", "ok": true, "head": "a".repeat(40)})).unwrap_err();
     assert_eq!(code, 400, "{why}");
     assert!(why.contains("nothing to publish"), "{why}");
-    std::fs::write(&b.app.cfg.config_path, format!("{REVIEW}publish = \"wd review publish {{repo}} {{pr}}\"\n")).unwrap();
+    std::fs::write(&b.app.cfg.config_path, format!("{REVIEW}publish = \"critic publish {{repo}} {{pr}}\"\n")).unwrap();
     let v = b.report("tb.step_publish", json!({"name": "Author review", "ok": true, "head": "a".repeat(40)})).unwrap();
     assert_eq!(v["passed"], true);
     let logged = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE 'Published%'", taskboardd::p![id]).unwrap();

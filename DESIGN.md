@@ -47,7 +47,7 @@ one a "handoff" prompt, and the Claude plugin's hooks and the `tb` CLI report pr
 
 ## Dropped
 
-WD review gate, master-build breaks and Azure DevOps,
+The old external review gate, master-build breaks and Azure DevOps,
 stopping PR builds, Slack reviewer nudges and reviewer cycling, the private Review log service, the Jira
 desk terminal (replaced by REST), code-comment guard hooks, compact-before-resume guard.
 

@@ -405,7 +405,7 @@ prompt = "Run the review"
 check = "true"
 per_head = true
 min_gap_mins = 10
-bar = "WD"
+bar = "Critic"
 "#;
 
 fn round(b: &Board, head: &str, ok: bool, result: Value) -> Value {
@@ -534,7 +534,7 @@ fn a_rounds_findings_show_on_the_task_and_can_be_triaged() {
     // The PR bar names it.
     b.link(id, 21, "feat/login");
     let c = b.card(id);
-    assert_eq!(c["pr"]["bar"]["wd"]["bar"], "WD", "{}", c["pr"]["bar"]);
+    assert_eq!(c["pr"]["bar"]["author_review"]["bar"], "Critic", "{}", c["pr"]["bar"]);
     assert_eq!(c["pr"]["bar"]["reviewers"], 2);
     assert_eq!(c["pr"]["bar"]["build_url"], "https://ci.example/1", "with nothing failed, Checks opens the latest build");
 }
