@@ -3,7 +3,7 @@
 //! task's old pill carried ("Question", "Checks failed", "Starting"…) goes on the row's line.
 // The Needs you, Goals, Tasks and goal pages draw their rows with it.
 #![allow(dead_code)]
-use crate::fmt::{self, opt_s, s};
+use crate::fmt::{self, b, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::home::tile_vm;
 use crate::ui::kit;
@@ -106,7 +106,10 @@ pub fn row(c: &Value) -> Row {
         "Checks running" | "Comments" | "Ready to merge" => (St::Review, format!("{} · {}", tile.status, tile.line), false, String::new()),
         "In review" => (St::Review, tile.line, false, String::new()),
         "Failed" => (St::Failed, opt_s(c, "summary").unwrap_or("").to_string(), false, fmt::hhmm(when)),
-        _ => (St::Done, opt_s(c, "summary").map(str::to_string).unwrap_or_default(), false, fmt::hhmm(when)),
+        "Done" if !crate::ui::goal::awaiting_merge(c) => (St::Done, opt_s(c, "summary").map(str::to_string).unwrap_or_default(), false, fmt::hhmm(when)),
+        // A label this match doesn't know yet goes by the task itself, never to Done: a done task
+        // with its PR still open is in review until the PR merges.
+        _ => (by_task(c), format!("{} · {}", tile.status, tile.line), false, String::new()),
     };
     // A merged PR says so on a done row.
     let line = if st == St::Done && line.is_empty() {
@@ -115,6 +118,18 @@ pub fn row(c: &Value) -> Row {
         line
     };
     Row { st, line, loud, age }
+}
+
+/// The status of a task whose tile label `row` doesn't know, from its own fields.
+fn by_task(c: &Value) -> St {
+    match s(c, "status") {
+        "done" if b(c, "failed") => St::Failed,
+        "done" if crate::ui::goal::awaiting_merge(c) => St::Review,
+        "done" => St::Done,
+        "working" => St::Working,
+        "queued" => St::Queued,
+        _ => St::Needs,
+    }
 }
 
 /// The status chip, a fixed width so rows line up.
@@ -186,5 +201,20 @@ mod tests {
         assert_eq!((conflicts.st, conflicts.line.as_str(), conflicts.loud), (St::Review, "Conflicts · PR #50 · Rebasing", true));
         let stuck = row(&card(json!({"stuck": {"since": "2026-10-27T10:00:00Z"}})));
         assert_eq!((stuck.st, stuck.loud), (St::Working, true));
+    }
+
+    #[test]
+    fn a_tile_label_it_doesnt_know_goes_by_the_task_never_to_done() {
+        let open = card(json!({"status": "done", "pr": {"num": 7, "state": "OPEN"}}));
+        assert_eq!(by_task(&open), St::Review);
+        assert_eq!(by_task(&card(json!({"status": "done", "pr": {"num": 7, "state": "MERGED"}}))), St::Done);
+        assert_eq!(by_task(&card(json!({"status": "done", "failed": true, "pr": {"num": 7, "state": "OPEN"}}))), St::Failed);
+        assert_eq!(by_task(&card(json!({"status": "working"}))), St::Working);
+        assert_eq!(by_task(&card(json!({"status": "needs"}))), St::Needs);
+        // Every phase the daemon can send on an open PR, known or new, stays in review.
+        for phase in ["checks", "fix", "rebase", "comments", "merge", "review", "rereview", "steps", "waits", "stack", "ask", "something-new"] {
+            let c = card(json!({"status": "done", "pr": {"num": 7, "state": "OPEN", "stage": {"phase": phase}}}));
+            assert_eq!(row(&c).st, St::Review, "phase {phase}");
+        }
     }
 }
