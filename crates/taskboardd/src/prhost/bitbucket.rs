@@ -82,10 +82,7 @@ impl Http for BasicHttp {
     /// A GET is shared on the account with the same read in flight or kept lately; anything else is a
     /// write, which then drops the reads it may change (`limit` "Sharing reads").
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
-        match method {
-            "GET" => self.gate.read(url, || self.send(method, url, body)),
-            _ => self.gate.write(url, || self.send(method, url, body)),
-        }
+        self.gate.request(method, url, || self.send(method, url, body))
     }
 }
 
