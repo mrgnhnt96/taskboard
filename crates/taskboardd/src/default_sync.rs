@@ -3,7 +3,8 @@
 //! behind. On the PR timer, every few minutes, each project's repo is fetched and its local default
 //! branch fast-forwarded to origin's: moved in place when no worktree has it checked out, else merged
 //! `--ff-only` where it is, but only when that checkout has no changes to tracked files and no merge or
-//! rebase under way. A branch with commits of its own is left alone.
+//! rebase under way. A branch with commits of its own is left alone. A worktree slot claimed from a
+//! local branch gets the same before it starts (`freshen`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -14,14 +15,18 @@ use once_cell::sync::Lazy;
 
 use crate::app::App;
 use crate::util::*;
-use crate::worktrees::{git, last_line, GIT_SECS};
+use crate::worktrees::{git, last_line, Git, GIT_SECS};
 
 /// How often a repo is looked at.
 const EVERY_SECS: f64 = 300.0;
-const FETCH_SECS: f64 = 120.0;
+const FETCH_SECS: f64 = 300.0;
+/// A fetch this recent is used as it is.
+const FRESH_SECS: f64 = 60.0;
 
 /// When each repo was last looked at, by path.
 static CHECKED: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(Default::default);
+/// When each repo was last fetched, by path.
+static FETCHED: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(Default::default);
 
 /// Looks at each project's repo that's due. Outside a transaction: git may take a while.
 pub fn sweep(app: &App) -> Result<()> {
@@ -61,16 +66,56 @@ fn top(path: &str) -> Option<String> {
 /// Fetches origin and fast-forwards the default branch when it's behind and that's safe. What it did,
 /// or why it couldn't; None when there was nothing to do.
 pub fn sync(repo: &str) -> Option<String> {
-    if git(repo, &["remote", "get-url", "origin"], GIT_SECS).code != 0 {
+    if !has_origin(repo) {
         return None;
     }
-    let f = git(repo, &["fetch", "-q", "origin"], FETCH_SECS);
+    let f = fetch(repo);
     if f.code != 0 {
         return Some(format!("git fetch failed: {}", last_line(&f.err)));
     }
-    let branch = default_branch(repo)?;
+    fast_forward(repo, &default_branch(repo)?)
+}
+
+fn has_origin(repo: &str) -> bool {
+    git(repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0
+}
+
+/// `git fetch origin`, skipped when the repo was fetched in the last minute (a claim right after a
+/// worktree's start fetched it).
+pub(crate) fn fetch(repo: &str) -> Git {
+    if FETCHED.lock().unwrap().get(repo).is_some_and(|at| at.elapsed().as_secs_f64() < FRESH_SECS) {
+        return Git { code: 0, out: String::new(), err: String::new() };
+    }
+    let r = git(repo, &["fetch", "-q", "origin"], FETCH_SECS);
+    if r.code == 0 {
+        FETCHED.lock().unwrap().insert(repo.to_string(), Instant::now());
+    }
+    r
+}
+
+/// Before a worktree slot starts from `start`: fetches origin (unless `fetch_too` is false: a caller
+/// holding the database), and when `start` is a local branch behind origin's copy, fast-forwards it
+/// when that's safe, so the slot starts from the latest. What it did, or why it couldn't.
+pub fn freshen(repo: &str, start: &str, fetch_too: bool) -> Option<String> {
+    let origin = has_origin(repo);
+    if origin && fetch_too {
+        let f = fetch(repo);
+        if f.code != 0 {
+            return Some(format!("git fetch failed, so it starts from what the repo had: {}", last_line(&f.err)));
+        }
+    }
+    let local = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{start}")], GIT_SECS).code == 0;
+    (origin && local).then(|| fast_forward(repo, start)).flatten()
+}
+
+/// Fast-forwards the local branch to origin's when it's behind and that's safe: moved in place when no
+/// worktree has it checked out, else merged `--ff-only` where it is when that checkout is clean.
+fn fast_forward(repo: &str, branch: &str) -> Option<String> {
     let (local, remote) = (format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}"));
-    let count = |range: String| git(repo, &["rev-list", "--count", &range], GIT_SECS).out.trim().parse::<i64>().unwrap_or(0);
+    let count = |range: String| {
+        let r = git(repo, &["rev-list", "--count", &range], GIT_SECS);
+        if r.code == 0 { r.out.trim().parse::<i64>().unwrap_or(0) } else { 0 }
+    };
     let behind = count(format!("{local}..{remote}"));
     if behind == 0 {
         return None;
@@ -207,6 +252,16 @@ mod tests {
         std::fs::write(clone.join("scratch"), "x").unwrap();
         sync(clone.to_str().unwrap()).unwrap();
         assert_eq!(head(&clone, "HEAD"), head(&origin, "HEAD"));
+    }
+
+    #[test]
+    fn freshen_fast_forwards_a_local_start() {
+        let (_tmp, origin, clone) = setup();
+        sh(&clone, &["switch", "-q", "--detach"]);
+        let text = freshen(clone.to_str().unwrap(), "main", true).unwrap();
+        assert!(text.starts_with("fast-forwarded main"), "{text}");
+        assert_eq!(head(&clone, "refs/heads/main"), head(&origin, "HEAD"));
+        assert_eq!(freshen(clone.to_str().unwrap(), "origin/main", true), None);
     }
 
     #[test]
