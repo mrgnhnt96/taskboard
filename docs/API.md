@@ -293,7 +293,18 @@ The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat objec
   "attachments": [attachment],      // on the task
   "goal_attachments": [attachment], // on its goal (omit or [] when no goal)
   "origin": {"from": str, "by": str, "url": str|null} | null,  // where the task came from; the task panel's "From" row
-  "step_results": [step_result]     // the latest round of each of its steps that ran (see "The PR plan and flow")
+  "step_results": [step_result],    // the latest round of each of its steps that ran (see "The PR plan and flow")
+  "code_review_rounds": [{          // each round of its pre-PR code review (see REVIEW-PROTOCOL.md), oldest first; the try that counted
+    "round": int, "try": int, "ok": bool, "reviewer": str|null, "verdict": "pass"|"fail"|"skip"|null, "headline": str|null,
+    "error": str|null,              // the reviewer failed: why
+    "cost": number|null,            // the reviewer's cost in USD, when it said
+    "head": str|null, "at": iso,
+    "findings": [{"id": "F1", "title": str, "severity": "blocker"|"major"|"minor"|null, "file": str|null, "line": int|null, "url": str|null,
+                  "outcome": "fix"|"backlog"|"dismiss"|null, // the triage agent's call; null until it made one
+                  "reason": str|null, "issue": "B7"|null, // why; the backlog item a `backlog` finding filed
+                  "fixed": str|null}],  // what the task's agent changed, once it marked a `fix` finding fixed
+    "capped": bool                  // it reached the round cap with `fix` findings not fixed, so the task went on to its PR with them
+  }]
 }
 ```
 On this detail, `pr.bar.author_review` is the `step_result` of the step with a `bar` name (else null).

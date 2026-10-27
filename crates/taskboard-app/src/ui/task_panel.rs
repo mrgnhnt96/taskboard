@@ -912,15 +912,16 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
                 };
             }
         }
-        // Dev: `TASKBOARD_TL=started,result:0` opens those timeline steps (screenshots).
+        // Dev: `TASKBOARD_TL=started,result:0,round:0` opens those timeline steps (screenshots).
         if let Ok(want) = std::env::var("TASKBOARD_TL") {
             ui(|u| {
                 for w in want.split(',') {
                     match w.trim() {
                         "started" => u.tl_open.insert(view::TlStep::Started),
-                        r => match r.strip_prefix("result:").and_then(|i| i.parse().ok()) {
-                            Some(i) => u.tl_open.insert(view::TlStep::Result(i)),
-                            None => false,
+                        r => match (r.strip_prefix("result:").and_then(|i| i.parse().ok()), r.strip_prefix("round:").and_then(|i| i.parse().ok())) {
+                            (Some(i), _) => u.tl_open.insert(view::TlStep::Result(i)),
+                            (_, Some(i)) => u.tl_open.insert(view::TlStep::Round(i)),
+                            _ => false,
                         },
                     };
                 }

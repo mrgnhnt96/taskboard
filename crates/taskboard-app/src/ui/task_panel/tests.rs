@@ -912,6 +912,41 @@ fn a_step_opens_to_its_findings_with_their_state() {
 }
 
 #[::core::prelude::v1::test]
+fn a_code_review_round_opens_to_its_findings_and_how_each_was_triaged() {
+    let round = json!({"round": 1, "try": 1, "ok": true, "reviewer": "acme-review", "verdict": "fail", "headline": "4 findings", "cost": 0.4,
+                       "head": "abc1234def", "at": "2026-01-05T12:00:00Z", "capped": false,
+                       "findings": [{"id": "F1", "title": "Off by one", "severity": "high", "file": "src/a.rs", "line": 3, "outcome": "fix", "reason": "Breaks paging", "fixed": "Counts from zero"},
+                                    {"id": "F2", "title": "Slow loop", "outcome": "backlog", "reason": "Older code", "issue": "B7"},
+                                    {"id": "F3", "title": "Naming", "outcome": "dismiss", "reason": "Matches the file"},
+                                    {"id": "F4", "title": "Null check", "outcome": "fix"}]});
+    let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp", "code_review_rounds": [round]});
+    let shut = panel_text(task.clone(), json!({}));
+    assert!(shut.contains("Code review Round 1 · 4 findings") && !shut.contains("Off by one"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["round:0"]}})));
+    assert!(text.contains("F1 Fixed high Off by one src/a.rs:3 Breaks paging Counts from zero"), "{text}");
+    assert!(text.contains("F2 Backlog Slow loop B7 Older code") && text.contains("F3 Dismissed Naming Matches the file"), "{text}");
+    assert!(text.contains("F4 To fix Null check") && text.contains("Reviewer acme-review · $0.40") && text.contains("Ran on commit abc1234"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_code_review_shows_where_its_round_stands_and_the_cap_alert() {
+    let round = |n: u64, capped: bool| json!({"round": n, "ok": true, "verdict": "fail", "headline": "1 finding", "at": "2026-01-05T12:00:00Z", "capped": capped,
+                                              "findings": [{"id": "F1", "title": "Off by one", "outcome": "fix"}]});
+    let task = |rounds: Value, cr: Value| json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp", "code_review_rounds": rounds, "code_review": cr});
+    let triaging = panel_text(task(json!([round(1, false)]), json!({"state": "triaging", "round": 1, "triage": {"findings": 3, "triaged": 1}})), json!({}));
+    assert!(triaging.contains("Round 1 · 1 finding") && triaging.contains("Triaging 1 of 3"), "{triaging}");
+    let fixing = panel_text(task(json!([round(1, false)]), json!({"state": "fixing", "round": 1, "fix": {"findings": 2, "fixed": 0}})), json!({}));
+    assert!(fixing.contains("Fixing 0 of 2"), "{fixing}");
+    // A retried round shows once, as the one being reviewed.
+    let failed = json!({"round": 2, "ok": false, "error": "exit 1", "at": "2026-01-05T12:00:00Z", "findings": []});
+    let reviewing = panel_text(task(json!([round(1, false), failed]), json!({"state": "running", "round": 2, "since": "2026-01-05T12:05:00Z"})), json!({}));
+    assert!(reviewing.contains("Code review Round 2 · Reviewing") && !reviewing.contains("didn’t run"), "{reviewing}");
+    let capped = panel_text(task(json!([round(5, true)]), Value::Null), json!({}));
+    assert!(capped.contains("Reached its 5-round cap It went on to its PR with F1 still to fix."), "{capped}");
+    assert!(!panel_text(task(json!([round(1, false)]), Value::Null), json!({})).contains("cap"));
+}
+
+#[::core::prelude::v1::test]
 fn a_findings_link_opens_the_step_results_holding_findings() {
     let task = json!({"step_results": [{"name": "QA", "findings": []},
                                        {"name": "Author review", "findings": [{"id": "F1", "title": "Typo"}]}]});
@@ -1204,7 +1239,10 @@ fn the_checks_step_says_being_fixed_only_while_a_terminal_is_on_it() {
 fn tl_step(v: &Value) -> Option<view::TlStep> {
     match v.as_str()? {
         "started" => Some(view::TlStep::Started),
-        s => s.strip_prefix("result:")?.parse().ok().map(view::TlStep::Result),
+        s => match s.strip_prefix("round:") {
+            Some(i) => i.parse().ok().map(view::TlStep::Round),
+            None => s.strip_prefix("result:")?.parse().ok().map(view::TlStep::Result),
+        },
     }
 }
 
