@@ -39,6 +39,57 @@ fn bare(l: &str) -> &str {
     l.trim_end_matches('\n').trim_end_matches('\r')
 }
 
+/// A line that tells no task's edit from another's: blank, or only punctuation (`}`, `)`, `];`).
+fn trivial(l: &str) -> bool {
+    bare(l).chars().all(|c| c.is_whitespace() || c.is_ascii_punctuation())
+}
+
+/// A recorded hunk's new side (its context and added lines) and where in it lines were added and
+/// removed. None when every line it changed is trivial: such a hunk matches any edit's braces.
+fn block_of(h: &Value) -> Option<(Vec<&str>, Vec<usize>, Vec<usize>)> {
+    let mut block: Vec<&str> = vec![];
+    let (mut added, mut removed) = (vec![], vec![]);
+    let mut real = false;
+    for l in h["lines"].as_array().into_iter().flatten().filter_map(|l| l.as_str()) {
+        match l.chars().next() {
+            Some('+') => {
+                added.push(block.len());
+                block.push(&l[1..]);
+            }
+            Some('-') => removed.push(block.len()),
+            Some(' ') => {
+                block.push(&l[1..]);
+                continue;
+            }
+            _ => continue,
+        }
+        real |= !trivial(&l[1..]);
+    }
+    real.then_some((block, added, removed))
+}
+
+/// The recorded patches for `file` in a task's `hunks/<task>` text.
+fn patches_of<'a>(log: &'a str, file: &str) -> impl Iterator<Item = Value> + 'a {
+    let file = file.to_string();
+    log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(move |rec| rec["file"].as_str().map(real_file).as_deref() == Some(file.as_str())).flat_map(|rec| rec["patch"].as_array().cloned().unwrap_or_default())
+}
+
+/// Whether every hunk recorded for `file` that changed a real line is in `text` whole (its context
+/// and added lines, together): the edits are all there, in HEAD or a pushed branch, say. False when
+/// the log has none for it.
+pub fn all_in(log: &str, file: &str, text: &str) -> bool {
+    let lines = lines(text);
+    let mut any = false;
+    for h in patches_of(log, file) {
+        any = true;
+        let Some((block, _, _)) = block_of(&h) else { continue };
+        if nearest(&block, &lines, 0).is_none() {
+            return false;
+        }
+    }
+    any
+}
+
 /// The hunks of `git diff -U0` for `file`, from HEAD's text (`head`) to the working copy's (`work`).
 pub fn parse(file: &str, head: &[&str], work: &[&str], diff: &str) -> Vec<Hunk> {
     let n = |m: Option<regex::Match>| m.map_or(1, |m| m.as_str().parse().unwrap_or(1));
@@ -77,34 +128,18 @@ impl Marks {
     pub fn of(log: &str, file: &str, work: &[&str]) -> Option<Marks> {
         let mut m = Marks::default();
         let mut any = false;
-        for rec in log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
-            if rec["file"].as_str().map(real_file).as_deref() != Some(file) {
-                continue;
-            }
+        for h in patches_of(log, file) {
             any = true;
-            for h in rec["patch"].as_array().into_iter().flatten() {
-                m.find(h, work);
-            }
+            m.find(&h, work);
         }
         any.then_some(m)
     }
 
     /// Finds one recorded hunk's new side (its context and added lines) in `work`, nearest where it
-    /// was written, and marks its added lines and the places it removed lines from.
+    /// was written, and marks its added lines and the places it removed lines from. A hunk that
+    /// changed only trivial lines marks nothing.
     fn find(&mut self, h: &Value, work: &[&str]) {
-        let mut block: Vec<&str> = vec![];
-        let (mut added, mut removed) = (vec![], vec![]);
-        for l in h["lines"].as_array().into_iter().flatten().filter_map(|l| l.as_str()) {
-            match l.chars().next() {
-                Some('+') => {
-                    added.push(block.len());
-                    block.push(&l[1..]);
-                }
-                Some('-') => removed.push(block.len()),
-                Some(' ') => block.push(&l[1..]),
-                _ => {}
-            }
-        }
+        let Some((block, added, removed)) = block_of(h) else { return };
         let want = h["newStart"].as_u64().unwrap_or(1).saturating_sub(1) as usize;
         if let Some(s) = nearest(&block, work, want) {
             self.lines.extend(added.iter().map(|i| s + i));
@@ -115,6 +150,9 @@ impl Marks {
         // on its own, so a hunk both made is still seen as this one's too.
         for run in added.chunk_by(|a, b| a + 1 == *b) {
             let lines: Vec<&str> = run.iter().map(|i| block[*i]).collect();
+            if lines.iter().all(|l| trivial(l)) {
+                continue;
+            }
             if let Some(s) = nearest(&lines, work, want + run[0]) {
                 self.lines.extend(s..s + run.len());
             }
@@ -237,6 +275,35 @@ mod tests {
         let gone = json!({"file": "/x/f.txt", "patch": [{"newStart": 1, "lines": [" a", "+zzz"]}]}).to_string();
         let m = Marks::of(&gone, "/x/f.txt", &w).unwrap();
         assert!(!m.made(&Hunk { old: (0, 2), new: (0, 2), id: String::new() }));
+    }
+
+    #[test]
+    fn a_hunk_of_only_braces_marks_nothing() {
+        let work = "a\nb\n}\nc\nd\ne\nf\ng\nh\n";
+        let w = lines(work);
+        let (_, hunks) = split(work, "@@ -2,0 +3 @@\n+}\n");
+        let brace = json!({"file": "/x/f.txt", "patch": [{"newStart": 2, "lines": [" b", "+}", " c"]}]}).to_string();
+        assert!(!Marks::of(&brace, "/x/f.txt", &w).unwrap().made(&hunks[0]), "a lone brace isn't anyone's");
+        let blank = json!({"file": "/x/f.txt", "patch": [{"newStart": 2, "lines": [" b", "+  ", "+];", "-)", " c"]}]}).to_string();
+        assert!(!Marks::of(&blank, "/x/f.txt", &w).unwrap().made(&hunks[0]));
+    }
+
+    #[test]
+    fn a_brace_run_is_not_found_on_its_own() {
+        let work = "a\nB\n}\nc\nd\ne\nf\ng\nh\n";
+        let w = lines(work);
+        let (_, hunks) = split(work, "@@ -2 +2,2 @@\n-b\n+B\n+}\n");
+        // Its context is gone, so only its runs of added lines are looked for; the brace run alone isn't.
+        let mine = json!({"file": "/x/f.txt", "patch": [{"newStart": 1, "lines": [" zz", "+X", " yy", "+}", " ww"]}]}).to_string();
+        assert!(!Marks::of(&mine, "/x/f.txt", &w).unwrap().made(&hunks[0]));
+    }
+
+    #[test]
+    fn recorded_edits_are_all_in_a_text_that_has_each_hunk_whole() {
+        let log = json!({"file": "/x/f.txt", "patch": [{"newStart": 1, "lines": [" a", "-b", "+B", " c"]}, {"newStart": 5, "lines": [" e", "+}", " f"]}]}).to_string();
+        assert!(all_in(&log, "/x/f.txt", "a\nB\nc\nd\ne\nf\n"), "the brace hunk doesn't count");
+        assert!(!all_in(&log, "/x/f.txt", "a\nb\nc\nd\ne\nf\n"));
+        assert!(!all_in(&log, "/x/other.txt", "a\nB\nc\n"), "no record for the file");
     }
 
     #[test]

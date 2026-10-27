@@ -281,6 +281,14 @@ pub fn held(app: &App, t: &Row) -> Result<Option<Row>> {
     Ok(mine.into_iter().find(|s| live(s.st("path").as_str())))
 }
 
+/// `GET /slots/at?path=`: the slot `path` is in and the task holding it, for the hooks (no sizes,
+/// so it's quick).
+pub fn at(app: &App, path: &str) -> Result<Value> {
+    let Some(s) = slot_at(app, path)? else { return Ok(json!({"slot": null, "held_by": null})) };
+    let held = holder(app, &s)?;
+    Ok(json!({"slot": format!("slot-{}", s.i("n").unwrap_or(0)), "path": s.st("path"), "held_by": held.map(|t| rf("task", t.id()))}))
+}
+
 /// Does `t` hold the slot `path` is in?
 pub fn holds(app: &App, t: &Row, path: &str) -> Result<bool> {
     Ok(slot_at(app, path)?.is_some_and(|s| s.i("task_id") == Some(t.id())))

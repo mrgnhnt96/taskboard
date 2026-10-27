@@ -234,6 +234,11 @@ enum Cmd {
         #[command(subcommand)]
         action: SlotCmd,
     },
+    /// Another task's recorded edits in a checkout this task holds
+    Edits {
+        #[command(subcommand)]
+        action: EditsCmd,
+    },
     /// Stage only this task's own hunks of the files it edited, from its recorded edits, so a commit in a checkout other tasks share takes none of theirs
     Stage {
         /// Only these files; on its own, every uncommitted file the task edited here
@@ -685,6 +690,20 @@ enum Cmd {
 enum DaemonCmd {
     /// Restart the daemon under launchd and wait for it to answer again
     Restart,
+}
+
+#[derive(Subcommand)]
+enum EditsCmd {
+    /// Drop another task's recorded edits in the worktree slot this task holds, once that task has no terminal working there and nothing unpushed
+    Clear {
+        /// The task whose records go
+        target: String,
+        /// The checkout; on its own, the one here
+        #[arg(long)]
+        checkout: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3353,6 +3372,40 @@ fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
     Ok(0)
 }
 
+/// `tb edits clear`: drops `target`'s recorded edits in `checkout` (else here) for `t`, which must hold
+/// that checkout's worktree slot. Refused while `target`'s terminal works there or its branch has
+/// commits no remote has, since then the records still stand for its work.
+fn edits_clear(c: &Ctx, t: &str, target: &str, checkout: Option<&str>) -> Result<String, String> {
+    if t == target {
+        return Err(format!("{t}'s own records go once its edits are committed; tb edits clear is for another task's."));
+    }
+    let dir = std::path::Path::new(&c.cwd).join(checkout.unwrap_or("."));
+    let top = hook::checkout_top(&dir).ok_or_else(|| format!("{} isn't in a git checkout.", dir.display()))?;
+    let slot = c.call("GET", &format!("/slots/at?path={}", qv(&top.to_string_lossy())), None)?;
+    if slot["held_by"].as_str() != Some(t) {
+        return Err(format!("{t} doesn't hold the worktree slot at {}; only the task holding a slot clears another task's records there.", top.display()));
+    }
+    let theirs = c.call("GET", &format!("/steps?task={target}"), None)?;
+    let session = theirs["session"].as_str().unwrap_or("");
+    if !session.is_empty() {
+        // A terminal the board no longer knows isn't working anywhere.
+        let on = c.call("GET", &format!("/steps?session={}", qv(session)), None).unwrap_or_default();
+        let there = on["vars"]["worktree"].as_str().and_then(|w| std::path::Path::new(w).canonicalize().ok()).is_some_and(|w| w == top);
+        if on["task"].as_str() == Some(target) && there {
+            return Err(format!("{target}'s terminal still works in {}; its records stand for its work there.", top.display()));
+        }
+    }
+    let branch = theirs["vars"]["branch"].as_str().unwrap_or("");
+    if !branch.is_empty() {
+        let at = top.to_string_lossy();
+        let head = format!("refs/heads/{branch}");
+        if git_out(&at, &["rev-parse", "-q", "--verify", &head]).is_some() && git_out(&at, &["rev-list", "--count", &head, "--not", "--remotes"]).as_deref() != Some("0") {
+            return Err(format!("{target}'s branch {branch} has commits no remote has; push it first."));
+        }
+    }
+    Ok(hook::clear_edits(&c.cfg.data, target, &top))
+}
+
 /// Claims `t` a slot, bringing `bring`'s files and the `hunks` picked (relative to here) from the
 /// shared checkout, and says where it works now and what came along.
 fn slot_claim(c: &Ctx, t: &str, bring: Option<Vec<String>>, hunks: &[String]) -> Result<(), String> {
@@ -4409,7 +4462,7 @@ fn close_done_line(n: i64) -> String {
 }
 
 /// A query value, percent-encoded.
-fn qv(s: &str) -> String {
+pub(crate) fn qv(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
@@ -5734,6 +5787,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Slot { action } => slot_cmd(c, action),
+        Cmd::Edits { action: EditsCmd::Clear { target, checkout, task } } => {
+            let t = c.pr_task(task)?;
+            out(&edits_clear(c, &t, &task_ref(&target)?, checkout.as_deref())?);
+            Ok(0)
+        }
         Cmd::Stage { files, task } => {
             let t = c.pr_task(task)?;
             out(&hook::stage_own(&c.cfg.data, &t, std::path::Path::new(&c.cwd), &files)?);
