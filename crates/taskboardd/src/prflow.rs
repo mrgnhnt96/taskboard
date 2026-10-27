@@ -1942,8 +1942,11 @@ pub fn waited(app: &App, t: &Row) -> Result<Row> {
     if t.s("pr_phase") == Some("comments") {
         ch.push(("answered_changes", rec["changes_at"].clone()));
     }
-    if t.has_phase() {
-        ch.push(("handled", json!(wake_key(&t.st("pr_phase"), &rec))));
+    // The visit settles what it was brought back for. A PR that moved on during it (a merge visit that
+    // ends with the PR conflicting) still wakes for its new state; with no visit on, the current one.
+    let key = f.s("woke").map(str::to_string).or_else(|| t.has_phase().then(|| wake_key(&t.st("pr_phase"), &rec)));
+    if let Some(key) = key {
+        ch.push(("handled", json!(key)));
         ch.push(("handled_at", json!(now_iso())));
     }
     merge_flow(app, t.id(), ch)
