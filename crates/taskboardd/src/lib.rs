@@ -100,6 +100,7 @@ pub mod shared;
 pub mod review;
 pub mod review_fixes;
 pub mod slot_ageing;
+pub mod slot_keep;
 pub mod slot_tidy;
 pub mod slots;
 pub mod slowlog;
