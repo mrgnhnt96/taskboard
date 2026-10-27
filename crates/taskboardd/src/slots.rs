@@ -352,6 +352,11 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
         take(app, t, s.id(), &path, &format!("Back in its worktree slot-{} at {path}", s.i0("n")), &ctx_base(t, start))?;
         return Ok(path);
     }
+    // A slot starts from the latest: origin fetched (not while holding the database) and a local start
+    // branch fast-forwarded to origin's.
+    if let Some(text) = crate::default_sync::freshen(repo, start, !app.db.held_here()) {
+        app.info(format!("worktrees: before {} took a slot: {text}", rf("task", t.id())));
+    }
     let mut slots = rows(app, repo)?;
     // A conversation resumes only in the folder it ran in.
     if let Some(before) = board::task_context(t).s("worktree_slot") {
