@@ -632,8 +632,13 @@ fn task_conversation(t: &Row, last: Option<&Row>) -> Option<String> {
 }
 
 /// The old terminal a visit takes over; never the Jira desk, even if the task ever landed on it.
-fn replaceable(app: &App, last: Option<Row>) -> Option<Value> {
-    last.filter(|l| l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false)).map(|l| l.v("id"))
+/// The prompt runs where that terminal is, so only one in the visit's own checkout: one left in a
+/// slot the task gave back may be in another task's checkout by now.
+fn replaceable(app: &App, last: Option<Row>, cwd: &str) -> Option<Value> {
+    let root = |p: Option<&str>| crate::worktrees::root_of(p);
+    last.filter(|l| l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false))
+        .filter(|l| root(l.s("cwd")) == root(Some(cwd)))
+        .map(|l| l.v("id"))
 }
 
 /// A visit that doesn't change code (`MECHANICAL`): a fresh conversation on `[models] pr_visit` with
@@ -657,7 +662,7 @@ fn fresh_visit(app: &App, t: &Row, phase: &str, mut args: Value) -> Result<Value
     if let Some(f) = runner::with_effort(runner::with_model(None, model.as_deref()), effort.as_deref()) {
         args["flags"] = json!(f);
     }
-    if let Some(id) = replaceable(app, last) {
+    if let Some(id) = replaceable(app, last, args["cwd"].as_str().unwrap_or("")) {
         args["replace"] = id;
     }
     let on = model.map(|m| format!(" on {m}")).unwrap_or_default();
@@ -677,10 +682,14 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     if flow(t).contains_key("resume_cid") {
         merge_flow(app, t.id(), fields!["resume_cid" => null])?;
     }
+    // The slot claimed for the visit may not be the one the conversation worked in.
+    let cwd = args["cwd"].as_str().unwrap_or("").to_string();
+    if crate::slots::is_slot(&cwd) {
+        args["prompt"] = json!(format!("{}\n\nWork in {cwd}: the board claimed this slot for it.", args["prompt"].as_str().unwrap_or("")));
+    }
     let live = last.as_ref().is_some_and(|l| l.s("status") != Some("gone") && board::runs_claude(l));
     let too_big = match (&cid, live) {
         (Some(cid), false) => {
-            let cwd = args["cwd"].as_str().unwrap_or("").to_string();
             limits::fresh_start_why(app, &limits::conversation(app, &cwd, cid, last.as_ref().and_then(|l| l.s("last_activity"))))
         }
         _ => None,
@@ -699,7 +708,7 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
         }
         Some(cid) => {
             args["flags"] = json!(runner::with_effort(runner::with_model(Some(format!("--resume {cid}")), model.as_deref()), effort.as_deref()));
-            if let Some(id) = replaceable(app, last) {
+            if let Some(id) = replaceable(app, last, args["cwd"].as_str().unwrap_or("")) {
                 args["replace"] = id;
             }
         }
@@ -2437,6 +2446,70 @@ mod tests {
         assert!(carry_leftovers(&app, &t).unwrap().is_none(), "the PR's own commits aren't left over");
         assert_eq!(crate::slots::branch_of(&slot).as_deref(), Some("feat/a"), "the slot is left alone");
         assert_eq!(app.db.count("SELECT COUNT(*) FROM tasks", p![]).unwrap(), 1);
+    }
+
+    /// A task that gave slot-1 back (another task holds it now) while its old terminal stays open there.
+    fn gave_its_slot_back(dir: &Path, max_slots: i64) -> (std::sync::Arc<App>, i64, String) {
+        let mut cfg = crate::config::Config::for_tests(dir);
+        cfg.worktrees.max_slots = max_slots;
+        let app = App::for_tests(cfg);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |args: &[&str]| assert_eq!(crate::worktrees::git(&repo, args, 30.0).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let other = app.db.insert("tasks", fields!["title" => "B", "status" => "working"]).unwrap();
+        let slot = crate::slots::claim(&app, &board::get_task(&app, other).unwrap(), &repo, "HEAD").unwrap();
+        assert!(slot.ends_with("slot-1"));
+        app.db.insert("sessions", fields!["id" => "old", "agent" => "claude", "status" => "idle", "project_path" => repo.clone(), "cwd" => slot.clone()]).unwrap();
+        let ctx = json!({"worktree_slot": slot, "where": {"worktree": slot}}).to_string();
+        let id = app.db.insert("tasks", fields!["title" => "A", "status" => "done", "pr_num" => 7, "context" => ctx, "pr_flow" => json!({"session": "old"}).to_string()]).unwrap();
+        (app, id, slot)
+    }
+
+    #[test]
+    fn a_rebase_failing_check_or_review_fix_runs_in_a_slot_the_task_holds_not_its_old_terminal() {
+        type Wake = fn(&App, &Row) -> Result<Option<i64>>;
+        let wakes: [(&str, Wake); 3] = [
+            ("rebase", |app, t| follow_wake(app, t, "Work this task builds on has moved.")),
+            ("failing check", |app, t| wake(app, t, "checks", &json!({"failed": ["ci"]}), None)),
+            ("review fix", |app, t| wake(app, t, "comments", &json!({}), None)),
+        ];
+        for (what, wake) in wakes {
+            let dir = tempfile::tempdir().unwrap();
+            let (app, id, old) = gave_its_slot_back(dir.path(), 10);
+            let jid = wake(&app, &board::get_task(&app, id).unwrap()).unwrap().unwrap_or_else(|| panic!("{what}: woke"));
+            let args: Value = serde_json::from_str(&app.db.q1("SELECT args FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap().st("args")).unwrap();
+            let cwd = args["cwd"].as_str().unwrap();
+            assert!(cwd.ends_with("slot-2"), "{what}: a slot of its own, not {cwd}");
+            assert!(crate::slots::holds(&app, &board::get_task(&app, id).unwrap(), cwd).unwrap(), "{what}");
+            assert!(args.get("replace").is_none(), "{what}: not typed into the terminal in {old}");
+            assert!(args["prompt"].as_str().unwrap().contains(&format!("Work in {cwd}")), "{what}: points the agent at it");
+        }
+    }
+
+    #[test]
+    fn a_visit_types_into_the_old_terminal_only_in_the_slot_it_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _, old) = gave_its_slot_back(dir.path(), 10);
+        let last = || board::get_session(&app, Some("old")).unwrap();
+        assert_eq!(replaceable(&app, last(), &old), Some(json!("old")));
+        assert_eq!(replaceable(&app, last(), &format!("{old}/crates")), Some(json!("old")), "a subfolder is the same checkout");
+        assert_eq!(replaceable(&app, last(), &old.replace("slot-1", "slot-2")), None);
+        assert_eq!(replaceable(&app, last(), dir.path().join("repo").to_str().unwrap()), None, "nor the shared checkout");
+    }
+
+    #[test]
+    fn a_task_that_only_reported_from_a_slot_waits_for_one_while_the_pool_is_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, id, old) = gave_its_slot_back(dir.path(), 1);
+        let ctx = json!({"where": {"worktree": old}}).to_string();
+        board::update_task(&app, id, fields!["context" => ctx]).unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        assert!(crate::slots::needs_claim(&app, &t).unwrap());
+        assert_eq!(follow_wake(&app, &t, "Rebase").unwrap(), None, "no slot free: the wake waits");
+        assert!(app.db.q("SELECT id FROM jobs WHERE task_id = ?", p![id]).unwrap().is_empty());
     }
 
     #[test]

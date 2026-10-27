@@ -570,11 +570,11 @@ fn check_out(path: &str, start: &str, branch: Option<&str>) -> Result<String> {
 /// a slot; a 409 `WAIT` while the pool is full.
 pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
     let ctx = board::task_context(t);
-    let Some(before) = ctx.s("worktree_slot").filter(|p| is_slot(p)) else { return Ok(None) };
+    let Some(before) = slot_before(t, &ctx) else { return Ok(None) };
     if let Some(s) = held(app, t)? {
         return Ok(Some(s.st("path")));
     }
-    let Some(repo) = slot_repo(before) else { return Ok(None) };
+    let Some(repo) = slot_repo(&before) else { return Ok(None) };
     let start = ctx.s("worktree_base").unwrap_or("HEAD").to_string();
     let branch = ctx.s("worktree_branch").or_else(|| ctx.get("where").and_then(|w| w.get("branch")).and_then(|b| b.as_str())).map(|b| b.to_string());
     claim_on(app, t, repo, &start, branch.as_deref()).map(Some)
@@ -584,8 +584,15 @@ pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
 /// holding the database does that first without it.
 pub fn needs_claim(app: &App, t: &Row) -> Result<bool> {
     let ctx = board::task_context(t);
-    let Some(before) = ctx.s("worktree_slot").filter(|p| is_slot(p)) else { return Ok(false) };
-    Ok(slot_repo(before).is_some() && held(app, t)?.is_none())
+    let Some(before) = slot_before(t, &ctx) else { return Ok(false) };
+    Ok(slot_repo(&before).is_some() && held(app, t)?.is_none())
+}
+
+/// The slot `t` last worked in: the one it claimed, else the one its checkout or folder is in, so a
+/// task that only ever ran in a slot claims one too instead of working in it after it's given back.
+fn slot_before(t: &Row, ctx: &Row) -> Option<String> {
+    let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str());
+    [ctx.s("worktree_slot"), wt, t.s("repo_path")].into_iter().flatten().find(|p| is_slot(p)).and_then(|p| crate::worktrees::root_of(Some(p)))
 }
 
 /// The repository a slot folder belongs to, while it's still there.

@@ -588,7 +588,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 None => proj.s("name").map(|x| x.to_string()).or_else(|| path.as_deref().and_then(base_name)),
             };
             let mut f = crate::fields![
-                "name" => name, "project" => project, "project_path" => path, "branch" => branch, "dirty" => dirty,
+                "name" => name, "project" => project, "project_path" => path, "cwd" => s.get("cwd"), "branch" => branch, "dirty" => dirty,
                 "agent" => agent, "status" => state_of(&state), "prompt_waiting" => (state == "needs_you") as i64,
                 "last_activity" => s.get("last_activity_at"), "source" => "midna", "missed" => 0, "gone_at" => null
             ];
