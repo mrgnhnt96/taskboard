@@ -246,8 +246,8 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     if let Some(why) = crate::slots::visit_end_refusal(app, &board::get_task(app, id)?, body)? {
         return err(409, why);
     }
-    let (t, rec) = fresh(app, id)?;
-    let pr = pr_of(&t)?;
+    let pr = pr_of(&board::get_task(app, id)?)?;
+    let (t, rec) = fresh(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "comments", e))?;
     let f = flow(&t);
     let open = prflow::open_threads(&f, &rec);
     if !open.is_empty() {
@@ -264,7 +264,9 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     let review = prflow::review_of(&f, &rec);
     let users: Vec<String> = review.requesters.iter().map(|(u, _)| u.clone()).filter(|u| !u.is_empty()).collect();
     if !users.is_empty() {
-        host(app, &pr)?.re_request_reviews(&pr, &users).map_err(|e| ApiError::new(502, format!("Couldn't ask for another review on PR #{}: {e}.", pr.num)))?;
+        host(app, &pr)?.re_request_reviews(&pr, &users).map_err(|e| {
+            prflow::wait_out_limit(app, id, &pr, body, "comments", ApiError::new(502, format!("Couldn't ask for another review on PR #{}: {e}.", pr.num)))
+        })?;
     }
     let asked: Vec<String> = review.requesters.iter().map(|(u, n)| if n.is_empty() { u.clone() } else { n.clone() }).collect();
     app.db.tx(|| {
@@ -443,8 +445,8 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
             format!("{} merges this project's PRs (agents_merge is off), and hasn't told you to merge this one in this terminal. Run tb pr wait and leave it to them.", app.cfg.owner),
         );
     }
-    let (t, rec) = fresh(app, id)?;
-    let pr = pr_of(&t)?;
+    let pr = pr_of(&before)?;
+    let (t, rec) = fresh(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "merge", e))?;
     let site = prhost::limit::label(&pr.host);
     progress::stage(&format!("Read PR #{} from {site}", pr.num));
     let blockers = merge_blockers(app, &t, &rec, word.as_ref().is_some_and(|w| w.approved))?;
@@ -472,7 +474,7 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
             })?;
             return err(409, format!("PR #{} can't merge: it conflicts with its base branch {}. Rebase onto it, resolve the conflicts, push with git push --force-with-lease, then run tb pr wait.", pr.num, rec["base"].as_str().unwrap_or("main")));
         }
-        return err(502, format!("Couldn't merge PR #{}: {e}.", pr.num));
+        return Err(prflow::wait_out_limit(app, id, &pr, body, "merge", ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num))));
     }
     progress::stage(&format!("Merged PR #{} on {site}", pr.num));
     let who = match &word {
