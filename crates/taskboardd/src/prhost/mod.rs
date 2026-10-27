@@ -586,6 +586,8 @@ pub struct FakeHost {
     pub reads: Mutex<usize>,
     /// What `read` answers instead of the record, while set.
     pub read_error: Mutex<Option<String>>,
+    /// PR numbers whose `read` fails.
+    pub read_fails: Mutex<Vec<i64>>,
     /// How long `read` takes.
     pub read_delay: Mutex<std::time::Duration>,
     /// The stamp `stamps` answers for every PR, while set (logged as `stamps <n>`).
@@ -600,7 +602,7 @@ pub struct FakeHost {
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -625,11 +627,14 @@ impl PrHost for FakeHost {
         self.log(format!("stamps {}", looks.len()));
         Ok(vec![Some(stamp); looks.len()])
     }
-    fn read(&self, _pr: &PrRef) -> HostResult<Record> {
+    fn read(&self, pr: &PrRef) -> HostResult<Record> {
         *self.reads.lock() += 1;
         std::thread::sleep(*self.read_delay.lock());
         if let Some(e) = self.read_error.lock().clone() {
             return Err(e);
+        }
+        if self.read_fails.lock().contains(&pr.num) {
+            return Err(format!("Bitbucket answered 404 for #{}", pr.num));
         }
         Ok(self.rec.lock().clone())
     }

@@ -1561,12 +1561,14 @@ fn full_reads_only_due_by_age_are_spread_over_polls_oldest_first() {
     poll(&b);
     assert_eq!(reads(&h), 5, "a PR never read is read at once");
     for (i, id) in ids.iter().enumerate() {
-        prflow::merge_flow(&b.app, *id, vec![("full_at", json!(iso(now_ts() - 7200.0 - i as f64 * 60.0)))]).unwrap();
+        prflow::merge_flow(&b.app, *id, vec![("full_at", json!(iso(now_ts() - 7200.0 - i as f64 * 60.0))), ("read_at", json!(iso(now_ts() - 600.0)))]).unwrap();
     }
     poll(&b);
     assert_eq!(reads(&h), 8, "a few a poll");
     let read_now = |id: i64| now_ts() - taskboardd::util::parse_iso(b.flow(id)["full_at"].as_str().unwrap()).unwrap() < 60.0;
     assert_eq!(ids.iter().map(|id| read_now(*id)).collect::<Vec<_>>(), vec![false, false, true, true, true], "oldest first");
+    let asked_now = |id: i64| now_ts() - taskboardd::util::parse_iso(b.flow(id)["read_at"].as_str().unwrap()).unwrap() < 60.0;
+    assert!(asked_now(ids[0]) && asked_now(ids[1]), "the ones left for later still count as read: the host said they hadn't changed");
     poll(&b);
     assert_eq!(reads(&h), 10, "the rest on the next poll");
     poll(&b);
@@ -1575,6 +1577,32 @@ fn full_reads_only_due_by_age_are_spread_over_polls_oldest_first() {
     *h.stamp.lock() = Some("s2".into());
     poll(&b);
     assert_eq!(reads(&h), 15, "a moved stamp is read at once, however many moved");
+
+    *h.held.lock() = Some(now_ts() + 300.0);
+    *h.stamp.lock() = Some("s3".into());
+    poll(&b);
+    assert_eq!(reads(&h), 20, "the host said what moved: a limited account still reads it");
+}
+
+#[test]
+fn a_pr_whose_full_read_keeps_failing_doesnt_hold_its_turn() {
+    // Three PRs that can't be read (gone, or the token lost the repo) took every turn, and the rest were never read.
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    *h.stamp.lock() = Some("s1".into());
+    let ids: Vec<i64> = (1..=5).map(|n| b.pr_task(&format!("https://bitbucket.org/acme/webapp/pull-requests/{n}"))).collect();
+    poll(&b);
+    for (i, id) in ids.iter().enumerate() {
+        prflow::merge_flow(&b.app, *id, vec![("full_at", json!(iso(now_ts() - 7200.0 - i as f64 * 60.0)))]).unwrap();
+    }
+    *h.read_fails.lock() = vec![3, 4, 5];
+    poll(&b);
+    assert_eq!(reads(&h), 8, "the three oldest are tried, and fail");
+    let read_now = |id: i64| now_ts() - taskboardd::util::parse_iso(b.flow(id)["full_at"].as_str().unwrap()).unwrap() < 60.0;
+    assert!(!read_now(ids[0]) && !read_now(ids[1]));
+    poll(&b);
+    assert_eq!(reads(&h), 11);
+    assert!(read_now(ids[0]) && read_now(ids[1]), "a failed try goes to the back");
 }
 
 #[test]
@@ -1587,7 +1615,7 @@ fn when_the_host_cant_say_what_changed_a_limited_account_waits_and_the_rest_are_
     poll(&b);
     assert_eq!(reads(&h), 5);
     for (i, id) in ids.iter().enumerate() {
-        prflow::merge_flow(&b.app, *id, vec![("full_at", json!(iso(now_ts() - 600.0 - i as f64 * 60.0)))]).unwrap();
+        prflow::merge_flow(&b.app, *id, vec![("full_at", json!(iso(now_ts() - 600.0 - i as f64 * 60.0))), ("read_at", json!(iso(now_ts() - 600.0)))]).unwrap();
     }
     *h.stamps_error.lock() = Some("Bitbucket answered 429".into());
     *h.held.lock() = Some(now_ts() + 300.0);
@@ -1598,6 +1626,8 @@ fn when_the_host_cant_say_what_changed_a_limited_account_waits_and_the_rest_are_
     assert_eq!(reads(&h), 8, "a few a poll once it lifts");
     let read_now = |id: i64| now_ts() - taskboardd::util::parse_iso(b.flow(id)["full_at"].as_str().unwrap()).unwrap() < 60.0;
     assert_eq!(ids.iter().map(|id| read_now(*id)).collect::<Vec<_>>(), vec![false, false, true, true, true], "oldest first");
+    let asked_now = |id: i64| now_ts() - taskboardd::util::parse_iso(b.flow(id)["read_at"].as_str().unwrap()).unwrap() < 60.0;
+    assert!(!asked_now(ids[0]) && !asked_now(ids[1]), "nothing said they hadn't changed: not read, so the relay's reconcile still asks");
     poll(&b);
     assert_eq!(reads(&h), 11, "still unknown: every PR stays due, so the reads go round a few a poll");
     assert!(read_now(ids[0]) && read_now(ids[1]), "the two left behind go first");

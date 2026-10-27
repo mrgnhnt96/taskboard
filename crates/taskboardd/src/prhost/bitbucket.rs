@@ -773,7 +773,9 @@ pub(crate) mod tests {
     /// Every call: method, URL and body.
     pub type Calls = Arc<Mutex<Vec<(String, String, Option<Value>)>>>;
 
-    /// Answers each call with the first canned answer whose "METHOD url" contains the key; logs the calls.
+    /// Answers each call with the first canned answer whose "METHOD url" contains the key, cut to the
+    /// URL's `fields=` as Bitbucket cuts it, so a field a read uses but doesn't ask for is missing here
+    /// too; logs the calls.
     pub struct FakeHttp {
         pub answers: Vec<(&'static str, Value)>,
         pub calls: Calls,
@@ -787,8 +789,31 @@ pub(crate) mod tests {
             // A canned `{"error": "…"}` is a failed call.
             match v["error"].as_str() {
                 Some(e) => Err(e.to_string()),
-                None => Ok(v),
+                None => Ok(match url.split(['?', '&']).find_map(|q| q.strip_prefix("fields=")) {
+                    Some(f) => only(&v, &f.split(',').collect::<Vec<_>>()),
+                    None => v,
+                }),
             }
+        }
+    }
+
+    /// The parts of `v` the dotted paths name (`values.user.uuid`); a list keeps the paths for each item.
+    fn only(v: &Value, paths: &[&str]) -> Value {
+        match v {
+            Value::Array(items) => Value::Array(items.iter().map(|x| only(x, paths)).collect()),
+            Value::Object(o) => {
+                let mut out = serde_json::Map::new();
+                for (k, x) in o {
+                    let rest: Vec<&str> = paths.iter().filter_map(|p| if p == k { Some("") } else { p.strip_prefix(k.as_str())?.strip_prefix('.') }).collect();
+                    if rest.contains(&"") {
+                        out.insert(k.clone(), x.clone());
+                    } else if !rest.is_empty() {
+                        out.insert(k.clone(), only(x, &rest));
+                    }
+                }
+                Value::Object(out)
+            }
+            _ => v.clone(),
         }
     }
 
@@ -966,6 +991,8 @@ pub(crate) mod tests {
         }
         let pr_get = urls.iter().find(|u| u.contains("/pullrequests/7?")).unwrap();
         assert!(pr_get.contains("participants.approved") && !pr_get.contains("summary"), "{pr_get}");
+        // The fake answers only the fields asked for, so the other read tests catch a list that drops one.
+        assert_eq!(host(calls).files(&pr()).unwrap(), vec!["a.rs", "b.rs"]);
     }
 
     #[test]

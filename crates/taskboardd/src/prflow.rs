@@ -1896,7 +1896,12 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
         .iter()
         .zip(&needs)
         .filter(|(_, n)| matches!(n, Need::Due(_)))
-        .map(|(t, _)| (flow(t).s("full_at").and_then(parse_iso).unwrap_or(0.0), t.id()))
+        // A read that failed goes to the back too, so a PR that can't be read doesn't hold a turn every poll.
+        .map(|(t, _)| {
+            let f = flow(t);
+            let at = |k: &str| f.s(k).and_then(parse_iso).unwrap_or(0.0);
+            (at("full_at").max(at("full_tried_at")), t.id())
+        })
         .collect();
     due.sort_by(|a, b| a.0.total_cmp(&b.0));
     let turn: BTreeSet<i64> = due.iter().take(CATCH_UP_READS).map(|(_, id)| *id).collect();
@@ -1928,6 +1933,7 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
                 }
                 Err(e) => {
                     app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url")));
+                    merge_flow(app, t.id(), fields!["full_tried_at" => now_iso()])?;
                     continue;
                 }
             },
