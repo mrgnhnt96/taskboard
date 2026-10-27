@@ -1,5 +1,5 @@
 //! A task's terminal tab in Midna follows the task: In review, Done, Question, Alert, Task failed and
-//! Waiting, set with Midna's `session.set_status`.
+//! Waiting, set with Midna's `session.set_status`; its Summary entry gets the task's panel (`summary.annotate`).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -335,4 +335,85 @@ fn a_question_after_the_pr_visit_ended_reaches_the_owner_instead_of_being_refuse
                       "pr_flow" => json!({"session": "s1"}).to_string()]);
     b.report("tb.question", "s1", json!({"text": "Who can read the thread?"})).unwrap();
     assert_eq!(details(&b).last(), Some(&Some(format!("T{id} · Login: asked on PR #9: Who can read the thread?"))));
+}
+
+/// The panels sent to the Summary entries of Midna's terminals since the start, as (terminal, panel).
+fn panels(b: &Board) -> Vec<(String, Value)> {
+    midna::send_panels(&b.app);
+    calls(b, "summary.annotate")
+        .into_iter()
+        .map(|c| {
+            assert_eq!(c["owner"], "taskboard");
+            (c["id"].as_str().unwrap().to_string(), c["panel"].clone())
+        })
+        .collect()
+}
+
+fn badges(b: &Board) -> Vec<(String, String)> {
+    panels(b).into_iter().map(|(sid, p)| (sid, p["badge"].as_str().unwrap().to_string())).collect()
+}
+
+#[test]
+fn a_taken_task_puts_its_panel_on_the_terminal_and_keeps_it_current() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    let sent = panels(&b);
+    assert_eq!(sent.len(), 1);
+    let (sid, p) = &sent[0];
+    assert_eq!(sid, "s1");
+    assert_eq!(p["title"], format!("T{id} Login"));
+    assert_eq!(p["url"], format!("taskboard://task/T{id}"));
+    assert_eq!((&p["badge"], &p["color"], &p["line"]), (&json!("Working"), &json!("teal"), &json!(format!("T{id} Working"))));
+
+    b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_url" => "https://github.com/acme/webapp/pull/9", "pr_state" => "OPEN", "pr_phase" => "checks"]);
+    let p = panels(&b).pop().unwrap().1;
+    assert_eq!(p["badge"], "In review");
+    assert_eq!(p["buttons"][1], json!({"label": "PR #9", "open": "https://github.com/acme/webapp/pull/9"}));
+    b.set(id, fields!["pr_phase" => "review"]);
+    assert_eq!(panels(&b).len(), 2, "an unchanged panel isn't sent again");
+
+    // The terminal closes; its Summary entry still follows the task.
+    b.set(id, fields!["session_id" => null]);
+    b.set(id, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
+    assert_eq!(badges(&b).last(), Some(&("s1".to_string(), "Merged".to_string())));
+}
+
+#[test]
+fn a_terminal_switched_to_another_task_shows_that_task() {
+    let b = new_board(true);
+    let first = b.task_on("s1", "Login");
+    let second = b.task_on("s1", "Signup");
+    let sent = panels(&b);
+    assert_eq!(sent.last().unwrap().1["title"], format!("T{second} Signup"));
+    let n = sent.len();
+    b.set(first, fields!["status" => "done", "no_pr" => "nothing to change"]);
+    assert_eq!(panels(&b).len(), n, "the first task no longer owns s1's panel");
+}
+
+#[test]
+fn a_panel_shows_its_goals_progress_and_next_task() {
+    let b = new_board(true);
+    let g = b.post("/goals", json!({"name": "Accounts", "project": "webapp"}))["id"].as_i64().unwrap();
+    let id = b.task_on("s1", "Login");
+    let next = b.post("/tasks", json!({"title": "Signup", "detail": "Do it.", "project": "webapp", "pickup": "new"}))["id"].as_i64().unwrap();
+    b.set(next, fields!["goal_id" => g]);
+    b.set(id, fields!["goal_id" => g]);
+    let p = panels(&b).pop().unwrap().1;
+    assert_eq!(p["subtitle"], format!("G{g} Accounts · 0/2"));
+    assert_eq!(p["subtitle_url"], format!("taskboard://goal/G{g}"));
+    assert_eq!(p["buttons"][1], json!({"label": format!("Next: T{next}"), "open": format!("taskboard://task/T{next}")}));
+
+    b.set(next, fields!["status" => "done", "no_pr" => "nothing to change"]);
+    let p = panels(&b).pop().unwrap().1;
+    assert_eq!(p["subtitle"], format!("G{g} Accounts · 1/2"), "another task's progress updates it");
+    assert_eq!(p["buttons"].as_array().unwrap().len(), 1, "no next task left");
+}
+
+#[test]
+fn a_board_without_the_runner_sends_no_panels() {
+    let b = new_board(false);
+    let id = b.task_on("s1", "Login");
+    b.set(id, fields!["status" => "done", "no_pr" => "nothing to change"]);
+    assert!(b.app.shared.lock().midna_panels.is_empty());
+    assert_eq!(panels(&b), vec![]);
 }

@@ -27,7 +27,7 @@ pub fn find_task(app: &App, id: Option<i64>) -> Result<Option<Row>> {
 }
 
 pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> {
-    let before = if f.iter().any(|(k, _)| hooks::watched(k) || crate::midna::tab_field(k)) { find_task(app, Some(id))? } else { None };
+    let before = if f.iter().any(|(k, _)| hooks::watched(k) || crate::midna::tab_field(k) || crate::midna::panel_field(k)) { find_task(app, Some(id))? } else { None };
     let goal = before.as_ref().and_then(|t| t.i("goal_id"));
     let goal_was_finished = match goal {
         Some(g) => goal_finished(app, g)?,
@@ -46,6 +46,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
             hooks::fire(app, event, &after, Some(&before));
         }
         crate::midna::task_changed(app, &before, &after)?;
+        crate::midna::panel_changed(app, &before, &after)?;
         if let (Some(g), false) = (goal, goal_was_finished) {
             if goal_finished(app, g)? {
                 on_goal_finished(app, g, Some(&after))?;

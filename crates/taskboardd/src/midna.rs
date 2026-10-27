@@ -438,6 +438,7 @@ pub fn jobs_loop(app: Arc<App>) {
         let down = app.shared.lock().midna_down;
         if !down {
             send_tabs(&app);
+            send_panels(&app);
         }
         let j = if down {
             None
@@ -873,14 +874,12 @@ fn remove_old_triggers(app: &App, run: &str) {
 /// What a task's terminal tab shows for its state, if anything.
 pub fn task_tab(t: &Row) -> Option<&'static str> {
     if t.s("status") == Some("done") {
-        let merged = t.s("pr_phase") == Some("merged") || t.s("pr_state").is_some_and(|s| s.eq_ignore_ascii_case("MERGED"));
-        let asked = jloads_obj(t.s("pr_flow")).get("stopped").is_some_and(|s| s["asked"] == true);
         return if t.b("failed") {
             Some("failed")
-        } else if merged || (t.i("pr_num").is_none() && !has(t.s("pr_url"))) {
+        } else if pr_merged(t) || (t.i("pr_num").is_none() && !has(t.s("pr_url"))) {
             Some("done")
         } else if board::pr_still_open(t) {
-            Some(if asked { "question" } else { "in_review" })
+            Some(if pr_asked(t) { "question" } else { "in_review" })
         } else {
             None
         };
@@ -890,6 +889,15 @@ pub fn task_tab(t: &Row) -> Option<&'static str> {
     }
     // waits_for outlives the wait, so only a task parked on it is waiting.
     (t.s("status") == Some("queued") && crate::waitsfor::parked(t).is_some()).then_some("waiting")
+}
+
+fn pr_merged(t: &Row) -> bool {
+    t.s("pr_phase") == Some("merged") || t.s("pr_state").is_some_and(|s| s.eq_ignore_ascii_case("MERGED"))
+}
+
+/// Whether the task's PR visit stopped to ask Morgan something.
+fn pr_asked(t: &Row) -> bool {
+    jloads_obj(t.s("pr_flow")).get("stopped").is_some_and(|s| s["asked"] == true)
 }
 
 /// The terminal a task's tab status goes on: the one visiting its PR, else its own, else the one it
@@ -1009,6 +1017,213 @@ pub fn send_tabs(app: &App) {
                 }
             }
             Err(MidnaError::Refused(e)) => app.info(format!("midna: couldn't set {sid}'s tab to {tab}: {e}")),
+        }
+    }
+}
+
+/// The most tasks kept waiting to send their panel while Midna is away.
+const PANELS_KEPT: usize = 200;
+/// The most terminals whose last panel is kept, so an unchanged one isn't sent again.
+const PANELS_REMEMBERED: usize = 500;
+
+/// The task fields a terminal's panel is read from (`task_panel`), beyond the tab status's.
+pub fn panel_field(field: &str) -> bool {
+    tab_field(field) || matches!(field, "session_id" | "title" | "goal_id")
+}
+
+/// The badge and color a task's panel shows for its state.
+pub fn panel_state(t: &Row) -> (&'static str, &'static str) {
+    match t.s("status") {
+        Some("done") if t.b("failed") => ("Failed", "red"),
+        Some("done") if pr_merged(t) => ("Merged", "green"),
+        Some("done") if board::pr_still_open(t) => match pr_asked(t) {
+            true => ("Question", "amber"),
+            false => ("In review", "purple"),
+        },
+        Some("done") if t.i("pr_num").is_some() || has(t.s("pr_url")) => ("PR closed", "gray"),
+        Some("done") => ("Done", "green"),
+        Some("needs") => match t.s("needs_reason") {
+            Some("question") => ("Question", "amber"),
+            Some("lost") => ("Lost", "red"),
+            _ => ("Needs you", "amber"),
+        },
+        Some("working") => ("Working", "teal"),
+        Some("queued") if crate::waitsfor::parked(t).is_some() => ("Waiting", "blue"),
+        Some("queued") => ("Queued", "gray"),
+        _ => ("Planned", "gray"),
+    }
+}
+
+/// The panel a task puts on its terminals' entries in Midna's Summary: the task and its state, its
+/// goal (`goal`, with how many of its tasks are done) and buttons to the task, its PR and the goal's
+/// next task (`next`).
+pub fn task_panel(app: &App, t: &Row, goal: Option<(&Row, i64, i64)>, next: Option<&Row>) -> Value {
+    let tref = rf("task", t.id());
+    let (badge, color) = panel_state(t);
+    let open = dispatch::page_link(app, &format!("task/{tref}"));
+    let mut buttons = vec![json!({"label": "Open task", "open": open})];
+    if let Some(pr) = t.s("pr_url").filter(|u| u.starts_with("https://") || u.starts_with("http://")) {
+        let label = t.i("pr_num").map(|n| format!("PR #{n}")).unwrap_or_else(|| "Open PR".into());
+        buttons.push(json!({"label": label, "open": pr}));
+    }
+    if let Some(n) = next {
+        let nref = rf("task", n.id());
+        buttons.push(json!({"label": format!("Next: {nref}"), "open": dispatch::page_link(app, &format!("task/{nref}"))}));
+    }
+    let mut panel = json!({
+        "title": one_line(&format!("{tref} {}", t.st("title")), 120),
+        "url": open,
+        "badge": badge,
+        "color": color,
+        "line": format!("{tref} {badge}"),
+        "buttons": buttons,
+        "app": links_owner(app),
+    });
+    if let Some((g, done, total)) = goal {
+        let gref = rf("goal", g.id());
+        panel["subtitle"] = json!(one_line(&format!("{gref} {} · {done}/{total}", g.st("name")), 120));
+        panel["subtitle_url"] = json!(dispatch::page_link(app, &format!("goal/{gref}")));
+    }
+    panel
+}
+
+/// The task's panel and the terminals it goes on (none when no terminal shows it).
+fn panel_of(app: &App, t: &Row) -> Result<Option<(Vec<String>, Value)>> {
+    let sids = panel_terminals(app, t)?;
+    if sids.is_empty() {
+        return Ok(None);
+    }
+    let goal = board::find_goal(app, t.i("goal_id"))?;
+    let (counts, next) = match &goal {
+        Some(g) => (Some(board::goal_counts(app, g.id())?), next_in_goal(&board::goal_tasks(app, g.id())?, t)),
+        None => (None, None),
+    };
+    let goal = goal.as_ref().zip(counts).map(|(g, c)| (g, c["done"].as_i64().unwrap_or(0), c["total"].as_i64().unwrap_or(0)));
+    Ok(Some((sids, task_panel(app, t, goal, next.as_ref()))))
+}
+
+/// The goal's next task for `t`: the first not done after it in the goal's order, else before it.
+fn next_in_goal(tasks: &[Row], t: &Row) -> Option<Row> {
+    let at = tasks.iter().position(|r| r.id() == t.id()).unwrap_or(0);
+    let open = |r: &&Row| r.id() != t.id() && r.s("status") != Some("done");
+    tasks[at..].iter().find(open).or_else(|| tasks[..at].iter().find(open)).cloned()
+}
+
+/// The terminals showing task `t` in Midna (running or closed): its own and the ones it worked in,
+/// each while it's the task that terminal shows (`terminal_task`).
+fn panel_terminals(app: &App, t: &Row) -> Result<Vec<String>> {
+    let mut sids: Vec<String> = t.s("session_id").filter(|s| !s.is_empty()).map(|s| vec![s.to_string()]).unwrap_or_default();
+    for r in app.db.q("SELECT session_id FROM task_terminals WHERE task_id = ? ORDER BY at DESC LIMIT 5", p![t.id()])? {
+        if let Some(s) = r.s("session_id").filter(|s| !s.is_empty() && !sids.iter().any(|x| x == s)) {
+            sids.push(s.to_string());
+        }
+    }
+    let mut out = vec![];
+    for sid in sids {
+        if terminal_task(app, &sid)? == Some(t.id()) {
+            out.push(sid);
+        }
+    }
+    Ok(out)
+}
+
+/// The task a terminal's panel shows: the open one on it, else the last one it worked on.
+fn terminal_task(app: &App, sid: &str) -> Result<Option<i64>> {
+    let open = app.db.val("SELECT id FROM tasks WHERE session_id = ? AND status != 'done' ORDER BY updated_at DESC, id DESC LIMIT 1", p![sid])?;
+    if let Some(id) = open.as_i64() {
+        return Ok(Some(id));
+    }
+    if let Some(id) = board::get_session(app, Some(sid))?.and_then(|s| s.i("last_task")) {
+        return Ok(Some(id));
+    }
+    Ok(app.db.val("SELECT task_id FROM task_terminals WHERE session_id = ? ORDER BY at DESC LIMIT 1", p![sid])?.as_i64())
+}
+
+/// Queues task `id`'s panel for its terminals; the jobs thread sends it.
+pub fn queue_panel(app: &App, id: i64) {
+    if !app.cfg.runner {
+        return;
+    }
+    let mut s = app.shared.lock();
+    if s.midna_panels.contains(&id) {
+        return;
+    }
+    if s.midna_panels.len() >= PANELS_KEPT {
+        s.midna_panels.pop_front();
+    }
+    s.midna_panels.push_back(id);
+    drop(s);
+    app.notify_jobs();
+}
+
+/// Queues a task's panel when its state moved from `before` to `after` changes it, and its goal's
+/// other tasks' panels when that changes the goal's progress or next task.
+pub fn panel_changed(app: &App, before: &Row, after: &Row) -> Result<()> {
+    if !app.cfg.runner {
+        return Ok(());
+    }
+    let shown = |t: &Row| (panel_state(t), t.v("title"), t.v("session_id"), t.v("goal_id"), t.v("pr_url"), t.v("pr_num"));
+    if shown(before) == shown(after) {
+        return Ok(());
+    }
+    queue_panel(app, after.id());
+    let goals = [before.i("goal_id"), after.i("goal_id")];
+    if panel_state(before) == panel_state(after) && goals[0] == goals[1] {
+        return Ok(());
+    }
+    for g in goals.into_iter().flatten() {
+        let others = app.db.q(
+            "SELECT DISTINCT tt.task_id FROM task_terminals tt JOIN tasks t ON t.id = tt.task_id WHERE t.goal_id = ? AND t.id != ?",
+            p![g, after.id()],
+        )?;
+        for o in others {
+            queue_panel(app, o.i0("task_id"));
+        }
+    }
+    Ok(())
+}
+
+/// Sends the queued tasks' panels to the Summary entries of their terminals. One Midna won't take is
+/// logged (one for a terminal it doesn't know, quietly) and dropped; with Midna down they wait. A
+/// Midna too old for `summary.annotate` is logged once.
+pub fn send_panels(app: &App) {
+    static TOO_OLD: AtomicBool = AtomicBool::new(false);
+    loop {
+        let Some(id) = app.shared.lock().midna_panels.pop_front() else { return };
+        let (sids, panel) = match board::find_task(app, Some(id)).and_then(|t| t.map(|t| panel_of(app, &t)).transpose()) {
+            Ok(Some(Some(p))) => p,
+            Ok(_) => continue,
+            Err(e) => {
+                app.info(format!("midna: couldn't build {}'s panel: {e}", rf("task", id)));
+                continue;
+            }
+        };
+        let owner = links_owner(app).to_lowercase().replace(' ', "-");
+        for sid in sids {
+            if app.shared.lock().midna_panels_sent.get(&sid) == Some(&panel) {
+                continue;
+            }
+            match call_timeout(app, "summary.annotate", json!({"id": sid, "owner": owner, "panel": panel}), 5.0) {
+                Ok(_) => {
+                    let mut s = app.shared.lock();
+                    if s.midna_panels_sent.len() >= PANELS_REMEMBERED {
+                        s.midna_panels_sent.clear();
+                    }
+                    s.midna_panels_sent.insert(sid, panel.clone());
+                }
+                Err(MidnaError::Down(_)) => {
+                    app.shared.lock().midna_panels.push_front(id);
+                    return;
+                }
+                Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
+                    if !TOO_OLD.swap(true, Ordering::Relaxed) {
+                        app.info("midna: it doesn't take Summary panels yet (summary.annotate); closed terminals show no task until it's updated".to_string());
+                    }
+                }
+                // A terminal Midna has dropped from its Summary.
+                Err(MidnaError::Refused(e)) if e.starts_with("no terminal") => {}
+                Err(MidnaError::Refused(e)) => app.info(format!("midna: couldn't put {}'s panel on {sid}: {e}", rf("task", id))),
+            }
         }
     }
 }
@@ -1242,6 +1457,84 @@ mod tests {
             app.db.insert("tasks", vec![("title", json!("t")), ("pr_url", json!(format!("https://github.com/o/r/pull/{n}")))]).unwrap();
         }
         assert_eq!(link_menus(&app, "tb").len(), MAX_MENUS);
+    }
+
+    fn row(fields: Value) -> Row {
+        fields.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn panel_states_have_a_badge_and_color() {
+        let pr = |extra: Value| {
+            let mut t = json!({"status": "done", "pr_num": 9, "pr_url": "https://github.com/o/r/pull/9", "pr_state": "OPEN", "pr_phase": "checks"});
+            t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            row(t)
+        };
+        let cases = [
+            (row(json!({"status": "working"})), ("Working", "teal")),
+            (row(json!({"status": "queued"})), ("Queued", "gray")),
+            (row(json!({"status": "queued", "context": "{\"parked\": {\"session\": \"s1\"}}"})), ("Waiting", "blue")),
+            (row(json!({"status": "needs", "needs_reason": "question"})), ("Question", "amber")),
+            (row(json!({"status": "needs", "needs_reason": "lost"})), ("Lost", "red")),
+            (row(json!({"status": "needs", "needs_reason": "attention"})), ("Needs you", "amber")),
+            (row(json!({"status": "done"})), ("Done", "green")),
+            (row(json!({"status": "done", "failed": 1})), ("Failed", "red")),
+            (pr(json!({})), ("In review", "purple")),
+            (pr(json!({"pr_flow": "{\"stopped\": {\"asked\": true}}"})), ("Question", "amber")),
+            (pr(json!({"pr_phase": "merged", "pr_state": "MERGED"})), ("Merged", "green")),
+            (pr(json!({"pr_state": "CLOSED"})), ("PR closed", "gray")),
+            (pr(json!({"failed": 1})), ("Failed", "red")),
+            (row(json!({})), ("Planned", "gray")),
+        ];
+        for (t, want) in cases {
+            assert_eq!(panel_state(&t), want, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn a_task_panel_shows_the_task_its_goal_and_where_to_go_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let t = row(json!({"id": 731, "title": "Dropped files  type their path", "status": "done", "pr_num": 88,
+                           "pr_url": "https://github.com/o/r/pull/88", "pr_state": "OPEN", "pr_phase": "review"}));
+        let g = row(json!({"id": 12, "name": "Drag and drop"}));
+        let next = row(json!({"id": 732, "title": "Drop folders"}));
+        assert_eq!(
+            task_panel(&app, &t, Some((&g, 3, 5)), Some(&next)),
+            json!({
+                "title": "T731 Dropped files type their path",
+                "url": "taskboard://task/T731",
+                "badge": "In review",
+                "color": "purple",
+                "line": "T731 In review",
+                "subtitle": "G12 Drag and drop · 3/5",
+                "subtitle_url": "taskboard://goal/G12",
+                "buttons": [
+                    {"label": "Open task", "open": "taskboard://task/T731"},
+                    {"label": "PR #88", "open": "https://github.com/o/r/pull/88"},
+                    {"label": "Next: T732", "open": "taskboard://task/T732"},
+                ],
+                "app": "Taskboard",
+            })
+        );
+        let alone = row(json!({"id": 5, "title": "Fix", "status": "working", "pr_url": "file:///tmp/x"}));
+        let p = task_panel(&app, &alone, None, None);
+        assert_eq!(p["buttons"], json!([{"label": "Open task", "open": "taskboard://task/T5"}]), "only web PR links");
+        assert!(p.get("subtitle").is_none() && p.get("subtitle_url").is_none());
+    }
+
+    #[test]
+    fn the_next_task_is_the_goals_next_open_one() {
+        let tasks: Vec<Row> = [(1, "done"), (2, "queued"), (3, "working"), (4, "done"), (5, "queued")]
+            .iter()
+            .map(|(id, s)| row(json!({"id": id, "status": s})))
+            .collect();
+        let next = |id: i64| next_in_goal(&tasks, &tasks[(id - 1) as usize]).map(|r| r.id());
+        assert_eq!(next(3), Some(5));
+        assert_eq!(next(5), Some(2), "wraps to the earliest open one");
+        assert_eq!(next(1), Some(2));
+        let alone = vec![row(json!({"id": 1, "status": "working"}))];
+        assert_eq!(next_in_goal(&alone, &alone[0]), None);
     }
 
     #[test]
