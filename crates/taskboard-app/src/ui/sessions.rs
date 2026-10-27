@@ -1395,13 +1395,6 @@ pub fn escape(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>)
     false
 }
 
-/// Show a terminal from a task ("Back to T12" leads back to it), like the web board's terminal links.
-pub fn open_from_task(m: &mut MainWindow, session_id: &str, task_ref: &str, cx: &mut Context<MainWindow>) {
-    m.sessions.back = Some(task_ref.to_string());
-    m.go(Page::Sessions, cx);
-    open(m, session_id, cx);
-}
-
 /// The page was left (the web route lost its `back=`).
 pub fn left(m: &mut MainWindow) {
     m.sessions.back = None;
@@ -2772,21 +2765,6 @@ mod tests {
             m.go(Page::Board, cx);
             m.sessions.confirm = Some("fake-s1".into());
             assert!(!escape(m, window, cx), "only on the Sessions page");
-        })
-        .unwrap();
-    }
-
-    #[gpui_kit::test]
-    fn back_to_the_task(cx: &mut TestAppContext) {
-        let (w, _rec) = page(cx);
-        w.update(cx, |m, _, cx| {
-            m.go(Page::Board, cx);
-            open_from_task(m, "fake-s2", "T3", cx);
-            assert_eq!(m.page, Page::Sessions);
-            assert_eq!(m.sessions.selected.as_deref(), Some("fake-s2"));
-            assert_eq!(header_vm(None, "", m.sessions.back.as_deref()).back.as_deref(), Some("Back to T3"));
-            m.go(Page::Board, cx);
-            assert_eq!(m.sessions.back, None, "leaving the page drops it");
         })
         .unwrap();
     }
