@@ -910,9 +910,11 @@ fn roster_ids(app: &App, project: &str, rec: &mut crate::prhost::Record) -> Resu
 }
 
 /// Reads one task's PR now and steps it, as the poll does. The record, or why the host couldn't be read.
+/// The read is fresh (`prhost::limit::fresh`): it's made to see what changed, so it takes no answer
+/// sent before it began.
 pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, String>> {
     let t = board::get_task(app, id)?;
-    let rec = match read(app, &t) {
+    let rec = match crate::prhost::limit::fresh(|| read(app, &t)) {
         Ok(r) => r,
         Err(e) => return Ok(Err(e)),
     };
@@ -945,7 +947,7 @@ pub fn apply_event(app: &App, id: i64, ev: &Value) -> Result<Option<Value>> {
     if crate::prhost::Record::lacks_checks(ev, &prior) {
         let Some(pr) = crate::prhost::PrRef::of(&t) else { return Ok(None) };
         let Ok(host) = crate::prhost::host_for(app, &pr.host) else { return Ok(None) };
-        match host.checks(&pr, &rec.head) {
+        match crate::prhost::limit::fresh(|| host.checks(&pr, &rec.head)) {
             Ok(Some(checks)) => rec.checks = checks,
             _ => return Ok(None),
         }
