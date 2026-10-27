@@ -85,7 +85,7 @@ impl Board {
     /// The visits the board woke the PR's agent for, oldest first.
     fn visits(&self, id: i64) -> Vec<Value> {
         let jobs = self.app.db.q("SELECT args FROM jobs WHERE purpose = 'pr' AND task_id = ? ORDER BY id", taskboardd::p![id]).unwrap();
-        jobs.iter().map(|j| jloads_obj(j.s("args")).into_iter().collect::<serde_json::Map<_, _>>().into()).collect()
+        jobs.iter().map(|j| Value::Object(board::job_args(j).into_iter().collect())).collect()
     }
     fn calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.dir.path().join("calls.txt")).unwrap_or_default().lines().map(|l| l.to_string()).collect()
@@ -400,4 +400,61 @@ fn the_merge_visit_says_approved_only_when_it_was() {
     assert_eq!(b.step_with_lens(id, done, &approved).s("pr_phase"), Some("merge"));
     let prompt = b.visits(id).last().unwrap()["prompt"].as_str().unwrap().to_string();
     assert!(prompt.contains("It's approved and every check is green."), "{prompt}");
+}
+
+const MERGE_STEP: &str = r#"
+[[steps]]
+name = "Staging check"
+before = "merge"
+prompt = "Check it on staging."
+"#;
+
+#[test]
+fn the_steps_visit_says_approved_only_when_it_was() {
+    let done = json!({"state": "done", "head": "h1", "at": now_iso()});
+    let say = |review: bool, approved: bool| {
+        let b = board_with(|c| {
+            c.pr.lens.on = true;
+            c.pr.agents_merge = Some(true);
+            c.pr.projects.insert("webapp".into(), taskboardd::config::PrProject { review: Some(review), ..Default::default() });
+        });
+        std::fs::write(&b.app.cfg.config_path, MERGE_STEP).unwrap();
+        let id = b.pr_task();
+        let mut rec = green();
+        if approved {
+            rec["review_decision"] = json!("APPROVED");
+            rec["approvals"] = json!(1);
+        }
+        assert_eq!(b.step_with_lens(id, done.clone(), &rec).s("pr_phase"), Some("steps"));
+        b.visits(id).last().unwrap()["prompt"].as_str().unwrap().to_string()
+    };
+    let off = say(false, false);
+    assert!(off.contains("Every check is green, but its merge waits"), "{off}");
+    let on = say(true, true);
+    assert!(on.contains("It's approved and every check is green, but its merge waits"), "{on}");
+}
+
+#[test]
+fn lens_finishing_steps_with_the_last_read_when_there_is_nothing_fresh_to_read() {
+    // A host the board doesn't watch is never read, so lens finishing steps the stored record.
+    let b = board_with(|c| c.pr.lens.on = true);
+    let id = b.pr_task();
+    let queued = json!({"state": "queued", "head": "h1", "at": now_iso(), "tries": 1});
+    b.step_with_lens(id, queued, &green());
+    let host = FakeHost::new("github", green_record());
+    prhost::install(&b.app, host.clone());
+    b.app.db.x("UPDATE tasks SET pr_host = 'unwatched.example' WHERE id = ?", taskboardd::p![id]).unwrap();
+    lens_pr::run(&b.app, id).unwrap();
+    assert_eq!(*host.reads.lock(), 0, "an unwatched host is never read");
+    assert_ne!(b.task(id).s("pr_phase"), Some("lens"), "stepped with the last read");
+
+    // No stored read yet: the PR's first read steps it, so lens finishing reads nothing.
+    let b = lens_on();
+    let id = b.pr_task();
+    let host = FakeHost::new("github", green_record());
+    prhost::install(&b.app, host.clone());
+    prflow::merge_flow(&b.app, id, vec![("lens", json!({"state": "queued", "head": "h1", "at": now_iso(), "tries": 1}))]).unwrap();
+    b.app.db.x("UPDATE tasks SET pr_flow = json_remove(pr_flow, '$.rec') WHERE id = ?", taskboardd::p![id]).unwrap();
+    lens_pr::run(&b.app, id).unwrap();
+    assert_eq!(*host.reads.lock(), 0, "no record to re-read");
 }
