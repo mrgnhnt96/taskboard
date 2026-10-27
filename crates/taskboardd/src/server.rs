@@ -38,8 +38,13 @@ fn error(status: u16, message: &str) -> Response {
 /// `{"progress": "<line>"}` per stage as the handler finishes it, then `{"result": …}` or
 /// `{"error": "<sentence>", "status": <code>}`. The 200 goes out with the first line, so the error's
 /// status is on the last one. `tb` asks for it on its long commands, and its time limit then restarts
-/// with each line.
+/// with each line. A stage that says nothing for `KEEPALIVE` (waiting on the db lock, a hook, the
+/// host's call queue) still sends a blank line, which `tb` skips, so it never times out on a board
+/// that's still working.
 pub const PROGRESS_HEADER: &str = "x-task-board-progress";
+
+/// How long the progress stream goes without a line before it sends a blank one: under `tb`'s 5s.
+const KEEPALIVE: std::time::Duration = crate::progress::WAITING_EVERY;
 
 fn streamed(
     app: Arc<App>,
@@ -47,14 +52,34 @@ fn streamed(
     path: String,
     run: impl FnOnce(crate::progress::Sink) -> crate::util::Result<Value> + Send + 'static,
 ) -> Response {
+    streamed_every(app, method, path, KEEPALIVE, run)
+}
+
+fn streamed_every(
+    app: Arc<App>,
+    method: Method,
+    path: String,
+    keepalive: std::time::Duration,
+    run: impl FnOnce(crate::progress::Sink) -> crate::util::Result<Value> + Send + 'static,
+) -> Response {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let lines = tx.clone();
     let sink: crate::progress::Sink = Arc::new(move |line: &str| {
         let _ = lines.send(format!("{}\n", json!({"progress": line})));
     });
+    let blank = tx.clone();
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(keepalive).await;
+            if blank.send("\n".into()).is_err() {
+                break;
+            }
+        }
+    });
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         let out = tokio::task::spawn_blocking(move || run(sink)).await;
+        ticker.abort();
         let ms = started.elapsed().as_millis();
         if ms > 1000 {
             app.info(format!("slow request: {method} {path} took {ms} ms (streamed)"));
@@ -391,11 +416,40 @@ mod tests {
         assert_eq!(s, 200, "{v}");
     }
 
-    /// A streamed reply's content type and its lines.
+    /// A streamed reply's content type and its lines, without the blank keepalives.
     async fn lines(resp: Response) -> (String, Vec<Value>) {
         let ct = resp.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
         let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-        (ct, String::from_utf8(bytes.to_vec()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect())
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        (ct, text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect())
+    }
+
+    #[tokio::test]
+    async fn a_quiet_stage_still_sends_blank_lines_until_the_result() {
+        use futures_util::StreamExt;
+        let (_r, app, _id, _d) = board_with_task();
+        let keepalive = std::time::Duration::from_millis(50);
+        // Silent for 8 keepalives: waiting on the db lock or the host's call queue says nothing.
+        let resp = streamed_every(app, Method::POST, "/x".into(), keepalive, |sink| {
+            crate::progress::with(sink, || {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                Ok(json!({"ok": true}))
+            })
+        });
+        let mut body = resp.into_body().into_data_stream();
+        let mut got = vec![];
+        let mut longest = std::time::Duration::ZERO;
+        let mut last = std::time::Instant::now();
+        while let Some(chunk) = body.next().await {
+            longest = longest.max(last.elapsed());
+            last = std::time::Instant::now();
+            got.push(String::from_utf8(chunk.unwrap().to_vec()).unwrap());
+        }
+        let text = got.concat();
+        let (blanks, rest): (Vec<&str>, Vec<&str>) = text.lines().partition(|l| l.is_empty());
+        assert!(blanks.len() >= 3, "{text:?}");
+        assert_eq!(rest, [json!({"result": {"ok": true}}).to_string()]);
+        assert!(longest < std::time::Duration::from_millis(250), "went quiet for {longest:?}");
     }
 
     #[tokio::test]

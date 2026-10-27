@@ -385,6 +385,14 @@ mod tests {
     }
 
     #[test]
+    fn blank_lines_keep_a_quiet_stage_alive() {
+        // The board's keepalive: blank lines 150ms apart while a stage says nothing, past the 400ms limit.
+        let cfg = board("application/x-ndjson", &["", "", "", "", r#"{"result":{"ok":true}}"#], Duration::from_millis(150));
+        let v = request_progress(&cfg, "POST", "/x", None, 0.4, |s| panic!("no stage, got {s}")).unwrap();
+        assert_eq!(v, json!({"ok": true}));
+    }
+
+    #[test]
     fn a_stage_that_hangs_times_out_as_quiet_not_gone() {
         let cfg = board("application/x-ndjson", &[r#"{"progress":"Read PR #3"}"#], Duration::from_millis(600));
         let e = request_progress(&cfg, "POST", "/x", None, 0.2, |_| {}).unwrap_err();

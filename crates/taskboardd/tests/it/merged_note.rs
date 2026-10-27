@@ -101,6 +101,27 @@ fn tb_done_refuses_a_ticketed_pr_task_without_a_note() {
 }
 
 #[test]
+fn a_submit_retried_after_it_went_through_changes_nothing() {
+    // #768: tb gave up waiting on the first submit, but the board finished it; the retry is safe.
+    let b = board_with(|_| {});
+    let t = b.ticketed();
+    let done = json!({"summary": "Added login", "pr": "https://github.com/acme/webapp/pull/9", "merged_note": "## What changed\nLogin.", "human": "1h"});
+    b.report("tb.done", done.clone()).unwrap();
+    let tasks = || b.app.db.count("SELECT COUNT(*) FROM tasks", vec![]).unwrap();
+    let jobs = || b.app.db.count("SELECT COUNT(*) FROM jobs", vec![]).unwrap();
+    let (before, before_jobs, first) = (tasks(), jobs(), b.task(t));
+
+    b.report("tb.done", json!({"summary": "Added login, again", "pr": "https://github.com/acme/webapp/pull/9", "merged_note": "Other.", "human": "2h"})).unwrap();
+    b.report("tb.done", done).unwrap();
+    let again = b.task(t);
+    assert_eq!(again.st("status"), "done");
+    for k in ["summary", "merged_note", "pr_url", "finished_at"] {
+        assert_eq!(again.get(k), first.get(k), "{k}");
+    }
+    assert_eq!((tasks(), jobs()), (before, before_jobs), "no second human task or job");
+}
+
+#[test]
 fn no_pr_and_tasks_without_a_ticket_aren_t_asked_for_a_note() {
     let b = board_with(|_| {});
     b.ticketed();
