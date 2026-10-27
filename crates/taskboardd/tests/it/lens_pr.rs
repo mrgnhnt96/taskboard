@@ -9,6 +9,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{jloads_obj, now_iso, RowExt};
+use taskboardd::prhost::{self, Check, FakeHost, Record, Thread};
 use taskboardd::{board, lens_pr, midna, prflow, reports};
 
 struct Board {
@@ -35,6 +36,8 @@ fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
     let app = App::for_tests(cfg);
+    // The read after lens posts goes to this host, not the real one.
+    prhost::install(&app, FakeHost::new("github", green_record()));
     app.db
         .set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string()))
         .unwrap();
@@ -43,6 +46,10 @@ fn board_with(f: impl FnOnce(&mut Config)) -> Board {
 
 fn lens_on() -> Board {
     board_with(|c| c.pr.lens.on = true)
+}
+
+fn green_record() -> Record {
+    Record { state: "OPEN".into(), head: "h1".into(), checks: vec![Check { name: "ci".into(), state: "passed".into(), url: None, at: None }], ..Default::default() }
 }
 
 fn green() -> Value {
@@ -74,6 +81,11 @@ impl Board {
     }
     fn lens(&self, id: i64) -> Value {
         jloads_obj(self.task(id).s("pr_flow")).get("lens").cloned().unwrap_or(Value::Null)
+    }
+    /// The visits the board woke the PR's agent for, oldest first.
+    fn visits(&self, id: i64) -> Vec<Value> {
+        let jobs = self.app.db.q("SELECT args FROM jobs WHERE purpose = 'pr' AND task_id = ? ORDER BY id", taskboardd::p![id]).unwrap();
+        jobs.iter().map(|j| jloads_obj(j.s("args")).into_iter().collect::<serde_json::Map<_, _>>().into()).collect()
     }
     fn calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.dir.path().join("calls.txt")).unwrap_or_default().lines().map(|l| l.to_string()).collect()
@@ -309,4 +321,83 @@ fn a_running_review_is_killed_when_the_pr_merges() {
     assert_eq!(lens["reason"], "the PR merged");
     let events = b.call("GET", &format!("/tasks/T{id}"), json!({})).to_string();
     assert!(events.contains("stopped the lens review, the PR merged"), "{events}");
+}
+
+#[test]
+fn once_lens_posts_the_pr_is_read_again_so_its_findings_hold_it_at_comments() {
+    let b = board_with(|c| {
+        c.pr.lens.on = true;
+        c.pr.approvals = 1;
+    });
+    let id = b.pr_task();
+    let mut approved = green();
+    approved["approvals"] = json!(1);
+    approved["review_decision"] = json!("APPROVED");
+    let queued = json!({"state": "queued", "head": "h1", "at": now_iso(), "tries": 1});
+    assert_eq!(b.step_with_lens(id, queued, &approved).s("pr_phase"), Some("lens"), "the last read, before lens ran");
+    let mut posted = green_record();
+    posted.approvals = 1;
+    posted.review_decision = "APPROVED".into();
+    posted.viewer = "morgan".into();
+    posted.threads = vec![Thread {
+        id: "th1".into(),
+        kind: "review".into(),
+        resolvable: true,
+        author: "morgan".into(),
+        last_author: "morgan".into(),
+        last_at: now_iso(),
+        text: "Off by one".into(),
+        body: "Off by one.\n\n<!-- lens:finding key=abc -->".into(),
+        ..Default::default()
+    }];
+    let host = FakeHost::new("github", posted);
+    prhost::install(&b.app, host.clone());
+    lens_pr::run(&b.app, id).unwrap();
+    assert_eq!(b.lens(id)["state"], "done");
+    assert_eq!(*host.reads.lock(), 1, "read fresh once lens posted");
+    assert_eq!(b.task(id).s("pr_phase"), Some("comments"), "its findings hold it, not the read before lens ran");
+    let visits: Vec<Value> = b.visits(id).iter().map(|v| v["visit"].clone()).collect();
+    assert_eq!(visits, [json!("comments")], "never woken to merge");
+}
+
+#[test]
+fn when_the_host_can_t_be_read_after_lens_posts_a_late_read_steps_it() {
+    let b = lens_on();
+    let id = b.pr_task();
+    let queued = json!({"state": "queued", "head": "h1", "at": now_iso(), "tries": 1});
+    b.step_with_lens(id, queued, &green());
+    let host = FakeHost::new("github", green_record());
+    *host.read_error.lock() = Some("the host is down".into());
+    prhost::install(&b.app, host);
+    lens_pr::run(&b.app, id).unwrap();
+    assert_eq!(b.lens(id)["state"], "done");
+    assert_eq!(b.task(id).s("pr_phase"), Some("lens"), "not stepped with the read before lens ran");
+    assert!(jloads_obj(b.task(id).s("pr_flow")).get("reread_at").is_some_and(|r| r.is_string()), "a late read is due");
+}
+
+#[test]
+fn the_merge_visit_says_approved_only_when_it_was() {
+    let b = board_with(|c| {
+        c.pr.lens.on = true;
+        c.pr.agents_merge = Some(true);
+        c.pr.projects.insert("webapp".into(), taskboardd::config::PrProject { review: Some(false), ..Default::default() });
+    });
+    let id = b.pr_task();
+    let done = json!({"state": "done", "head": "h1", "at": now_iso()});
+    assert_eq!(b.step_with_lens(id, done.clone(), &green()).s("pr_phase"), Some("merge"));
+    let prompt = b.visits(id).last().unwrap()["prompt"].as_str().unwrap().to_string();
+    assert!(prompt.contains("Every check is green and nothing holds it."), "{prompt}");
+    assert!(!prompt.contains("approved"), "the review is off: {prompt}");
+
+    let b = board_with(|c| {
+        c.pr.lens.on = true;
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task();
+    let mut approved = green();
+    approved["review_decision"] = json!("APPROVED");
+    approved["approvals"] = json!(1);
+    assert_eq!(b.step_with_lens(id, done, &approved).s("pr_phase"), Some("merge"));
+    let prompt = b.visits(id).last().unwrap()["prompt"].as_str().unwrap().to_string();
+    assert!(prompt.contains("It's approved and every check is green."), "{prompt}");
 }

@@ -169,10 +169,7 @@ pub fn act(app: &App, id: i64, body: &Value) -> Result<Value> {
     } else {
         return err(400, "Say what to do: --retry, or --skip \"<why>\".");
     }
-    let t = board::get_task(app, id)?;
-    if let Some(rec) = jloads_obj(t.s("pr_flow")).get("rec").filter(|r| r.is_object()).cloned() {
-        app.db.tx(|| prflow::step(app, &t, &rec))?;
-    }
+    step_last(app, id)?;
     let t = board::get_task(app, id)?;
     Ok(json!({"ok": true, "task": rf("task", id), "lens": jloads_obj(t.s("pr_flow")).get("lens").cloned(), "pr": board::pr_card(app, &t)}))
 }
@@ -199,7 +196,7 @@ fn update(app: &App, id: i64, changes: Value) -> Result<()> {
 }
 
 /// One queued run: lens's PR pass from the PR's repo, then the outcome on the board and the PR stepped
-/// again, so it moves on from the `lens` stage.
+/// again (read fresh once lens has posted), so it moves on from the `lens` stage.
 pub fn run(app: &App, id: i64) -> Result<()> {
     let t = board::get_task(app, id)?;
     let num = t.i0("pr_num");
@@ -221,12 +218,37 @@ pub fn run(app: &App, id: i64) -> Result<()> {
         Ok(Some(log)) => {
             update(app, id, json!({"state": "done", "finished_at": finished_at, "log": log}))?;
             board::log_event(app, id, "lens", "status", &format!("PR #{num}: lens reviewed it and posted what it found"))?;
+            return reread(app, id, num);
         }
         Err((why, log)) => {
             let tries = jloads_obj(t.s("pr_flow")).get("lens").and_then(|l| l["tries"].as_i64()).unwrap_or(1);
             failed(app, &t, tries, why, log.clone())?;
         }
     }
+    step_last(app, id)
+}
+
+/// Steps the PR with a fresh read once lens has posted: the record read before it ran has none of its
+/// findings, so it would move a green PR on to its merge. When the host can't be read now, the next
+/// late read (`prflow::late_reads`) steps it instead; until then lens's stage stays.
+fn reread(app: &App, id: i64, num: i64) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    if !prflow::flow(&t).contains_key("rec") {
+        // The PR's first read, which started the review, steps it.
+        return Ok(());
+    }
+    if !crate::prhost::watched(t.s("pr_host")) {
+        return step_last(app, id);
+    }
+    if let Err(e) = prflow::refresh_task(app, id)? {
+        app.info(format!("lens: reading PR #{num} after its review: {e}"));
+        prflow::merge_flow(app, id, fields!["reread_at" => now_iso()])?;
+    }
+    Ok(())
+}
+
+/// Steps the PR again with its last read.
+fn step_last(app: &App, id: i64) -> Result<()> {
     let t = board::get_task(app, id)?;
     if let Some(rec) = jloads_obj(t.s("pr_flow")).get("rec").filter(|r| r.is_object()).cloned() {
         app.db.tx(|| prflow::step(app, &t, &rec))?;
