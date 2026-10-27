@@ -434,12 +434,28 @@ pub fn task_for_session(app: &App, sid: Option<&str>) -> Result<Option<Row>> {
     }
 }
 
-/// The task terminal `sid` last handed in, once it's on none.
-pub fn submitted_by(app: &App, sid: &str) -> Result<Option<Row>> {
+/// The task terminal `sid` last had, once it's on none: the latest it handed in, else the one it
+/// last took or visited.
+pub fn last_task_of(app: &App, sid: &str) -> Result<Option<Row>> {
     if sid.is_empty() {
         return Ok(None);
     }
-    app.db.q1("SELECT * FROM tasks WHERE session_id = ? AND status = 'done' ORDER BY finished_at DESC, id DESC LIMIT 1", p![sid])
+    if let Some(t) = app.db.q1("SELECT * FROM tasks WHERE session_id = ? AND status = 'done' ORDER BY finished_at DESC, id DESC LIMIT 1", p![sid])? {
+        return Ok(Some(t));
+    }
+    find_task(app, get_session(app, Some(sid))?.and_then(|s| s.i("last_task")))
+}
+
+/// The goal terminal `sid` last ran (`tb start G<n>`).
+pub fn goal_ran_by(app: &App, sid: &str) -> Result<Option<Row>> {
+    let ran = app.db.q1(
+        "SELECT data FROM session_events WHERE session_id = ? AND kind = ? AND data LIKE 'G%' ORDER BY id DESC LIMIT 1",
+        p![sid, crate::startword::RAN],
+    )?;
+    match ran.and_then(|r| r.st("data").trim_start_matches('G').parse::<i64>().ok()) {
+        Some(id) => app.db.q1("SELECT * FROM goals WHERE id = ?", p![id]),
+        None => Ok(None),
+    }
 }
 
 pub fn get_session(app: &App, sid: Option<&str>) -> Result<Option<Row>> {

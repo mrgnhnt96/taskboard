@@ -87,12 +87,12 @@ pub fn segments(v: &Value, o: Options) -> Value {
     let link = |kind: &str, r: &str| format!("taskboard://{kind}/{r}");
     let named = |r: &str, title: &str, n: usize| if o.title && !title.is_empty() { format!("{r} {}", clip(title, n)) } else { r.to_string() };
     let mut segs = vec![];
-    // The task it's on, else a PR it's visiting, else the task it last handed in.
+    // The task it's on, else a PR it's visiting, else the task it last had, else the goal it last ran.
     let visit = v["task"]["ref"].is_null() && v["visiting"]["ref"].is_string();
     let t = match () {
         _ if v["task"]["ref"].is_string() => &v["task"],
         _ if visit => &v["visiting"],
-        _ => &v["submitted"],
+        _ => &v["last"],
     };
     if let Some(r) = t["ref"].as_str() {
         let title = t["title"].as_str().unwrap_or("");
@@ -127,6 +127,10 @@ pub fn segments(v: &Value, o: Options) -> Value {
             _ => named(r, title, 40),
         };
         segs.push(json!({"text": text, "tone": tone, "icon": icon, "tooltip": tip, "link": link("task", r)}));
+    } else if let Some(g) = v["goal"]["ref"].as_str() {
+        // The only thing tied to the terminal, so it shows even with the goal turned off.
+        let name = v["goal"]["name"].as_str().unwrap_or("");
+        segs.push(json!({"text": named(g, name, 24), "tone": "accent", "tooltip": format!("Ran here: {g} “{name}”"), "link": link("goal", g)}));
     }
     let line = v["line"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
     for (i, x) in line.iter().take(LINE_MAX).enumerate() {
@@ -299,11 +303,18 @@ mod tests {
 
     #[test]
     fn a_handed_in_task_stays_on_the_bar_once_the_terminal_is_on_none() {
-        let v = json!({"task": null, "line": [], "visiting": null, "submitted": {"ref": "T7", "title": "Add x", "status": "done", "goal": {"ref": "G2", "name": "Polish"},
+        let v = json!({"task": null, "line": [], "visiting": null, "last": {"ref": "T7", "title": "Add x", "status": "done", "goal": {"ref": "G2", "name": "Polish"},
                        "pr": {"num": 12, "state": "OPEN", "stage": {"phase": "review", "label": "Awaiting review"}}}});
         let s = segments(&v, Options::default());
         assert_eq!((s[0]["text"].as_str(), s[1]["text"].as_str()), (Some("G2 Polish"), Some("T7 Add x")));
         assert_eq!((s[1]["tone"].as_str(), s[1]["icon"].as_str()), (Some("accent"), Some("pr")));
+    }
+
+    #[test]
+    fn a_goal_run_here_shows_when_no_task_does() {
+        let v = json!({"task": null, "line": [], "visiting": null, "last": null, "goal": {"ref": "G2", "name": "Polish"}});
+        let s = segments(&v, Options { goal: false, title: true });
+        assert_eq!((s[0]["text"].as_str(), s[0]["link"].as_str()), (Some("G2 Polish"), Some("taskboard://goal/G2")));
     }
 
     #[test]

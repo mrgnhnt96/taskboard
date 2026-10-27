@@ -382,12 +382,22 @@ fn whoami_carries_the_tasks_detail() {
 fn whoami_keeps_the_task_a_terminal_handed_in_for_its_status_bar() {
     let b = new_board();
     let t1 = b.on_task("s1", "Fix the header");
-    assert!(b.get("whoami?session=s1")["submitted"].is_null(), "not while it's on a task");
+    assert!(b.get("whoami?session=s1")["last"].is_null(), "not while it's on a task");
     b.report("tb.done", "s1", json!({"summary": "Fixed it.", "pr": "https://github.com/acme/webapp/pull/7"}));
     let w = b.get("whoami?session=s1");
     assert!(w["task"].is_null(), "the terminal is on no task");
-    assert_eq!(w["submitted"]["ref"], t1);
-    assert_eq!(w["submitted"]["pr"]["num"], 7);
+    assert_eq!(w["last"]["ref"], t1);
+    assert_eq!(w["last"]["pr"]["num"], 7);
+}
+
+#[test]
+fn whoami_names_the_goal_a_terminal_ran_when_no_task_ties_to_it() {
+    let b = new_board();
+    b.add_session("s1");
+    assert!(b.get("whoami?session=s1")["goal"].is_null());
+    let g = b.post("goals", json!({"name": "Polish", "project": "web"}))["id"].as_i64().unwrap();
+    taskboardd::startword::note_ran_goal(&b.app, "s1", g).unwrap();
+    assert_eq!(b.get("whoami?session=s1")["goal"], json!({"ref": format!("G{g}"), "name": "Polish"}));
 }
 
 #[test]
