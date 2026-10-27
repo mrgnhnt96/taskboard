@@ -314,6 +314,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The effort the task's terminal starts with (`tb task new --effort`): low, medium, high, xhigh or
     // max; null for its model's tier's (`[models] small_effort`, …).
     ("tasks", "effort", "TEXT"),
+    // The folder Midna says the terminal is in, which for a slot's terminal is the slot, not its
+    // project's checkout (`project_path`). A PR visit types into an old terminal only in its own slot.
+    ("sessions", "cwd", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
