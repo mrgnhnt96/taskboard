@@ -19,7 +19,6 @@ use crate::util::*;
 use crate::{board, p, projects};
 
 static BASE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$").unwrap());
-const FETCH_SECS: f64 = 300.0;
 pub(crate) const GIT_SECS: f64 = 120.0;
 static TASK_IN_BRANCH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[/_-])t(\d+)(?:[/_-]|$)").unwrap());
 static TASK_IN_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[_-])t(\d+)$").unwrap());
@@ -168,7 +167,7 @@ pub fn make(app: &App, t: &Row, start: Option<&str>) -> Result<String> {
     }
     let remote = git(&repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0;
     if remote {
-        let r = crate::progress::waiting("git fetch origin", crate::progress::WAITING_EVERY, || git(&repo, &["fetch", "origin"], FETCH_SECS));
+        let r = crate::progress::waiting("git fetch origin", crate::progress::WAITING_EVERY, || crate::default_sync::fetch(&repo));
         if r.code != 0 {
             return err(409, format!("git fetch failed before making its worktree: {}", last_line(&r.err)));
         }
