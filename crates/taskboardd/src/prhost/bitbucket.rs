@@ -201,7 +201,6 @@ impl BitbucketHost {
         Ok(out)
     }
 
-    /// Sets the PR's reviewers to exactly these.
     /// Whether the PR merges cleanly into its base, as a bool: Bitbucket has no such flag, but its diffstat
     /// marks each conflicting file. Null when the diffstat can't be read whole.
     fn mergeable(&self, pr: &PrRef) -> Value {
@@ -217,9 +216,15 @@ impl BitbucketHost {
         if next.is_some() { Value::Null } else { Value::Bool(true) }
     }
 
+    /// Sets the PR's reviewers to exactly these, last-wins: a newer list replaces this one while it waits.
     fn put_reviewers(&self, pr: &PrRef, p: &Value, reviewers: Vec<Value>) -> HostResult<()> {
         let url = self.pr_url(pr);
-        super::limit::last_wins(format!("{url} reviewers"), || self.http.call("PUT", &url, Some(&json!({"title": p["title"], "reviewers": reviewers})))).map(|_| ())
+        super::limit::last_wins(format!("{url} reviewers"), || self.send_reviewers(&url, p, reviewers))
+    }
+
+    /// Sets the PR's reviewers to exactly these, going out even when a newer list follows.
+    fn send_reviewers(&self, url: &str, p: &Value, reviewers: Vec<Value>) -> HostResult<()> {
+        self.http.call("PUT", url, Some(&json!({"title": p["title"], "reviewers": reviewers}))).map(|_| ())
     }
 
     fn current_reviewers(p: &Value) -> Vec<Value> {
@@ -360,11 +365,12 @@ impl PrHost for BitbucketHost {
 
     fn re_request_reviews(&self, pr: &PrRef, users: &[String]) -> HostResult<()> {
         // Bitbucket has no "ask again": taking someone off the reviewers and putting them back clears
-        // their old approval or request for changes, and notifies them.
+        // their old approval or request for changes, and notifies them. So the taking off isn't
+        // last-wins: a newer list replacing it would leave them on, and the putting back would do nothing.
         let p = self.get(&self.pr_url(pr))?;
         let list = Self::current_reviewers(&p);
         let without: Vec<Value> = list.iter().filter(|r| !users.iter().any(|u| same_user(r, u))).cloned().collect();
-        self.put_reviewers(pr, &p, without.clone())?;
+        self.send_reviewers(&self.pr_url(pr), &p, without.clone())?;
         let mut with = without;
         with.extend(users.iter().map(|u| user_ref(u)));
         self.put_reviewers(pr, &p, with)
@@ -1001,10 +1007,16 @@ pub(crate) mod tests {
         h.retarget(&pr(), "develop").unwrap();
         h.set_description(&pr(), "## Summary").unwrap();
         h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true }).unwrap();
+        h.re_request_reviews(&pr(), &[REV.to_string()]).unwrap();
         let pr7 = "https://api/repositories/ws/repo/pullrequests/7";
         let marks = marks.lock().clone();
         let puts: Vec<_> = marks.iter().filter(|(c, _)| c.starts_with("PUT")).map(|(_, k)| k.clone()).collect();
-        assert_eq!(puts, vec![Some(format!("{pr7} reviewers")), Some(format!("{pr7} base")), Some(format!("{pr7} description"))]);
+        let reviewers = Some(format!("{pr7} reviewers"));
+        assert_eq!(
+            puts,
+            vec![reviewers.clone(), Some(format!("{pr7} base")), Some(format!("{pr7} description")), None, reviewers],
+            "asking again takes them off with a write that always goes out, then puts them back last-wins"
+        );
         assert!(marks.iter().any(|(c, _)| c == &format!("POST {pr7}/merge")));
         assert!(marks.iter().filter(|(c, _)| !c.starts_with("PUT")).all(|(_, k)| k.is_none()), "reads and merges aren't: {marks:?}");
     }

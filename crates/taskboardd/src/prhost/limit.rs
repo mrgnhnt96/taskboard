@@ -388,13 +388,18 @@ fn fresh_since() -> f64 {
 /// reviewers`): each only sets state, so a newer one with the same key replaces one still waiting for
 /// its slot (see "Collapsing writes"). Never for a merge, a comment or an approval.
 pub fn last_wins<T>(key: String, f: impl FnOnce() -> T) -> T {
-    let was = LAST_WINS.with(|k| k.replace(Some(key)));
-    let out = f();
-    LAST_WINS.with(|k| k.replace(was));
-    out
+    /// Puts back the key outside, even when `f` panics: a pooled thread mustn't keep marking writes.
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAST_WINS.with(|k| k.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(LAST_WINS.with(|k| k.replace(Some(key))));
+    f()
 }
 
-/// The key `f` marks its writes with ([`last_wins`]), if any.
+/// The key the current thread's writes are marked with, set by an enclosing [`last_wins`], if any.
 pub(super) fn last_wins_key() -> Option<String> {
     LAST_WINS.with(|k| k.borrow().clone())
 }
@@ -1576,6 +1581,15 @@ mod tests {
         assert!(!is_priority());
         assert!(priority(|| priority(is_priority) && is_priority()));
         assert!(!is_priority());
+    }
+
+    #[test]
+    fn last_wins_puts_back_the_key_outside_even_when_its_writes_panic() {
+        let inner = last_wins("PR1 base".into(), || last_wins("PR1 description".into(), last_wins_key));
+        assert_eq!(inner.as_deref(), Some("PR1 description"));
+        let panicked = std::panic::catch_unwind(|| last_wins("PR1 base".into(), || panic!("the write broke")));
+        assert!(panicked.is_err());
+        assert_eq!(last_wins_key(), None, "the thread's later writes aren't marked");
     }
 
     #[test]
