@@ -8,7 +8,8 @@
 //! stage ("Lens review") in place of `review` or `ask`; every other stage (a failed check, comments,
 //! ready to merge) still wins, so it never holds a merge. A run the board lost (it restarted midway)
 //! stops holding once its timeout has passed. Each PR is reviewed once: a later push isn't
-//! reviewed again, and a PR first read while lens was off isn't reviewed at all.
+//! reviewed again, and a PR first read while lens was off isn't reviewed at all. A PR that merges or
+//! closes first needs no review: a queued run is `skipped` and a running one killed and `stopped`.
 
 use std::path::{Path, PathBuf};
 
@@ -98,16 +99,27 @@ fn update(app: &App, id: i64, changes: Value) -> Result<()> {
 pub fn run(app: &App, id: i64) -> Result<()> {
     let t = board::get_task(app, id)?;
     let num = t.i0("pr_num");
+    if let Some(why) = finished(&t) {
+        update(app, id, json!({"state": "skipped", "finished_at": now_iso(), "reason": why}))?;
+        board::log_event(app, id, "lens", "status", &format!("PR #{num}: no lens review, {why}"))?;
+        return Ok(());
+    }
     update(app, id, json!({"state": "running", "started_at": now_iso()}))?;
     let outcome = review(app, &t, num);
-    let finished = json!(now_iso());
+    let finished_at = json!(now_iso());
     match &outcome {
-        Ok(log) => {
-            update(app, id, json!({"state": "done", "finished_at": finished, "log": log}))?;
+        Ok(None) => {
+            let why = board::get_task(app, id).ok().as_ref().and_then(finished).unwrap_or("the PR finished");
+            update(app, id, json!({"state": "stopped", "finished_at": finished_at, "reason": why}))?;
+            board::log_event(app, id, "lens", "status", &format!("PR #{num}: stopped the lens review, {why}"))?;
+            return Ok(());
+        }
+        Ok(Some(log)) => {
+            update(app, id, json!({"state": "done", "finished_at": finished_at, "log": log}))?;
             board::log_event(app, id, "lens", "status", &format!("PR #{num}: lens reviewed it and posted what it found"))?;
         }
         Err((why, log)) => {
-            update(app, id, json!({"state": "failed", "finished_at": finished, "error": why, "log": log}))?;
+            update(app, id, json!({"state": "failed", "finished_at": finished_at, "error": why, "log": log}))?;
             board::log_event(app, id, "lens", "status", &format!("PR #{num}: the lens review failed: {why}"))?;
         }
     }
@@ -118,16 +130,29 @@ pub fn run(app: &App, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Runs the pass: the log's path, or why it failed (and the log, when there is one).
-fn review(app: &App, t: &Row, num: i64) -> std::result::Result<Value, (String, Value)> {
+/// Why the PR needs no review any more: it merged or closed.
+fn finished(t: &Row) -> Option<&'static str> {
+    match t.s("pr_phase") {
+        Some("merged") => Some("the PR merged"),
+        Some("declined") => Some("the PR was closed"),
+        _ => None,
+    }
+}
+
+/// Runs the pass: the log's path, `None` when the PR merged or closed midway and the run was killed,
+/// or why it failed (and the log, when there is one).
+fn review(app: &App, t: &Row, num: i64) -> std::result::Result<Option<Value>, (String, Value)> {
     let fail = |why: &str| (why.to_string(), Value::Null);
     let lens = crate::lens::bin(app).ok_or_else(|| fail("lens isn't installed"))?;
     let cwd = prflow::pr_cwd(app, t).ok().flatten().ok_or_else(|| fail("the PR's project has no folder on this machine"))?;
-    let out = proc::run(&lens, &args(num), Some(Path::new(&cwd)), timeout_secs(app))
+    let id = t.id();
+    let done = || board::get_task(app, id).ok().as_ref().and_then(finished).is_some();
+    let out = proc::run_until(&lens, &args(num), Some(Path::new(&cwd)), timeout_secs(app), &[], None, &done)
         .map_err(|e| fail(&match e {
             proc::RunError::TimedOut => format!("it took longer than {} minutes", app.cfg.pr.lens.timeout_mins),
             proc::RunError::Spawn(e) => format!("lens didn't start: {e}"),
         }))?;
+    let Some(out) = out else { return Ok(None) };
     let path = log_path(app, t.id(), num);
     let saved = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
         .and_then(|_| std::fs::write(&path, format!("{}\n--- stderr ---\n{}", out.stdout, out.stderr)))
@@ -138,6 +163,6 @@ fn review(app: &App, t: &Row, num: i64) -> std::result::Result<Value, (String, V
         let why = why.trim().strip_prefix("Error: ").unwrap_or(why.trim());
         return Err((short(why, 200), log));
     }
-    Ok(log)
+    Ok(Some(log))
 }
 

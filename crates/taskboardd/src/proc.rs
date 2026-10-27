@@ -31,6 +31,19 @@ pub fn run_with(
     env: &[(String, String)],
     input: Option<&[u8]>,
 ) -> Result<Output, RunError> {
+    run_until(program, args, cwd, timeout, env, input, &|| false).map(|o| o.expect("never stopped"))
+}
+
+/// `run_with` that kills the command when `stop` says so (asked about once a second): `None` then.
+pub fn run_until(
+    program: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+    timeout: f64,
+    env: &[(String, String)],
+    input: Option<&[u8]>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Output>, RunError> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
@@ -64,6 +77,7 @@ pub fn run_with(
         let _ = etx.send(s);
     });
     let end = Instant::now() + Duration::from_secs_f64(timeout.max(0.1));
+    let mut asked = Instant::now();
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break Some(st),
@@ -75,6 +89,16 @@ pub fn run_with(
                 slowlog::command(program, args, cwd, started.elapsed(), Ended::TimedOut { stderr: &stderr });
                 return Err(RunError::TimedOut);
             }
+            Ok(None) if asked.elapsed() >= Duration::from_secs(1) && {
+                asked = Instant::now();
+                stop()
+            } =>
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                slowlog::command(program, args, cwd, started.elapsed(), Ended::Exited { code: None, stderr: "stopped" });
+                return Ok(None);
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(15)),
             Err(_) => break None,
         }
@@ -85,7 +109,7 @@ pub fn run_with(
     let stderr = String::from_utf8_lossy(&erx.recv_timeout(grace).unwrap_or_default()).into_owned();
     let code = status.and_then(|s| s.code());
     slowlog::command(program, args, cwd, started.elapsed(), Ended::Exited { code, stderr: &stderr });
-    Ok(Output { code, stdout, stderr })
+    Ok(Some(Output { code, stdout, stderr }))
 }
 
 /// Finds a command on PATH (or returns the path as given when it has a slash).

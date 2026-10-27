@@ -1661,6 +1661,9 @@ pub fn lens_step(l: &Value) -> PrStep {
         "queued" => step("Lens", StepSt::Wait, Some("Queued"), None),
         "running" => step("Lens", StepSt::Now, Some("Reviewing"), None),
         "done" => step("Lens", StepSt::Done, Some("Posted"), None),
+        // The PR merged or closed first.
+        "skipped" => step("Lens", StepSt::Done, Some("Skipped"), None),
+        "stopped" => step("Lens", StepSt::Done, Some("Stopped"), None),
         _ => step("Lens", StepSt::Fail, Some("Failed"), None),
     }
 }
