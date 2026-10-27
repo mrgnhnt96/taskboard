@@ -372,6 +372,20 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
     move |_, cx| cx.new(|_| Tip { text: text.clone() }).into()
 }
 
+/// Text that truncates to its box and, only when it was cut, shows all of it in a tooltip on hover.
+/// Set `truncate()` (and the text style) on the parent; this takes them from there.
+pub fn clipped(id: impl Into<ElementId>, text: impl Into<SharedString>) -> InteractiveText {
+    let text = text.into();
+    let styled = StyledText::new(text.clone());
+    let layout = styled.layout().clone();
+    InteractiveText::new(id, styled).tooltip(move |_, _, cx| was_cut(&layout, &text).then(|| cx.new(|_| Tip { text: text.clone() }).into()))
+}
+
+/// A truncated layout lays out fewer words and an ellipsis, so its text isn't the text given.
+fn was_cut(layout: &TextLayout, text: &str) -> bool {
+    layout.text() != text
+}
+
 struct CardTip {
     title: SharedString,
     summary: Option<String>,
@@ -572,6 +586,29 @@ pub fn icon(kind: Icon, size: f32, color: Hsla) -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
+    use gpui_kit::{Context, IntoElement, ParentElement, Render, Styled, StyledText, TestAppContext, TextLayout, Window, div, px};
+
+    const WORDS: &str = "Open an X Money account and save the sign-in in Keychain";
+
+    struct Boxes(TextLayout, TextLayout);
+
+    impl Render for Boxes {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let (narrow, wide) = (StyledText::new(WORDS), StyledText::new(WORDS));
+            (self.0, self.1) = (narrow.layout().clone(), wide.layout().clone());
+            div().text_size(px(13.)).child(div().w(px(80.)).truncate().child(narrow)).child(div().w(px(900.)).truncate().child(wide))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn only_words_cut_off_offer_the_rest(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| Boxes(StyledText::new("").layout().clone(), StyledText::new("").layout().clone()));
+        cx.update(|window, cx| drop(window.draw(cx)));
+        let (narrow, wide) = view.read_with(cx, |b, _| (b.0.clone(), b.1.clone()));
+        assert!(super::was_cut(&narrow, WORDS), "{}", narrow.text());
+        assert!(!super::was_cut(&wide, WORDS), "{}", wide.text());
+    }
+
     #[::core::prelude::v1::test]
     fn the_crescent_is_one_simple_outline() {
         let pts = super::crescent((11.5, 12.5), 5., (14., 10.), 4.);

@@ -231,7 +231,7 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         d
     };
     // Just words: a click here opens the task like the rest of the row; its panel links the PR.
-    let pr = div().flex_none().w(px(120.)).min_w_0().truncate().text_size(px(12.)).text_color(t.muted).child(x.pr.clone());
+    let pr = div().flex_none().w(px(120.)).min_w_0().truncate().text_size(px(12.)).text_color(t.muted).child(kit::clipped(SharedString::from(format!("goal-task-pr-{}", x.r)), x.pr.clone()));
     div()
         .id(SharedString::from(format!("goal-task-{}", x.r)))
         .flex()
@@ -255,14 +255,14 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
                     .truncate()
                     .font_weight(FontWeight::MEDIUM)
                     .hover(move |s| s.text_color(link).underline())
-                    .child(x.title),
+                    .child(kit::clipped(SharedString::from(format!("goal-task-title-text-{}", x.r)), x.title)),
             )
             .items_center()
             .gap(px(8.))
             .when(x.design, |d| d.child(kit::design_pill(t))),
             1.,
         ))
-        .child(cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(x.row.line), 1.1))
+        .child(cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(kit::clipped(SharedString::from(format!("goal-task-line-{}", x.r)), x.row.line)), 1.1))
         .child(pr)
         .child(div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(x.row.age))
 }
