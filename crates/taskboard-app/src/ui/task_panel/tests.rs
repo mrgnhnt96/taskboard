@@ -365,12 +365,10 @@ fn planned_task_queues(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn done_task_requeues(cx: &mut gpui_kit::TestAppContext) {
-    let (w, rec) = parity::window(cx);
+fn done_task_has_no_queue_again(cx: &mut gpui_kit::TestAppContext) {
+    let (w, _rec) = parity::window(cx);
     open(cx, &w, "T1");
-    press(cx, &w, "requeue", None);
-    assert_eq!(rec.last("tasks/T1/requeue"), Some(json!({})));
-    assert_eq!(note("act:T1"), Some(("Back in the queue".into(), false)));
+    assert!(w.update(cx, |m, _, _| view::find_act(&build(m).unwrap(), "requeue", None).is_none()).unwrap());
 }
 
 #[gpui_kit::test]

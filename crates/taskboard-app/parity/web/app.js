@@ -1124,7 +1124,18 @@ function doneNode(t) {
   const act = 'act:' + r;
   return tlNode(t.failed ? 'fail' : 'done', tlHead(t.failed ? 'Failed' : 'Done', '', hhmm(t.finished_at)),
     `<p class="tl-text">${esc(t.summary || t.latest || 'No summary was given.')}</p>
-    <div class="row">${btn(t.failed ? 'Try again' : 'Queue again', 'requeue', { id: r, grp: act })}${sessionLive(t) ? btn('Close its terminal', 'close-term', { id: r, cls: 'danger', grp: act }) : ''}</div>${note(act)}`);
+    ${doneActs(t, r, act)}${note(act)}`);
+}
+
+// Try again for a failed task; Close terminal behind the ⋯ menu while its terminal is open.
+function doneActs(t, r, act) {
+  const again = t.failed ? btn('Try again', 'requeue', { id: r, grp: act }) : '';
+  const more = sessionLive(t)
+    ? `<button type="button" class="icon-btn" data-act="term-menu" data-id="${esc(r)}" aria-haspopup="menu" aria-expanded="${!!S.termMenu}" title="Terminal actions">${ICON.more}</button>` : '';
+  if (!again && !more) return '';
+  const menu = S.termMenu && more ? `<div class="ctxmenu term-menu" role="menu" aria-label="Terminal actions">
+    <button type="button" role="menuitem" class="danger" data-act="close-term" data-id="${esc(r)}" data-grp="${esc(act)}"><b>Close terminal</b><span>Closes the terminal it ran in</span></button></div>` : '';
+  return `<div class="row">${again}${more ? `<span class="menu-at">${more}${menu}</span>` : ''}</div>`;
 }
 
 // What the task is doing now, with what it needs from you and its terminal's controls.
