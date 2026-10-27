@@ -1,18 +1,22 @@
 //! Work hours: the status-bar pill (`hoursPill`: "Work hours 9am–5pm", "Agents off until Thu 6am")
 //! and its menu (`hoursMenuHtml`: the on/off check, From / to, the days, "Today until"). Every
 //! change is saved at once (`saveHours`: `POST /hours`, `today_until` only when it changed).
+//! The times are typed ("7p", "730pm", "17:30") with an am/pm chip beside each.
 use crate::app::{MainWindow, Pill};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
 use crate::ui::kit;
+use crate::ui::text_input::FieldChanged;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
 pub const DAYS: [(&str, &str); 7] = [("sun", "S"), ("mon", "M"), ("tue", "T"), ("wed", "W"), ("thu", "T"), ("fri", "F"), ("sat", "S")];
 const MENU: &str = "hours";
-/// A time list opened inside the menu: which select.
-const SELECTS: [&str; 3] = ["start", "end", "today"];
+/// The menu's time fields, by index.
+const START: usize = 0;
+const END: usize = 1;
+const TODAY: usize = 2;
 
 /// The menu's edits (a copy of `work_hours` taken when it opened: `openHoursMenu`).
 #[derive(Default)]
@@ -24,10 +28,17 @@ pub struct State {
     /// "" = the usual end.
     pub today: String,
     pub err: Option<String>,
-    /// The select whose option list is open.
-    pub open: Option<&'static str>,
+    /// The half each time field's chip shows (true = pm): From, to, Today until.
+    pub pm: [bool; 3],
+    /// The time fields, made when the menu first draws.
+    pub fields: Option<Fields>,
     /// The day the week starts on (`work_hours.week_days[0]`, config.toml's `first_weekday`).
     pub first_day: String,
+}
+
+pub struct Fields {
+    inputs: [kit::Input; 3],
+    _subs: Vec<Subscription>,
 }
 
 /// The day buttons in week order, starting on `first` (`sun` when it isn't a day).
@@ -39,15 +50,34 @@ pub fn week_order(first: &str) -> Vec<(&'static str, &'static str)> {
 impl State {
     /// `openHoursMenu`.
     pub fn from_hours(h: &Value) -> State {
-        State {
+        let mut st = State {
             on: b(h, "on"),
             start: s(h, "start").into(),
             end: s(h, "end").into(),
             days: arr(h, "days").iter().filter_map(|d| d.as_str().map(str::to_string)).collect(),
             today: s(h, "today_until").into(),
-            err: None,
-            open: None,
             first_day: arr(h, "week_days").first().and_then(|d| d.as_str()).unwrap_or("sun").into(),
+            ..Default::default()
+        };
+        // An unset "Today until" is usually an evening, so its chip starts on pm.
+        st.pm = [0, 1, 2].map(|i| shown(st.value(i)).1.unwrap_or(i == TODAY));
+        st
+    }
+
+    /// A time field's value ("HH:MM", "" for the usual end).
+    pub fn value(&self, i: usize) -> &str {
+        match i {
+            START => &self.start,
+            END => &self.end,
+            _ => &self.today,
+        }
+    }
+
+    fn value_mut(&mut self, i: usize) -> &mut String {
+        match i {
+            START => &mut self.start,
+            END => &mut self.end,
+            _ => &mut self.today,
         }
     }
 
@@ -85,34 +115,70 @@ pub fn pill_view(h: &Value) -> Pill {
     Pill { cls, label, title: s(h, "line").to_string() }
 }
 
-/// A time in a list: always "h:mm" ("1:00am", "1:30am") so the labels line up.
-pub fn list_clock(hhmm: &str) -> String {
-    let mut it = hhmm.split(':').map(|p| p.parse::<u32>().unwrap_or(0));
-    let (h, m) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
-    format!("{}:{m:02}{}", if h % 12 == 0 { 12 } else { h % 12 }, if h < 12 { "am" } else { "pm" })
+/// A value as its field shows it: "19:30" → ("7:30", Some(pm)); "" → ("", None).
+pub fn shown(hhmm: &str) -> (String, Option<bool>) {
+    let mut it = hhmm.split(':').map(|p| p.parse::<u32>().ok());
+    let (Some(Some(h)), Some(Some(m))) = (it.next(), it.next()) else {
+        return (String::new(), None);
+    };
+    (format!("{}:{m:02}", if h % 12 == 0 { 12 } else { h % 12 }), Some(h >= 12))
 }
 
-/// `hourOptions(cur)`: every half hour, plus `cur` when it's off the grid; (value, label).
-pub fn hour_options(cur: &str) -> Vec<(String, String)> {
-    half_hours_from(0, cur)
-}
-
-/// The half-hour marks from minute `from` of the day to 11:30pm, plus `cur` when it isn't one of them.
-fn half_hours_from(from: u32, cur: &str) -> Vec<(String, String)> {
-    let mut times: Vec<String> = (from.div_ceil(30)..48).map(|k| format!("{:02}:{:02}", k / 2, (k % 2) * 30)).collect();
-    if !cur.is_empty() && !times.iter().any(|x| x == cur) {
-        times.push(cur.to_string());
-        times.sort();
+/// Splits a typed time into its digits and the half it names: "7:30p" → ("7:30", Some(pm)).
+fn split_half(text: &str) -> (String, Option<bool>) {
+    let t: String = text.to_lowercase().chars().filter(|c| !c.is_whitespace() && *c != '.').collect();
+    for (suffix, pm) in [("am", false), ("pm", true), ("a", false), ("p", true)] {
+        if let Some(core) = t.strip_suffix(suffix) {
+            return (core.to_string(), Some(pm));
+        }
     }
-    times.into_iter().map(|v| (v.clone(), list_clock(&v))).collect()
+    (t, None)
 }
 
-/// The "Today until" options: "Usual end", then the half-hour marks still ahead of `now`.
-pub fn today_options(cur: &str, now: chrono::NaiveTime) -> Vec<(String, String)> {
-    use chrono::Timelike;
-    let mut v = vec![(String::new(), "Usual end".to_string())];
-    v.extend(half_hours_from(now.hour() * 60 + now.minute() + 1, cur));
-    v
+/// The half a typed time names, if it names one ("7p" → pm), so the chip can follow the typing.
+pub fn typed_half(text: &str) -> Option<bool> {
+    split_half(text).1
+}
+
+/// Reads a typed time: "7", "730", "0730", "7:30", "7p", "7:30 pm", "17:30". A 1–12 hour with
+/// no am/pm takes the chip's half (`pm`); 0 and 13–23 are read as a 24-hour clock.
+/// Returns "HH:MM".
+pub fn parse_time(text: &str, pm: bool) -> Option<String> {
+    let (core, half) = split_half(text);
+    let (h, m) = match core.split_once(':') {
+        Some((h, "")) if !h.is_empty() => (h, "00"),
+        Some((h, m)) if !h.is_empty() && m.len() == 2 => (h, m),
+        Some(_) => return None,
+        None => match core.len() {
+            1 | 2 => (core.as_str(), "00"),
+            3 | 4 => core.split_at(core.len() - 2),
+            _ => return None,
+        },
+    };
+    if !h.chars().chain(m.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    if m > 59 || h > 23 {
+        return None;
+    }
+    let h = match half {
+        Some(_) if h == 0 || h > 12 => return None,
+        Some(pm) => h % 12 + if pm { 12 } else { 0 },
+        None if h == 0 || h > 12 => h,
+        None => h % 12 + if pm { 12 } else { 0 },
+    };
+    Some(format!("{h:02}:{m:02}"))
+}
+
+/// The grey rest drawn after what's typed while it reads as a time: "7" → ":00", "7:3" → nothing.
+pub fn ghost(text: &str, pm: bool) -> Option<String> {
+    let typed = text.trim();
+    if typed.is_empty() || typed_half(typed).is_some() {
+        return None;
+    }
+    let full = shown(&parse_time(typed, pm)?).0;
+    full.strip_prefix(typed).filter(|rest| !rest.is_empty()).map(str::to_string)
 }
 
 pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -175,56 +241,150 @@ pub fn save(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     );
 }
 
-/// A select: the chosen option's label and ▾; it opens its option list in place.
-fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, String)], enabled: bool, open: bool, cx: &mut Context<MainWindow>) -> Div {
-    let label = options.iter().find(|(v, _)| v == value).map(|(_, l)| l.clone()).unwrap_or_default();
-    let button = div()
-        .id(SharedString::from(format!("hours-{which}")))
+/// The menu's time fields, filled with the values; typing an am/pm moves the chip, leaving a
+/// field saves it.
+fn make_fields(st: &State, window: &mut Window, cx: &mut Context<MainWindow>) -> Fields {
+    let inputs = [START, END, TODAY].map(|i| kit::Input::with_text(cx, if i == TODAY { "Usual end" } else { "" }, false, &shown(st.value(i)).0));
+    let mut subs = Vec::new();
+    for (i, input) in inputs.iter().enumerate() {
+        subs.push(cx.subscribe(&input.field, move |m: &mut MainWindow, field, _: &FieldChanged, cx| {
+            if let Some(pm) = typed_half(field.read(cx).text()) {
+                m.hours.pm[i] = pm;
+            }
+            cx.notify();
+        }));
+        subs.push(cx.on_blur(&input.focus, window, move |m, _, cx| commit(m, i, cx)));
+    }
+    Fields { inputs, _subs: subs }
+}
+
+/// The menu closed: keep what was being typed, then drop the fields.
+fn close_fields(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(f) = m.hours.fields.as_ref() else { return };
+    if let Some(i) = f.inputs.iter().position(|input| input.focus.is_focused(window)) {
+        commit(m, i, cx);
+        window.focus(&m.focus, cx);
+    }
+    m.hours.fields = None;
+}
+
+/// Show field `i`'s value again (its chip too), dropping what was typed.
+fn show_value(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
+    let (text, pm) = shown(m.hours.value(i));
+    if let Some(pm) = pm {
+        m.hours.pm[i] = pm;
+    }
+    if let Some(f) = m.hours.fields.as_ref() {
+        f.inputs[i].set_text(&text, cx);
+    }
+}
+
+/// Take what's typed in field `i`: a time saves (when it changed), an empty "Today until" is the
+/// usual end, anything else puts the value back.
+fn commit(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
+    let Some(f) = m.hours.fields.as_ref() else { return };
+    let text = f.inputs[i].text(cx);
+    let next = if i == TODAY && text.trim().is_empty() { Some(String::new()) } else { parse_time(&text, m.hours.pm[i]) };
+    let changed = next.filter(|v| v != m.hours.value(i)).map(|v| *m.hours.value_mut(i) = v).is_some();
+    show_value(m, i, cx);
+    if changed {
+        save(m, cx);
+    }
+    cx.notify();
+}
+
+/// The chip: flip field `i` between am and pm, keeping the time typed.
+fn flip(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
+    m.hours.pm[i] = !m.hours.pm[i];
+    let Some(f) = m.hours.fields.as_ref() else { return };
+    let digits = split_half(&f.inputs[i].text(cx)).0;
+    f.inputs[i].set_text(&digits, cx);
+    commit(m, i, cx);
+}
+
+/// A typed time: the text, the grey rest of the time while typing, and the am/pm chip ("Today
+/// until" shows no chip while it's the usual end). ↩ takes it, esc puts the value back.
+fn time_field(m: &MainWindow, t: &Theme, i: usize, window: &Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let (on, pm) = (m.hours.on, m.hours.pm[i]);
+    let input = &m.hours.fields.as_ref().expect("made before the menu draws").inputs[i];
+    let focused = input.focus.is_focused(window);
+    let text = input.text(cx);
+    let rest = if focused { ghost(&text, pm) } else { None };
+    let chip = (i != TODAY || focused || !text.is_empty()).then(|| {
+        div()
+            .id(("hours-half", i))
+            .flex_none()
+            .flex()
+            .items_center()
+            .h(px(28.))
+            .px(px(7.))
+            .rounded(px(6.))
+            .bg(if focused { t.accent_line } else { t.seg })
+            .text_color(if focused { t.accent_fg } else { t.text_2 })
+            .text_size(px(12.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(if pm { "pm" } else { "am" })
+            .when(on, |d| {
+                d.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
+                    cx.stop_propagation();
+                    flip(m, i, cx);
+                }))
+            })
+    });
+    let focus = input.focus.clone();
+    let typed = div()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .child(input.field.clone())
+        .children(rest.map(|rest| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .flex()
+                .whitespace_nowrap()
+                .child(div().text_color(gpui_kit::transparent_black()).child(text))
+                .child(div().text_color(t.faint).child(rest))
+        }));
+    div()
+        .id(("hours-time", i))
+        .relative()
         .flex()
         .flex_1()
         .min_w_0()
         .items_center()
-        .justify_between()
         .gap(px(4.))
         .h(px(40.))
-        .px(px(12.))
+        .pl(px(10.))
+        .pr(px(4.))
         .rounded(px(9.))
         .border_1()
-        .border_color(if open { t.accent } else { t.border_2 })
+        .border_color(if focused { t.accent } else { t.border_2 })
         .bg(t.card)
         .text_size(px(14.))
-        .child(div().min_w_0().truncate().child(label))
-        .child(kit::icon(kit::Icon::Chev, 12., t.muted))
-        .when(!enabled, |d| d.opacity(0.5))
-        .when(enabled, |d| {
-            d.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
-                m.hours.open = if m.hours.open == Some(which) { None } else { Some(which) };
-                cx.notify();
-            }))
-        });
-    let mut col = div().relative().flex().flex_col().flex_1().min_w_0().child(button);
-    if open {
-        let mut list = div().id(SharedString::from(format!("hours-{which}-list"))).flex().flex_col().max_h(px(200.)).overflow_y_scroll().p(px(2.)).rounded(px(6.)).border_1().border_color(t.border).bg(t.card).shadow_lg();
-        for (v, l) in options {
-            let (v2, sel) = (v.clone(), v == value);
-            list = list.child(kit::menu_item(t, SharedString::from(format!("hours-{which}-{v}")), l.clone(), sel).h(px(26.)).on_click(cx.listener(move |m, _, _, cx| {
-                match which {
-                    "start" => m.hours.start = v2.clone(),
-                    "end" => m.hours.end = v2.clone(),
-                    _ => m.hours.today = v2.clone(),
+        .line_height(px(20.))
+        .text_color(t.text)
+        .child(typed)
+        .children(chip)
+        .when(!on, |d| d.opacity(0.5).child(div().id(("hours-time-off", i)).absolute().inset_0().occlude()))
+        .when(on, |d| d.cursor_text().on_click(move |_, window, cx| window.focus(&focus, cx)))
+        .on_key_down(cx.listener(move |m, ev: &KeyDownEvent, window, cx| {
+            let Some(f) = m.hours.fields.as_ref() else { return };
+            match f.inputs[i].on_key(ev, cx) {
+                kit::KeyOutcome::Submit => {
+                    commit(m, i, cx);
+                    window.focus(&m.focus, cx);
                 }
-                m.hours.open = None;
-                save(m, cx);
-                cx.notify();
-            })));
-        }
-        // Floats over the other rows instead of pushing the menu taller. "Today until" is the
-        // last row, near the window's bottom, so its list opens upward.
-        let float = div().absolute().left_0().right_0();
-        let float = if which == "today" { float.bottom_full().mb(px(4.)) } else { float.top_full().mt(px(4.)) };
-        col = col.child(deferred(float.child(list)).with_priority(4));
-    }
-    col
+                kit::KeyOutcome::Cancel => {
+                    show_value(m, i, cx);
+                    window.focus(&m.focus, cx);
+                    cx.stop_propagation();
+                }
+                kit::KeyOutcome::Ignored => {}
+            }
+        }))
 }
 
 /// Midna's keep-awake, read-only (changed with `tb keep-awake`): whether the Mac is held awake now,
@@ -255,8 +415,11 @@ fn keep_awake(t: &Theme, k: KeepAwake) -> Div {
         .children(k.schedule.map(|s| div().pl(px(14.)).text_color(t.muted).child(s)))
 }
 
-pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    let at = m.menu_open(MENU)?;
+pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let Some(at) = m.menu_open(MENU) else {
+        close_fields(m, window, cx);
+        return None;
+    };
     let t = cx.global::<Theme>().clone();
     let st = &m.hours;
     let on = st.on;
@@ -318,8 +481,10 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
         }
         days = days.child(item);
     }
-    let (start_o, end_o, today_o) = (hour_options(&st.start), hour_options(&st.end), today_options(&st.today, fmt::local(fmt::now()).time()));
-    let (start, end, today, open, err) = (st.start.clone(), st.end.clone(), st.today.clone(), st.open, st.err.clone());
+    let err = st.err.clone();
+    if m.hours.fields.is_none() {
+        m.hours.fields = Some(make_fields(&m.hours, window, cx));
+    }
     let menu = kit::menu_box(&t, 280.)
         .id("hours-menu")
         .shadow(crate::ui::kit::shadow_modal(&t))
@@ -329,14 +494,13 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
         .child(check)
         .child(
             row()
-                .items_start()
-                .child(div().pt(px(10.)).child("From"))
-                .child(select(&t, SELECTS[0], &start, &start_o, on, open == Some("start"), cx))
-                .child(div().pt(px(10.)).child("to"))
-                .child(select(&t, SELECTS[1], &end, &end_o, on, open == Some("end"), cx)),
+                .child("From")
+                .child(time_field(m, &t, START, window, cx))
+                .child("to")
+                .child(time_field(m, &t, END, window, cx)),
         )
         .child(days)
-        .child(row().items_start().child(div().pt(px(10.)).child("Today until")).child(select(&t, SELECTS[2], &today, &today_o, on, open == Some("today"), cx)))
+        .child(row().child(div().whitespace_nowrap().child("Today until")).child(time_field(m, &t, TODAY, window, cx)))
         .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)))
         .children(m.state().get("keep_awake").and_then(keep_awake_view).map(|k| keep_awake(&t, k)));
     // Opens upward from the pill.
@@ -345,7 +509,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
 
 #[cfg(test)]
 mod tests {
-    use super::{DAYS, State, hour_options, pill_view, save, today_options, week_order};
+    use super::{DAYS, State, ghost, parse_time, pill_view, save, shown, typed_half, week_order};
     use crate::fmt::{self, arr, b, s};
     use crate::parity::golden;
     use serde_json::json;
@@ -376,18 +540,16 @@ mod tests {
                 days: arr(m, "days").iter().filter_map(|d| d.as_str().map(str::to_string)).collect(),
                 today: s(m, "today").into(),
                 err: fmt::opt_s(m, "err").map(str::to_string),
-                open: None,
                 first_day: "sun".into(),
+                ..Default::default()
             };
-            let sel = |opts: Vec<(String, String)>, cur: &str| {
-                json!({"disabled": !st.on, "selected": opts.iter().any(|(v, _)| v == cur).then(|| cur.to_string())})
-            };
+            let sel = |cur: &str, usual: bool| json!({"disabled": !st.on, "selected": (usual || !cur.is_empty()).then(|| cur.to_string())});
             json!({
                 "on": st.on,
                 "check": "Only start agents during work hours",
-                "start": sel(hour_options(&st.start), &st.start),
-                "end": sel(hour_options(&st.end), &st.end),
-                "today": sel(today_options(&st.today, chrono::NaiveTime::MIN), &st.today),
+                "start": sel(&st.start, false),
+                "end": sel(&st.end, false),
+                "today": sel(&st.today, true),
                 "days": DAYS.iter().map(|(d, l)| json!({"day": d, "on": st.days.iter().any(|x| x == d), "title": fmt::cap(d), "disabled": !st.on, "label": l})).collect::<Vec<_>>(),
                 "err": st.err,
                 "labels": ["From", "to", "Today until"],
@@ -396,26 +558,47 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn time_lists_always_show_minutes() {
-        let o = hour_options("08:15");
-        assert_eq!(o.len(), 49);
-        assert_eq!(o[0], ("00:00".into(), "12:00am".into()));
-        assert_eq!(o[2], ("01:00".into(), "1:00am".into()));
-        assert_eq!(o[3], ("01:30".into(), "1:30am".into()));
-        assert_eq!(o.last().unwrap(), &("23:30".into(), "11:30pm".into()));
-        assert!(o.contains(&("08:15".into(), "8:15am".into())), "an off-grid time stays listed");
+    fn typed_times_read_loosely() {
+        let am = |t: &str| parse_time(t, false);
+        let pm = |t: &str| parse_time(t, true);
+        assert_eq!(pm("7").as_deref(), Some("19:00"), "a bare hour takes the chip's half");
+        assert_eq!(am("7").as_deref(), Some("07:00"));
+        assert_eq!(am("7p").as_deref(), Some("19:00"), "a typed half beats the chip");
+        assert_eq!(pm("7:30 AM").as_deref(), Some("07:30"));
+        assert_eq!(am("730pm").as_deref(), Some("19:30"));
+        assert_eq!(am("0730").as_deref(), Some("07:30"));
+        assert_eq!(am("1145p.m.").as_deref(), Some("23:45"));
+        assert_eq!(am("17:30").as_deref(), Some("17:30"), "13–23 is a 24-hour time");
+        assert_eq!(pm("0:15").as_deref(), Some("00:15"));
+        assert_eq!(am("12a").as_deref(), Some("00:00"));
+        assert_eq!(am("12p").as_deref(), Some("12:00"));
+        assert_eq!(pm("12").as_deref(), Some("12:00"));
+        for bad in ["", "7:3", "7:60", "24", "13pm", "0am", "12345", "seven", ":30", "7:30x"] {
+            assert_eq!(am(bad), None, "{bad:?}");
+        }
     }
 
     #[::core::prelude::v1::test]
-    fn today_lists_only_the_half_hours_ahead() {
-        let at = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
-        let vals = |o: Vec<(String, String)>| o.into_iter().map(|(v, _)| v).collect::<Vec<_>>();
-        let o = vals(today_options("", at(14, 10)));
-        assert_eq!(o[..3], ["", "14:30", "15:00"]);
-        assert_eq!(o.last().unwrap(), "23:30");
-        assert_eq!(vals(today_options("", at(14, 30)))[1], "15:00", "the mark it's on has passed");
-        assert_eq!(vals(today_options("", at(23, 45))), [""]);
-        assert!(vals(today_options("13:00", at(14, 10))).contains(&"13:00".to_string()), "the chosen time stays even once passed");
+    fn fields_show_twelve_hour_times() {
+        assert_eq!(shown("19:30"), ("7:30".into(), Some(true)));
+        assert_eq!(shown("00:00"), ("12:00".into(), Some(false)));
+        assert_eq!(shown("12:00"), ("12:00".into(), Some(true)));
+        assert_eq!(shown(""), (String::new(), None));
+        assert_eq!(typed_half("7 P"), Some(true));
+        assert_eq!(typed_half("7:30"), None);
+        let st = State::from_hours(&json!({"start": "09:00", "end": "17:00", "today_until": ""}));
+        assert_eq!(st.pm, [false, true, true], "an unset Today until starts on pm");
+    }
+
+    #[::core::prelude::v1::test]
+    fn ghost_finishes_the_time_being_typed() {
+        assert_eq!(ghost("7", true).as_deref(), Some(":00"));
+        assert_eq!(ghost("7:", true).as_deref(), Some("00"));
+        assert_eq!(ghost("12", false).as_deref(), Some(":00"));
+        assert_eq!(ghost("7:30", true), None, "nothing left to finish");
+        assert_eq!(ghost("730", true), None, "digits that don't lead the time get none");
+        assert_eq!(ghost("7p", true), None);
+        assert_eq!(ghost("", true), None);
     }
 
     #[::core::prelude::v1::test]
@@ -429,9 +612,8 @@ mod tests {
                 end: s(m, "end").into(),
                 days: arr(m, "days").iter().filter_map(|d| d.as_str().map(str::to_string)).collect(),
                 today: s(m, "today").into(),
-                err: None,
-                open: None,
                 first_day: "sun".into(),
+                ..Default::default()
             };
             json!([["/hours", st.body(i["today_until"].as_str().unwrap_or(""))]])
         });
@@ -479,5 +661,35 @@ mod tests {
         assert_eq!(body["on"], json!(true));
         assert!(body["days"].as_array().unwrap().contains(&json!("sat")));
         assert!(body.get("today_until").is_none(), "today_until only when it changed");
+    }
+
+    #[gpui_kit::test]
+    fn typing_a_time_posts_hours(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        let typed = |field: usize, text: &'static str, cx: &mut gpui_kit::TestAppContext| {
+            w.update(cx, |m, window, cx| {
+                if m.hours.fields.is_none() {
+                    let h = m.state()["work_hours"].clone();
+                    m.hours = State::from_hours(&h);
+                    m.hours.on = true;
+                    m.hours.fields = Some(super::make_fields(&m.hours, window, cx));
+                    m.toggle_menu(super::MENU, gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)), cx);
+                }
+                m.hours.fields.as_ref().unwrap().inputs[field].set_text(text, cx);
+                super::commit(m, field, cx);
+            })
+            .unwrap();
+            crate::parity::settle(cx);
+        };
+        typed(super::TODAY, "6p", cx);
+        assert_eq!(rec.last("hours").expect("posted /hours")["today_until"], json!("18:00"));
+        typed(super::START, "8:30", cx);
+        assert_eq!(rec.last("hours").unwrap()["start"], json!("08:30"), "the chip's am");
+        typed(super::END, "nonsense", cx);
+        w.update(cx, |m, _, cx| {
+            let text = m.hours.fields.as_ref().unwrap().inputs[super::END].text(cx);
+            assert_eq!(text, super::shown(&m.hours.end).0, "a bad time puts the value back");
+        })
+        .unwrap();
     }
 }
