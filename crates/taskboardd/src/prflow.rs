@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::config::RebasePolicy;
 use crate::util::*;
+use crate::worktrees::{git, last_line, GIT_SECS};
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
 pub const WAKE: &[&str] = &["fix", "rebase", "comments", "steps", "merge", "ask"];
@@ -883,6 +884,169 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
         out.push((s, t, finished));
     }
     Ok(out)
+}
+
+/// A finished PR whose visit left work in the task's slot that never reached it: uncommitted
+/// changes, or commits past the PR's last head that no remote has. Commits them to a branch cut from
+/// the task's own, queues a follow-up task to take that branch to a PR of its own, and gives the slot
+/// back clean. The follow-up, when there was work to save.
+pub fn carry_leftovers(app: &App, t: &Row) -> Result<Option<Row>> {
+    let Some(slot) = crate::slots::held(app, t)? else { return Ok(None) };
+    let path = slot.st("path");
+    let Some(left) = Leftovers::in_slot(&path, flow(t).s("head")) else { return Ok(None) };
+    let branch = left.save(&path, t)?;
+    let ctx = board::task_context(t);
+    let base = ctx.s("worktree_base").or(left.head.as_deref()).unwrap_or("HEAD").to_string();
+    if git(&path, &["switch", "-q", "--detach", &base], GIT_SECS).code != 0 {
+        git(&path, &["switch", "-q", "--detach"], GIT_SECS);
+    }
+    let follow = follow_up(app, t, &slot, &left, &branch)?;
+    board::log_event(
+        app,
+        t.id(),
+        board::BOARD,
+        "midna",
+        &format!(
+            "PR #{} was {} while its visit still had {} in worktree slot-{}; saved {} to branch {branch} and made {} to carry {} to a PR of its own",
+            t.i0("pr_num"),
+            t.st("pr_phase"),
+            left.what(),
+            slot.i0("n"),
+            if left.pieces() == 1 { "it" } else { "them" },
+            rf("task", follow.id()),
+            if left.pieces() == 1 { "it" } else { "them" },
+        ),
+    )?;
+    crate::slots::release_if_clean(app, t)?;
+    Ok(Some(follow))
+}
+
+/// What a slot holds that a finished PR doesn't: whether anything is uncommitted, and how many
+/// commits aren't on a remote or in the PR's last head.
+struct Leftovers {
+    dirty: bool,
+    commits: i64,
+    from: Option<String>,
+    head: Option<String>,
+    cut: String,
+}
+
+impl Leftovers {
+    fn in_slot(path: &str, head: Option<&str>) -> Option<Leftovers> {
+        let status = git(path, &["status", "--porcelain"], GIT_SECS);
+        if status.code != 0 {
+            return None;
+        }
+        let dirty = status.out.lines().any(|l| !l.trim().is_empty());
+        // The PR's head may be gone from every remote once it merged and its branch was deleted.
+        let head = head.filter(|h| git(path, &["cat-file", "-e", &format!("{h}^{{commit}}")], GIT_SECS).code == 0).map(str::to_string);
+        let remote = !git(path, &["remote"], GIT_SECS).out.trim().is_empty();
+        let commits = if remote {
+            let mut args = vec!["rev-list", "--count", "HEAD", "--not", "--remotes"];
+            args.extend(head.as_deref());
+            git(path, &args, GIT_SECS).out.trim().parse().unwrap_or(0)
+        } else {
+            0
+        };
+        if !dirty && commits == 0 {
+            return None;
+        }
+        let cut = git(path, &["rev-parse", "HEAD"], GIT_SECS).out.trim().to_string();
+        Some(Leftovers { dirty, commits, from: crate::slots::branch_of(path), head, cut })
+    }
+
+    fn pieces(&self) -> i64 {
+        self.commits + self.dirty as i64
+    }
+
+    fn what(&self) -> String {
+        let commits = match self.commits {
+            0 => None,
+            1 => Some("1 commit that wasn't pushed".to_string()),
+            k => Some(format!("{k} commits that weren't pushed")),
+        };
+        let changes = self.dirty.then(|| "uncommitted changes".to_string());
+        [changes, commits].into_iter().flatten().collect::<Vec<_>>().join(" and ")
+    }
+
+    /// Commits it all to a new branch at the slot's head. The branch's name; on a failure the slot is
+    /// back where it was, the changes still in it.
+    fn save(&self, path: &str, t: &Row) -> Result<String> {
+        let stem = format!("follow/{}-pr-{}", rf("task", t.id()), t.i0("pr_num"));
+        let taken = |b: &str| git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")], GIT_SECS).code == 0;
+        let branch = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|b| !taken(b)).unwrap_or(stem);
+        let msg = format!("Work left uncommitted on PR #{}'s visit", t.i0("pr_num"));
+        let mut steps: Vec<Vec<&str>> = vec![vec!["switch", "-q", "-c", &branch]];
+        if self.dirty {
+            steps.push(vec!["-c", "advice.addIgnoredFile=false", "add", "--all"]);
+            steps.push(vec!["commit", "-q", "--no-verify", "-m", &msg]);
+        }
+        for args in &steps {
+            let r = git(path, args, GIT_SECS);
+            if r.code != 0 && !(args.contains(&"add") && all_staged(path)) {
+                let back = self.from.as_deref().unwrap_or(&self.cut);
+                git(path, &["reset", "-q", "--soft", &self.cut], GIT_SECS);
+                if git(path, &["switch", "-q", back], GIT_SECS).code != 0 {
+                    git(path, &["switch", "-q", "--detach", &self.cut], GIT_SECS);
+                }
+                git(path, &["branch", "-q", "-D", &branch], GIT_SECS);
+                return err(409, format!("git {} failed: {}", args.join(" "), last_line(&r.err)));
+            }
+        }
+        Ok(branch)
+    }
+}
+
+/// The task that takes a visit's saved work to a PR: queued in a slot that starts on `branch`.
+fn follow_up(app: &App, t: &Row, slot: &Row, left: &Leftovers, branch: &str) -> Result<Row> {
+    let (n, me, tb) = (t.i0("pr_num"), rf("task", t.id()), board::tb_cmd(app));
+    let from = left.from.as_deref().map(|b| format!("cut from {b}")).unwrap_or_else(|| format!("cut from {}", short_sha(&left.cut)));
+    let onto = left.head.as_deref().unwrap_or(&left.cut);
+    let detail = [
+        format!(
+            "PR #{n} for {me} was {} while its visit still had {} in worktree slot-{}. The board saved it to the branch {branch}, {from}.",
+            t.st("pr_phase"),
+            left.what(),
+            slot.i0("n")
+        ),
+        format!(
+            "How to finish:\n\
+             - The task starts on {branch}. See what the visit left: git log --stat {}..{branch}.\n\
+             - Rebase it onto main: git fetch origin && git rebase --onto origin/main {onto} {branch}. Drop what main already has.\n\
+             - Finish the change and ship it as its own PR, like any task.\n\
+             - If none of it is needed any more, finish with {tb} submit \"<summary>\" --no-pr \"<why>\".",
+            short_sha(onto)
+        ),
+    ]
+    .join("\n\n");
+    let mut meta = vec![json!(["Earlier task", me]), json!(["Earlier PR", format!("#{n}")]), json!(["Branch", branch])];
+    if let Some(u) = t.s("pr_url").filter(|u| !u.is_empty()) {
+        meta.push(json!(["Earlier PR link", u]));
+    }
+    let goal = board::find_goal(app, t.i("goal_id"))?.filter(|g| !g.b("archived"));
+    let body = json!({
+        "title": clip(&format!("Finish the work left on PR #{n}: {}", t.st("title")), 300),
+        "project": t.v("project"), "goal_id": goal.as_ref().map(|g| g.id()), "priority": "high", "lane": "slot",
+        "detail": detail, "meta": meta, "not_backlog": true,
+        "origin": {"from": format!("PR #{n}'s visit for {me}"), "by": board::BOARD, "url": t.v("pr_url")},
+    });
+    let made = crate::ops::new_task(app, &body, board::BOARD, Some(&format!("From the work PR #{n}'s visit for {me} left in worktree slot-{}", slot.i0("n"))))?;
+    let id = made["id"].as_i64().unwrap_or(0);
+    let mut ctx = board::task_context(&board::get_task(app, id)?);
+    ctx.insert("worktree_branch".into(), json!(branch));
+    board::save_context(app, id, &ctx, false)?;
+    board::get_task(app, id)
+}
+
+fn short_sha(sha: &str) -> &str {
+    &sha[..sha.len().min(10)]
+}
+
+/// `add --all` can exit non-zero over an ignored path after staging the rest; it's done when nothing
+/// is left unstaged.
+fn all_staged(path: &str) -> bool {
+    let st = git(path, &["status", "--porcelain"], GIT_SECS);
+    st.code == 0 && st.out.lines().filter(|l| !l.trim().is_empty()).all(|l| !l.starts_with("??") && l.chars().nth(1) == Some(' '))
 }
 
 /// One read of a task's PR from its host, as the flow keeps it (`prhost::Record::to_value`). The read
@@ -2183,6 +2347,96 @@ mod tests {
         assert_eq!(made.len(), 1, "then woke the task in it");
         let args: Value = serde_json::from_str(&made[0].st("args")).unwrap();
         assert_eq!(args["cwd"], json!(slot));
+    }
+
+    /// A done task whose PR #7 merged, holding slot-1 on its pushed branch `feat/a`; the slot's path
+    /// and the task.
+    fn merged_visit(app: &App, dir: &Path) -> (String, Row) {
+        let at = |p: &Path| p.to_str().unwrap().to_string();
+        let (repo, remote) = (at(&dir.join("repo")), at(&dir.join("remote.git")));
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |at: &str, args: &[&str]| assert_eq!(git(at, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&repo, &["init", "-q", "-b", "main"]);
+        run(&repo, &["config", "user.name", "t"]);
+        run(&repo, &["config", "user.email", "t@t"]);
+        std::fs::write(Path::new(&repo).join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(Path::new(&repo).join("app.rs"), "one").unwrap();
+        run(&repo, &["add", "--all"]);
+        run(&repo, &["commit", "-qm", "one"]);
+        run(dir.to_str().unwrap(), &["init", "-q", "--bare", &remote]);
+        run(&repo, &["remote", "add", "origin", &remote]);
+        run(&repo, &["push", "-q", "origin", "main"]);
+        let base = git(&repo, &["rev-parse", "HEAD"], GIT_SECS).out.trim().to_string();
+        let slot = format!("{repo}/.claude/worktrees/slot-1");
+        run(&repo, &["worktree", "add", "-q", "-b", "feat/a", &slot, "HEAD"]);
+        std::fs::write(Path::new(&slot).join("app.rs"), "the change").unwrap();
+        run(&slot, &["commit", "-qam", "the change"]);
+        run(&slot, &["push", "-q", "origin", "feat/a"]);
+        let head = git(&slot, &["rev-parse", "HEAD"], GIT_SECS).out.trim().to_string();
+        let ctx = json!({"worktree_slot": slot, "worktree_base": base, "worktree_branch": "feat/a"}).to_string();
+        let id = app
+            .db
+            .insert(
+                "tasks",
+                fields!["title" => "A", "project" => "app", "status" => "done", "pr_num" => 7, "pr_phase" => "merged",
+                        "pr_flow" => json!({"head": head}).to_string(), "context" => ctx],
+            )
+            .unwrap();
+        app.db.insert("worktree_slots", fields!["repo" => repo, "n" => 1, "path" => slot.clone(), "task_id" => id]).unwrap();
+        (slot, board::get_task(app, id).unwrap())
+    }
+
+    #[test]
+    fn work_a_merged_visit_left_in_its_slot_becomes_a_follow_up_on_its_own_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let (slot, t) = merged_visit(&app, dir.path());
+        let run = |args: &[&str]| assert_eq!(git(&slot, args, GIT_SECS).code, 0, "git {args:?}");
+        std::fs::write(Path::new(&slot).join("app.rs"), "a review fix").unwrap();
+        run(&["commit", "-qam", "a review fix"]);
+        std::fs::write(Path::new(&slot).join("app.rs"), "more of it").unwrap();
+        std::fs::write(Path::new(&slot).join("new.rs"), "untracked").unwrap();
+        std::fs::create_dir_all(Path::new(&slot).join("target")).unwrap();
+        std::fs::write(Path::new(&slot).join("target/build.o"), "ignored").unwrap();
+
+        let follow = carry_leftovers(&app, &t).unwrap().expect("a follow-up task");
+        let branch = format!("follow/{}-pr-7", rf("task", t.id()));
+        let show = |what: &str| git(&slot, &["show", &format!("{branch}:{what}")], GIT_SECS);
+        assert_eq!(show("app.rs").out, "more of it");
+        assert_eq!(show("new.rs").out, "untracked");
+        assert_ne!(show("target/build.o").code, 0, "ignored files stay out");
+        let log = git(&slot, &["log", "--format=%s", &format!("origin/feat/a..{branch}")], GIT_SECS).out;
+        assert_eq!(log.lines().collect::<Vec<_>>(), ["Work left uncommitted on PR #7's visit", "a review fix"], "the unpushed commit comes along");
+
+        assert!(git(&slot, &["status", "--porcelain"], GIT_SECS).out.trim().is_empty(), "the slot is clean");
+        assert!(crate::slots::held(&app, &t).unwrap().is_none(), "and given back");
+        assert_eq!(board::task_context(&board::get_task(&app, t.id()).unwrap()).s("worktree_branch"), Some("feat/a"), "the task keeps its own branch");
+
+        assert_eq!(follow.s("status"), Some("queued"));
+        assert_eq!(follow.s("lane"), Some("slot"));
+        assert_eq!(follow.s("project"), Some("app"));
+        assert_eq!(board::task_context(&follow).s("worktree_branch"), Some(branch.as_str()), "it starts on the saved branch");
+        assert!(follow.st("detail").contains(&branch) && follow.st("detail").contains("PR #7"));
+        let said: Vec<String> = app.db.q("SELECT text FROM events WHERE task_id = ?", p![t.id()]).unwrap().iter().map(|e| e.st("text")).collect();
+        assert!(
+            said.iter().any(|s| s.contains(&branch) && s.contains(&rf("task", follow.id())) && s.contains("uncommitted changes and 1 commit")),
+            "the task's log links the follow-up: {said:?}"
+        );
+        assert!(carry_leftovers(&app, &t).unwrap().is_none(), "once");
+    }
+
+    #[test]
+    fn a_merged_visit_with_nothing_left_makes_no_follow_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let (slot, t) = merged_visit(&app, dir.path());
+        assert!(carry_leftovers(&app, &t).unwrap().is_none(), "everything is pushed");
+        // Merged and its branch deleted: the PR's commits are on no remote, but they're its head.
+        assert_eq!(git(&slot, &["push", "-q", "origin", "--delete", "feat/a"], GIT_SECS).code, 0);
+        assert_eq!(git(&slot, &["fetch", "-q", "--prune", "origin"], GIT_SECS).code, 0);
+        assert!(carry_leftovers(&app, &t).unwrap().is_none(), "the PR's own commits aren't left over");
+        assert_eq!(crate::slots::branch_of(&slot).as_deref(), Some("feat/a"), "the slot is left alone");
+        assert_eq!(app.db.count("SELECT COUNT(*) FROM tasks", p![]).unwrap(), 1);
     }
 
     #[test]
