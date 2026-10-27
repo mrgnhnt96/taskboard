@@ -28,6 +28,10 @@ static SIZES: parking_lot::Mutex<BTreeMap<String, Size>> = parking_lot::Mutex::n
 /// `live`'s answers by path, with the `.git` link they were read from. Every `/state` and `/goals`
 /// asks it for each task's slot, and the `git rev-parse` behind it is a process each time.
 static LIVE: parking_lot::Mutex<BTreeMap<String, (Link, bool)>> = parking_lot::Mutex::new(BTreeMap::new());
+/// When a done task last claimed a slot for PR work, in its context (`visit_due`).
+const PR_CLAIM: &str = "worktree_pr_claim";
+/// How long a PR claim keeps its slot while no visit comes of it.
+const PR_CLAIM_SECS: f64 = 900.0;
 /// How long a measured size stands before it's measured again.
 const SIZE_SECS: f64 = 600.0;
 /// `tb project set --min-slots` and the rest: name → the `[worktrees]` keys it sets.
@@ -241,13 +245,27 @@ fn rows(app: &App, repo: &str) -> Result<Vec<Row>> {
 }
 
 /// The task holding a slot, or None when it's free: never taken, given back, its task gone, or done
-/// with its terminal closed and no PR visit running.
+/// with its terminal closed and no PR visit running or about to start.
 fn holder(app: &App, s: &Row) -> Result<Option<Row>> {
     let Some(t) = board::find_task(app, s.i("task_id"))? else { return Ok(None) };
-    if t.s("status") == Some("done") && !crate::worktrees::terminal_open(app, &t)? && !crate::prflow::visit_live(app, &t)? {
+    if t.s("status") == Some("done")
+        && !crate::worktrees::terminal_open(app, &t)?
+        && !crate::prflow::visit_live(app, &t)?
+        && !visit_due(app, &t)?
+    {
         return Ok(None);
     }
     Ok(Some(t))
+}
+
+/// Whether a done task claimed its slot for PR work whose visit hasn't been made yet. The visit's job
+/// comes after the claim (on the next poll, for some), and until it does nothing else marks the slot
+/// as in use: PR returns claiming one after another would all take the same slot.
+fn visit_due(app: &App, t: &Row) -> Result<bool> {
+    let ctx = board::task_context(t);
+    let Some(at) = ctx.s(PR_CLAIM).filter(|a| age_secs(Some(a)).is_some_and(|s| s < PR_CLAIM_SECS)) else { return Ok(false) };
+    let made = app.db.q1("SELECT id FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'pr' AND created_at >= ?", p![t.id(), at])?;
+    Ok(made.is_none())
 }
 
 pub(crate) fn slot_at(app: &App, path: &str) -> Result<Option<Row>> {
@@ -567,9 +585,14 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
         }
         let repo = s.st("repo");
         let held = holder(app, s)?;
+        // Free by its holder, but the last task left uncommitted work in it, so no pick takes it.
+        let kept = match (&held, s.i("task_id")) {
+            (None, Some(id)) if live(&s.st("path")) && dirty(&s.st("path")) => Some(rf("task", id)),
+            _ => None,
+        };
         out.push(json!({
             "name": format!("slot-{}", s.i0("n")), "n": s.v("n"), "project": s.v("project"), "repo": repo, "path": s.v("path"),
-            "held_by": held.as_ref().map(|t| rf("task", t.id())), "title": held.as_ref().map(|t| t.v("title")),
+            "held_by": held.as_ref().map(|t| rf("task", t.id())), "title": held.as_ref().map(|t| t.v("title")), "kept_by": kept,
             "used_at": s.v("used_at"), "made_at": s.v("made_at"), "size_kb": size_kb,
             "waiting": waiting.iter().filter(|(r, _)| *r == repo).map(|(_, t)| t.clone()).collect::<Vec<_>>(),
         }));
@@ -640,7 +663,13 @@ fn take(app: &App, t: &Row, id: i64, path: &str, text: &str, start: &str) -> Res
             "UPDATE worktree_slots SET task_id = ?, used_at = ?, seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM worktree_slots) WHERE id = ?",
             p![t.id(), now_iso(), id],
         )?;
-        let mut ctx = board::task_context(&board::get_task(app, t.id())?);
+        let fresh = board::get_task(app, t.id())?;
+        let mut ctx = board::task_context(&fresh);
+        if fresh.s("status") == Some("done") {
+            ctx.insert(PR_CLAIM.into(), json!(now_iso()));
+        } else {
+            ctx.remove(PR_CLAIM);
+        }
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         w.insert("worktree".into(), json!(path));
         ctx.insert("where".into(), Value::Object(w));
@@ -695,6 +724,33 @@ mod tests {
         assert!(!needs_claim(&app, &t).unwrap(), "the slot it holds is still its own");
         std::fs::remove_dir_all(&repo).unwrap();
         assert!(!needs_claim(&app, &t).unwrap(), "a repository that's gone has no slot to claim");
+    }
+
+    #[test]
+    fn pr_returns_claiming_one_after_another_each_get_their_own_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |args: &[&str]| assert_eq!(git(&repo, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let slot = slot_path(&repo, 1);
+        run(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone()]).unwrap();
+        // Both worked in slot-1 before and gave it back.
+        let ctx = json!({"worktree_slot": slot, "worktree_base": "HEAD"}).to_string();
+        let done = |title: &str| board::get_task(&app, app.db.insert("tasks", crate::fields!["title" => title, "status" => "done", "context" => ctx.clone()]).unwrap()).unwrap();
+        let (a, b) = (done("A"), done("B"));
+        assert_eq!(reclaim(&app, &a).unwrap().as_deref(), Some(slot.as_str()), "A gets its own slot back");
+        let other = reclaim(&app, &b).unwrap().unwrap();
+        assert_ne!(other, slot, "B can't take the slot A claimed for a visit that hasn't started");
+        // A's visit comes and goes: its slot is free again.
+        let ended = json!({}).to_string();
+        app.db.insert("jobs", crate::fields!["kind" => "agent", "purpose" => "pr", "state" => "done", "task_id" => a.id(), "target" => ended, "created_at" => now_iso()]).unwrap();
+        let s = slot_at(&app, &slot).unwrap().unwrap();
+        assert!(holder(&app, &s).unwrap().is_none(), "the visit ended");
     }
 
     /// Asks until the background measuring gives a size other than `not`.
