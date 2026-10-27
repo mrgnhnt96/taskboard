@@ -1952,6 +1952,13 @@ pub fn waited(app: &App, t: &Row) -> Result<Row> {
     merge_flow(app, t.id(), ch)
 }
 
+/// Ends the visit without settling it: the host has the board rate-limited until `until`, so the agent
+/// is brought back for the same step once it's over, in place of waiting in its terminal.
+pub fn wait_out(app: &App, t: &Row, until: f64) -> Result<Row> {
+    let at = iso(until);
+    merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null, "retry_at" => at.clone(), "reread_at" => at])
+}
+
 trait HasPhase {
     fn has_phase(&self) -> bool;
 }
