@@ -6,6 +6,11 @@
 //! `bot_run_gap_mins` of another comment of a run is the same run (gap to gap), which starts at its
 //! earliest comment, whatever order the host lists them in.
 //!
+//! A repo a healthy stream relay covers (`feed::pr_poll_rests`) isn't read on that timer: the relay's
+//! comment and review events note the runs as they come ([`note_event`]), and the repo is only read to
+//! catch up every `[feed] reconcile_secs` (an hour; never at 0), a failed read included, so a limited
+//! account isn't asked again every sweep.
+//!
 //! Once a run has been seen, the bot is timed: its next run is the last one plus the interval, rolled
 //! forward by the interval until it's in the future; the picker asks that person only when the next run
 //! is at most `bot_due_mins` away, and their pace is the fastest the speed table gives. A reviewer
@@ -86,11 +91,21 @@ fn repos(app: &App, project: &str) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// Whether this repo's comments are due to be read again (`bot_scan_mins` since the last good read).
-fn scan_due(app: &App, key: &str) -> Result<bool> {
+/// Whether this repo's comments are due to be read again: `bot_scan_mins` since the last good read, or
+/// for a repo a relay covers, `reconcile_secs` since the last try.
+fn scan_due(app: &App, key: &str, covered: bool) -> Result<bool> {
+    let every = if covered {
+        let r = app.cfg.feed.reconcile_secs;
+        if r <= 0.0 {
+            return Ok(false);
+        }
+        r.max(app.cfg.reviewers.bot_scan_mins * 60.0)
+    } else {
+        app.cfg.reviewers.bot_scan_mins * 60.0
+    };
     let scans = jloads_obj(app.db.get_setting(SCANS_SETTING)?.as_deref());
     let last = scans.get(key).and_then(|v| v.as_str()).and_then(parse_iso);
-    Ok(!last.is_some_and(|l| now_ts() - l < app.cfg.reviewers.bot_scan_mins * 60.0))
+    Ok(!last.is_some_and(|l| now_ts() - l < every))
 }
 
 /// Notes a good read of this repo's comments, at `at` (when it started).
@@ -114,7 +129,8 @@ pub fn note_runs(app: &App) -> Result<i64> {
         let mine: Vec<&Row> = bots.iter().filter(|r| r.st("project") == project).collect();
         for (host, repo) in repos(app, &project)? {
             let key = format!("{host}:{repo}");
-            if !scan_due(app, &key)? {
+            let covered = crate::feed::pr_poll_rests(app, &host, &repo);
+            if !scan_due(app, &key, covered)? {
                 continue;
             }
             let started = now_iso();
@@ -122,6 +138,9 @@ pub fn note_runs(app: &App) -> Result<i64> {
                 Ok(c) => c,
                 Err(e) => {
                     app.info(format!("reviewers: couldn't read {repo}'s comments for bot runs: {e}"));
+                    if covered {
+                        scanned(app, &key, &started)?;
+                    }
                     continue;
                 }
             };
@@ -147,6 +166,32 @@ pub fn note_runs(app: &App) -> Result<i64> {
         }
     }
     Ok(noted)
+}
+
+/// Notes the bot run a stream comment or review event shows (`pr`, `comment_id` or the event's `id`,
+/// `author` or `who`, `body`, `at`): its author is a reviewer with a bot in a project whose PRs are in
+/// that repo, and its body has their marker. True when it's a new run.
+pub fn note_event(app: &App, ev: &Value) -> Result<bool> {
+    let pr = &ev["pr"];
+    let (host, repo) = (body_str(pr, "provider").to_lowercase(), body_str(pr, "repo"));
+    let author = [body_str(ev, "author"), body_str(ev, "who")].into_iter().find(|a| !a.is_empty()).unwrap_or_default();
+    let text = body_str(ev, "body").to_lowercase();
+    let Some(at) = ev["at"].as_str().and_then(parse_iso) else { return Ok(false) };
+    if repo.is_empty() || author.is_empty() || text.is_empty() || at < now_ts() - app.cfg.reviewers.bot_window_hours * 3600.0 {
+        return Ok(false);
+    }
+    let bots = app.db.q(
+        "SELECT * FROM reviewers WHERE bot_every_h IS NOT NULL AND bot_mark IS NOT NULL AND bot_mark != '' \
+         AND project IN (SELECT project FROM tasks WHERE pr_host = ? AND pr_repo = ?)",
+        p![host, repo],
+    )?;
+    let id = [body_str(ev, "comment_id"), body_str(ev, "id")].into_iter().find(|i| !i.is_empty()).unwrap_or_default();
+    let comment = format!("{repo}#{}:{id}", pr["num"].as_i64().unwrap_or(0));
+    let mut new = false;
+    for r in bots.iter().filter(|r| has_bot(r) && reviewers::names(r, &author) && text.contains(&r.st("bot_mark").to_lowercase())) {
+        new |= note_run(app, r, at, &comment)?;
+    }
+    Ok(new)
 }
 
 /// Records one run at `at` unless this comment was counted before, or it's within `bot_run_gap_mins`

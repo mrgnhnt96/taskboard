@@ -381,7 +381,10 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
                 None => out,
             })
         }
-        "review" | "comment" => pr_hint(app, kind, ev),
+        "review" | "comment" => {
+            app.db.tx(|| crate::botrun::note_event(app, ev))?;
+            pr_hint(app, kind, ev)
+        }
         "push" => {
             feed::note_event_for(app, "builds", kind, ev, None)?;
             Ok(json!({"builds": crate::prbuilds::on_push_build(app, &as_push_build(ev))?}))

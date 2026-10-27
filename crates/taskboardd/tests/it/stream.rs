@@ -575,6 +575,39 @@ fn a_relay_covering_some_prs_polls_some() {
     b.send(from("all", ev("h1", "heartbeat", json!({"sources": ["prs"]}))));
     let prs = b.source("prs");
     assert_eq!((prs["polling"].clone(), prs["polling_some"].clone()), (json!(false), json!(false)));
+    assert_eq!(prs["polled"], json!([]));
+}
+
+#[test]
+fn polling_some_names_the_repos_it_polls_and_why() {
+    // #727
+    let b = board_with(stream_mode("prs"));
+    prhost::install(&b.app, FakeHost::new("github", host_rec("g1")));
+    let bb = FakeHost::new("bitbucket", host_rec("b1"));
+    prhost::install(&b.app, bb.clone());
+    b.pr_task("https://github.com/acme/quill/pull/7");
+    let covered = b.pr_task(BB);
+    b.send(from("bb", ev("h1", "heartbeat", json!({"sources": ["prs"], "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}))));
+    assert_eq!(
+        b.source("prs")["polled"],
+        json!([{"host": "bitbucket", "repo": "acme/webapp", "prs": 1, "why": "reconcile"}, {"host": "github", "repo": "acme/quill", "prs": 1, "why": "not covered"}]),
+        "the Bitbucket PR hasn't been read since the relay connected"
+    );
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(b.source("prs")["polled"], json!([{"host": "github", "repo": "acme/quill", "prs": 1, "why": "not covered"}]));
+
+    // The host can't say what changed: the covered PR waits for a later round instead of a full read.
+    prflow::merge_flow(&b.app, covered, vec![("read_at", json!(ago(7200.0)))]).unwrap();
+    *bb.stamps_error.lock() = Some("rate-limited".into());
+    let before = *bb.reads.lock();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*bb.reads.lock(), before, "a covered PR isn't read in full when the stamps fail");
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(*bb.reads.lock(), before + 1, "a refresh still reads it");
+    *bb.stamps_error.lock() = None;
+    prflow::merge_flow(&b.app, covered, vec![("read_at", json!(ago(7200.0)))]).unwrap();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*bb.reads.lock(), before + 2, "its reconcile reads it once the host answers");
 }
 
 #[test]

@@ -577,11 +577,13 @@ pub struct FakeHost {
     pub read_delay: Mutex<std::time::Duration>,
     /// The stamp `stamps` answers for every PR, while set (logged as `stamps <n>`).
     pub stamp: Mutex<Option<String>>,
+    /// While set, `stamps` fails with it (the host couldn't say what changed).
+    pub stamps_error: Mutex<Option<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -596,6 +598,9 @@ impl PrHost for FakeHost {
         self.host
     }
     fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {
+        if let Some(e) = self.stamps_error.lock().clone() {
+            return Err(e);
+        }
         let Some(stamp) = self.stamp.lock().clone() else { return Ok(vec![None; looks.len()]) };
         self.log(format!("stamps {}", looks.len()));
         Ok(vec![Some(stamp); looks.len()])
