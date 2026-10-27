@@ -21,7 +21,7 @@ fn new_board() -> Board {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::for_tests(dir.path());
     let mut projects = vec![];
-    for name in ["lens", "taskboard"] {
+    for name in ["notes", "taskboard"] {
         let repo = dir.path().join(name);
         std::fs::create_dir_all(&repo).unwrap();
         projects.push(json!({"name": name, "path": repo.to_string_lossy()}));
@@ -59,25 +59,25 @@ impl Board {
 #[test]
 fn a_planned_task_moves_with_its_repo_and_keeps_its_goal() {
     let b = new_board();
-    let g = b.post("/goals", json!({"name": "Lens polish", "project": "lens"}))["ref"].as_str().unwrap().to_string();
-    let t = b.task(json!({"title": "Board badge is stale", "project": "lens", "goal_id": g, "status": "planned"}));
+    let g = b.post("/goals", json!({"name": "Notes polish", "project": "notes"}))["ref"].as_str().unwrap().to_string();
+    let t = b.task(json!({"title": "Board badge is stale", "project": "notes", "goal_id": g, "status": "planned"}));
     b.post(&format!("tasks/{t}"), json!({"project": "TaskBoard"}));
     let row = b.row(&t);
     assert_eq!(row.st("project"), "taskboard", "the board's own spelling");
     assert_eq!(row.st("repo_path"), b.repo("taskboard"));
     assert_eq!(row.st("status"), "planned", "a task that never ran keeps its place");
     assert!(row.i("goal_id").is_some(), "a goal can hold more than one project's work");
-    assert!(b.log(&t).contains("Moved from lens to taskboard"), "{}", b.log(&t));
+    assert!(b.log(&t).contains("Moved from notes to taskboard"), "{}", b.log(&t));
 }
 
 #[test]
 fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
     let b = new_board();
-    midna::sync(&b.app, &[json!({"id": "s1", "name": "Lens 1", "agent": "claude", "cwd": b.repo("lens"), "status": {"state": "working"}})], &[])
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Notes 1", "agent": "claude", "cwd": b.repo("notes"), "status": {"state": "working"}})], &[])
         .unwrap();
     let r = reports::handle(
         &b.app,
-        json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("lens"), "git": {},
+        json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("notes"), "git": {},
                "title": "Sync drops a task", "here": true}),
         false,
     )
@@ -99,7 +99,7 @@ fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
     assert_eq!(row.s("session_id"), Some("s1"), "the terminal carries on with it");
     assert_eq!(row.s("claude_session_id"), Some("c-s1"), "and keeps its conversation");
     assert_eq!(row.st("status"), before.st("status"), "still in progress");
-    assert!(b.log(&t).contains("Lens 1 carries on with it in taskboard's repo"), "{}", b.log(&t));
+    assert!(b.log(&t).contains("Notes 1 carries on with it in taskboard's repo"), "{}", b.log(&t));
     // The hook that refuses work in another repository now reads the new one as the task's.
     let mut q = Query::new();
     q.insert("session".into(), "s1".into());
@@ -110,15 +110,15 @@ fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
 #[test]
 fn a_task_whose_terminal_closed_lets_go_of_it_and_its_old_checkout() {
     let b = new_board();
-    let t = b.task(json!({"title": "Its terminal closed", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "Its terminal closed", "project": "notes", "status": "planned"}));
     let id = b.row(&t).id();
     b.app
         .db
         .update("tasks", &json!(id), vec![("status", json!("needs")), ("lost", json!(1)), ("needs_reason", json!("lost")),
-                                          ("session_id", json!("s1")), ("session_name", json!("Lens 1")), ("claude_session_id", json!("c-s1"))])
+                                          ("session_id", json!("s1")), ("session_name", json!("Notes 1")), ("claude_session_id", json!("c-s1"))])
         .unwrap();
     let mut ctx = board::task_context(&b.row(&t));
-    ctx.insert("where".into(), json!({"worktree": b.repo("lens"), "branch": "fix/sync"}));
+    ctx.insert("where".into(), json!({"worktree": b.repo("notes"), "branch": "fix/sync"}));
     board::save_context(&b.app, id, &ctx, false).unwrap();
     b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
     let row = b.row(&t);
@@ -131,7 +131,7 @@ fn a_task_whose_terminal_closed_lets_go_of_it_and_its_old_checkout() {
 #[test]
 fn a_task_that_ran_with_no_terminal_waits_for_start_in_the_new_repo() {
     let b = new_board();
-    let t = b.task(json!({"title": "Lost its terminal", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "Lost its terminal", "project": "notes", "status": "planned"}));
     b.app.db.update("tasks", &json!(b.row(&t).id()), vec![("status", json!("idle")), ("claude_session_id", json!("c-old"))]).unwrap();
     b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
     let row = b.row(&t);
@@ -143,22 +143,22 @@ fn a_task_that_ran_with_no_terminal_waits_for_start_in_the_new_repo() {
 #[test]
 fn here_refuses_another_projects_work() {
     let b = new_board();
-    midna::sync(&b.app, &[json!({"id": "s1", "name": "Lens 1", "agent": "claude", "cwd": b.repo("lens"), "status": {"state": "working"}})], &[])
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Notes 1", "agent": "claude", "cwd": b.repo("notes"), "status": {"state": "working"}})], &[])
         .unwrap();
     let new = |project: Option<&str>| {
         reports::handle(
             &b.app,
-            json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("lens"), "git": {},
+            json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("notes"), "git": {},
                    "title": "Fix the kernel gate", "here": true, "project": project}),
             false,
         )
     };
     let e = new(Some("taskboard")).unwrap_err();
     assert_eq!(e.status, 409);
-    assert!(e.message.contains("works in lens") && e.message.contains("--project taskboard (without --here)"), "{}", e.message);
+    assert!(e.message.contains("works in notes") && e.message.contains("--project taskboard (without --here)"), "{}", e.message);
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks", vec![]).unwrap(), 0, "nothing filed under the wrong project");
-    let r = new(Some("lens")).unwrap();
-    assert_eq!(b.row(r["created"][0].as_str().unwrap()).st("project"), "lens");
+    let r = new(Some("notes")).unwrap();
+    assert_eq!(b.row(r["created"][0].as_str().unwrap()).st("project"), "notes");
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn here_refuses_a_project_the_board_doesnt_know_or_a_folder_with_no_project() {
     midna::sync(
         &b.app,
         &[
-            json!({"id": "s1", "name": "Lens 1", "agent": "claude", "cwd": b.repo("lens"), "status": {"state": "working"}}),
+            json!({"id": "s1", "name": "Notes 1", "agent": "claude", "cwd": b.repo("notes"), "status": {"state": "working"}}),
             json!({"id": "s2", "name": "Scratch", "agent": "claude", "cwd": elsewhere, "status": {"state": "working"}}),
         ],
         &[],
@@ -184,31 +184,31 @@ fn here_refuses_a_project_the_board_doesnt_know_or_a_folder_with_no_project() {
             false,
         )
     };
-    let e = new("s1", &b.repo("lens"), Some("nowhere")).unwrap_err();
+    let e = new("s1", &b.repo("notes"), Some("nowhere")).unwrap_err();
     assert_eq!(e.status, 400);
     assert!(e.message.contains("knows no project “nowhere”"), "{}", e.message);
     let e = new("s2", &elsewhere, None).unwrap_err();
     assert_eq!(e.status, 409);
     assert!(e.message.contains(&format!("midna project add {elsewhere}")), "names the command that adds one: {}", e.message);
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks", vec![]).unwrap(), 0, "no task under an invented project");
-    let r = new("s1", &format!("{}/src", b.repo("lens")), Some("LENS")).unwrap();
-    assert_eq!(b.row(r["created"][0].as_str().unwrap()).st("project"), "lens", "a subfolder is its project's, any case");
+    let r = new("s1", &format!("{}/src", b.repo("notes")), Some("NOTES")).unwrap();
+    assert_eq!(b.row(r["created"][0].as_str().unwrap()).st("project"), "notes", "a subfolder is its project's, any case");
 }
 
 #[test]
 fn an_unknown_project_is_refused() {
     let b = new_board();
-    let t = b.task(json!({"title": "Wrong home", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "Wrong home", "project": "notes", "status": "planned"}));
     let (code, msg) = b.post_err(&format!("tasks/{t}"), json!({"project": "nowhere"}));
     assert_eq!(code, 400);
-    assert!(msg.contains("lens, taskboard"), "names the projects it knows: {msg}");
-    assert_eq!(b.row(&t).st("project"), "lens");
+    assert!(msg.contains("notes, taskboard"), "names the projects it knows: {msg}");
+    assert_eq!(b.row(&t).st("project"), "notes");
 }
 
 #[test]
 fn a_done_task_moves_and_stays_done_out_of_the_old_projects_release() {
     let b = new_board();
-    let t = b.task(json!({"title": "Shipped under the wrong project", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "Shipped under the wrong project", "project": "notes", "status": "planned"}));
     b.app
         .db
         .update("tasks", &json!(b.row(&t).id()), vec![("status", json!("done")), ("summary", json!("Fixed it")), ("release_id", json!(3))])
@@ -224,7 +224,7 @@ fn a_done_task_moves_and_stays_done_out_of_the_old_projects_release() {
 #[test]
 fn a_failed_task_moves_and_waits_for_start_to_try_again() {
     let b = new_board();
-    let t = b.task(json!({"title": "Filed in the wrong repo", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "Filed in the wrong repo", "project": "notes", "status": "planned"}));
     b.app
         .db
         .update("tasks", &json!(b.row(&t).id()), vec![("status", json!("done")), ("failed", json!(1)), ("summary", json!("Wrong project"))])
@@ -240,7 +240,7 @@ fn a_failed_task_moves_and_waits_for_start_to_try_again() {
 #[test]
 fn a_submitted_task_moves_with_its_pr() {
     let b = new_board();
-    let t = b.task(json!({"title": "Has a PR", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "Has a PR", "project": "notes", "status": "planned"}));
     b.app
         .db
         .update(
@@ -260,8 +260,8 @@ fn a_submitted_task_moves_with_its_pr() {
 #[test]
 fn a_stacked_task_is_refused_until_unstacked() {
     let b = new_board();
-    let parent = b.task(json!({"title": "Base", "project": "lens", "status": "planned"}));
-    let t = b.task(json!({"title": "On top", "project": "lens", "status": "planned", "stack_on": parent}));
+    let parent = b.task(json!({"title": "Base", "project": "notes", "status": "planned"}));
+    let t = b.task(json!({"title": "On top", "project": "notes", "status": "planned", "stack_on": parent}));
     let (code, msg) = b.post_err(&format!("tasks/{t}"), json!({"project": "taskboard"}));
     assert_eq!(code, 409);
     assert!(msg.contains("--stack-on none"), "{msg}");
@@ -270,11 +270,11 @@ fn a_stacked_task_is_refused_until_unstacked() {
 #[test]
 fn a_backlog_issue_moves_and_says_so_in_its_log() {
     let b = new_board();
-    let i = b.post("/backlog", json!({"title": "Stuck badge", "project": "lens", "kind": "bug"}))["id"].as_i64().unwrap();
+    let i = b.post("/backlog", json!({"title": "Stuck badge", "project": "notes", "kind": "bug"}))["id"].as_i64().unwrap();
     b.post(&format!("backlog/B{i}"), json!({"project": "taskboard"}));
     assert_eq!(board::get_issue(&b.app, i).unwrap().st("project"), "taskboard");
     let log = json!(board::issue_history(&b.app, i).unwrap()).to_string();
-    assert!(log.contains("Moved from lens to taskboard"), "{log}");
+    assert!(log.contains("Moved from notes to taskboard"), "{log}");
     let (code, _) = b.post_err(&format!("backlog/B{i}"), json!({"project": "nowhere"}));
     assert_eq!(code, 400);
 }

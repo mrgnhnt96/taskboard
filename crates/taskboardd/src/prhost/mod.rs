@@ -201,9 +201,6 @@ pub struct Reply {
     pub at: String,
 }
 
-/// The marker that ends every finding lens posts on a PR.
-const LENS_FINDING: &str = "<!-- lens:finding key=";
-
 /// How much of a reply's text a record keeps on one line.
 pub(crate) const REPLY_MAX: usize = 400;
 /// How much of a comment's whole text a record keeps.
@@ -211,17 +208,12 @@ pub(crate) const BODY_MAX: usize = 20_000;
 
 impl Thread {
     /// Waiting on us (the board's account, see [`Record::us`]): unresolved, and someone else spoke last.
-    /// A task waits until resolved, and so does a lens finding: lens may post as our own account.
+    /// A task waits until resolved.
     pub fn waiting_on(&self, us: &str) -> bool {
         if self.resolved {
             return false;
         }
-        self.kind == "task" || self.lens_finding() || self.last_author != us
-    }
-
-    /// lens posted it: its comments end in `<!-- lens:finding key=<key> -->`.
-    pub fn lens_finding(&self) -> bool {
-        self.body.contains(LENS_FINDING) || self.text.contains(LENS_FINDING)
+        self.kind == "task" || self.last_author != us
     }
 }
 

@@ -467,7 +467,7 @@ fn a_merged_pr_stays_merged_when_stepped_with_the_record_from_before_the_merge()
     b.post("/tasks/T1/pr/merged", json!({}));
     assert_eq!(b.task(id).s("pr_state"), Some("MERGED"));
 
-    // A lens review finishing re-steps the PR with the cached record, which still reads open.
+    // A later step (from a cached read) re-steps the PR with the cached record, which still reads open.
     b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &open)).unwrap();
     let t = b.task(id);
     assert_eq!(t.s("pr_phase"), Some("merged"));

@@ -51,7 +51,6 @@ pub struct FileConfig {
     pub checkin: crate::checkin::CheckinConfig,
     pub spans: crate::spans::SpansConfig,
     pub review: crate::review::ReviewConfig,
-    pub lens: crate::lens::SubmitConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     /// `[hosts.<host>]`: each PR host's call budget (`prhost/limit.rs`).
@@ -233,8 +232,6 @@ pub struct PrConfig {
     pub approvals: i64,
     /// Per-project PR rules, by the project's name (`[pr.projects.webapp]`).
     pub projects: BTreeMap<String, PrProject>,
-    /// The lens review stage on new PRs (`[pr.lens]`, `lens_pr.rs`).
-    pub lens: LensConfig,
 }
 
 impl Default for PrConfig {
@@ -253,7 +250,6 @@ impl Default for PrConfig {
             azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
             approvals: DEFAULT_APPROVALS,
             projects: BTreeMap::new(),
-            lens: LensConfig::default(),
         }
     }
 }
@@ -330,27 +326,8 @@ pub struct PrProject {
     pub agents_merge: Option<bool>,
     /// A green PR waits for the owner's review. Off: the board marks it reviewed. Unset: `pr.owner_review`.
     pub owner_review: Option<bool>,
-    /// The lens review stage on this project's new PRs. Unset: `pr.lens.on`.
-    pub lens: Option<bool>,
     /// When to rebase its PRs onto their base. Unset: `pr.rebase`.
     pub rebase: Option<RebasePolicy>,
-}
-
-/// `[pr.lens]`: on a new PR, run lens's PR pass (`lens review --pr <n>`, the binary `[lens] bin` names)
-/// and let it post its verified findings on the PR. It shows as the `lens` stage and never holds a merge.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct LensConfig {
-    /// Run it on every project's new PRs (a project's `lens` says otherwise). Off by default.
-    pub on: bool,
-    /// How long one run may take, in minutes. A run past it is stopped, and the stage moves on.
-    pub timeout_mins: f64,
-}
-
-impl Default for LensConfig {
-    fn default() -> Self {
-        LensConfig { on: false, timeout_mins: 30.0 }
-    }
 }
 
 /// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).
@@ -782,7 +759,6 @@ pub struct Config {
     pub checkin: crate::checkin::CheckinConfig,
     pub spans: crate::spans::SpansConfig,
     pub review: crate::review::ReviewConfig,
-    pub lens: crate::lens::SubmitConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
@@ -963,7 +939,6 @@ impl Config {
             checkin: f.checkin,
             spans: f.spans,
             review: f.review,
-            lens: f.lens,
             reviewers: f.reviewers,
             feed: f.feed,
             hosts: f.hosts,
@@ -985,7 +960,6 @@ impl Config {
         c.claude_projects = data.join("claude-projects");
         // Tests never run the real claude (QA comments, screening and wave plans would ask it).
         c.claude = data.join("no-claude").to_string_lossy().to_string();
-        c.lens.bin = data.join("no-lens").to_string_lossy().to_string();
         c.runner = false;
         // No `--model` in started terminals' flags unless a test turns it on.
         c.models.enabled = false;
@@ -1142,6 +1116,14 @@ mod tests {
         assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, BACKGROUND);
         let f: FileConfig = toml::from_str("[terminals]\nbackground = []").unwrap();
         assert!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background.is_empty());
+    }
+
+    #[test]
+    fn an_old_config_s_lens_tables_are_ignored() {
+        let old = "[lens]\non = true\nbin = \"lens\"\nsubmit = true\n\n[lens.projects]\nweb = false\n\n[pr]\napprovals = 1\n\n[pr.lens]\non = true\ntimeout_mins = 30\n\n[pr.projects.web]\nlens = true\n";
+        let f: FileConfig = toml::from_str(old).expect("an old config with lens still loads");
+        let c = Config::from_file(f, PathBuf::from("/tmp/x.toml"));
+        assert_eq!(c.pr.approvals, 1, "the rest of it still counts");
     }
 
     #[test]

@@ -186,23 +186,15 @@ fn link(path: &str) -> Option<Link> {
     Some(Link::Worktree { gitdir, there })
 }
 
-/// Leftovers a tool writes into a slot it runs in, safe to drop when the worktree under them is gone.
-const LEFTOVERS: [&str; 1] = [".review"];
-
-/// A slot folder holding nothing but `LEFTOVERS`.
-fn only_leftovers(path: &str) -> bool {
-    std::fs::read_dir(path).is_ok_and(|d| d.flatten().all(|e| LEFTOVERS.contains(&e.file_name().to_string_lossy().as_ref())))
+/// A slot folder holding nothing.
+fn empty(path: &str) -> bool {
+    std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_none())
 }
 
-/// Has the slot uncommitted changes? Untracked `LEFTOVERS` don't count: a slot holding only those is
-/// free to take. True when git fails.
+/// Has the slot uncommitted changes? True when git fails.
 fn dirty(path: &str) -> bool {
     let r = git(path, &["status", "--porcelain"], GIT_SECS);
-    r.code != 0
-        || r.out.lines().filter(|l| !l.trim().is_empty()).any(|l| {
-            let top = l.strip_prefix("?? ").and_then(|f| f.trim_matches('"').split('/').next());
-            !top.is_some_and(|t| LEFTOVERS.contains(&t))
-        })
+    r.code != 0 || r.out.lines().any(|l| !l.trim().is_empty())
 }
 
 /// Adds the worktree at `path`, detached at `start`, and checks git sees it as one.
@@ -217,15 +209,15 @@ fn add(repo: &str, path: &str, start: &str) -> Result<()> {
     Ok(())
 }
 
-/// A slot whose folder isn't a live worktree: made again in place when it's gone or holds only
-/// leftovers, else dropped from the pool with its folder left for a look. True when it's live again.
+/// A slot whose folder isn't a live worktree: made again in place when it's gone or empty,
+/// else dropped from the pool with its folder left for a look. True when it's live again.
 fn repair(app: &App, t: &Row, s: &Row, repo: &str, start: &str) -> Result<bool> {
     let (path, n) = (s.st("path"), s.i("n").unwrap_or(0));
     git(repo, &["worktree", "prune"], GIT_SECS);
     let gone = !Path::new(&path).exists();
-    if !gone && !only_leftovers(&path) {
+    if !gone && !empty(&path) {
         app.db.x("DELETE FROM worktree_slots WHERE id = ?", p![s.id()])?;
-        let why = format!("Dropped worktree slot-{n} from the pool: {path} isn't a git worktree any more and holds more than leftovers, so it's left as it is");
+        let why = format!("Dropped worktree slot-{n} from the pool: {path} isn't a git worktree any more and isn't empty, so it's left as it is");
         app.info(format!("worktrees: {why}"));
         board::log_event(app, t.id(), board::BOARD, "midna", &why)?;
         return Ok(false);
@@ -427,8 +419,7 @@ fn save_leftovers(app: &App, s: &Row, path: &str) -> Result<String> {
     let taken = |b: &str| git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")], GIT_SECS).code == 0;
     let branch = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|b| !taken(b)).unwrap_or(stem);
     let base = git(path, &["rev-parse", "HEAD"], GIT_SECS).out.trim().to_string();
-    let mut add = vec!["add".to_string(), "-A".into(), "--".into(), ".".into()];
-    add.extend(LEFTOVERS.iter().map(|l| format!(":!{l}")));
+    let add = vec!["add".to_string(), "-A".into(), "--".into(), ".".into()];
     let msg = format!("WIP left uncommitted in worktree slot-{n}");
     let steps: [Vec<String>; 3] = [
         vec!["switch".into(), "-q".into(), "-c".into(), branch.clone()],
@@ -889,25 +880,6 @@ mod tests {
         resized(&path);
         let after = measured(&path, first);
         assert!(after.unwrap() >= first.unwrap() + 4096, "{first:?} → {after:?}");
-    }
-
-    #[test]
-    fn untracked_review_leftovers_leave_a_slot_clean() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_str().unwrap();
-        let run = |args: &[&str]| assert_eq!(git(path, args, GIT_SECS).code, 0, "git {args:?}");
-        run(&["init", "-q"]);
-        std::fs::write(dir.path().join("app.rs"), "one").unwrap();
-        run(&["add", "app.rs"]);
-        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"]);
-        std::fs::create_dir_all(dir.path().join(".review/pr-640")).unwrap();
-        std::fs::write(dir.path().join(".review/pr-640/notes.md"), "lens").unwrap();
-        assert!(!dirty(path), "a slot holding only .review leftovers is free to take");
-        std::fs::write(dir.path().join("new.rs"), "two").unwrap();
-        assert!(dirty(path), "another untracked file still counts");
-        std::fs::remove_file(dir.path().join("new.rs")).unwrap();
-        std::fs::write(dir.path().join("app.rs"), "two").unwrap();
-        assert!(dirty(path), "a changed tracked file still counts");
     }
 
     #[test]

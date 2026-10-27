@@ -443,16 +443,6 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("waits_on".into(), json!(waits_on(app, name)));
     // Worktrees of its repo that the clean-up matched to no task (`worktrees::others`).
     o.insert("stray_worktrees".into(), json!(crate::worktrees::stray(app, name)?));
-    // Whether lens sweeps it (and its latest sweep, `lens_sweep.rs`), only where lens is installed.
-    if crate::lens::bin(app).is_some() {
-        o.insert("lens".into(), json!(crate::lens::on(app, Some(name))));
-        o.insert("lens_set".into(), json!(crate::lens::project_set(app, name)?));
-        let mut sweep = crate::lens_sweep::of(app, name)?;
-        if let Some(s) = sweep.as_object_mut() {
-            s.remove("filed");
-        }
-        o.insert("lens_sweep".into(), sweep);
-    }
     o.insert("setup_gaps".into(), crate::setup::gaps_json(app, name)?);
     // Its areas from `.taskboard.toml` (`areas.rs`), and what in that file was left out.
     let areas = match p["path"].as_str().filter(|p| !p.is_empty()) {
