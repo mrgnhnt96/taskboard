@@ -1029,7 +1029,7 @@ fn nudge(r: &Report) -> Result<Option<Value>> {
 
 /// The terminal on `t` stopped with nothing left running in it: whether the board sent the turn's prompt.
 fn idle_on(r: &Report, t: &Row) -> Result<Option<bool>> {
-    if t.s("status") != Some("working") || t.b("lost") || as_bool(r.body.get("stop_hook_active"), false) {
+    if t.s("status") != Some("working") || t.b("lost") || as_bool(r.body.get("stop_hook_active"), false) || crate::code_review::in_review(t) {
         return Ok(None);
     }
     let Some(s) = board::get_session(r.app, r.sid())? else { return Ok(None) };
@@ -1067,7 +1067,7 @@ fn ship_nudge(r: &Report, head: &str) -> Result<Option<Value>> {
 /// The head of the task's branch when it has commits its base doesn't and no PR, read before the
 /// transaction since it runs git.
 fn unshipped(r: &Report, t: &Row) -> Option<String> {
-    if has(t.s("pr_url")) || !projects::task_ships_pr(r.app, t).unwrap_or(false) {
+    if has(t.s("pr_url")) || crate::code_review::in_review(t) || !projects::task_ships_pr(r.app, t).unwrap_or(false) {
         return None;
     }
     let base = steps::real_base(r.app, t).ok()?;
@@ -3221,6 +3221,12 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             // Its slot goes back once it's done: nothing may be left only there.
             if let Some(why) = crate::slots::release_refusal(app, t)? {
                 return err(409, why);
+            }
+        }
+        // With a reviewer set, the submit waits in code review and the board sends it on after.
+        if let Some(t) = &t {
+            if let Some(held) = crate::code_review::gate(app, &r.body, t, spooled)? {
+                return Ok(held);
             }
         }
         crate::propen::before_done(app, &mut r.body, t.as_ref())?;

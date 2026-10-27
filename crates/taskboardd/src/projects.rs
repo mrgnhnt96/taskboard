@@ -440,6 +440,8 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("releases_set".into(), json!(crate::releases::setting(app, name)?));
     o.insert("release_tags".into(), json!(crate::release_tags::pattern(app, name)?));
     o.insert("release_script".into(), json!(crate::releases::script(app, name)?));
+    o.insert("code_review".into(), json!(crate::code_review::command(app, name)?));
+    o.insert("code_review_set".into(), json!(crate::code_review::setting(app, name)?));
     o.insert("waits_on".into(), json!(waits_on(app, name)));
     // Worktrees of its repo that the clean-up matched to no task (`worktrees::others`).
     o.insert("stray_worktrees".into(), json!(crate::worktrees::stray(app, name)?));

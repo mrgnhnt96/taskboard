@@ -475,6 +475,7 @@ impl Db {
         conn.execute_batch(crate::spans::SCHEMA)?;
         conn.execute_batch(crate::review::SCHEMA)?;
         add_columns(&conn, crate::review::ADDED)?;
+        add_columns(&conn, crate::code_review::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
         conn.execute_batch(BACKFILL_LANES)?;
         let changed: Arc<Mutex<Vec<(String, i64)>>> = Default::default();

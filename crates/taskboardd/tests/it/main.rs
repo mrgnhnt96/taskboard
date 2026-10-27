@@ -16,6 +16,7 @@ mod backlog_tidy;
 mod beta5_prflow;
 mod breaks;
 mod chain;
+mod code_review;
 mod compact_resume;
 mod cross_project_waits;
 mod days;
