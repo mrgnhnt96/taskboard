@@ -30,6 +30,8 @@ use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, t
 pub const WAKE: &[&str] = &["fix", "rebase", "comments", "steps", "merge", "ask"];
 /// The visits that don't change code: they start fresh on `[models] pr_visit` (`fresh_visit`).
 const MECHANICAL: &[&str] = &["merge", "ask"];
+/// Steps whose visit works on the PR's host (asks, merges, replies), so it waits out a rate limit.
+const ON_HOST: &[&str] = &["ask", "merge", "comments"];
 pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
 pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "steps", "merge", "waits", "stack"];
@@ -1659,7 +1661,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     let stalled = phase == "merge" && merge_stalled(&now_flow, &key);
     let fresh = f.s("woke") != Some(key.as_str()) && f.s("handled") != Some(key.as_str());
-    if may_wake
+    let would_wake = may_wake
         && WAKE.contains(&phase.as_str())
         && t.s("status") == Some("done")
         && (fresh || stalled)
@@ -1668,8 +1670,17 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         && !visit_live(app, t)?
         && hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref())
         // The agent isn't brought back to ask for reviews while the PR feed holds asks.
-        && (phase != "ask" || crate::asks::held(app, t)?.is_none())
-    {
+        && (phase != "ask" || crate::asks::held(app, t)?.is_none());
+    // A visit whose step works on the host waits while the account the PR's host signs in as is
+    // rate-limited: its first tb pr call would fail. Other hosts and accounts go on.
+    let limited = if would_wake && ON_HOST.contains(&phase.as_str()) { crate::prhost::PrRef::of(t).and_then(|pr| host_held(app, &pr)) } else { None };
+    if let Some(until) = limited {
+        let at = iso(until);
+        board::log_event(app, t.id(), board::BOARD, "status", &format!(
+            "PR #{} needs the agent ({}), but {} has the board rate-limited; bringing it back at {}",
+            t.i0("pr_num"), label(&phase).to_lowercase(), crate::prhost::limit::label(t.s("pr_host").unwrap_or("")), local_clock(Some(&at))))?;
+        changes.extend(fields!["retry_at" => at.clone(), "reread_at" => at]);
+    } else if would_wake {
         let mut probe = t.clone();
         probe.insert("pr_phase".into(), json!(phase));
         let tries = now_flow.i0("merge_tries") + 1;
@@ -1957,6 +1968,47 @@ pub fn waited(app: &App, t: &Row) -> Result<Row> {
 pub fn wait_out(app: &App, t: &Row, until: f64) -> Result<Row> {
     let at = iso(until);
     merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null, "retry_at" => at.clone(), "reread_at" => at])
+}
+
+/// When the account the PR's host signs in as takes calls again, while that account is rate-limited.
+/// Another host, or another account on it, doesn't hold this PR.
+pub fn host_held(app: &App, pr: &crate::prhost::PrRef) -> Option<f64> {
+    crate::prhost::host_for(app, &pr.host).ok()?.held_until()
+}
+
+/// A `tb pr` command of the `step` visit that failed while the PR's host account is rate-limited: the
+/// board ends the visit, gives the slot back and brings the agent back for the step once the limit is
+/// over (`wait_out`), so it doesn't wait in its terminal. Anything else (another failure, another step,
+/// a visit that can't end yet) answers `e` as it was.
+pub fn wait_out_limit(app: &App, id: i64, pr: &crate::prhost::PrRef, body: &Value, step: &str, e: ApiError) -> ApiError {
+    let Some(until) = host_held(app, pr) else { return e };
+    let ended = || -> Result<bool> {
+        let t = board::get_task(app, id)?;
+        if t.s("pr_phase") != Some(step) || crate::slots::visit_end_refusal(app, &t, body)?.is_some() {
+            return Ok(false);
+        }
+        let site = crate::prhost::limit::label(&pr.host);
+        app.db.tx(|| {
+            wait_out(app, &t, until)?;
+            let at = local_clock(Some(&iso(until)));
+            board::log_event(app, id, board::BOARD, "status", &format!("The visit to PR #{} ({}) ended while {site} has the board rate-limited; bringing the agent back at {at}", pr.num, label(step).to_lowercase()))
+        })?;
+        crate::slots::release(app, &board::get_task(app, id)?)?;
+        Ok(true)
+    };
+    match ended() {
+        Ok(true) => ApiError::new(
+            e.status,
+            format!(
+                "{} The board ended this visit and brings you back after {}, once the limit is over. You can stop here: \
+                 don't wait for it or try again in this conversation.",
+                e.message,
+                local_clock(Some(&iso(until)))
+            ),
+        ),
+        Ok(false) => e,
+        Err(x) => x,
+    }
 }
 
 trait HasPhase {

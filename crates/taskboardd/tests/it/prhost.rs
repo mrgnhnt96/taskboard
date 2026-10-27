@@ -315,6 +315,27 @@ fn addressed_refuses_while_threads_are_open_then_asks_the_reviewers_again() {
 }
 
 #[test]
+fn addressed_while_the_host_account_is_limited_ends_the_visit_until_it_lifts() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("t1".into());
+    rec.reviewers = vec![reviewer("rev", "changes")];
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "comments");
+    *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
+    *h.read_error.lock() = Some("Bitbucket rate-limited until 3:40 PM".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"})).unwrap_err();
+    assert!(e.contains("Couldn't read PR #9") && e.contains("brings you back after"), "{e}");
+    assert_eq!(b.phase(id), "comments", "nobody was asked again yet");
+    assert!(b.flow(id)["retry_at"].is_string());
+    assert!(b.flow(id).get("handled").is_none(), "the visit comes back for the same step");
+}
+
+#[test]
 fn merge_checks_everything_first_then_merges_and_closes_the_branch() {
     let b = board_with(|c| {
         c.pr.agents_merge = Some(true);
@@ -1236,6 +1257,35 @@ fn a_merge_the_host_refuses_for_a_conflict_goes_to_rebase() {
     h.rec.lock().head = "h2".into();
     poll(&b);
     assert_eq!(b.phase(id), "merge", "the rebased push can merge again");
+}
+
+#[test]
+fn a_merge_that_hits_a_rate_limit_ends_the_visit_until_it_lifts() {
+    let b = board_with(|c| {
+        c.pr.wake = true;
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    assert_eq!(wakes(&b, id).len(), 1);
+    *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
+    *h.merge_error.lock() = Some("429 Too Many Requests".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("Couldn't merge PR #9") && e.contains("brings you back after"), "{e}");
+    assert!(b.flow(id).get("woke").is_none());
+    assert!(b.flow(id).get("merge_tries").is_none(), "not a merge left open");
+    visits_done(&b, id);
+    poll(&b);
+    assert_eq!(wakes(&b, id).len(), 1, "not while the limit lasts");
+    *h.held.lock() = None;
+    *h.merge_error.lock() = None;
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.retry_at', '2000-01-01T00:00:00Z') WHERE id = ?", p![id]).unwrap();
+    poll(&b);
+    assert_eq!(wakes(&b, id).len(), 2, "back to merge once it's over");
 }
 
 #[test]

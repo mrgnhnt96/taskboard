@@ -16,6 +16,10 @@ use super::{gist, whole, Cancelled, Check, Comment, HostResult, Look, MergeOpts,
 /// error starts with "Bitbucket answered <code>" when Bitbucket answered.
 pub trait Http: Send + Sync {
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value>;
+    /// The account `call` signs in as, as the rate limits know it (`limit::Gate::key`).
+    fn limit_key(&self) -> Option<String> {
+        None
+    }
 }
 
 /// JSON over HTTPS with basic auth (Bitbucket, and Azure DevOps in `ci.rs`).
@@ -66,6 +70,9 @@ fn headroom(r: &ureq::Response) -> Option<super::limit::Headroom> {
 }
 
 impl Http for BasicHttp {
+    fn limit_key(&self) -> Option<String> {
+        Some(self.gate.key.clone())
+    }
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
         let svc = self.service;
         self.gate.call(method != "GET", || {
@@ -249,6 +256,9 @@ const STAMP_FIELDS: &str = "next,values.id,values.state,values.title,values.upda
 impl PrHost for BitbucketHost {
     fn id(&self) -> &'static str {
         "bitbucket"
+    }
+    fn held_until(&self) -> Option<f64> {
+        super::limit::held_until(&self.http.limit_key()?)
     }
 
     fn checks(&self, pr: &PrRef, head: &str) -> HostResult<Option<Vec<Check>>> {

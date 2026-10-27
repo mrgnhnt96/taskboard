@@ -767,6 +767,13 @@ fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
     assert_eq!(card["pr"]["stage"]["asked"]["by"], "The agent");
 }
 
+/// Ends the limit the fake host's account is under, and the wait the board set for it.
+fn limit_over(b: &Board, h: &FakeHost, id: i64) {
+    *h.held.lock() = None;
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", vec![json!(id)]).unwrap();
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.retry_at', '2000-01-01T00:00:00Z') WHERE id = ?", vec![json!(id)]).unwrap();
+}
+
 #[test]
 fn a_rate_limited_ask_ends_the_visit_and_brings_the_agent_back_after_it() {
     let b = board_with(|c| c.reviewers.ask_stage = true);
@@ -776,13 +783,12 @@ fn a_rate_limited_ask_ends_the_visit_and_brings_the_agent_back_after_it() {
     poll(&b);
     b.mark_reviewed(id);
     assert_eq!(pr_jobs(&b, id).len(), 1);
-    // The host has the board limited: the ask fails, and nothing is asked.
-    let until = taskboardd::util::now_ts() + 3.0;
-    prhost::limit::limits().hit("test:wait-out", "bitbucket", &prhost::limit::Hit { retry_after: Some(3.0), why: "429".into(), ..Default::default() }, until - 3.0);
+    // The host has the board's account limited: the ask fails, and nothing is asked.
+    *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
     *h.review_error.lock() = Some("Bitbucket answered 429".into());
 
     let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"})).unwrap_err();
-    assert!(e.contains("The board ended this visit and brings you back to ask after"), "{e}");
+    assert!(e.contains("The board ended this visit and brings you back after"), "{e}");
     assert!(e.contains("don't wait for it"), "{e}");
     let f = b.flow(id);
     assert!(f.get("woke").is_none(), "the visit is over");
@@ -792,12 +798,43 @@ fn a_rate_limited_ask_ends_the_visit_and_brings_the_agent_back_after_it() {
 
     // Once the limit is over, the next read brings the agent back to ask.
     *h.review_error.lock() = None;
-    b.app.db.x("UPDATE jobs SET state = 'done' WHERE task_id = ?", vec![json!(id)]).unwrap();
-    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.retry_at', '2000-01-01T00:00:00Z') WHERE id = ?", vec![json!(id)]).unwrap();
+    limit_over(&b, &h, id);
     poll(&b);
     let jobs = pr_jobs(&b, id);
     assert_eq!(jobs.len(), 2, "{jobs:?}");
     assert!(jobs[1].contains("pr reviewers T"), "{}", jobs[1]);
+}
+
+#[test]
+fn the_agent_isn_t_brought_back_to_ask_while_the_host_account_is_limited() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
+    b.mark_reviewed(id);
+    assert_eq!(b.phase(id), "ask");
+    assert!(pr_jobs(&b, id).is_empty(), "its first tb pr call would fail");
+    assert!(b.flow(id)["retry_at"].is_string());
+    limit_over(&b, &h, id);
+    poll(&b);
+    assert_eq!(pr_jobs(&b, id).len(), 1);
+}
+
+#[test]
+fn a_limit_on_another_host_holds_nothing_here() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let _h = fake(&b, green());
+    let gh = FakeHost::new("github", green());
+    *gh.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
+    prhost::install(&b.app, gh);
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    b.mark_reviewed(id);
+    assert_eq!(pr_jobs(&b, id).len(), 1, "GitHub's limit doesn't hold a Bitbucket PR");
+    assert!(b.flow(id).get("retry_at").is_none());
 }
 
 #[test]

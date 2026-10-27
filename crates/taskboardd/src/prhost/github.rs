@@ -11,6 +11,10 @@ use super::{gist, whole, Cancelled, Check, Comment, HostResult, Look, MergeOpts,
 /// Runs `gh` with these arguments and answers its stdout.
 pub trait Gh: Send + Sync {
     fn run(&self, args: &[String]) -> HostResult<String>;
+    /// The account `run` signs in as, as the rate limits know it (`limit::Gate::key`).
+    fn limit_key(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct GhCli {
@@ -33,8 +37,11 @@ impl GhCli {
 }
 
 impl Gh for GhCli {
+    fn limit_key(&self) -> Option<String> {
+        Some(super::account_key("github", &self.env.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>()))
+    }
     fn run(&self, args: &[String]) -> HostResult<String> {
-        let key = super::account_key("github", &self.env.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>());
+        let key = self.limit_key().unwrap_or_default();
         super::limit::Gate::new("github", key).call(is_write(args), || {
             let o = self.gh(args).map_err(|e| (e, None))?;
             if o.code != Some(0) {
@@ -195,6 +202,9 @@ fn stamps_query(looks: &[Look]) -> String {
 impl PrHost for GithubHost {
     fn id(&self) -> &'static str {
         "github"
+    }
+    fn held_until(&self) -> Option<f64> {
+        super::limit::held_until(&self.gh.limit_key()?)
     }
 
     fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {

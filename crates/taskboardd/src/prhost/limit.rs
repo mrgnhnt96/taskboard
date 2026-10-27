@@ -391,14 +391,12 @@ impl Limits {
     }
 
     /// Each account the board has called: its host, limit and calls in the last hour.
-    /// When the host's accounts take calls again: the latest end of a limit, or of the slow restart
-    /// after one, across them. None when none is held.
-    pub fn held_until(&self, host: &str, now: f64) -> Option<f64> {
+    /// When the account `key` takes calls again: the end of its limit, or of the slow restart after it.
+    /// None when it isn't held. Other accounts, and other hosts, don't count.
+    pub fn held_until(&self, key: &str, now: f64) -> Option<f64> {
         let all = self.accounts.lock();
-        all.values()
-            .filter(|a| a.host == host)
-            .filter_map(|a| a.until.filter(|u| *u > now).or_else(|| a.slow(now)))
-            .max_by(|a, b| a.total_cmp(b))
+        let a = all.get(key)?;
+        a.until.filter(|u| *u > now).or_else(|| a.slow(now))
     }
 
     pub fn status(&self, now: f64) -> Vec<Value> {
@@ -531,9 +529,9 @@ pub fn status() -> Vec<Value> {
     limits().status(now_ts())
 }
 
-/// When the host takes the board's calls again, while it's limited ([`Limits::held_until`]).
-pub fn held_until(host: &str) -> Option<f64> {
-    limits().held_until(host, now_ts())
+/// When the account `key` takes the board's calls again, while it's limited ([`Limits::held_until`]).
+pub fn held_until(key: &str) -> Option<f64> {
+    limits().held_until(key, now_ts())
 }
 
 /// How much to widen the PR poll and the review sweep ([`Limits::stretch`]).
@@ -587,15 +585,16 @@ mod tests {
     }
 
     #[test]
-    fn held_until_is_the_latest_limit_or_slow_restart_on_the_host() {
+    fn held_until_is_the_account_s_limit_or_slow_restart_alone() {
         let l = Limits::default();
-        assert_eq!(l.held_until("bitbucket", T0), None);
+        assert_eq!(l.held_until("bb:1", T0), None);
+        l.admit("gh:1", "github", false, false, T0).unwrap();
         l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(120.0), ..hit("429") }, T0);
-        l.hit("bb:2", "bitbucket", &Hit { retry_after: Some(300.0), ..hit("429") }, T0);
-        assert_eq!(l.held_until("bitbucket", T0 + 60.0), Some(T0 + 300.0));
-        assert_eq!(l.held_until("github", T0 + 60.0), None, "another host isn't held");
-        let slow = l.held_until("bitbucket", T0 + 301.0).expect("the slow restart after it holds it too");
-        assert!(slow > T0 + 301.0, "{slow}");
+        assert_eq!(l.held_until("bb:1", T0 + 60.0), Some(T0 + 120.0));
+        assert_eq!(l.held_until("bb:2", T0 + 60.0), None, "another account on the host isn't held");
+        assert_eq!(l.held_until("gh:1", T0 + 60.0), None, "another host isn't held");
+        let slow = l.held_until("bb:1", T0 + 121.0).expect("the slow restart after it holds it too");
+        assert!(slow > T0 + 121.0, "{slow}");
     }
 
     #[test]

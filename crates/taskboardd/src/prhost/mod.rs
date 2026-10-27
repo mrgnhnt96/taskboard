@@ -428,6 +428,11 @@ pub struct OpenPr {
 pub trait PrHost: Send + Sync {
     /// `github` or `bitbucket`.
     fn id(&self) -> &'static str;
+    /// When the account this host signs in as takes calls again, while the host has it rate-limited
+    /// (`limit::held_until`). Only this account: another host, or another account, isn't held by it.
+    fn held_until(&self) -> Option<f64> {
+        None
+    }
     fn read(&self, pr: &PrRef) -> HostResult<Record>;
     /// The checks on the PR's `head` commit alone, for a stream event that moved the head without
     /// them; `None` when the host can't read them apart from a whole [`PrHost::read`].
@@ -579,11 +584,13 @@ pub struct FakeHost {
     pub stamp: Mutex<Option<String>>,
     /// While set, `stamps` fails with it (the host couldn't say what changed).
     pub stamps_error: Mutex<Option<String>>,
+    /// What `held_until` answers: the account rate-limited until then.
+    pub held: Mutex<Option<f64>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -596,6 +603,9 @@ impl FakeHost {
 impl PrHost for FakeHost {
     fn id(&self) -> &'static str {
         self.host
+    }
+    fn held_until(&self) -> Option<f64> {
+        *self.held.lock()
     }
     fn stamps(&self, looks: &[Look]) -> HostResult<Vec<Option<String>>> {
         if let Some(e) = self.stamps_error.lock().clone() {
