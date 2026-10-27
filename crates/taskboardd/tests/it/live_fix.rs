@@ -162,3 +162,26 @@ fn a_fix_waiting_to_retry_its_wake_isn_t_idle() {
     assert_eq!(s["label"], "Checks failed", "{s}");
     assert_eq!(s["idle"], true);
 }
+
+#[test]
+fn a_pr_that_conflicts_during_a_visit_for_something_else_still_wakes_to_rebase() {
+    let b = board();
+    let id = b.failing();
+    // While the agent is on the failed check, main moves on and the PR conflicts with it.
+    let mut r = rec("h1", &[]);
+    r.mergeable = json!("CONFLICTING");
+    *b.host.rec.lock() = r;
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(b.task(id).s("pr_phase"), Some("rebase"));
+    // The visit ends: what it was brought back for is handled, not the conflict it never saw.
+    prflow::waited(&b.app, &b.task(id)).unwrap();
+    assert_eq!(flow(&b, id)["handled"].as_str(), Some("fix:h1:0"));
+    // Its turn ends, so the terminal is idle.
+    b.app.db.x("UPDATE sessions SET status = 'idle' WHERE id = 's1'", p![]).unwrap();
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(flow(&b, id)["woke"].as_str(), Some("rebase:h1:b1"), "the conflict wakes the agent");
+}
+
+fn flow(b: &Board, id: i64) -> Value {
+    serde_json::from_str(b.task(id).s("pr_flow").unwrap_or("{}")).unwrap()
+}
