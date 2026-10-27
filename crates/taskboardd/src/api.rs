@@ -202,6 +202,10 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             let sid = query.get("session").map(|s| s.as_str()).unwrap_or("");
             let t = board::task_for_session(app, Some(sid))?;
             let v = if t.is_none() { prflow::visited_by(app, sid)? } else { None };
+            // For the status bar, which shows whatever task or goal it can tie to the terminal: the task it
+            // last had (handed in, or taken elsewhere since), else the goal it last ran.
+            let last = if t.is_none() && v.is_none() { board::last_task_of(app, sid)? } else { None };
+            let goal = if t.is_none() && v.is_none() && last.is_none() { board::goal_ran_by(app, sid)? } else { None };
             // The card plus its detail ("What to do"): a reviewer reading `tb peek` needs the ask, not just the title.
             let card = |t: &Row| -> Result<Value> {
                 let mut c = board::task_card(app, t)?;
@@ -212,6 +216,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                       "task": match t { Some(t) => card(&t)?, None => Value::Null },
                       "line": crate::lines::entries(app, sid)?,
                       "visiting": match v { Some(v) => card(&v)?, None => Value::Null },
+                      "last": match last { Some(l) => card(&l)?, None => Value::Null },
+                      "goal": match goal { Some(g) => json!({"ref": rf("goal", g.id()), "name": g.v("name")}), None => Value::Null },
                       "status_bar": crate::statusbar::get(app).to_json()}))
         }
         ("GET", ["steps"]) => {

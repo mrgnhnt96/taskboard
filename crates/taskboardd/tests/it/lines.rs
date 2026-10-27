@@ -379,6 +379,67 @@ fn whoami_carries_the_tasks_detail() {
 }
 
 #[test]
+fn whoami_keeps_the_task_a_terminal_handed_in_for_its_status_bar() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    assert!(b.get("whoami?session=s1")["last"].is_null(), "not while it's on a task");
+    b.report("tb.done", "s1", json!({"summary": "Fixed it.", "pr": "https://github.com/acme/webapp/pull/7"}));
+    let w = b.get("whoami?session=s1");
+    assert!(w["task"].is_null(), "the terminal is on no task");
+    assert_eq!(w["last"]["ref"], t1);
+    assert_eq!(w["last"]["pr"]["num"], 7);
+}
+
+#[test]
+fn whoami_names_the_goal_a_terminal_ran_when_no_task_ties_to_it() {
+    let b = new_board();
+    b.add_session("s1");
+    assert!(b.get("whoami?session=s1")["goal"].is_null());
+    let g = b.post("goals", json!({"name": "Polish", "project": "web"}))["id"].as_i64().unwrap();
+    taskboardd::startword::note_ran_goal(&b.app, "s1", g).unwrap();
+    assert_eq!(b.get("whoami?session=s1")["goal"], json!({"ref": format!("G{g}"), "name": "Polish"}));
+}
+
+#[test]
+fn whoami_falls_back_to_the_task_a_terminal_last_took_when_none_of_its_tasks_is_done() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    board::update_task(&b.app, t1.trim_start_matches('T').parse().unwrap(), fields!["session_id" => null]).unwrap();
+    let w = b.get("whoami?session=s1");
+    assert!(w["task"].is_null(), "the task was taken elsewhere");
+    assert_eq!(w["last"]["ref"], t1, "the terminal still shows the one it last took");
+}
+
+#[test]
+fn whoami_shows_the_latest_task_handed_in_and_prefers_it_to_a_goal_the_terminal_ran() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    b.report("tb.done", "s1", json!({"summary": "Fixed it.", "no_pr": "Test"}));
+    let t2 = b.split("s1", "Make the footer sticky", "next")["created"][0].as_str().unwrap().to_string();
+    assert_ne!(t1, t2);
+    let g = b.post("goals", json!({"name": "Polish", "project": "web"}))["id"].as_i64().unwrap();
+    taskboardd::startword::note_ran_goal(&b.app, "s1", g).unwrap();
+    let t2_id: i64 = t2.trim_start_matches('T').parse().unwrap();
+    board::update_task(&b.app, t2_id, fields!["status" => "done", "finished_at" => "2999-01-01T00:00:00Z"]).unwrap();
+    let w = b.get("whoami?session=s1");
+    assert_eq!(w["last"]["ref"], t2, "the one handed in last, not the first");
+    assert!(w["goal"].is_null(), "a task beats a goal");
+}
+
+#[test]
+fn whoami_names_the_latest_goal_a_terminal_ran_and_none_once_it_is_deleted() {
+    let b = new_board();
+    b.add_session("s1");
+    let first = b.post("goals", json!({"name": "Polish", "project": "web"}))["id"].as_i64().unwrap();
+    let second = b.post("goals", json!({"name": "Ship", "project": "web"}))["id"].as_i64().unwrap();
+    taskboardd::startword::note_ran_goal(&b.app, "s1", first).unwrap();
+    taskboardd::startword::note_ran_goal(&b.app, "s1", second).unwrap();
+    assert_eq!(b.get("whoami?session=s1")["goal"]["ref"], format!("G{second}"), "the latest run, not the first");
+    b.app.db.x("DELETE FROM goals WHERE id = ?", p![second]).unwrap();
+    assert!(b.get("whoami?session=s1")["goal"].is_null(), "a deleted goal is no goal, not an error");
+}
+
+#[test]
 fn a_failed_task_handed_in_later_is_submitted_or_done_and_its_terminal_stays_put() {
     let b = new_board();
     let t1 = b.on_task("s1", "Fix the header");
