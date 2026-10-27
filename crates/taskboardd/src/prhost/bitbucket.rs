@@ -218,7 +218,8 @@ impl BitbucketHost {
     }
 
     fn put_reviewers(&self, pr: &PrRef, p: &Value, reviewers: Vec<Value>) -> HostResult<()> {
-        self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "reviewers": reviewers}))).map(|_| ())
+        let url = self.pr_url(pr);
+        super::limit::last_wins(format!("{url} reviewers"), || self.http.call("PUT", &url, Some(&json!({"title": p["title"], "reviewers": reviewers})))).map(|_| ())
     }
 
     fn current_reviewers(p: &Value) -> Vec<Value> {
@@ -406,8 +407,9 @@ impl PrHost for BitbucketHost {
     }
 
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()> {
-        let p = self.get(&self.pr_url(pr))?;
-        self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "destination": {"branch": {"name": base}}}))).map(|_| ())
+        let url = self.pr_url(pr);
+        let p = self.get(&url)?;
+        super::limit::last_wins(format!("{url} base"), || self.http.call("PUT", &url, Some(&json!({"title": p["title"], "destination": {"branch": {"name": base}}})))).map(|_| ())
     }
 
     fn description(&self, pr: &PrRef) -> HostResult<String> {
@@ -415,8 +417,9 @@ impl PrHost for BitbucketHost {
     }
 
     fn set_description(&self, pr: &PrRef, body: &str) -> HostResult<()> {
-        let p = self.get(&self.pr_url(pr))?;
-        self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "description": body}))).map(|_| ())
+        let url = self.pr_url(pr);
+        let p = self.get(&url)?;
+        super::limit::last_wins(format!("{url} description"), || self.http.call("PUT", &url, Some(&json!({"title": p["title"], "description": body})))).map(|_| ())
     }
 
     fn files(&self, pr: &PrRef) -> HostResult<Vec<String>> {
@@ -977,6 +980,33 @@ pub(crate) mod tests {
         );
         assert_eq!(mergeable(vec![("/diffstat", page("modified", Some("https://api/repositories/ws/repo/pullrequests/7/diffstat")))]), Value::Null, "too many pages to read whole");
         assert_eq!(mergeable(vec![("/diffstat", json!({"error": "Bitbucket answered 500"}))]), Value::Null, "an unreadable diffstat");
+    }
+
+    /// Each call, as "METHOD url", with the last-wins key it was marked with (`limit::last_wins`).
+    struct Marked(FakeHttp, Arc<Mutex<Vec<(String, Option<String>)>>>);
+
+    impl Http for Marked {
+        fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
+            self.1.lock().push((format!("{method} {url}"), crate::prhost::limit::last_wins_key()));
+            self.0.call(method, url, body)
+        }
+    }
+
+    #[test]
+    fn writes_that_only_set_a_pr_s_state_are_last_wins_by_field() {
+        let marks = Arc::new(Mutex::new(vec![]));
+        let http = FakeHttp { answers: vec![("GET", pr_json()), ("PUT", json!({})), ("POST", json!({}))], calls: Arc::new(Mutex::new(vec![])) };
+        let h = BitbucketHost::new(Box::new(Marked(http, marks.clone())), "https://api/");
+        h.request_reviews(&pr(), &["557058:abc".to_string()]).unwrap();
+        h.retarget(&pr(), "develop").unwrap();
+        h.set_description(&pr(), "## Summary").unwrap();
+        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true }).unwrap();
+        let pr7 = "https://api/repositories/ws/repo/pullrequests/7";
+        let marks = marks.lock().clone();
+        let puts: Vec<_> = marks.iter().filter(|(c, _)| c.starts_with("PUT")).map(|(_, k)| k.clone()).collect();
+        assert_eq!(puts, vec![Some(format!("{pr7} reviewers")), Some(format!("{pr7} base")), Some(format!("{pr7} description"))]);
+        assert!(marks.iter().any(|(c, _)| c == &format!("POST {pr7}/merge")));
+        assert!(marks.iter().filter(|(c, _)| !c.starts_with("PUT")).all(|(_, k)| k.is_none()), "reads and merges aren't: {marks:?}");
     }
 
     #[test]
