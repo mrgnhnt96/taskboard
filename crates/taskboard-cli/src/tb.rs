@@ -7198,6 +7198,15 @@ fn stream_lines(v: &Value) -> String {
             _ => " · poll resting",
         };
         lines.push(line);
+        for p in s["polled"].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "  polls  {} {} · {} · {}",
+                p["host"].as_str().unwrap_or("?"),
+                p["repo"].as_str().unwrap_or("?"),
+                taskboardd::util::plural(p["prs"].as_i64().unwrap_or(0), "PR"),
+                p["why"].as_str().unwrap_or("")
+            ));
+        }
         let relays = s["relays"].as_array().cloned().unwrap_or_default();
         let width = relays.iter().filter_map(|r| r["relay"].as_str()).map(|n| n.chars().count()).max().unwrap_or(0).max(6);
         for r in &relays {

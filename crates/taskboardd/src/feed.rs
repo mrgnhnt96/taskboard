@@ -336,6 +336,28 @@ fn polling_some(app: &App, src: &Source) -> bool {
     })
 }
 
+/// While the PR poll [polls some](polling_some): the open PRs it still reads, by repo, and why: no
+/// healthy relay covers the repo (`not covered`), or one does and the PR's reconcile is due (`reconcile`).
+fn polled_prs(app: &App, src: &Source) -> Vec<Value> {
+    if !polling_some(app, src) {
+        return vec![];
+    }
+    let tasks = app
+        .db
+        .q(
+            "SELECT * FROM tasks WHERE pr_host IN ('github', 'bitbucket') AND pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
+            p![],
+        )
+        .unwrap_or_default();
+    let mut by: std::collections::BTreeMap<(String, String, &str), i64> = Default::default();
+    for t in tasks.iter().filter(|t| !pr_poll_skips(app, t)) {
+        let (host, repo) = (t.st("pr_host"), t.st("pr_repo"));
+        let why = if pr_poll_rests(app, &host, &repo) { "reconcile" } else { "not covered" };
+        *by.entry((host, repo, why)).or_default() += 1;
+    }
+    by.into_iter().map(|((host, repo, why), prs)| json!({"host": host, "repo": repo, "prs": prs, "why": why})).collect()
+}
+
 pub(crate) fn span(secs: f64) -> String {
     let m = (secs / 60.0).round() as i64;
     if secs < 60.0 {
@@ -509,6 +531,7 @@ pub fn health_of(app: &App, src: &Source) -> Value {
         "why": p.as_ref().map(|(_, w)| w.clone()),
         "polling": !poll_rests(app, &src.name),
         "polling_some": polling_some(app, src),
+        "polled": polled_prs(app, src),
         "last_event_at": st.v("last_event_at"),
         "last_event": st.v("last_event"),
         "last_heartbeat_at": st.v("last_heartbeat_at"),

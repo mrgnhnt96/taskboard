@@ -1356,6 +1356,42 @@ fn a_bot_run_starts_at_its_earliest_comment_and_a_failed_read_is_tried_again() {
 }
 
 #[test]
+fn a_repo_a_relay_covers_gets_bot_runs_from_its_events_and_is_only_read_to_catch_up() {
+    // #727
+    let b = board_with(|c| {
+        c.stream.sources.insert("prs".into(), taskboardd::stream::SourceConfig { mode: "stream".into(), ..Default::default() });
+    });
+    b.pr_task(BB);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
+    let h = fake(&b, green());
+    let stream = |e: Value| b.post("/stream/events", json!({"v": 1, "events": [e]}));
+    stream(json!({"id": "h1", "kind": "heartbeat", "source": "fi", "at": taskboardd::util::now_iso(), "sources": ["prs"],
+                  "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}));
+    let reads = || h.calls().iter().filter(|c| c.starts_with("comments")).count();
+    let runs = || b.app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs", vec![]).unwrap();
+
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 1, "the first catch-up read");
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": taskboardd::util::iso(taskboardd::util::now_ts() - 11.0 * 60.0)}).to_string())).unwrap();
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 1, "not again at bot_scan_mins while the relay covers the repo");
+
+    stream(json!({"id": "c1", "kind": "comment", "source": "fi", "at": taskboardd::util::iso(taskboardd::util::now_ts() - 60.0),
+                  "pr": {"provider": "bitbucket", "repo": "acme/webapp", "num": 31}, "comment_id": "c1", "author": "{ana}",
+                  "body": "2 findings.\n\n🤖 AI Review"}));
+    assert_eq!(runs(), 1, "the relay's comment event is the run");
+    stream(json!({"id": "c2", "kind": "comment", "source": "fi", "at": taskboardd::util::now_iso(),
+                  "pr": {"provider": "bitbucket", "repo": "acme/webapp", "num": 31}, "comment_id": "c2", "author": "{bo}", "body": "AI review please"}));
+    assert_eq!(runs(), 1, "someone else's comment isn't a run");
+
+    b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": taskboardd::util::iso(taskboardd::util::now_ts() - 3601.0)}).to_string())).unwrap();
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 2, "read to catch up after reconcile_secs");
+}
+
+#[test]
 fn a_slow_bot_run_chains_comment_to_comment_and_a_bridge_joins_two_runs() {
     let b = board_with(|c| c.reviewers.bot_run_gap_mins = 30.0);
     b.add("Ana", json!({"user": "{ana}"}));

@@ -1797,7 +1797,7 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     }
     let mut changed = 0;
     for (host, tasks) in by_host {
-        let (polled, calls) = crate::prhost::limit::counting(|| poll_host(app, &host, &tasks));
+        let (polled, calls) = crate::prhost::limit::counting(|| poll_host(app, &host, &tasks, skip_covered));
         let (stepped, full) = polled?;
         changed += stepped;
         crate::prhost::limit::limits().note_poll(&host, tasks.len(), full, calls.get(&host).copied().unwrap_or(0), now_ts());
@@ -1818,13 +1818,21 @@ const FULL_READ_EVERY: f64 = 3600.0;
 
 /// Polls one host's PRs: what changed on all of them in one batch ([`PrHost::stamps`]), then a full
 /// read of each one that changed, and steps them all. How many stepped to a new stage, and how many
-/// were read in full.
+/// were read in full. When the host can't say what changed, the timed poll (`skip_covered`) leaves
+/// the PRs a healthy relay covers for a later round instead of reading them in full: those reads are
+/// what spends a nearly used-up budget.
 ///
 /// [`PrHost::stamps`]: crate::prhost::PrHost::stamps
-fn poll_host(app: &App, host: &str, tasks: &[Row]) -> Result<(i64, usize)> {
-    let stamps = stamps(app, host, tasks);
+fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result<(i64, usize)> {
+    let (stamps, unknown) = match stamps(app, host, tasks) {
+        Some(s) => (s, false),
+        None => (vec![None; tasks.len()], true),
+    };
     let (mut changed, mut full) = (0, 0);
     for (t, stamp) in tasks.iter().zip(stamps) {
+        if unknown && skip_covered && crate::feed::pr_poll_rests(app, host, t.s("pr_repo").unwrap_or("")) {
+            continue;
+        }
         let rec = match unchanged(t, stamp.as_deref()) {
             // The host said it hasn't changed: that counts as a read for the relay's reconcile (`feed::pr_poll_skips`).
             Some(rec) => {
@@ -1855,8 +1863,8 @@ fn poll_host(app: &App, host: &str, tasks: &[Row]) -> Result<(i64, usize)> {
     Ok((changed, full))
 }
 
-/// Each task's PR stamp, in order; every one None when the host couldn't say (each is read in full).
-fn stamps(app: &App, host: &str, tasks: &[Row]) -> Vec<Option<String>> {
+/// Each task's PR stamp, in order (None for one the host had none for); None when the host couldn't say.
+fn stamps(app: &App, host: &str, tasks: &[Row]) -> Option<Vec<Option<String>>> {
     use crate::prhost::{Look, PrRef};
     let refs: Vec<Option<PrRef>> = tasks.iter().map(PrRef::of).collect();
     let looks: Vec<Look> = refs.iter().zip(tasks).filter_map(|(pr, t)| Some(Look { pr: pr.clone()?, checks: waits_on_checks(t) })).collect();
@@ -1864,13 +1872,13 @@ fn stamps(app: &App, host: &str, tasks: &[Row]) -> Vec<Option<String>> {
     let got = crate::prhost::host_for(app, host).and_then(|h| crate::prhost::limit::priority(|| h.stamps(&looks)));
     let mut got = match got {
         Ok(got) if got.len() == looks.len() => got.into_iter(),
-        Ok(_) => return vec![None; tasks.len()],
+        Ok(_) => return None,
         Err(e) => {
-            app.info(format!("prs: couldn't ask {host} what changed, so every PR there is read in full: {e}"));
-            return vec![None; tasks.len()];
+            app.info(format!("prs: couldn't ask {host} what changed, so its PRs are read in full (the timed poll leaves those a relay covers): {e}"));
+            return None;
         }
     };
-    refs.iter().map(|pr| pr.as_ref().and_then(|_| got.next().flatten())).collect()
+    Some(refs.iter().map(|pr| pr.as_ref().and_then(|_| got.next().flatten())).collect())
 }
 
 /// The stamp reads the PR's checks too: it waits on them, or they're running or failed (a rerun moves

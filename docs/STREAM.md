@@ -221,9 +221,16 @@ for a source, the source's health is its relays':
   `tb pr check` (`POST /prs/refresh`, as `relay_hints`) print it.
 
 Each relay in `GET /stream` says what it covers: `"all"` when its heartbeats left `covers` out, `[]` when it never
-sent one, else the list. A source's `polling_some` is true while the PR poll runs but skips the PRs a relay covers.
-`tb stream` prints each relay under its source (health, idle state, last event and heartbeat, covers), the source
-line says `polling some PRs` then, and `tb stream --json` prints `GET /stream` as it is.
+sent one, else the list. A source's `polling_some` is true while the PR poll runs but skips the PRs a relay covers,
+and `polled` lists the open PRs it still reads, by repo (`[{host, repo, prs, why}]`): `why` is `not covered` (no
+healthy relay covers the repo) or `reconcile` (one does, and the PR's reconcile is due). `tb stream` prints each
+relay under its source (health, idle state, last event and heartbeat, covers), the source line says `polling some
+PRs` then with a `polls` line per repo, and `tb stream --json` prints `GET /stream` as it is.
+
+When the host can't say what changed (`PrHost::stamps` fails), the timed poll reads the PRs no relay covers in full
+and leaves the covered ones for a later round, so a nearly spent budget isn't tipped over by reads the relay makes
+unneeded. A comment or review event (with a `body`) from a reviewer with a review bot, carrying their marker, is
+noted as a bot run (`botrun.rs`), and a repo a relay covers is read for bot runs only every `reconcile_secs`.
 
 Without stream relays (only the older endpoints below), health and the poll work as before.
 
