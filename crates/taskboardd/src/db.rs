@@ -162,6 +162,13 @@ CREATE TABLE IF NOT EXISTS worktree_slots(
   id INTEGER PRIMARY KEY, repo TEXT NOT NULL, n INT NOT NULL, path TEXT NOT NULL, project TEXT,
   task_id INT, made_at TEXT, used_at TEXT, seq INT NOT NULL DEFAULT 0, UNIQUE(repo, n));
 
+-- The worktree slot pool's busy stretches (`slot_usage.rs`), sampled each minute for the Days page:
+-- `full` (a project's pool at `max_slots` with every slot held), `wait` (a task queued for a slot)
+-- and `idle` (a task holding a slot while its terminal isn't working).
+CREATE TABLE IF NOT EXISTS slot_spans(
+  id INTEGER PRIMARY KEY, project TEXT NOT NULL, kind TEXT NOT NULL, task_id INT, from_at TEXT NOT NULL, to_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS slot_spans_at ON slot_spans(to_at);
+
 -- Every change of a task's status, for the Days page's timeline (`days.rs`). A trigger, so no
 -- path that moves a task can forget it. Every status change goes through `board::update_task`,
 -- which stamps `updated_at`.

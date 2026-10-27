@@ -636,7 +636,9 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         hi = hi.max(h);
     }
     let held = host_limits(app, date, now)?;
-    for sp in held.as_array().into_iter().flatten().flat_map(|h| h["spans"].as_array().cloned().unwrap_or_default()) {
+    let pool = crate::slot_usage::day(app, bounds(date).0, bounds(date).1.min(now), &hide, NO_PROJECT)?;
+    let full = pool.as_array().into_iter().flatten().flat_map(|p| p["full"].as_array().cloned().unwrap_or_default());
+    for sp in held.as_array().into_iter().flatten().flat_map(|h| h["spans"].as_array().cloned().unwrap_or_default()).chain(full) {
         if let (Some(a), Some(z)) = (hour_of(sp["from"].as_str().unwrap_or("")), hour_of(sp["to"].as_str().unwrap_or(""))) {
             lo = lo.min(a);
             hi = hi.max(z);
@@ -662,6 +664,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     day_json["hourly"] = json!(s.hourly);
     day_json["usage"] = crate::usage::day_slots(app, bounds(date).0, now)?;
     day_json["host_limits"] = held;
+    day_json["slot_pool"] = pool;
     day_json["lanes"] = json!(lanes);
     day_json["waits"] = json!(waits);
     day_json["tasks"] = json!(rows.iter().filter(|(p, _)| !hide.contains(*p)).flat_map(|(_, v)| v["tasks"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>());
@@ -860,6 +863,7 @@ pub fn cleanup(app: &App) -> Result<Value> {
         let l = app.db.changed("DELETE FROM session_events WHERE at < ?", p![before])?;
         app.db.changed("DELETE FROM usage_samples WHERE at < ?", p![before])?;
         app.db.changed("DELETE FROM host_limits WHERE to_at < ?", p![before])?;
+        app.db.changed("DELETE FROM slot_spans WHERE to_at < ?", p![before])?;
         Ok((e, s, l))
     })?;
     let days = match summary_days(app) {
