@@ -279,6 +279,11 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let ask = str_list(body.get("ask"));
     let count = body["count"].as_u64().map(|n| n as usize).or_else(|| body_str(body, "count").parse().ok());
     let dry = as_bool(body.get("dry_run"), false);
+    if ends_visit && !dry {
+        if let Some(why) = crate::slots::visit_end_refusal(app, &t, body)? {
+            return err(409, why);
+        }
+    }
     let why = Some(body_str(body, "why")).filter(|w| !w.is_empty());
     let picking = drop.is_empty() && replace.is_empty() && ask.is_empty();
     let to_drop = if drop.is_empty() {

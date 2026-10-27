@@ -243,6 +243,9 @@ fn after(app: &App, id: i64, out: Value) -> Result<Value> {
 /// `tb pr addressed`: refuses while threads are open; then asks each reviewer with a standing request
 /// for changes (not one swapped off) to review again, and ends the visit.
 pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
+    if let Some(why) = crate::slots::visit_end_refusal(app, &board::get_task(app, id)?, body)? {
+        return err(409, why);
+    }
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;
     let f = flow(&t);
@@ -426,6 +429,9 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     // The owner telling the agent in its terminal to merge this PR: a one-off merge where agents don't
     // merge on their own, and an "approved" in it stands in for the approvals.
     let before = board::get_task(app, id)?;
+    if let Some(why) = crate::slots::visit_end_refusal(app, &before, body)? {
+        return err(409, why);
+    }
     let linked = PrRef::of(&before);
     let word = match &linked {
         Some(pr) if agent => crate::startword::owners_merge_word(app, &via, id, pr.num)?,
@@ -689,6 +695,9 @@ pub fn needs_owner(app: &App, id: i64, body: &Value) -> Result<Value> {
     let n = reason.chars().count();
     if !(REASON_MIN..=REASON_MAX).contains(&n) {
         return err(400, format!("The reason is {n} characters: say what the owner has to do in {REASON_MIN} to {REASON_MAX}."));
+    }
+    if let Some(why) = crate::slots::visit_end_refusal(app, &board::get_task(app, id)?, body)? {
+        return err(409, why);
     }
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;

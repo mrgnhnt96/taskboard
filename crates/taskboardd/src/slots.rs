@@ -366,9 +366,11 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
             continue;
         }
         if dirty(&path) {
-            app.info(format!("worktrees: passed over {path}: it has uncommitted changes"));
-            dirty_alert(app, &s)?;
-            continue;
+            if let Err(e) = save_leftovers(app, &s, &path) {
+                app.info(format!("worktrees: passed over {path}: it has uncommitted changes, and saving them failed: {}", e.message));
+                dirty_alert(app, &s)?;
+                continue;
+            }
         }
         crate::dispatch::clear_alert_key(app, &dirty_key(&path))?;
         let n = s.i("n").unwrap_or(0);
@@ -398,6 +400,53 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     let text = if at == start { format!("Made worktree slot-{n} from {start} at {path}") } else { format!("Made worktree slot-{n} at {path}, on its branch {at}") };
     take(app, t, id, &path, &text, start)?;
     Ok(path)
+}
+
+/// Saves the uncommitted changes a free slot was left with to a `wip/` branch named for the task
+/// that left them, so the slot is taken clean and nothing is lost. The branch's name.
+fn save_leftovers(app: &App, s: &Row, path: &str) -> Result<String> {
+    let n = s.i0("n");
+    let left_by = board::find_task(app, s.i("task_id"))?;
+    let stem = match &left_by {
+        Some(t) => format!("wip/{}-slot-{n}", rf("task", t.id())),
+        None => format!("wip/slot-{n}"),
+    };
+    let taken = |b: &str| git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")], GIT_SECS).code == 0;
+    let branch = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|b| !taken(b)).unwrap_or(stem);
+    let base = git(path, &["rev-parse", "HEAD"], GIT_SECS).out.trim().to_string();
+    let mut add = vec!["add".to_string(), "-A".into(), "--".into(), ".".into()];
+    add.extend(LEFTOVERS.iter().map(|l| format!(":!{l}")));
+    let msg = format!("WIP left uncommitted in worktree slot-{n}");
+    let steps: [Vec<String>; 3] = [
+        vec!["switch".into(), "-q".into(), "-c".into(), branch.clone()],
+        add,
+        vec!["commit".into(), "-q".into(), "--no-verify".into(), "-m".into(), msg],
+    ];
+    for args in &steps {
+        let r = git(path, &args.iter().map(String::as_str).collect::<Vec<_>>(), GIT_SECS);
+        if r.code != 0 {
+            // Back where it was, the changes still in the folder, so the slot is passed over as before.
+            git(path, &["switch", "-q", "--detach", &base], GIT_SECS);
+            git(path, &["branch", "-q", "-D", &branch], GIT_SECS);
+            return err(409, format!("git {} failed: {}", args[0], last_line(&r.err)));
+        }
+    }
+    git(path, &["switch", "-q", "--detach", &base], GIT_SECS);
+    crate::dispatch::clear_alert_key(app, &dirty_key(path))?;
+    app.info(format!("worktrees: saved the uncommitted changes left in {path} to {branch}"));
+    if let Some(t) = &left_by {
+        board::log_event(app, t.id(), board::BOARD, "midna", &format!("Saved the uncommitted changes it left in worktree slot-{n} to branch {branch}, so the slot could be used again"))?;
+    }
+    Ok(branch)
+}
+
+/// Why an agent can't run a PR command that ends its visit yet: its slot goes back once the visit
+/// ends, so nothing may be left only there. The owner's own commands aren't held to it.
+pub fn visit_end_refusal(app: &App, t: &Row, body: &Value) -> Result<Option<String>> {
+    if body["by_session"].as_str().is_none_or(|s| s.is_empty()) {
+        return Ok(None);
+    }
+    release_refusal(app, t)
 }
 
 /// The base a slot it's back in was taken at, so `take` doesn't move it to `start`.
@@ -751,6 +800,56 @@ mod tests {
         app.db.insert("jobs", crate::fields!["kind" => "agent", "purpose" => "pr", "state" => "done", "task_id" => a.id(), "target" => ended, "created_at" => now_iso()]).unwrap();
         let s = slot_at(&app, &slot).unwrap().unwrap();
         assert!(holder(&app, &s).unwrap().is_none(), "the visit ended");
+    }
+
+    #[test]
+    fn a_free_slot_left_with_changes_is_saved_to_a_wip_branch_and_taken_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |at: &str, args: &[&str]| assert_eq!(git(at, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&repo, &["init", "-q"]);
+        run(&repo, &["config", "user.name", "t"]);
+        run(&repo, &["config", "user.email", "t@t"]);
+        std::fs::write(Path::new(&repo).join("app.rs"), "one").unwrap();
+        run(&repo, &["add", "app.rs"]);
+        run(&repo, &["commit", "-qm", "one"]);
+        let slot = slot_path(&repo, 1);
+        run(&repo, &["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+        let left = app.db.insert("tasks", crate::fields!["title" => "A", "status" => "done"]).unwrap();
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone(), "task_id" => left]).unwrap();
+        std::fs::write(Path::new(&slot).join("app.rs"), "a review fix").unwrap();
+        std::fs::write(Path::new(&slot).join("new.rs"), "untracked").unwrap();
+        let next = board::get_task(&app, app.db.insert("tasks", crate::fields!["title" => "B", "status" => "queued"]).unwrap()).unwrap();
+        assert_eq!(claim_on(&app, &next, &repo, "HEAD", None).unwrap(), slot, "the slot is taken, not passed over");
+        assert!(!dirty(&slot), "taken clean");
+        let branch = format!("wip/{}-slot-1", rf("task", left));
+        let saved = git(&repo, &["show", &format!("{branch}:app.rs")], GIT_SECS);
+        assert_eq!(saved.out, "a review fix", "the change is on {branch}");
+        assert_eq!(git(&repo, &["show", &format!("{branch}:new.rs")], GIT_SECS).out, "untracked");
+    }
+
+    #[test]
+    fn only_an_agent_ending_its_visit_is_held_to_a_clean_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |args: &[&str]| assert_eq!(git(&repo, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let slot = slot_path(&repo, 1);
+        run(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+        let id = app.db.insert("tasks", crate::fields!["title" => "A", "status" => "done"]).unwrap();
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone(), "task_id" => id]).unwrap();
+        std::fs::write(Path::new(&slot).join("fix.rs"), "not committed").unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        let why = visit_end_refusal(&app, &t, &json!({"by_session": "s1"})).unwrap().expect("the agent is told");
+        assert!(why.contains("uncommitted changes"), "{why}");
+        assert!(visit_end_refusal(&app, &t, &json!({})).unwrap().is_none(), "the owner isn't held to it");
     }
 
     /// Asks until the background measuring gives a size other than `not`.
