@@ -1182,7 +1182,7 @@ function prNodes(t) {
   if (!p || p.num == null) {
     // The whole way the PR will take, its steps still ahead.
     const ahead = ['Checks', 'You', 'Review'].map(name => stepHtml({ name, st: 'todo' }));
-    return [tlNode('todo', tlHead('Pull request')), tlNode('todo', tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${ahead.join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>`), tlNode('todo', tlHead('Merged'))];
+    return [tlNode('todo', tlHead('Pull request')), tlNode('todo', tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${ahead.join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>`), tlNode('todo', tlHead('Pending merge'))];
   }
   const key = t.jira && t.jira.key;
   const title = key && (p.title || '').startsWith(key) ? p.title.slice(key.length).replace(/^[\s:–-]+/, '') : p.title;
@@ -1196,7 +1196,7 @@ function prNodes(t) {
   return [
     tlNode('done', tlHead('Pull request'), head),
     tlNode(st, tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${steps.map(stepHtml).join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>${prBar(t, p)}`),
-    tlNode(merge.st === 'todo' ? 'todo' : merge.st === 'done' ? 'done' : merge.st === 'fail' ? 'fail' : 'now', tlHead(merge.st === 'fail' ? 'Closed without merging' : 'Merged', merge.st === 'done' || merge.st === 'fail' ? '' : merge.sub || '')),
+    tlNode(merge.st === 'todo' ? 'todo' : merge.st === 'done' ? 'done' : merge.st === 'fail' ? 'fail' : 'now', tlHead(merge.st === 'fail' ? 'Closed without merging' : merge.st === 'done' ? 'Merged' : 'Pending merge', merge.st === 'done' || merge.st === 'fail' ? '' : merge.sub || '')),
   ];
 }
 

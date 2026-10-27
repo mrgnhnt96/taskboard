@@ -324,7 +324,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 The board answered 500. Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "T7 The board answered 500. Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -463,7 +463,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -616,7 +616,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Write an answer first. Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Write an answer first. Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -763,7 +763,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -906,7 +906,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1049,7 +1049,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1210,7 +1210,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Yes Ask for the password first No Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Yes Ask for the password first No Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1373,7 +1373,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small L Send Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small L Send Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1542,7 +1542,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small L Send Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small L Send Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1692,7 +1692,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Pick a fruit Apple Red Pear Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pick a fruit Apple Red Pear Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1819,7 +1819,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Waiting at its prompt. Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Waiting at its prompt. Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1940,7 +1940,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp It’s waiting for you in Midna. Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp It’s waiting for you in Midna. Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2088,7 +2088,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Your answer to T7 didn’t arrive. Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Your answer to T7 didn’t arrive. Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2231,7 +2231,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Merged Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Should removing the last passkey require a password re-check? Write an answer Pending merge Checks and review Checks You Review Pull request Waiting on you Asked 4m ago, after 2h 1m of work 2:56 PM Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2369,7 +2369,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Merged Checks and review Checks You Review Pull request Waiting on you Started In T7 old 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Pending merge Checks and review Checks You Review Pull request Waiting on you Started In T7 old 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2505,7 +2505,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Merged Checks and review Checks You Review Pull request Waiting on you Started In T7 old 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Pending merge Checks and review Checks You Review Pull request Waiting on you Started In T7 old 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2653,7 +2653,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done Sent to Midna See what the new terminal gets Merged Checks and review Checks You Review Pull request Waiting on you Started In T7 old 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done Sent to Midna See what the new terminal gets Pending merge Checks and review Checks You Review Pull request Waiting on you Started In T7 old 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2777,7 +2777,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Couldn’t start in Midna Midna didn’t start a terminal for this task. New Midna terminal Queue in Midna Merged Checks and review Checks You Review Pull request Waiting on you Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Couldn’t start in Midna Midna didn’t start a terminal for this task. New Midna terminal Queue in Midna Pending merge Checks and review Checks You Review Pull request Waiting on you Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2897,7 +2897,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Couldn’t start in Midna Midna answered: no such project. New Midna terminal Queue in Midna Merged Checks and review Checks You Review Pull request Waiting on you Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Couldn’t start in Midna Midna answered: no such project. New Midna terminal Queue in Midna Pending merge Checks and review Checks You Review Pull request Waiting on you Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3017,7 +3017,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Queued Start Start when the repo’s free Not starting yet: Waits for work hours (tomorrow 6am). Start runs it now anyway. What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Queued Start Start when the repo’s free Not starting yet: Waits for work hours (tomorrow 6am). Start runs it now anyway. What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3147,7 +3147,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Queued Sending… Start when the repo’s free Sent to Midna What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Queued Sending… Start when the repo’s free Sent to Midna What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3267,7 +3267,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Starting What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Starting What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3412,7 +3412,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Merged Checks and review Checks You Review Pull request Blocked Blocked by T4 Working Add the registration endpoint T5 Blocked Migrations What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Pending merge Checks and review Checks You Review Pull request Blocked Blocked by T4 Working Add the registration endpoint T5 Blocked Migrations What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3542,7 +3542,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Merged Checks and review Checks You Review Pull request Planned Queue it now What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Pending merge Checks and review Checks You Review Pull request Planned Queue it now What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3663,7 +3663,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Planned Start Start when the repo’s free What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Planned Start Start when the repo’s free What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3792,7 +3792,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Merged Checks and review Checks You Review Pull request Planned Queue it now What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Pending merge Checks and review Checks You Review Pull request Planned Queue it now What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -3922,7 +3922,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Merged Checks and review Checks You Review Pull request Planned Queue it now What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Pending merge Checks and review Checks You Review Pull request Planned Queue it now What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4051,7 +4051,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 G › T7 Sign in with a passkey webapp 4 of 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 G › T7 Sign in with a passkey webapp 4 of 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4176,7 +4176,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 G › T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 G › T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4320,7 +4320,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4471,7 +4471,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4622,7 +4622,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4773,7 +4773,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -4927,7 +4927,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5078,7 +5078,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5203,7 +5203,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5328,7 +5328,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started In T7 x 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started In T7 x 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5452,7 +5452,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 10m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 2:50 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 10m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 2:50 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5592,7 +5592,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5746,7 +5746,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Detached. It’s back in the queue. Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Detached. It’s back in the queue. Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5871,7 +5871,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Progress Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Progress Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -5994,7 +5994,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6116,7 +6116,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6234,7 +6234,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6352,7 +6352,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6479,7 +6479,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Close its terminal Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Close its terminal Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6603,7 +6603,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Failed 2:30 PM Couldn’t reproduce. Try again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Failed 2:30 PM Couldn’t reproduce. Try again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6726,7 +6726,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Done 2:30 PM No summary was given. Queue again Started 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Done 2:30 PM No summary was given. Queue again Started 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6852,7 +6852,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Back in the queue Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Back in the queue Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -6999,7 +6999,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Running Review Not asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Not asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -7147,7 +7147,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks None Review Approved Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks None Review Approved Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -7295,7 +7295,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Passed Review Changes asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Changes asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -7443,7 +7443,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Waiting Review Not asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Waiting Review Not asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -7596,7 +7596,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Running Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -7749,7 +7749,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Fix starting Review Waiting Fixing checks Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Fix starting Review Waiting Fixing checks Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -7903,7 +7903,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Being fixed Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Being fixed Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -8060,7 +8060,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor stopped on the PR Tests still fail on CI only. Send answer Focus in Midna Merged Checks and review Checks Fix stopped Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor stopped on the PR Tests still fail on CI only. Send answer Focus in Midna Pending merge Checks and review Checks Fix stopped Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -8221,7 +8221,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor asks you about the PR Should I rename the helper as the reviewer asks? Send answer Focus in Midna Merged Checks and review Checks Passed Review New comments Answering comments Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor asks you about the PR Should I rename the helper as the reviewer asks? Send answer Focus in Midna Pending merge Checks and review Checks Passed Review New comments Answering comments Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -8379,7 +8379,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Passed Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -8532,7 +8532,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Merging Checks and review Checks Passed Review Approved Merging Terminal › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Merging Checks and review Checks Passed Review Approved Merging Terminal › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -8686,7 +8686,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Passed Review Awaiting re-review Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Awaiting re-review Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -9135,7 +9135,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Running Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -9282,7 +9282,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Merged Checks and review Checks Running Review Waiting Pull request #42 webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Pull request #42 webapp Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -9415,7 +9415,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks Failed Review Waiting Pull request #42 Passkey sign-in webapp Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks Failed Review Waiting Pull request #42 Passkey sign-in webapp Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -9558,7 +9558,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Its terminal stopped on the PR Stuck. Send answer Focus in Midna Merged Checks and review Checks Running Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Its terminal stopped on the PR Stuck. Send answer Focus in Midna Pending merge Checks and review Checks Running Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -9730,7 +9730,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -9900,7 +9900,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 2 · 2 of 4 Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 2 · 2 of 4 Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -10029,7 +10029,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -10157,7 +10157,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 3 · 4 of 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 3 · 4 of 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -10325,7 +10325,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -10494,7 +10494,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -10663,7 +10663,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -10832,7 +10832,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -11005,7 +11005,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -11170,7 +11170,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Attached 4 Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Attached 4 Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Started 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -14712,7 +14712,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Detach Take it off this terminal and queue it again Close terminal Stops the command that is running Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Detach Take it off this terminal and queue it again Close terminal Stops the command that is running Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -14841,7 +14841,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Focus in Midna Detach Take it off this terminal and queue it again Close terminal Stops the command that is running Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Focus in Midna Detach Take it off this terminal and queue it again Close terminal Stops the command that is running Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -14970,7 +14970,7 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Done 2:30 PM Login ceremony is in. Queue again Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -15384,7 +15384,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Merged Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks You Review Pull request Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM What to do Context Full log",
         "acts": [
           "task-back",
           "close-panel",

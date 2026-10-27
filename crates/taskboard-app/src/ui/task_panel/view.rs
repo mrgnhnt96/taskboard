@@ -2193,7 +2193,12 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
         _ => TlSt::Now,
     };
     let merge_sub = if matches!(merge_st, TlSt::Done | TlSt::Fail) { String::new() } else { merge.sub.unwrap_or_default() };
-    let merge_name = if merge_st == TlSt::Fail { "Closed without merging" } else { "Merged" };
+    // Named for what has happened only once it has: "Pending merge" until the PR lands.
+    let merge_name = match merge_st {
+        TlSt::Done => "Merged",
+        TlSt::Fail => "Closed without merging",
+        _ => "Pending merge",
+    };
     // "Updated 4m ago": when the board last read the open PR, so a stale read shows.
     let updated = opt_s(p, "checked_at").filter(|_| pr_open(p)).map(|at| format!("Updated {}", fmt::ago(at))).unwrap_or_default();
     vec![
@@ -2217,7 +2222,7 @@ fn no_pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     vec![
         tl_node(TlSt::Todo, tl_head(tl_name("Pull request"), "", ""), pr, false),
         tl_node(TlSt::Todo, tl_head(tl_name("Checks and review"), "", ""), vec![step_nodes(steps)], false),
-        tl_node(TlSt::Todo, tl_head(tl_name("Merged"), "", ""), vec![], false),
+        tl_node(TlSt::Todo, tl_head(tl_name("Pending merge"), "", ""), vec![], false),
     ]
 }
 

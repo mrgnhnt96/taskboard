@@ -86,7 +86,7 @@ impl Kind {
     }
 }
 
-const SHOW: [Show; 6] = [Show::Open, Show::Only(St::Needs), Show::Only(St::Working), Show::Only(St::Queued), Show::Only(St::Review), Show::Done];
+const SHOW: [Show; 7] = [Show::Open, Show::Only(St::Needs), Show::Only(St::Working), Show::Only(St::Queued), Show::Only(St::Review), Show::Only(St::Pending), Show::Done];
 
 #[derive(Default)]
 pub struct State {
@@ -255,7 +255,7 @@ pub fn head(items: &[Item], project: Option<&str>, since: DateTime<Utc>) -> Head
     projects.retain(|(p, _)| !p.is_empty());
     projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let scope: Vec<&Item> = items.iter().filter(|it| project.is_none_or(|p| it.project == p)).collect();
-    let counts = [St::Needs, St::Working, St::Queued, St::Review].map(|st| (st, scope.iter().filter(|it| it.open && it.row.st == st).count())).to_vec();
+    let counts = [St::Needs, St::Working, St::Queued, St::Review, St::Pending].map(|st| (st, scope.iter().filter(|it| it.open && it.row.st == st).count())).to_vec();
     Head {
         open: scope.iter().filter(|it| it.open).count(),
         done_week: scope.iter().filter(|it| it.row.st == St::Done && it.finished.is_some_and(|f| f >= since)).count(),
@@ -286,7 +286,7 @@ pub struct Group {
 }
 
 /// The order a progress bar runs in: finished work first.
-const BAR: [St; 7] = [St::Done, St::Review, St::Working, St::Needs, St::Failed, St::Queued, St::Planned];
+const BAR: [St; 8] = [St::Done, St::Pending, St::Review, St::Working, St::Needs, St::Failed, St::Queued, St::Planned];
 
 /// A goal or project's state line, and how urgent it is (lower first).
 fn state_of(tasks: &[&Item], goal: Option<&Value>) -> (Option<(String, Option<St>)>, u8) {
@@ -304,6 +304,8 @@ fn state_of(tasks: &[&Item], goal: Option<&Value>) -> (Option<(String, Option<St
         (format!("{} in review", n(St::Review)), Some(St::Review), 2)
     } else if n(St::Working) > 0 {
         (format!("{} working", n(St::Working)), Some(St::Working), 3)
+    } else if n(St::Pending) > 0 {
+        (format!("{} pending merge", n(St::Pending)), Some(St::Pending), 3)
     } else if flag("paused") {
         ("Paused".into(), None, 4)
     } else if let Some(after) = after {
@@ -346,7 +348,7 @@ pub fn groups(items: &[Item], goals: &[Value], by: GroupBy, f: &Filter) -> Vec<G
         let open_n = tasks.iter().filter(|it| it.open).count() as i64;
         let count = if open_n > 0 || by == GroupBy::Status { format!("{} open", open_n) } else { format!("{} done", tasks.len()) };
         let bar = BAR.iter().map(|st| (*st, tasks.iter().filter(|it| it.row.st == *st).count() as i64)).collect();
-        let busy = rows.iter().any(|it| it.open && matches!(it.row.st, St::Needs | St::Failed | St::Working | St::Review));
+        let busy = rows.iter().any(|it| it.open && matches!(it.row.st, St::Needs | St::Failed | St::Working | St::Review | St::Pending));
         let (r, name, gid) = match by {
             GroupBy::Goal => first.goal.clone().unwrap_or_else(|| (String::new(), "Not in a goal".into(), i64::MAX)),
             GroupBy::Status => (String::new(), key.clone(), 0),
@@ -413,7 +415,7 @@ fn task_row(t: &Theme, it: &Item, col: String, cx: &mut Context<MainWindow>) -> 
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)))
-        .child(div().flex_none().w(px(86.)).child(status::chip(t, it.row.st)))
+        .child(div().flex_none().w(px(status::CHIP_W + 2.)).child(status::chip(t, it.row.st)))
         .child(div().flex_none().w(px(36.)).font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.faint).child(it.r.clone()))
         .child(
             div()
@@ -784,7 +786,7 @@ mod tests {
         assert_eq!(all.projects, [("web".to_string(), 3), ("api".to_string(), 2)]);
         let api = head(&it, Some("api"), since);
         assert_eq!((api.open, api.done_week), (2, 0));
-        assert_eq!(api.counts, [(St::Needs, 0), (St::Working, 1), (St::Queued, 1), (St::Review, 0)]);
+        assert_eq!(api.counts, [(St::Needs, 0), (St::Working, 1), (St::Queued, 1), (St::Review, 0), (St::Pending, 0)]);
     }
 
     #[test]
