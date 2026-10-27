@@ -374,16 +374,18 @@ enum Cmd {
         rest: Vec<String>,
     },
     /// A code review's triage: the round's findings and what's left (tb finding T5), or one finding's outcome:
-    /// tb finding T5 F2 fix|backlog|dismiss "<reason>". backlog files it in the task's backlog
+    /// tb finding T5 F2 fix|backlog|dismiss "<reason>". backlog files it in the task's backlog. The task's
+    /// own agent marks a fix finding it has fixed: tb finding T5 F2 fixed "<what it changed>"
     Finding {
-        /// T5, the task whose review is in triage
+        /// T5, the task whose review is in triage or being fixed
         task: String,
         /// F2, the finding's id
         finding: Option<String>,
-        /// fix (this task's change caused it), backlog (real, but not this change's) or dismiss (not worth acting on)
-        #[arg(value_parser = ["fix", "backlog", "dismiss"])]
+        /// fix (this task's change caused it), backlog (real, but not this change's), dismiss (not worth acting
+        /// on), or fixed (from the task's own agent, once it has fixed a fix finding)
+        #[arg(value_parser = ["fix", "backlog", "dismiss", "fixed"])]
         outcome: Option<String>,
-        /// Why, in one line
+        /// Why, in one line (with fixed: what you changed)
         reason: Vec<String>,
     },
     /// How this board slices a goal into tasks: the owner's planning file for the project or the board,
@@ -3198,6 +3200,23 @@ fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<S
     let path = format!("/tasks/{task}/code-review/triage");
     let Some(finding) = finding else {
         let v = c.call("GET", &path, None)?;
+        if v["fixing"] == true {
+            out(&format!("{task}'s code review, round {}, to fix:", v["round"]));
+            for f in v["findings"].as_array().cloned().unwrap_or_default() {
+                let line = f["line"].as_str().unwrap_or("");
+                match f["fixed"].as_str() {
+                    Some(n) => out(&format!("  {line}\n    fixed: {n}")),
+                    None => out(&format!("  {line}\n    why it's this change's: {}", f["reason"].as_str().unwrap_or(""))),
+                }
+            }
+            let left: Vec<&str> = v["left"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+            if left.is_empty() {
+                out("Every one is marked fixed: commit, push and run tb submit again.");
+            } else {
+                out(&format!("Left: {}. Mark each once it's fixed: tb finding {task} <id> fixed \"<what you changed>\"", left.join(", ")));
+            }
+            return Ok(0);
+        }
         if v["triaging"] != true {
             out(&format!("{task} has no code review round in triage."));
             return Ok(0);
@@ -3222,6 +3241,9 @@ fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<S
         return Err(format!("Say what to do with it: tb finding {task} {finding} fix|backlog|dismiss \"<reason>\""));
     };
     let reason = reason.join(" ");
+    if reason.trim().is_empty() && outcome == "fixed" {
+        return Err(format!("Say what you changed: tb finding {task} {finding} fixed \"<what you changed>\""));
+    }
     if reason.trim().is_empty() {
         return Err(format!("Say why: tb finding {task} {finding} {outcome} \"<reason>\""));
     }
@@ -8569,6 +8591,7 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "finding", "T5"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "backlog", "not", "this", "change"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "dismiss", "a false positive"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "fixed", "bounds check now uses <="]).is_ok());
         assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "maybe", "why"]).is_err());
         assert!(Cli::try_parse_from(["tb", "finding"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "new", "Fix it", "--jira", "none"]).is_ok());

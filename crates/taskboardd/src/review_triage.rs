@@ -3,7 +3,8 @@
 //! findings. It judges only whether this task's change caused each finding, and records each one's
 //! outcome with `tb finding T<n> F1 fix|backlog|dismiss "<reason>"`; `backlog` files a backlog item in the
 //! task's project and goal. It never edits code. Once every finding has an outcome, the board closes its
-//! terminal and the round is triaged.
+//! terminal and the round is triaged. With `fix` findings, the task's own agent gets the fix list, marks
+//! each with `tb finding T<n> F1 fixed "<what it changed>"` and submits again for the next round.
 
 use serde_json::{json, Value};
 
@@ -19,6 +20,8 @@ pub const ROLE: &str = "Triages a code review's findings";
 /// The stage's state while the triage agent works.
 pub const STATE: &str = "triaging";
 pub const OUTCOMES: &[&str] = &["fix", "backlog", "dismiss"];
+/// What the task's own agent marks a `fix` finding once it has fixed it.
+pub const FIXED: &str = "fixed";
 const REASON_MAX: usize = 300;
 /// A triage that hasn't finished by then is closed, and the task carries on without it.
 const MAX_SECS: i64 = 3600;
@@ -74,6 +77,15 @@ fn findings(d: &Value) -> Vec<Value> {
 
 fn left(d: &Value) -> Vec<String> {
     findings(d).iter().filter_map(|f| f["id"].as_str()).filter(|id| d["triage"][*id]["outcome"].is_null()).map(str::to_string).collect()
+}
+
+fn with_outcome(d: &Value, outcome: &str) -> Vec<Value> {
+    findings(d).into_iter().filter(|f| d["triage"][f["id"].as_str().unwrap_or("")]["outcome"] == outcome).collect()
+}
+
+/// The round's `fix` findings its agent hasn't marked fixed.
+fn unfixed(d: &Value) -> Vec<String> {
+    with_outcome(d, "fix").iter().filter_map(|f| f["id"].as_str()).filter(|id| d["triage"][*id]["fixed"].is_null()).map(str::to_string).collect()
 }
 
 fn finding_line(f: &Value) -> String {
@@ -192,7 +204,17 @@ pub fn tick(app: &App, t: &Row, stage: Value) -> Result<()> {
             .map(|(o, c)| format!("{c} {o}"))
             .collect();
         app.db.tx(|| board::log_event(app, id, board::BOARD, "status", &format!("Code review round {n} triaged: {}", counts.join(", "))).map(|_| ()))?;
-        return code_review::carry_on(app, t, stage, None);
+        let fix = with_outcome(&d, "fix");
+        if fix.is_empty() {
+            return code_review::carry_on(app, t, stage, None);
+        }
+        let max = app.cfg.code_review.max_rounds as u64;
+        if n >= max {
+            let lines: Vec<String> = fix.iter().map(finding_line).collect();
+            let alert = format!("{me}'s code review reached its {max}-round cap with findings still to fix, so it went on to its PR: {}", lines.join("; "));
+            return code_review::carry_on(app, t, stage, Some(alert));
+        }
+        return start_fixing(app, t, n, &d, &fix);
     }
     let job = stage["job"].as_i64().map(|j| app.db.q1("SELECT * FROM jobs WHERE id = ?", p![j])).transpose()?.flatten();
     let refused = job.as_ref().map_or(true, |j| matches!(j.s("state"), Some("failed") | Some("cancelled")));
@@ -215,6 +237,68 @@ pub fn tick(app: &App, t: &Row, stage: Value) -> Result<()> {
     code_review::carry_on(app, t, stage, Some(alert))
 }
 
+/// After round `n` is triaged with `fix` findings: drops the held `tb submit` and sends the task's own
+/// agent the fix list. Its next `tb submit` runs the next round, or carries on when the code is unchanged.
+fn start_fixing(app: &App, t: &Row, n: u64, d: &Value, fix: &[Value]) -> Result<()> {
+    let id = t.id();
+    let me = rf("task", id);
+    let tb = board::tb_cmd(app);
+    let max = app.cfg.code_review.max_rounds as u64;
+    let list: Vec<String> = fix
+        .iter()
+        .map(|f| format!("- {}\n  Triage: {}", finding_line(f), d["triage"][f["id"].as_str().unwrap_or("")]["reason"].as_str().unwrap_or("")))
+        .collect();
+    let files = code_review::task_dir(app, id).join(format!("round-{n}")).join("findings.json");
+    let k = fix.len();
+    let text = format!(
+        "[task-board] {me}'s code review, round {n}, found {k} thing{} your change caused, to fix before its PR:\n{}\n\
+         Each in full (detail, url): {}\n\
+         Fix only these: the round's other findings went to the backlog or were dismissed. Mark each once it's fixed: \
+         {tb} finding {me} <id> fixed \"<what you changed>\"\n\
+         Then commit, push and run tb submit again as before, with the same summary and --pr-body: the board reviews the change \
+         as round {} of at most {max}. With the code unchanged, tb submit goes straight on to the PR, and the owner hears of any \
+         finding not marked fixed.",
+        if k == 1 { "" } else { "s" },
+        list.join("\n"),
+        files.display(),
+        n + 1
+    );
+    let stage = json!({"state": code_review::FIXING, "round": n, "since": now_iso()});
+    app.db.tx(|| {
+        code_review::save_stage(app, id, Some(&stage))?;
+        board::update_task(app, id, fields!["latest" => "Fixing code review findings"])?;
+        board::log_event(app, id, board::BOARD, "status", &format!("Fixing code review round {n}'s {k} finding{}", if k == 1 { "" } else { "s" }))?;
+        crate::deliver::add(app, "code_review_fix", &text, id, None, None).map(|_| ())
+    })
+}
+
+/// A `tb submit` while the agent fixes round `n`'s findings that carries on without another round (the
+/// code is unchanged, or the rounds ran out): ends the fixing, and tells the owner of any finding left
+/// unfixed.
+pub fn end_fixing(app: &App, t: &Row, stage: &Value) -> Result<()> {
+    let id = t.id();
+    let me = rf("task", id);
+    let n = stage["round"].as_u64().unwrap_or(1);
+    let d = round_event(app, id, n)?.map(|(_, d)| d).unwrap_or(Value::Null);
+    let rest = unfixed(&d);
+    let open: Vec<String> = with_outcome(&d, "fix").iter().filter(|f| f["id"].as_str().is_some_and(|i| rest.iter().any(|r| r == i))).map(finding_line).collect();
+    app.db.tx(|| {
+        code_review::save_stage(app, id, None)?;
+        if !open.is_empty() {
+            let alert = format!("{me} went on to its PR without another code review round, with round {n}'s findings not marked fixed: {}", open.join("; "));
+            crate::dispatch::add_alert(app, &alert, Some(id), t.i("goal_id"), None, None)?;
+        }
+        Ok(())
+    })
+}
+
+/// While the task's agent fixes round `n`'s findings, for the task card: how many to fix and how many are fixed.
+pub fn fix_progress(app: &App, task_id: i64, n: u64) -> Result<Value> {
+    let d = round_event(app, task_id, n)?.map(|(_, d)| d).unwrap_or(Value::Null);
+    let all = with_outcome(&d, "fix").len();
+    Ok(json!({"findings": all, "fixed": all - unfixed(&d).len()}))
+}
+
 /// How far round `n`'s triage has got, for the task card: its findings and how many have an outcome.
 pub fn progress(app: &App, task_id: i64, n: u64) -> Result<Value> {
     let d = round_event(app, task_id, n)?.map(|(_, d)| d).unwrap_or(Value::Null);
@@ -226,6 +310,18 @@ pub fn progress(app: &App, task_id: i64, n: u64) -> Result<Value> {
 pub fn state(app: &App, task_id: i64) -> Result<Value> {
     let t = board::get_task(app, task_id)?;
     let me = rf("task", task_id);
+    if let Some(stage) = code_review::fixing(&t) {
+        let n = stage["round"].as_u64().unwrap_or(1);
+        let d = round_event(app, task_id, n)?.map(|(_, d)| d).unwrap_or(Value::Null);
+        let list: Vec<Value> = with_outcome(&d, "fix")
+            .iter()
+            .map(|f| {
+                let tr = &d["triage"][f["id"].as_str().unwrap_or("")];
+                json!({"id": f["id"], "line": finding_line(f), "outcome": tr["outcome"], "reason": tr["reason"], "fixed": tr["fixed"]})
+            })
+            .collect();
+        return Ok(json!({"task": me, "triaging": false, "fixing": true, "round": n, "findings": list, "left": unfixed(&d)}));
+    }
     let Some(stage) = code_review::stage(&t).filter(|s| s["state"] == STATE) else {
         return Ok(json!({"task": me, "triaging": false}));
     };
@@ -241,11 +337,15 @@ pub fn state(app: &App, task_id: i64) -> Result<Value> {
     Ok(json!({"task": me, "triaging": true, "round": n, "findings": list, "left": left(&d)}))
 }
 
-/// `tb finding T<n> <id> <outcome> <reason>`: records one finding's outcome in the round in triage.
+/// `tb finding T<n> <id> <outcome> <reason>`: records one finding's outcome in the round in triage, or
+/// (`fixed`) that the task's agent has fixed one of the round it's fixing.
 pub fn report(app: &App, task_id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, task_id)?;
     let me = rf("task", task_id);
     let sid = body["session"].as_str().filter(|s| !s.is_empty());
+    if body["outcome"].as_str().is_some_and(|o| o.trim().eq_ignore_ascii_case(FIXED)) {
+        return mark_fixed(app, &t, body, sid);
+    }
     if sid.is_some() && t.s("session_id") == sid {
         return err(403, format!("{me}'s own agent can't triage its findings: a fresh triage agent does."));
     }
@@ -257,7 +357,7 @@ pub fn report(app: &App, task_id: i64, body: &Value) -> Result<Value> {
     let outcome = body["outcome"].as_str().map(|s| s.trim().to_lowercase()).unwrap_or_default();
     let reason = body["reason"].as_str().map(str::trim).unwrap_or("");
     if !OUTCOMES.contains(&outcome.as_str()) {
-        return err(400, "The outcome is fix, backlog or dismiss.");
+        return err(400, "The outcome is fix, backlog or dismiss (or fixed, from the task's own agent).");
     }
     if reason.is_empty() {
         return err(400, format!("Say why: tb finding {me} {} {outcome} \"<reason>\"", if fid.is_empty() { "<id>" } else { fid }));
@@ -304,6 +404,62 @@ pub fn report(app: &App, task_id: i64, body: &Value) -> Result<Value> {
         format!("Marked {fid} {outcome}. Left: {}.", rest.join(", "))
     };
     Ok(json!({"ok": true, "task": me, "round": n, "finding": fid, "outcome": outcome, "issue": d["triage"][&fid]["issue"].as_i64().map(|i| rf("issue", i)), "left": rest, "message": message}))
+}
+
+/// `tb finding T<n> <id> fixed "<what changed>"`: the task's agent marks one of the round's `fix` findings fixed.
+fn mark_fixed(app: &App, t: &Row, body: &Value, sid: Option<&str>) -> Result<Value> {
+    let task_id = t.id();
+    let me = rf("task", task_id);
+    if is_triage(app, sid)? {
+        return err(403, format!("A triage agent marks fix, backlog or dismiss; {me}'s own agent marks a finding fixed."));
+    }
+    let Some(stage) = code_review::fixing(t) else {
+        return err(409, format!("{me} has no code review findings to fix."));
+    };
+    let n = stage["round"].as_u64().unwrap_or(1);
+    let fid = body["finding"].as_str().map(str::trim).unwrap_or("");
+    let note = body["reason"].as_str().map(str::trim).unwrap_or("");
+    if note.is_empty() {
+        return err(400, format!("Say what you changed: tb finding {me} {} fixed \"<what you changed>\"", if fid.is_empty() { "<id>" } else { fid }));
+    }
+    if note.chars().count() > REASON_MAX || note.contains(['\n', '\r']) {
+        return err(400, format!("What you changed is one line of {REASON_MAX} characters at most."));
+    }
+    let Some((eid, mut d)) = round_event(app, task_id, n)? else {
+        return err(409, format!("{me}'s code review round {n} has no result."));
+    };
+    let fix = with_outcome(&d, "fix");
+    let Some(f) = fix.iter().find(|f| f["id"].as_str().is_some_and(|id| id.eq_ignore_ascii_case(fid))) else {
+        let ids: Vec<&str> = fix.iter().filter_map(|f| f["id"].as_str()).collect();
+        return err(404, format!("Round {n} has no finding “{fid}” to fix; the ones to fix are {}.", ids.join(", ")));
+    };
+    let fid = f["id"].as_str().unwrap_or(fid).to_string();
+    if let Some(was) = d["triage"][&fid]["fixed"].as_str() {
+        return err(409, format!("{fid} is already marked fixed: {was}"));
+    }
+    let name = board::session_name(app, sid, None);
+    app.db.tx(|| {
+        d["triage"][&fid]["fixed"] = json!(note);
+        d["triage"][&fid]["fixed_at"] = json!(now_iso());
+        app.db.x("UPDATE events SET data = ? WHERE id = ?", p![jdumps(&d), eid])?;
+        board::log_event_full(
+            app,
+            task_id,
+            &name,
+            "code_review_triage",
+            &format!("Fixed, round {n}: {fid}: {note}"),
+            Some(json!({"round": n, "finding": fid, "outcome": FIXED, "reason": note})),
+            None,
+        )
+        .map(|_| ())
+    })?;
+    let rest = unfixed(&d);
+    let message = if rest.is_empty() {
+        format!("Marked {fid} fixed. That was the last one: commit, push and run tb submit again for the next round.")
+    } else {
+        format!("Marked {fid} fixed. Left to fix: {}.", rest.join(", "))
+    };
+    Ok(json!({"ok": true, "task": me, "round": n, "finding": fid, "outcome": FIXED, "left": rest, "message": message}))
 }
 
 /// Files a `backlog` finding in the task's project and goal, or adds it to the open item that already has its title.

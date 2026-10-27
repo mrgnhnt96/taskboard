@@ -1,6 +1,6 @@
 //! The code review stage: with a reviewer set, `tb submit` waits while the board runs it on the task's
-//! worktree (docs/REVIEW-PROTOCOL.md), records the round, has a triage agent sort any findings, then carries
-//! the submit on to its PR.
+//! worktree (docs/REVIEW-PROTOCOL.md), records the round, has a triage agent sort any findings, hands the
+//! task's own agent the ones to fix for another round, then carries the submit on to its PR.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,13 +21,15 @@ struct Board {
 
 const BODY: &str = "## Summary\nAdds passkey sign-in.\n\n## Changes\n- New sign-in screen\n\n## Testing\n- Unit tests\n";
 
-/// A reviewer that saves what it was given under `seen/` in the test folder, then writes `result`.
+/// A reviewer that saves what it was given under `seen/` in the test folder, then writes `result` (or
+/// `result-<round>.json` in the test folder, when there is one).
 const PASS: &str = r#"{"protocol":1,"reviewer":"fake","verdict":"pass","headline":"Looks fine","findings":[],"cost":{"usd":0.25}}"#;
 const FAIL: &str = r#"{"protocol":1,"reviewer":"fake","verdict":"fail","headline":"One thing","findings":[{"id":"F1","title":"Off by one","severity":"major","file":"a.txt","line":1,"detail":"why","url":null}]}"#;
 
 fn reviewer(dir: &Path, result: &str) -> String {
     let seen = dir.join("seen");
     std::fs::create_dir_all(&seen).unwrap();
+    std::fs::write(dir.join("result.json"), result).unwrap();
     let script = dir.join("reviewer.sh");
     std::fs::write(
         &script,
@@ -35,8 +37,10 @@ fn reviewer(dir: &Path, result: &str) -> String {
             "#!/bin/sh\nset -e\nS='{seen}'\nenv | grep '^TASKBOARD_' | sort > \"$S/env-$TASKBOARD_ROUND\"\ncp \"$TASKBOARD_INTENT\" \"$S/intent-$TASKBOARD_ROUND\"\n\
              [ -n \"$TASKBOARD_PREVIOUS\" ] && cp \"$TASKBOARD_PREVIOUS\" \"$S/previous-$TASKBOARD_ROUND\"\n\
              echo \"round $TASKBOARD_ROUND\" >> \"$TASKBOARD_STATE_DIR/kept\"\ncp \"$TASKBOARD_STATE_DIR/kept\" \"$S/kept-$TASKBOARD_ROUND\"\n\
-             echo reading the diff >&2\ncat > \"$TASKBOARD_RESULT\" <<'EOF'\n{result}\nEOF\n",
-            seen = seen.display()
+             echo reading the diff >&2\nR='{dir}/result.json'\n[ -f '{dir}/result-'$TASKBOARD_ROUND.json ] && R='{dir}/result-'$TASKBOARD_ROUND.json\n\
+             cp \"$R\" \"$TASKBOARD_RESULT\"\n",
+            seen = seen.display(),
+            dir = dir.display()
         ),
     )
     .unwrap();
@@ -109,6 +113,18 @@ impl Board {
     fn pr_opened(&self) -> bool {
         std::fs::read_to_string(self.dir.path().join("gh.log")).is_ok_and(|l| l.contains("pr create"))
     }
+    fn pr_body(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("pr-body")).unwrap_or_default()
+    }
+    /// Marks a finding fixed, as the task's own agent.
+    fn fixed(&self, id: i64, finding: &str, note: &str) -> Result<Value, (u16, String)> {
+        self.post(&format!("/tasks/T{id}/code-review/triage"), json!({"finding": finding, "outcome": "fixed", "reason": note, "session": "s1"}))
+    }
+    /// The open message to the task's agent with its fix list.
+    fn fix_list(&self, id: i64) -> Option<String> {
+        let j = self.app.db.q1("SELECT args FROM jobs WHERE task_id = ? AND purpose = 'code_review_fix' AND state = 'pending' ORDER BY id DESC", p![id]).unwrap()?;
+        serde_json::from_str::<Value>(&j.st("args")).unwrap()["text"].as_str().map(str::to_string)
+    }
 }
 
 fn git(path: &Path, args: &[&str]) -> String {
@@ -136,7 +152,8 @@ fn git_repo(dir: &Path) -> PathBuf {
 fn fake_gh(dir: &Path) -> PathBuf {
     let gh = dir.join("gh");
     let log = dir.join("gh.log");
-    std::fs::write(&gh, format!("#!/bin/sh\necho \"$@\" >> '{}'\ncat > /dev/null\necho https://github.com/acme/webapp/pull/77\n", log.display())).unwrap();
+    let body = dir.join("pr-body");
+    std::fs::write(&gh, format!("#!/bin/sh\necho \"$@\" >> '{}'\ncat > '{}'\necho https://github.com/acme/webapp/pull/77\n", log.display(), body.display())).unwrap();
     Command::new("chmod").arg("+x").arg(&gh).status().unwrap();
     gh
 }
@@ -233,6 +250,8 @@ fn changed_code_gets_another_round_with_the_last_one_and_the_kept_state() {
     code_review::sweep(&b.app).unwrap();
     b.triage(id, "F1", "fix", "The change counts pages wrong").unwrap();
     code_review::sweep(&b.app).unwrap();
+    assert_eq!(b.stage(id)["state"], "fixing");
+    b.fixed(id, "F1", "Counts from zero").unwrap();
     b.commit("b.txt", "b\n");
     b.push();
     assert_eq!(b.done().unwrap()["code_review"], true);
@@ -249,6 +268,7 @@ fn changed_code_gets_another_round_with_the_last_one_and_the_kept_state() {
     assert_eq!(prev["findings"][0]["id"], "F1");
     assert_eq!(prev["findings"][0]["outcome"], "fix");
     assert_eq!(prev["findings"][0]["reason"], "The change counts pages wrong");
+    assert_eq!(prev["findings"][0]["fixed"], "Counts from zero");
     assert_eq!(b.seen("kept-2"), "round 1\nround 2\n");
     assert_eq!(b.row(id).i("pr_num"), Some(77));
 }
@@ -384,14 +404,118 @@ fn findings_go_to_a_triage_agent_that_marks_each_then_the_task_carries_on() {
 
     code_review::sweep(&b.app).unwrap();
     let t = b.row(id);
-    assert!(!code_review::in_review(&t));
-    assert_eq!(t.i("pr_num"), Some(77));
+    assert!(!code_review::in_review(&t), "the task's agent has it back");
+    assert_eq!(b.stage(id)["state"], "fixing");
+    assert!(!b.pr_opened());
     let r = &code_review::rounds(&b.app, id).unwrap()[0];
     assert_eq!(r["triage"]["F1"]["outcome"], "fix", "{r}");
     assert_eq!(r["triage"]["F2"]["outcome"], "backlog", "{r}");
     let log = b.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'status' AND text LIKE '%triaged%'", p![id]).unwrap().unwrap();
     assert_eq!(log.st("text"), "Code review round 1 triaged: 1 fix, 1 backlog");
     assert_eq!(b.get(&format!("tasks/T{id}/code-review/triage"))["triaging"], false);
+
+    // Submitted again with nothing changed: on to the PR, and the owner hears F1 wasn't marked fixed.
+    let v = b.done().unwrap();
+    assert_ne!(v["code_review"], true, "{v}");
+    assert_eq!(b.row(id).i("pr_num"), Some(77));
+    assert_eq!(b.stage(id)["state"], Value::Null);
+    assert!(
+        b.alerts().iter().any(|a| a.contains(&format!("T{id} went on to its PR without another code review round")) && a.contains("F1") && !a.contains("F2")),
+        "{:?}",
+        b.alerts()
+    );
+    assert!(b.pr_body().contains("## Code review\n\n- 1 round: 0 fixed, 1 backlogged, 0 dismissed, 1 left open"), "{}", b.pr_body());
+}
+
+#[test]
+fn the_tasks_agent_fixes_round_ones_findings_and_round_two_finds_nothing() {
+    let b = new_board(|d| Some(reviewer(d, PASS)));
+    std::fs::write(b.dir.path().join("result-1.json"), TWO).unwrap();
+    let id = b.task();
+    b.push();
+
+    b.done().unwrap();
+    code_review::sweep(&b.app).unwrap();
+    b.app.db.x("UPDATE jobs SET target = json_set(target, '$.session', 's-triage') WHERE purpose = 'code_review_triage'", p![]).unwrap();
+    assert_eq!(b.fixed(id, "F1", "Not yet").unwrap_err().0, 409, "nothing to fix while in triage");
+    b.triage(id, "F1", "fix", "The change counts one page too many").unwrap();
+    b.triage(id, "F2", "dismiss", "Not worth it").unwrap();
+    code_review::sweep(&b.app).unwrap();
+
+    let card = b.stage(id);
+    assert_eq!(card["state"], "fixing", "{card}");
+    assert_eq!(card["fix"], json!({"findings": 1, "fixed": 0}), "{card}");
+    let text = b.fix_list(id).expect("the fix list for the task's agent");
+    for want in ["round 1", "F1", "Off by one", "a.txt:1", "The change counts one page too many", &format!("finding T{id} <id> fixed"), "round 2 of at most 5", "round-1"] {
+        assert!(text.contains(want), "{want} in {text}");
+    }
+    assert!(!text.contains("Old helper") && !text.contains("F2"), "{text}");
+    let state = b.get(&format!("tasks/T{id}/code-review/triage"));
+    assert_eq!((state["fixing"].clone(), state["left"].clone()), (json!(true), json!(["F1"])), "{state}");
+    assert_eq!(state["findings"].as_array().unwrap().len(), 1, "{state}");
+
+    // Only the task's own agent marks one fixed, only a fix finding, once, with what changed.
+    let fixed = |sid: &str, f: &str, note: &str| b.post(&format!("/tasks/T{id}/code-review/triage"), json!({"finding": f, "outcome": "fixed", "reason": note, "session": sid}));
+    assert_eq!(fixed("s-triage", "F1", "Done").unwrap_err().0, 403);
+    assert_eq!(fixed("s1", "F2", "Done").unwrap_err().0, 404);
+    assert_eq!(fixed("s1", "F1", " ").unwrap_err().0, 400);
+    let v = fixed("s1", "f1", "Counts from zero").unwrap();
+    assert!(v["message"].as_str().unwrap().contains("last one"), "{v}");
+    assert_eq!(fixed("s1", "F1", "Again").unwrap_err().0, 409);
+    assert_eq!(b.stage(id)["fix"], json!({"findings": 1, "fixed": 1}));
+
+    b.commit("a.txt", "fixed\n");
+    b.push();
+    let v = b.done().unwrap();
+    assert_eq!(v["code_review"], true, "{v}");
+    assert_eq!(b.stage(id)["state"], "queued");
+    assert_eq!(b.stage(id)["round"], 2);
+    code_review::sweep(&b.app).unwrap();
+
+    let rounds = code_review::rounds(&b.app, id).unwrap();
+    assert_eq!(rounds.iter().map(|r| r["result"]["verdict"].as_str().unwrap()).collect::<Vec<_>>(), ["fail", "pass"]);
+    let prev: Value = serde_json::from_str(&b.seen("previous-2")).unwrap();
+    assert_eq!(prev["findings"][0]["fixed"], "Counts from zero", "{prev}");
+    let t = b.row(id);
+    assert_eq!(t.st("status"), "done");
+    assert_eq!(t.i("pr_num"), Some(77));
+    assert!(b.alerts().is_empty(), "{:?}", b.alerts());
+    assert!(b.pr_body().starts_with("## Summary"), "{}", b.pr_body());
+    assert!(b.pr_body().contains("## Code review\n\n- 2 rounds: 1 fixed, 0 backlogged, 1 dismissed"), "{}", b.pr_body());
+}
+
+#[test]
+fn a_review_that_keeps_finding_things_stops_at_the_cap_and_alerts_the_owner() {
+    let b = new_board(|d| Some(reviewer(d, FAIL)));
+    let id = b.task();
+    b.push();
+    b.done().unwrap();
+    for n in 1..=5u64 {
+        code_review::sweep(&b.app).unwrap();
+        assert_eq!(b.stage(id)["state"], "triaging", "round {n}");
+        b.triage(id, "F1", "fix", "Still off by one").unwrap();
+        code_review::sweep(&b.app).unwrap();
+        if n == 5 {
+            break;
+        }
+        assert_eq!(b.stage(id)["state"], "fixing", "round {n}");
+        assert!(b.fix_list(id).unwrap().contains(&format!("round {} of at most 5", n + 1)));
+        b.fixed(id, "F1", &format!("Try {n}")).unwrap();
+        b.commit("a.txt", &format!("try {n}\n"));
+        b.push();
+        assert_eq!(b.done().unwrap()["code_review"], true, "round {}", n + 1);
+    }
+
+    assert_eq!(code_review::rounds(&b.app, id).unwrap().len(), 5);
+    let t = b.row(id);
+    assert_eq!(b.stage(id)["state"], Value::Null);
+    assert_eq!(t.i("pr_num"), Some(77));
+    assert!(
+        b.alerts().iter().any(|a| a.contains(&format!("T{id}'s code review reached its 5-round cap with findings still to fix")) && a.contains("F1")),
+        "{:?}",
+        b.alerts()
+    );
+    assert!(b.pr_body().contains("- 5 rounds: 4 fixed, 0 backlogged, 0 dismissed, 1 left open"), "{}", b.pr_body());
 }
 
 #[test]
