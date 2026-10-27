@@ -461,6 +461,9 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
         if crate::jira_desk::is_desk(app, r.sid())? {
             return Ok(ok(None, Some(crate::jira_desk::intro(app))));
         }
+        if crate::review_triage::is_triage(app, r.sid())? {
+            return Ok(ok(None, Some(crate::review_triage::intro(app, r.sid())?)));
+        }
         let s = board::get_session(app, r.sid())?;
         let mut c = handoff::no_task_line(app, s.as_ref().and_then(|s| s.s("project")))?;
         let waiting = r.sid().map(|sid| lines::summary(app, sid)).transpose()?.unwrap_or_default();
@@ -925,7 +928,7 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
         return Ok(None);
     }
     // The ticket desk works Jira, not code: its turns are never asked to track themselves.
-    if crate::jira_desk::is_desk(r.app, Some(&sid))? {
+    if crate::jira_desk::is_desk(r.app, Some(&sid))? || crate::review_triage::is_triage(r.app, Some(&sid))? {
         return Ok(None);
     }
     let Some(s) = board::get_session(r.app, Some(&sid))? else { return Ok(None) };

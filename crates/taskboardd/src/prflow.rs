@@ -636,9 +636,11 @@ fn task_conversation(t: &Row, last: Option<&Row>) -> Option<String> {
 /// slot the task gave back may be in another task's checkout by now.
 fn replaceable(app: &App, last: Option<Row>, cwd: &str) -> Option<Value> {
     let root = |p: Option<&str>| crate::worktrees::root_of(p);
-    last.filter(|l| l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false))
-        .filter(|l| root(l.s("cwd")) == root(Some(cwd)))
-        .map(|l| l.v("id"))
+    last.filter(|l| {
+        l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false) && !crate::review_triage::is_triage(app, l.s("id")).unwrap_or(false)
+    })
+    .filter(|l| root(l.s("cwd")) == root(Some(cwd)))
+    .map(|l| l.v("id"))
 }
 
 /// A visit that doesn't change code (`MECHANICAL`): a fresh conversation on `[models] pr_visit` with

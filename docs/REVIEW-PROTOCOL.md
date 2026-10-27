@@ -109,3 +109,33 @@ cap with fixes still open, the board opens the PR anyway and alerts the owner.
 
 A submit turned back after its review (a branch that isn't pushed, say) doesn't run the reviewer again
 while the code is as it was reviewed.
+
+## Triage (board side)
+
+After a round with verdict `fail` and at least one finding, the task stays in code review (`state:
+"triaging"` on its card, with how many findings have an outcome) while the board opens a fresh agent in its
+own terminal: not the task's, and not one a task can be sent to. It works in the task's worktree with
+read-only tools, and gets:
+
+- the task's intent (the same text as `TASKBOARD_INTENT`);
+- the diff from the base to the worktree (inline, or a file in the round's folder when it's long);
+- the findings, one per line, and the result JSON's path.
+
+Its one question per finding is whether this task's change caused it. It never edits code. It records each
+finding's outcome with:
+
+```
+tb finding T<n>                                # the round's findings and which are left
+tb finding T<n> F1 fix "<reason>"              # the change caused it: the task's agent fixes it
+tb finding T<n> F2 backlog "<reason>"          # real, but not from this change: a backlog item
+tb finding T<n> F3 dismiss "<reason>"          # not a problem, or not one worth tracking
+```
+
+Every outcome needs a reason (one line, 300 characters at most), and a finding is marked once. `backlog`
+files a backlog item (kind `follow`) in the task's project and goal, or adds to an open one with the same
+title. The task's own terminal can't mark findings.
+
+The outcomes are kept on the round and go to the next round's reviewer in `TASKBOARD_PREVIOUS`. Once every
+finding has one, the board closes the triage terminal and logs the counts on the task. If the triage agent
+can't open, its terminal closes, or it runs past an hour, the board closes it, carries on and alerts the
+owner with the findings left.

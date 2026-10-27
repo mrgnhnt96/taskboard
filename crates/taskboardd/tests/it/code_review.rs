@@ -1,5 +1,6 @@
 //! The code review stage: with a reviewer set, `tb submit` waits while the board runs it on the task's
-//! worktree (docs/REVIEW-PROTOCOL.md), records the round, then carries the submit on to its PR.
+//! worktree (docs/REVIEW-PROTOCOL.md), records the round, has a triage agent sort any findings, then carries
+//! the submit on to its PR.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -97,6 +98,13 @@ impl Board {
     }
     fn alerts(&self) -> Vec<String> {
         dispatch::alerts(&self.app).iter().filter_map(|a| a["text"].as_str().map(str::to_string)).collect()
+    }
+    /// Marks a finding of the task's round in triage, as the triage agent's terminal.
+    fn triage(&self, id: i64, finding: &str, outcome: &str, reason: &str) -> Result<Value, (u16, String)> {
+        self.post(&format!("/tasks/T{id}/code-review/triage"), json!({"finding": finding, "outcome": outcome, "reason": reason, "session": "s-triage"}))
+    }
+    fn stage(&self, id: i64) -> Value {
+        self.get(&format!("tasks/T{id}"))["code_review"].clone()
     }
     fn pr_opened(&self) -> bool {
         std::fs::read_to_string(self.dir.path().join("gh.log")).is_ok_and(|l| l.contains("pr create"))
@@ -198,6 +206,9 @@ fn a_submit_turned_back_after_its_review_tells_the_agent_and_skips_review_when_u
 
     assert_eq!(b.done().unwrap()["code_review"], true);
     code_review::sweep(&b.app).unwrap();
+    assert_eq!(b.stage(id)["state"], "triaging");
+    b.triage(id, "F1", "dismiss", "Not from this change").unwrap();
+    code_review::sweep(&b.app).unwrap();
     let t = b.row(id);
     assert_ne!(t.st("status"), "done");
     assert!(!code_review::in_review(&t));
@@ -220,9 +231,13 @@ fn changed_code_gets_another_round_with_the_last_one_and_the_kept_state() {
 
     b.done().unwrap();
     code_review::sweep(&b.app).unwrap();
+    b.triage(id, "F1", "fix", "The change counts pages wrong").unwrap();
+    code_review::sweep(&b.app).unwrap();
     b.commit("b.txt", "b\n");
     b.push();
     assert_eq!(b.done().unwrap()["code_review"], true);
+    code_review::sweep(&b.app).unwrap();
+    b.triage(id, "F1", "dismiss", "Fixed in the last round").unwrap();
     code_review::sweep(&b.app).unwrap();
 
     let rounds = code_review::rounds(&b.app, id).unwrap();
@@ -232,6 +247,8 @@ fn changed_code_gets_another_round_with_the_last_one_and_the_kept_state() {
     assert_eq!(prev["protocol"], 1);
     assert_eq!(prev["verdict"], "fail");
     assert_eq!(prev["findings"][0]["id"], "F1");
+    assert_eq!(prev["findings"][0]["outcome"], "fix");
+    assert_eq!(prev["findings"][0]["reason"], "The change counts pages wrong");
     assert_eq!(b.seen("kept-2"), "round 1\nround 2\n");
     assert_eq!(b.row(id).i("pr_num"), Some(77));
 }
@@ -303,4 +320,94 @@ fn a_project_can_turn_its_reviewer_off_or_name_its_own() {
     b.push();
     assert_ne!(b.done().unwrap()["code_review"], true);
     assert_eq!(b.row(id).i("pr_num"), Some(77));
+}
+
+const TWO: &str = r#"{"protocol":1,"reviewer":"fake","verdict":"fail","headline":"Two things","findings":[{"id":"F1","title":"Off by one","severity":"major","file":"a.txt","line":1,"detail":"why"},{"id":"F2","title":"Old helper leaks","severity":"minor","file":"README","detail":"It was like this before"}]}"#;
+
+#[test]
+fn findings_go_to_a_triage_agent_that_marks_each_then_the_task_carries_on() {
+    let b = new_board(|d| Some(reviewer(d, TWO)));
+    let g = b.post("/goals", json!({"name": "Passkeys", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let id = b.task();
+    b.app.db.x("UPDATE tasks SET goal_id = ? WHERE id = ?", p![g, id]).unwrap();
+    b.push();
+    b.done().unwrap();
+    let (code, _) = b.triage(id, "F1", "fix", "Too soon").unwrap_err();
+    assert_eq!(code, 409, "not triaging yet");
+
+    code_review::sweep(&b.app).unwrap();
+    let stage = b.stage(id);
+    assert_eq!(stage["state"], "triaging", "{stage}");
+    assert_eq!(stage["triage"], json!({"findings": 2, "triaged": 0}), "{stage}");
+    let job = b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'code_review_triage'", p![]).unwrap().expect("a triage agent");
+    assert_eq!(job.st("kind"), "agent");
+    assert_eq!(job.i("task_id"), None, "the triage agent isn't the task's terminal");
+    let target: Value = serde_json::from_str(&job.st("target")).unwrap();
+    assert_eq!((target["task"].as_i64(), target["round"].as_u64()), (Some(id), Some(1)));
+    let args: Value = serde_json::from_str(&job.st("args")).unwrap();
+    let prompt = args["prompt"].as_str().unwrap();
+    for want in ["Add passkeys", "Sign in with a passkey.", "F1", "Off by one", "F2", "a.txt", &format!("tb finding T{id}")] {
+        assert!(prompt.contains(want), "{want} in {prompt}");
+    }
+    assert!(args["flags"].as_str().unwrap().contains("--disallowedTools"), "{args}");
+    // Still waiting while the agent works.
+    code_review::sweep(&b.app).unwrap();
+    assert_eq!(b.stage(id)["state"], "triaging");
+    assert!(!b.pr_opened());
+
+    let state = b.get(&format!("tasks/T{id}/code-review/triage"));
+    assert_eq!(state["triaging"], true, "{state}");
+    assert_eq!(state["left"], json!(["F1", "F2"]), "{state}");
+
+    let (code, why) = b.post(&format!("/tasks/T{id}/code-review/triage"), json!({"finding": "F1", "outcome": "fix", "reason": "Mine", "session": "s1"})).unwrap_err();
+    assert_eq!(code, 403, "{why}");
+    assert_eq!(b.triage(id, "F1", "fix", " ").unwrap_err().0, 400);
+    assert_eq!(b.triage(id, "F1", "fix", "a\nb").unwrap_err().0, 400);
+    assert_eq!(b.triage(id, "F1", "maybe", "Unsure").unwrap_err().0, 400);
+    assert_eq!(b.triage(id, "F9", "fix", "Mine").unwrap_err().0, 404);
+
+    let v = b.triage(id, "f1", "fix", "The change counts one page too many").unwrap();
+    assert!(v["message"].as_str().unwrap().contains("Left: F2"), "{v}");
+    assert_eq!(b.triage(id, "F1", "dismiss", "Changed my mind").unwrap_err().0, 409);
+    assert_eq!(b.stage(id)["triage"]["triaged"], 1);
+
+    let v = b.triage(id, "F2", "backlog", "The helper leaked before this change").unwrap();
+    assert!(v["message"].as_str().unwrap().contains("last one"), "{v}");
+    let issue = b.app.db.q1("SELECT * FROM issues WHERE title = 'Old helper leaks'", p![]).unwrap().expect("a backlog item");
+    assert_eq!(issue.i("goal_id"), Some(g));
+    assert_eq!(issue.st("project"), "webapp");
+    assert_eq!(issue.st("kind"), "follow");
+    assert_eq!(issue.i("found_by_task"), Some(id));
+    assert!(issue.st("detail").contains("The helper leaked before this change"), "{}", issue.st("detail"));
+    let state = b.get(&format!("tasks/T{id}/code-review/triage"));
+    assert_eq!(state["findings"][1]["issue"], format!("B{}", issue.id()), "{state}");
+
+    code_review::sweep(&b.app).unwrap();
+    let t = b.row(id);
+    assert!(!code_review::in_review(&t));
+    assert_eq!(t.i("pr_num"), Some(77));
+    let r = &code_review::rounds(&b.app, id).unwrap()[0];
+    assert_eq!(r["triage"]["F1"]["outcome"], "fix", "{r}");
+    assert_eq!(r["triage"]["F2"]["outcome"], "backlog", "{r}");
+    let log = b.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'status' AND text LIKE '%triaged%'", p![id]).unwrap().unwrap();
+    assert_eq!(log.st("text"), "Code review round 1 triaged: 1 fix, 1 backlog");
+    assert_eq!(b.get(&format!("tasks/T{id}/code-review/triage"))["triaging"], false);
+}
+
+#[test]
+fn a_triage_agent_that_cannot_open_lets_the_task_carry_on_and_alerts_the_owner() {
+    let b = new_board(|d| Some(reviewer(d, FAIL)));
+    let id = b.task();
+    b.push();
+    b.done().unwrap();
+    code_review::sweep(&b.app).unwrap();
+    b.app.db.x("UPDATE jobs SET state = 'failed', result = ? WHERE purpose = 'code_review_triage'", p![json!({"stderr": "no claude"}).to_string()]).unwrap();
+
+    code_review::sweep(&b.app).unwrap();
+    assert_eq!(b.row(id).i("pr_num"), Some(77));
+    assert!(
+        b.alerts().iter().any(|a| a.contains(&format!("T{id}'s code review round 1: its triage agent couldn't open (no claude) with 1 of its findings left (F1)"))),
+        "{:?}",
+        b.alerts()
+    );
 }

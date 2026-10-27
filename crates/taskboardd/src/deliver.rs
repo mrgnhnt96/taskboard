@@ -175,7 +175,7 @@ pub fn send_failed(app: &App, deliver_id: i64, why: &str) -> Result<()> {
 /// Hands this terminal's waiting messages to a live hook report.
 pub fn take(app: &App, sid: Option<&str>, event: &str) -> Result<Option<Value>> {
     let Some(sid) = sid.filter(|s| !s.is_empty()) else { return Ok(None) };
-    if !DELIVER_EVENTS.contains(&event) || crate::jira_desk::is_desk(app, Some(sid))? {
+    if !DELIVER_EVENTS.contains(&event) || crate::jira_desk::is_desk(app, Some(sid))? || crate::review_triage::is_triage(app, Some(sid))? {
         return Ok(None);
     }
     let mine = match board::task_for_session(app, Some(sid))? {

@@ -288,6 +288,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "done"]) => mark_done(app, tid(id)?, body, false),
         ("POST", ["tasks", id, "fail"]) => mark_done(app, tid(id)?, body, true),
         ("POST", ["tasks", id, "jira"]) => task_jira(app, tid(id)?, body),
+        ("GET", ["tasks", id, "code-review", "triage"]) => crate::review_triage::state(app, tid(id)?),
+        ("POST", ["tasks", id, "code-review", "triage"]) => crate::review_triage::report(app, tid(id)?, body),
         ("POST", ["tasks", id, "meta"]) => {
             let t = tid(id)?;
             app.db.tx(|| {

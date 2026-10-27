@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, fields, p, projects, steps};
+use crate::{board, fields, p, projects, review_triage, steps};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -99,7 +99,7 @@ pub fn in_review(t: &Row) -> bool {
     stage(t).is_some()
 }
 
-fn save_stage(app: &App, id: i64, stage: Option<&Value>) -> Result<()> {
+pub(crate) fn save_stage(app: &App, id: i64, stage: Option<&Value>) -> Result<()> {
     board::update_task(app, id, fields!["code_review" => stage.map(jdumps)])
 }
 
@@ -131,7 +131,11 @@ pub fn card(app: &App, t: &Row) -> Result<Value> {
         return Ok(Value::Null);
     }
     let s = now.unwrap_or(Value::Null);
-    Ok(json!({"state": s["state"], "round": s["round"], "tries": s["tries"], "since": s["since"], "last": last}))
+    let mut card = json!({"state": s["state"], "round": s["round"], "tries": s["tries"], "since": s["since"], "last": last});
+    if s["state"] == review_triage::STATE {
+        card["triage"] = review_triage::progress(app, t.id(), s["round"].as_u64().unwrap_or(1))?;
+    }
+    Ok(card)
 }
 
 /// Before `tb submit` (outside its transaction): when the task's project has a reviewer and its code
@@ -247,9 +251,16 @@ fn take(app: &App, id: i64) {
 fn round(app: &App, id: i64) -> Result<bool> {
     let t = board::get_task(app, id)?;
     let Some(mut stage) = stage(&t) else { return Ok(false) };
+    let triaging = stage["state"] == review_triage::STATE;
     if board::handed_in(&t) || t.b("failed") {
+        if triaging {
+            review_triage::close(app, &stage, &format!("Task board: {} has ended", rf("task", id)))?;
+        }
         save_stage(app, id, None)?;
         return Ok(false);
+    }
+    if triaging {
+        return review_triage::tick(app, &t, stage).map(|_| false);
     }
     let Some(cmd) = command(app, &t.st("project"))? else {
         return carry_on(app, &t, stage, None).map(|_| false);
@@ -287,13 +298,22 @@ fn round(app: &App, id: i64) -> Result<bool> {
         save_stage(app, id, Some(&stage))?;
         return Ok(false);
     }
+    if ran.error.is_none() && review_triage::wanted(&ran.result) {
+        match review_triage::open(app, &t, &mut stage, n, &ran.result) {
+            Ok(()) => return Ok(false),
+            Err(e) => {
+                let alert = format!("{me}'s code review round {n} found something, but its triage couldn't start ({}), so it carried on.", e.message);
+                return carry_on(app, &t, stage, Some(alert)).map(|_| false);
+            }
+        }
+    }
     let alert = ran.error.as_ref().map(|e| format!("{me}'s code review failed twice ({e}), so it carried on without one."));
     carry_on(app, &t, stage, alert).map(|_| false)
 }
 
 /// Ends the stage and sends the held `tb submit` on, as if the agent had just run it. When that's
 /// refused, the agent hears why in its terminal and the owner gets an alert.
-fn carry_on(app: &App, t: &Row, stage: Value, alert: Option<String>) -> Result<()> {
+pub(crate) fn carry_on(app: &App, t: &Row, stage: Value, alert: Option<String>) -> Result<()> {
     let id = t.id();
     let me = rf("task", id);
     app.db.tx(|| {
@@ -337,7 +357,7 @@ pub fn task_dir(app: &App, id: i64) -> PathBuf {
     app.cfg.data.join("code-review").join(rf("task", id))
 }
 
-fn worktree(app: &App, t: &Row) -> String {
+pub(crate) fn worktree(app: &App, t: &Row) -> String {
     steps::vars_at(app, t, None).get("worktree").cloned().filter(|w| !w.is_empty()).unwrap_or_else(|| t.st("repo_path"))
 }
 
@@ -424,7 +444,7 @@ fn read_result(path: &Path) -> std::result::Result<Value, String> {
 }
 
 /// The task as the reviewer reads it: its title and detail, and its goal's done-when.
-fn intent_text(app: &App, t: &Row) -> String {
+pub(crate) fn intent_text(app: &App, t: &Row) -> String {
     let mut s = format!("# {}: {}\n", rf("task", t.id()), t.st("title"));
     let detail = t.st("detail");
     if !detail.trim().is_empty() {
@@ -477,7 +497,7 @@ fn tidy(app: &App) {
     }
 }
 
-fn git_out(dir: &str, args: &[&str], env: &[(String, String)]) -> Option<String> {
+pub(crate) fn git_out(dir: &str, args: &[&str], env: &[(String, String)]) -> Option<String> {
     let bin = crate::proc::which("git")?;
     let mut all: Vec<String> = vec!["-C".into(), dir.into()];
     all.extend(args.iter().map(|a| a.to_string()));
