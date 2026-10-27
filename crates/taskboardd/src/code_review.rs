@@ -155,6 +155,40 @@ pub fn card(app: &App, t: &Row) -> Result<Value> {
     Ok(card)
 }
 
+/// Each round the task's code review ran, for its panel: the try that counted, its reviewer and result,
+/// and each finding with its triage outcome, the backlog item it filed and what fixed it. `capped` on
+/// a round that reached the cap with `fix` findings left, so the task went on to its PR with them.
+pub fn shown_rounds(app: &App, t: &Row) -> Result<Value> {
+    let max = app.cfg.code_review.max_rounds as u64;
+    let mut out: Vec<Value> = vec![];
+    for d in rounds(app, t.id())? {
+        let findings: Vec<Value> = d["result"]["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|f| {
+                let tr = &d["triage"][f["id"].as_str().unwrap_or("")];
+                json!({
+                    "id": f["id"], "title": f["title"], "severity": f["severity"], "file": f["file"], "line": f["line"], "url": f["url"],
+                    "outcome": tr["outcome"], "reason": tr["reason"], "issue": tr["issue"].as_i64().map(|i| rf("issue", i)), "fixed": tr["fixed"],
+                })
+            })
+            .collect();
+        let open = findings.iter().filter(|f| f["outcome"] == "fix" && f["fixed"].is_null()).count();
+        let row = json!({
+            "round": d["round"], "try": d["try"], "ok": d["ok"], "reviewer": d["reviewer"].as_str().or(d["result"]["reviewer"].as_str()),
+            "verdict": d["result"]["verdict"], "headline": d["result"]["headline"], "error": d["error"], "cost": d["cost"]["usd"],
+            "head": d["head"], "at": d["at"], "findings": findings,
+            "capped": d["ok"] == true && d["round"].as_u64().is_some_and(|n| n >= max) && open > 0 && stage(t).is_none(),
+        });
+        match out.iter_mut().find(|r| r["round"] == row["round"]) {
+            Some(r) => *r = row,
+            None => out.push(row),
+        }
+    }
+    Ok(json!(out))
+}
+
 /// Before `tb submit` (outside its transaction): when the task's project has a reviewer and its code
 /// hasn't been reviewed as it stands, holds the report and puts the task in code review. The reply for
 /// the agent then, else `None` to carry on with the submit. A report sent on later (`spooled`) skips the

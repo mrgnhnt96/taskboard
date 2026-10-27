@@ -444,6 +444,7 @@ fn with_step_results(app: &App, t: &Row, mut d: Value) -> Result<Value> {
         }
     }
     d["step_results"] = json!(results);
+    d["code_review_rounds"] = crate::code_review::shown_rounds(app, t)?;
     Ok(d)
 }
 

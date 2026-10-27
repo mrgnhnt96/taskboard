@@ -251,6 +251,8 @@ pub enum TlStep {
     Started,
     /// The nth of the task's `step_results`.
     Result(usize),
+    /// The nth of the task's `code_review_rounds`.
+    Round(usize),
 }
 
 /// A timeline stop's dot (`.n-*`).
@@ -1072,6 +1074,7 @@ fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
         nodes.push(started_node(c, t));
     }
     nodes.extend(arr(t, "step_results").iter().enumerate().map(|(ix, x)| result_node(c, t, ix, x)));
+    nodes.extend(code_review_nodes(c, t));
     if status == "done" {
         nodes.push(done_node(c, t));
     }
@@ -1206,6 +1209,123 @@ fn result_detail(t: &Value, x: &Value) -> Vec<Node> {
         out.push(det_row("Ran on", txt(on.join(" · "), St::Plain)));
     }
     out
+}
+
+/// The task's code review: each round it ran, then the round it's queued for or reviewing now. A
+/// round still being reviewed shows once, as the one it's on (a failed try is retried).
+fn code_review_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
+    let cr = &t["code_review"];
+    let state = opt_s(cr, "state");
+    let cur = cr["round"].as_u64();
+    let reviewing = matches!(state, Some("queued" | "running"));
+    let mut out: Vec<Node> = arr(t, "code_review_rounds")
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| !(reviewing && x["round"].as_u64() == cur))
+        .map(|(ix, x)| round_node(c, ix, x, state.is_some() && x["round"].as_u64() == cur, cr))
+        .collect();
+    if reviewing {
+        let sub = format!("Round {} · {}", cur.unwrap_or(1), if state == Some("queued") { "Queued" } else { "Reviewing" });
+        out.push(tl_node(TlSt::Now, tl_head(tl_name("Code review"), &sub, &fmt::hhmm(s(cr, "since"))), vec![], false));
+    }
+    out
+}
+
+/// A code review round: what the reviewer said, where its findings stand while it's triaged or fixed,
+/// and the cap alert when it went on to its PR with fixes left. It opens onto each finding and how it
+/// was triaged, the reviewer and the commit it read.
+fn round_node(c: &Ctx, ix: usize, x: &Value, now: bool, cr: &Value) -> Node {
+    let n = x["round"].as_u64().unwrap_or(1);
+    let findings = arr(x, "findings");
+    let left: Vec<&str> = findings.iter().filter(|f| s(f, "outcome") == "fix" && f["fixed"].is_null()).map(|f| s(f, "id")).collect();
+    let said = if opt_s(x, "error").is_some() {
+        "The reviewer didn’t run".to_string()
+    } else if let Some(h) = opt_s(x, "headline") {
+        h.to_string()
+    } else {
+        match s(x, "verdict") {
+            "pass" => "Passed".to_string(),
+            "skip" => "Skipped".to_string(),
+            _ => format!("{} findings", findings.len()),
+        }
+    };
+    let mut body = Vec::new();
+    if now {
+        match s(cr, "state") {
+            "triaging" => body.push(el(K::Line, vec![pill(format!("Triaging {} of {}", cr["triage"]["triaged"].as_u64().unwrap_or(0), cr["triage"]["findings"].as_u64().unwrap_or(0)), Tone::Review)])),
+            "fixing" => body.push(el(K::Line, vec![pill(format!("Fixing {} of {}", cr["fix"]["fixed"].as_u64().unwrap_or(0), cr["fix"]["findings"].as_u64().unwrap_or(0)), Tone::Working)])),
+            _ => {}
+        }
+    }
+    if b(x, "capped") {
+        body.push(el(
+            K::Box(BoxTone::Ask),
+            vec![txt(format!("Reached its {n}-round cap"), St::BoxLabel), txt(format!("It went on to its PR with {} still to fix.", left.join(", ")), St::Plain)],
+        ));
+    }
+    let st = if now {
+        TlSt::Now
+    } else if b(x, "capped") || opt_s(x, "error").is_some() || !left.is_empty() {
+        TlSt::Warn
+    } else {
+        TlSt::Done
+    };
+    let head = tl_head(tl_name("Code review"), &format!("Round {n} · {said}"), &fmt::hhmm(s(x, "at")));
+    tl_node(st, tl_step(c, TlStep::Round(ix), head, round_detail(x)), body, false)
+}
+
+/// A code review round, opened: why it didn't run, its findings with their triage, its reviewer and
+/// cost, and the commit it read.
+fn round_detail(x: &Value) -> Vec<Node> {
+    let mut out = Vec::new();
+    if let Some(e) = opt_s(x, "error") {
+        out.push(txt(e, St::DetText));
+    }
+    let findings = arr(x, "findings");
+    if !findings.is_empty() {
+        out.push(el(K::List, findings.iter().map(review_finding_item).collect()));
+    }
+    let mut by: Vec<String> = opt_s(x, "reviewer").map(str::to_string).into_iter().collect();
+    by.extend(x["cost"].as_f64().map(|usd| format!("${usd:.2}")));
+    if !by.is_empty() {
+        out.push(det_row("Reviewer", txt(by.join(" · "), St::Plain)));
+    }
+    if let Some(h) = opt_s(x, "head") {
+        out.push(det_row("Ran on", txt(format!("commit {}", h.chars().take(7).collect::<String>()), St::Plain)));
+    }
+    out
+}
+
+/// One code review finding: how it was triaged (still to triage, to fix, fixed, sent to the backlog or
+/// dismissed), its severity, title and where it is, with the triage's reason and what fixed it.
+fn review_finding_item(f: &Value) -> Node {
+    let (state, tone) = match (opt_s(f, "outcome"), f["fixed"].is_null()) {
+        (Some("fix"), false) => ("Fixed", Tone::Done),
+        (Some("fix"), true) => ("To fix", Tone::Needs),
+        (Some("backlog"), _) => ("Backlog", Tone::Planned),
+        (Some("dismiss"), _) => ("Dismissed", Tone::Closed),
+        _ => ("To triage", Tone::Queued),
+    };
+    let mut kids = vec![txt(s(f, "id"), St::Mono), pill(state, tone)];
+    if let Some(sev) = opt_s(f, "severity") {
+        kids.push(txt(sev, St::Small));
+    }
+    kids.push(txt(s(f, "title"), St::Plain));
+    if let Some(file) = opt_s(f, "file") {
+        kids.push(txt(match f["line"].as_i64() { Some(l) => format!("{file}:{l}"), None => file.to_string() }, St::Small));
+    }
+    if let Some(issue) = opt_s(f, "issue") {
+        kids.push(txt(issue, St::Mono));
+    }
+    for k in ["reason", "fixed"] {
+        if let Some(n) = opt_s(f, k) {
+            kids.push(txt(n, St::Small));
+        }
+    }
+    if let Some(u) = opt_s(f, "url").filter(|u| is_web(u)) {
+        kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
+    }
+    el(K::Line, kids)
 }
 
 /// `doneNode(t)`: Done or Failed, with its summary.

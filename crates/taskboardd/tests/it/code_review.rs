@@ -482,6 +482,14 @@ fn the_tasks_agent_fixes_round_ones_findings_and_round_two_finds_nothing() {
     assert!(b.alerts().is_empty(), "{:?}", b.alerts());
     assert!(b.pr_body().starts_with("## Summary"), "{}", b.pr_body());
     assert!(b.pr_body().contains("## Code review\n\n- 2 rounds: 1 fixed, 0 backlogged, 1 dismissed"), "{}", b.pr_body());
+
+    // The task's detail shows each round with its findings' outcomes and fixes.
+    let shown = b.get(&format!("tasks/T{id}"))["code_review_rounds"].clone();
+    assert_eq!(shown.as_array().map(|r| r.len()), Some(2), "{shown}");
+    let f = &shown[0]["findings"];
+    assert_eq!((f[0]["id"].clone(), f[0]["outcome"].clone(), f[0]["fixed"].clone()), (json!("F1"), json!("fix"), json!("Counts from zero")), "{shown}");
+    assert_eq!((f[1]["outcome"].clone(), f[1]["reason"].clone()), (json!("dismiss"), json!("Not worth it")), "{shown}");
+    assert_eq!((shown[1]["verdict"].clone(), shown[1]["capped"].clone()), (json!("pass"), json!(false)), "{shown}");
 }
 
 #[test]
@@ -516,6 +524,9 @@ fn a_review_that_keeps_finding_things_stops_at_the_cap_and_alerts_the_owner() {
         b.alerts()
     );
     assert!(b.pr_body().contains("- 5 rounds: 4 fixed, 0 backlogged, 0 dismissed, 1 left open"), "{}", b.pr_body());
+    let shown = b.get(&format!("tasks/T{id}"))["code_review_rounds"].clone();
+    let capped: Vec<bool> = shown.as_array().unwrap().iter().map(|r| r["capped"] == true).collect();
+    assert_eq!(capped, [false, false, false, false, true], "{shown}");
 }
 
 #[test]
