@@ -373,6 +373,19 @@ enum Cmd {
         /// key=… status=… found=yes added=… product=…, or (with fail) why
         rest: Vec<String>,
     },
+    /// A code review's triage: the round's findings and what's left (tb finding T5), or one finding's outcome:
+    /// tb finding T5 F2 fix|backlog|dismiss "<reason>". backlog files it in the task's backlog
+    Finding {
+        /// T5, the task whose review is in triage
+        task: String,
+        /// F2, the finding's id
+        finding: Option<String>,
+        /// fix (this task's change caused it), backlog (real, but not this change's) or dismiss (not worth acting on)
+        #[arg(value_parser = ["fix", "backlog", "dismiss"])]
+        outcome: Option<String>,
+        /// Why, in one line
+        reason: Vec<String>,
+    },
     /// How this board slices a goal into tasks: the owner's planning file for the project or the board,
     /// else the built-in rules
     Planning {
@@ -3180,6 +3193,43 @@ fn month_name(m: &str) -> String {
     chrono::NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").map(|d| d.format("%b %Y").to_string()).unwrap_or_else(|_| m.to_string())
 }
 
+fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<String>, reason: Vec<String>) -> Result<i32, String> {
+    let task = task_ref(&task)?;
+    let path = format!("/tasks/{task}/code-review/triage");
+    let Some(finding) = finding else {
+        let v = c.call("GET", &path, None)?;
+        if v["triaging"] != true {
+            out(&format!("{task} has no code review round in triage."));
+            return Ok(0);
+        }
+        out(&format!("{task}'s code review, round {}:", v["round"]));
+        for f in v["findings"].as_array().cloned().unwrap_or_default() {
+            let line = f["line"].as_str().unwrap_or("");
+            match f["outcome"].as_str() {
+                Some(o) => out(&format!("  {line}\n    {o}: {}", f["reason"].as_str().unwrap_or(""))),
+                None => out(&format!("  {line}")),
+            }
+        }
+        let left: Vec<&str> = v["left"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+        if left.is_empty() {
+            out("Every finding has an outcome.");
+        } else {
+            out(&format!("Left: {}. Mark each: tb finding {task} <id> fix|backlog|dismiss \"<reason>\"", left.join(", ")));
+        }
+        return Ok(0);
+    };
+    let Some(outcome) = outcome else {
+        return Err(format!("Say what to do with it: tb finding {task} {finding} fix|backlog|dismiss \"<reason>\""));
+    };
+    let reason = reason.join(" ");
+    if reason.trim().is_empty() {
+        return Err(format!("Say why: tb finding {task} {finding} {outcome} \"<reason>\""));
+    }
+    let v = c.call("POST", &path, Some(json!({"finding": finding, "outcome": outcome, "reason": reason, "session": c.session})))?;
+    out(v["message"].as_str().unwrap_or("Marked."));
+    Ok(0)
+}
+
 fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<String>) -> Result<i32, String> {
     let Some(job) = job else {
         let v = c.call("GET", "/jira", None)?;
@@ -5711,6 +5761,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
+        Cmd::Finding { task, finding, outcome, reason } => finding_cmd(c, task, finding, outcome, reason),
         Cmd::Planning { project, suggest, accept } => match (suggest, accept) {
             (false, false) => planning_cmd(c, project),
             _ => planning_lessons_cmd(c, project, accept),
@@ -8515,6 +8566,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "jira", "J12", "ok", "key=PROJ-1", "status=To Do", "found=yes"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "jira", "J12", "fail", "no", "such", "project"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "jira", "J12", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "finding", "T5"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "backlog", "not", "this", "change"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "dismiss", "a false positive"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "maybe", "why"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "finding"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "new", "Fix it", "--jira", "none"]).is_ok());
         // --issue: the title can come from the item; it works on this terminal, in a goal and on the board.
         let Cmd::Task { action: TaskCmd::New { title, issue, .. } } = Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here"]).unwrap().cmd else {

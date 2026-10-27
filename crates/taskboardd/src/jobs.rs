@@ -111,6 +111,10 @@ pub fn after_result(app: &App, j: &Row, ok: bool, res: &Value) -> Result<()> {
             if purpose == "plan" || purpose == "reopen" {
                 return Ok(());
             }
+            if purpose == crate::review_triage::PURPOSE {
+                // The review loop watches its triage job and ends the triage when it fails.
+                return Ok(());
+            }
             if purpose == crate::jira_desk::PURPOSE {
                 // A refused desk fails the Jira job that asked for it, so the desk isn't opened again for it.
                 if let Some(jid) = board::job_target(j).i("jira_job").filter(|_| !ok) {

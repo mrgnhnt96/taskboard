@@ -34,6 +34,9 @@ pub fn pickup(app: &App, body: &Value) -> Result<(String, Option<String>)> {
     if mode == "attach" && crate::jira_desk::is_desk(app, sid.as_deref())? {
         return err(409, "Tasks can't go to the Jira desk.");
     }
+    if mode == "attach" && crate::review_triage::is_triage(app, sid.as_deref())? {
+        return err(409, "Tasks can't go to a code review's triage terminal.");
+    }
     Ok((mode, sid))
 }
 
@@ -402,7 +405,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
         .q("SELECT * FROM sessions WHERE status != 'gone' ORDER BY name COLLATE NOCASE", p![])?
         .into_iter()
         .filter(|s| s.s("id") != t.s("session_id") && board::runs_claude(s) && s.s("project") == t.s("project"))
-        .filter(|s| !crate::jira_desk::is_desk(app, s.s("id")).unwrap_or(false))
+        .filter(|s| !crate::jira_desk::is_desk(app, s.s("id")).unwrap_or(false) && !crate::review_triage::is_triage(app, s.s("id")).unwrap_or(false))
         .map(|s| json!({"id": s.v("id"), "name": s.s("name").map(|n| n.to_string()).unwrap_or_else(|| s.st("id").chars().take(8).collect()), "status": board::terminal_status(Some(&s))}))
         .collect();
     let jobs_now: Vec<Value> = app
@@ -527,6 +530,7 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         let sid = s.st("id");
         let t = tasks.get(&sid);
         let desk = t.is_none() && crate::jira_desk::is_desk(app, Some(&sid))?;
+        let triage = t.is_none() && !desk && crate::review_triage::is_triage(app, Some(&sid))?;
         let line = crate::lines::entries(app, &sid)?;
         let mut row = json!({
             "id": sid, "name": s.s("name").filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("Terminal {}", sid.chars().take(8).collect::<String>())),
@@ -545,6 +549,10 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
             // The desk is never closed: the board sends it every Jira job.
             row["role"] = json!(crate::jira_desk::ROLE);
             row["close"] = Value::Null;
+            row["can_take"] = json!(false);
+        }
+        if triage {
+            row["role"] = json!(crate::review_triage::ROLE);
             row["can_take"] = json!(false);
         }
         for (k, v) in jobs::rename_state(app, &sid)? {
@@ -718,6 +726,8 @@ pub fn session_detail(app: &App, sid: &str) -> Result<Value> {
     if t.is_none() && crate::jira_desk::is_desk(app, Some(sid))? {
         out["role"] = json!(crate::jira_desk::ROLE);
         out["close"] = Value::Null;
+    } else if t.is_none() && crate::review_triage::is_triage(app, Some(sid))? {
+        out["role"] = json!(crate::review_triage::ROLE);
     }
     Ok(out)
 }

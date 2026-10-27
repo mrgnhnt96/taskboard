@@ -97,6 +97,7 @@ pub mod setup;
 pub mod shared;
 pub mod review;
 pub mod review_fixes;
+pub mod review_triage;
 pub mod slot_ageing;
 pub mod slot_keep;
 pub mod slot_tidy;
