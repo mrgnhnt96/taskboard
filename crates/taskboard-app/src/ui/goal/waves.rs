@@ -245,7 +245,8 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .hover(move |s| s.bg(hover))
         .cursor_pointer()
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx)))
-        .child(div().flex_none().w(px(86.)).child(status::chip(t, x.row.st)))
+        // A tighter chip than the board's, borrowing 6px of the gap so the ref and title stay put.
+        .child(div().flex_none().w(px(92.)).mr(px(-6.)).child(status::chip(t, x.row.st).w(px(92.)).px(px(5.)).text_size(px(11.))))
         .child(div().flex_none().w(px(36.)).text_size(px(11.)).font_family(t.mono_font.clone()).text_color(t.muted).child(x.r.clone()))
         .child(cell(
             div().flex().child(
