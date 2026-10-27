@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::worktrees::{git, last_line, GIT_SECS};
+use crate::worktrees::{git, last_line, Git, GIT_SECS};
 use crate::{board, p};
 
 pub const WAIT: &str = "Waits for a worktree slot";
@@ -407,8 +407,9 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     Ok(path)
 }
 
-/// Saves the uncommitted changes a free slot was left with to a `wip/` branch named for the task
-/// that left them, so the slot is taken clean and nothing is lost. The branch's name.
+/// Saves the uncommitted changes in a slot to a `wip/` branch named for the task that left them, so
+/// the slot is used clean and nothing is lost. The commit is made in a copy of the slot's index, so
+/// the slot never leaves its branch and, when the save fails, is just as it was. The branch's name.
 fn save_leftovers(app: &App, s: &Row, path: &str) -> Result<String> {
     let n = s.i0("n");
     let left_by = board::find_task(app, s.i("task_id"))?;
@@ -418,30 +419,100 @@ fn save_leftovers(app: &App, s: &Row, path: &str) -> Result<String> {
     };
     let taken = |b: &str| git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")], GIT_SECS).code == 0;
     let branch = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|b| !taken(b)).unwrap_or(stem);
-    let base = git(path, &["rev-parse", "HEAD"], GIT_SECS).out.trim().to_string();
-    let add = vec!["add".to_string(), "-A".into(), "--".into(), ".".into()];
-    let msg = format!("WIP left uncommitted in worktree slot-{n}");
-    let steps: [Vec<String>; 3] = [
-        vec!["switch".into(), "-q".into(), "-c".into(), branch.clone()],
-        add,
-        vec!["commit".into(), "-q".into(), "--no-verify".into(), "-m".into(), msg],
-    ];
-    for args in &steps {
-        let r = git(path, &args.iter().map(String::as_str).collect::<Vec<_>>(), GIT_SECS);
+    // git's whole error: its last line is often only a hint.
+    let failed = |step: &str, r: &Git| {
+        let why = one_line(&r.err, 2000);
+        format!("git {step} failed: {}", if why.is_empty() { "no output".to_string() } else { why })
+    };
+    let at = |name: &str| {
+        let p = git(path, &["rev-parse", "--git-path", name], GIT_SECS).out.trim().to_string();
+        if Path::new(&p).is_absolute() { p } else { format!("{}/{p}", path.trim_end_matches('/')) }
+    };
+    let index = at("wip-save-index");
+    // Started from the slot's own index, so git only rereads what changed.
+    if std::fs::copy(at("index"), &index).is_err() {
+        let _ = std::fs::remove_file(&index);
+    }
+    let saved = commit_all(path, &index, &format!("WIP left uncommitted in worktree slot-{n}"));
+    let _ = std::fs::remove_file(&index);
+    let commit = match saved {
+        Ok(c) => c,
+        Err((step, r)) => return err(409, failed(step, &r)),
+    };
+    let r = git(path, &["branch", &branch, &commit], GIT_SECS);
+    if r.code != 0 {
+        return err(409, failed("branch", &r));
+    }
+    // Saved, so the slot's copy goes: tracked files back to its commit, untracked ones removed. Ignored
+    // files (build output, review trees) stay, as nothing would save them anyway.
+    for (step, args) in [("reset", ["reset", "-q", "--hard"].as_slice()), ("clean", ["clean", "-fdq"].as_slice())] {
+        let r = git(path, args, GIT_SECS);
         if r.code != 0 {
-            // Back where it was, the changes still in the folder, so the slot is passed over as before.
-            git(path, &["switch", "-q", "--detach", &base], GIT_SECS);
-            git(path, &["branch", "-q", "-D", &branch], GIT_SECS);
-            return err(409, format!("git {} failed: {}", args[0], last_line(&r.err)));
+            return err(409, format!("saved to {branch}, but {}", failed(step, &r)));
         }
     }
-    git(path, &["switch", "-q", "--detach", &base], GIT_SECS);
     crate::dispatch::clear_alert_key(app, &dirty_key(path))?;
     app.info(format!("worktrees: saved the uncommitted changes left in {path} to {branch}"));
     if let Some(t) = &left_by {
         board::log_event(app, t.id(), board::BOARD, "midna", &format!("Saved the uncommitted changes it left in worktree slot-{n} to branch {branch}, so the slot could be used again"))?;
     }
     Ok(branch)
+}
+
+/// Commits everything in the worktree at `path`, ignored files aside, on top of its HEAD, using the
+/// index file `index` rather than the worktree's own. The commit, or the step that failed.
+fn commit_all(path: &str, index: &str, msg: &str) -> std::result::Result<String, (&'static str, Git)> {
+    let run = |args: &[&str]| {
+        let Some(bin) = crate::proc::which("git") else { return Git { code: 1, out: String::new(), err: "git isn't installed".into() } };
+        let mut all: Vec<String> = vec!["-C".into(), path.into()];
+        all.extend(args.iter().map(|a| a.to_string()));
+        match crate::proc::run_with(&bin, &all, None, GIT_SECS, &[("GIT_INDEX_FILE".into(), index.into())], None) {
+            Ok(o) => Git { code: o.code.unwrap_or(1), out: o.stdout, err: o.stderr },
+            Err(crate::proc::RunError::TimedOut) => Git { code: 1, out: String::new(), err: "git timed out".into() },
+            Err(crate::proc::RunError::Spawn(e)) => Git { code: 1, out: String::new(), err: e.to_string() },
+        }
+    };
+    if !Path::new(index).exists() {
+        let r = run(&["read-tree", "HEAD"]);
+        if r.code != 0 {
+            return Err(("read-tree", r));
+        }
+    }
+    // `add` with no pathspec never names an ignored path, which makes git exit 1 (its
+    // `advice.addIgnoredFile` hint) after staging everything else; a non-zero exit that left
+    // nothing unstaged is taken as done.
+    let r = run(&["-c", "advice.addIgnoredFile=false", "add", "--all"]);
+    if r.code != 0 {
+        let st = run(&["status", "--porcelain"]);
+        let all_staged = st.code == 0 && st.out.lines().filter(|l| !l.trim().is_empty()).all(|l| !l.starts_with("??") && l.chars().nth(1) == Some(' '));
+        if !all_staged {
+            return Err(("add", r));
+        }
+    }
+    let tree = run(&["write-tree"]);
+    if tree.code != 0 {
+        return Err(("write-tree", tree));
+    }
+    let c = run(&["commit-tree", tree.out.trim(), "-p", "HEAD", "-m", msg]);
+    if c.code != 0 {
+        return Err(("commit-tree", c));
+    }
+    Ok(c.out.trim().to_string())
+}
+
+/// Saves a finished task's uncommitted changes off the slot it holds, so the slot goes back clean.
+/// When that fails the changes stay, with git's error in the task's log.
+fn save_on_release(app: &App, t: &Row) -> Result<()> {
+    let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])? else { return Ok(()) };
+    let path = s.st("path");
+    if !live(&path) || !dirty(&path) {
+        return Ok(());
+    }
+    if let Err(e) = save_leftovers(app, &s, &path) {
+        app.info(format!("worktrees: couldn't give {path} back clean: {}", e.message));
+        board::log_event(app, t.id(), board::BOARD, "midna", &format!("Couldn't give its worktree slot-{} back clean: {}", s.i0("n"), e.message))?;
+    }
+    Ok(())
 }
 
 /// Why an agent can't run a PR command that ends its visit yet: its slot goes back once the visit
@@ -577,8 +648,13 @@ pub fn release(app: &App, t: &Row) -> Result<bool> {
     give_back(app, t)
 }
 
-/// `release` that keeps the slot, and says why in the task's log, when it can't be given back.
+/// `release` for a task done with its slot (its work submitted, or a PR visit over): uncommitted
+/// changes go to a `wip/` branch first, so it's given back clean. A parked task's stay, for when it
+/// carries on. Keeps the slot, and says why in the task's log, when it can't be given back.
 pub fn release_if_clean(app: &App, t: &Row) -> Result<bool> {
+    if t.s("status") == Some("done") {
+        save_on_release(app, t)?;
+    }
     if let Some(why) = release_refusal(app, t)? {
         board::log_event(app, t.id(), board::BOARD, "midna", &format!("Kept its worktree slot: {}", why.split(": ").nth(1).unwrap_or(&why)))?;
         return Ok(false);
@@ -901,5 +977,77 @@ mod tests {
         run(&["worktree", "prune"]);
         run(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
         assert!(live(&slot), "made again in place");
+    }
+
+    /// A repo ignoring `target/` and `.review/`, with slot-1 on branch `feat/a`, held by a task with
+    /// `status`. The repo, the slot and the task.
+    fn held_slot(app: &App, dir: &Path, status: &str) -> (String, String, Row) {
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |at: &str, args: &[&str]| assert_eq!(git(at, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&repo, &["init", "-q"]);
+        run(&repo, &["config", "user.name", "t"]);
+        run(&repo, &["config", "user.email", "t@t"]);
+        std::fs::write(Path::new(&repo).join(".gitignore"), "/target\n.review/\n").unwrap();
+        std::fs::write(Path::new(&repo).join("app.rs"), "one").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-qm", "one"]);
+        let slot = slot_path(&repo, 1);
+        run(&repo, &["worktree", "add", "-q", "-b", "feat/a", &slot, "HEAD"]);
+        let id = app.db.insert("tasks", crate::fields!["title" => "A", "status" => status]).unwrap();
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone(), "task_id" => id]).unwrap();
+        (repo, slot, board::get_task(app, id).unwrap())
+    }
+
+    #[test]
+    fn a_done_task_gives_back_its_slot_clean_its_changes_on_a_wip_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (repo, slot, t) = held_slot(&app, dir.path(), "done");
+        std::fs::write(Path::new(&slot).join("app.rs"), "a review fix").unwrap();
+        std::fs::write(Path::new(&slot).join("new.rs"), "untracked").unwrap();
+        // Ignored build output and review trees stay out of the save and don't fail it.
+        std::fs::create_dir_all(Path::new(&slot).join("target/debug")).unwrap();
+        std::fs::write(Path::new(&slot).join("target/debug/out"), "built").unwrap();
+        assert_eq!(git(&repo, &["worktree", "add", "-q", "--detach", &format!("{slot}/.review/pr-1/tree"), "HEAD"], GIT_SECS).code, 0);
+        assert!(release_if_clean(&app, &t).unwrap(), "given back");
+        assert!(!dirty(&slot), "the slot is clean");
+        assert!(held(&app, &t).unwrap().is_none(), "and free");
+        let branch = format!("wip/{}-slot-1", rf("task", t.id()));
+        assert_eq!(git(&repo, &["show", &format!("{branch}:app.rs")], GIT_SECS).out, "a review fix");
+        assert_eq!(git(&repo, &["show", &format!("{branch}:new.rs")], GIT_SECS).out, "untracked");
+        assert_ne!(git(&repo, &["cat-file", "-e", &format!("{branch}:target/debug/out")], GIT_SECS).code, 0, "ignored files aren't saved");
+        let ctx = board::task_context(&board::get_task(&app, t.id()).unwrap());
+        assert_eq!(ctx.s("worktree_branch"), Some("feat/a"), "its own branch is kept for review fixes, not the wip one");
+        assert!(crate::dispatch::alerts(&app).is_empty(), "nothing for the owner");
+    }
+
+    #[test]
+    fn a_parked_task_keeps_its_uncommitted_changes_in_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (_, slot, t) = held_slot(&app, dir.path(), "queued");
+        std::fs::write(Path::new(&slot).join("app.rs"), "half done").unwrap();
+        assert!(!release_if_clean(&app, &t).unwrap(), "kept");
+        assert!(dirty(&slot), "its work is where it left it");
+    }
+
+    #[test]
+    fn a_slot_that_cant_be_cleaned_is_kept_with_gits_whole_error_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (repo, slot, t) = held_slot(&app, dir.path(), "done");
+        std::fs::write(Path::new(&slot).join("new.rs"), "untracked").unwrap();
+        // A stale lock: git's first line names it, its last only says another git may be running.
+        std::fs::write(Path::new(&repo).join(".git/worktrees/slot-1/index.lock"), "").unwrap();
+        assert!(!release_if_clean(&app, &t).unwrap(), "kept");
+        assert!(dirty(&slot), "the changes stay");
+        assert_eq!(branch_of(&slot).as_deref(), Some("feat/a"), "never left its branch");
+        let branch = format!("wip/{}-slot-1", rf("task", t.id()));
+        assert_eq!(git(&repo, &["show", &format!("{branch}:new.rs")], GIT_SECS).out, "untracked", "saved all the same");
+        let logged: Vec<String> = app.db.q("SELECT text FROM events WHERE task_id = ?", p![t.id()]).unwrap().iter().map(|e| e.st("text")).collect();
+        let why = logged.iter().find(|l| l.starts_with("Couldn't give")).unwrap_or_else(|| panic!("{logged:?}"));
+        assert!(why.contains("git reset failed") && why.contains("index.lock"), "{why}");
     }
 }
