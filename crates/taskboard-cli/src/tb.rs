@@ -1902,6 +1902,16 @@ enum PrCmd {
         #[arg(long)]
         all: bool,
     },
+    /// A failed lens review holds the merge: run it again (--retry), or let the PR go without it (--skip)
+    Lens {
+        task: Option<String>,
+        /// Run the review again
+        #[arg(long, conflicts_with = "skip")]
+        retry: bool,
+        /// Why the PR goes on without its lens review
+        #[arg(long)]
+        skip: Option<String>,
+    },
     /// Reply to a review thread: [T<n>] <thread> "<what you did>" (ids from tb pr status)
     Reply {
         /// [task] thread text
@@ -6739,6 +6749,16 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let who = if c.session.is_empty() { "tb" } else { "The agent" };
                 c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason, "all": all, "who": who})))?;
                 out(&format!("{t}'s PR checks that didn't fail count as passed{}.", if all { " on every push" } else { " for this push" }));
+                Ok(0)
+            }
+            PrCmd::Lens { task, retry, skip } => {
+                let t = c.pr_task(task)?;
+                let who = if c.session.is_empty() { "tb" } else { "The agent" };
+                c.call("POST", &format!("/tasks/{t}/pr/lens"), Some(json!({"retry": retry, "skip": skip.clone().unwrap_or_default(), "who": who, "agent": !c.session.is_empty()})))?;
+                out(&match skip {
+                    Some(_) => format!("{t}'s PR goes on without its lens review."),
+                    None => format!("{t}'s lens review runs again; it holds the merge until it's done."),
+                });
                 Ok(0)
             }
             PrCmd::BodyCheck { file } => {

@@ -597,8 +597,8 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
-    "lens": {"state": "queued"|"running"|"done"|"failed", "head": str, "at": iso, "started_at": iso?, "finished_at": iso?,
-             "error": str?, "log": str?}|null,   // the lens review of the PR ([pr.lens]); null when lens never ran on it.
+    "lens": {"state": "queued"|"running"|"done"|"failed"|"skipped"|"stopped", "head": str, "at": iso, "tries": int,
+             "started_at": iso?, "finished_at": iso?, "error": str?, "log": str?, "reason": str?, "by": str?}|null,   // the lens review of the PR ([pr.lens]); null when lens never ran on it.
                                  // A run that outlived its timeout reads failed ("didn't finish"). The panel's Lens step sits after Checks
     "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round, or {"name", "bar", "pending": true}
                                  // before the first ("Not reviewed by WD yet"); null when the task doesn't end in a PR or the PR is merged or closed
@@ -710,6 +710,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
 | `POST /tasks/:id/pr/needs-owner` | `{reason, checks?: [str], who?}` | `tb pr needs-owner`: the current head's failed checks (all of them, or `checks`) are ones only the owner can fix, like a missing secret or variable or a permissions error. `reason` (20–300 characters) says what they have to do. Finishes the visit, alerts the owner, and the card's stage reads "Needs you to fix checks" with `owner` set until a new push. 409 when nothing fails on this push or a named check didn't fail. |
 | `POST /tasks/:id/pr/checks-running` | `{head, checks: [names], who?}` | A merge was refused while these checks ran on the host (`tb pr merge` notes it itself when it refuses for running checks). Kept as `pr_flow.checks_running` `{head (12 chars), checks, at}`: the stage stays `checks` on that head while any of them isn't finished in the record's builds, for at most 30 minutes, then goes back to `merge` with a fresh wake (not a retry). 400 without a head or checks; a note for an older head is ignored (`noted: false`). The merge stage's wake key includes each build's `name=state`, so a build that finishes after the merge retries ran out brings the merge back with fresh tries. |
+| `POST /tasks/:id/pr/lens` | `{retry?: bool, skip?: str, who?, agent?: bool}` | A lens review that holds the PR: `retry` runs a failed (or lost) one again; `skip` (the reason) lets the PR go without it. 403 when an agent skips it; 409 when there's no review, it isn't holding, or (`retry`) it hasn't failed. `tb pr lens [T<n>] --retry\|--skip "<why>"`. |
 | `POST /tasks/:id/pr/skip-checks` | `{reason, all?: bool, who?}` | Counts this push's checks (or every push's) that were stopped, are running or never posted as passed: for builds a hook cancelled. 400 without a `reason`; 409 while a check failed on this push (use `not-ours`), and a later push's failure still counts. The card's `pr.bar.checks` is `skipped`. |
 | `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
 | `POST /tasks/:id/pr/merged` | `{who?}` | `tb pr merged`: the PR was merged outside the board. |
@@ -1362,9 +1363,13 @@ request for changes doesn't make it one.
 board reads a new, open PR, it queues lens's PR pass (`lens review --pr <n>` from the PR's repo, the binary `[lens] bin` names),
 which posts its verified findings on the PR as inline comments. Runs go one at a time on
 their own thread. The run is kept in `pr_flow.lens` (`pr.bar.lens`), its output in `data/lens/T<id>-pr<n>.log`,
-and its outcome as a `lens` event. While it's queued or running, the PR's phase is `lens` in place of `ask` or
-`review` (so the owner isn't asked to look until lens has posted); every other stage still wins, so it never holds a
-fix or a merge, and a run past `timeout_mins` stops holding. Each PR is reviewed once: a later push isn't reviewed again.
+and its outcome as a `lens` event. Until the run is done, the review holds the PR: its phase is `lens` ahead of
+`review`, `ask` and `merge` (only `fix`, `checks`, `rebase` and `comments` come first), and `tb pr merge` refuses. Its
+findings (comments ending in `<!-- lens:finding key=… -->`) then hold the merge as open threads until each is resolved,
+even when lens posts as the board's own account. A run that fails, or one the board lost (past `timeout_mins`, as after a
+restart), is tried once more (`tries`); a second failure leaves it `failed`, still holding, and alerts the owner, who runs
+it again (`tb pr lens --retry`) or lets the PR go without it (`tb pr lens --skip "<why>"`, owner only). A PR that merges
+or closes first skips (or stops) the run. Each PR is reviewed once: a later push isn't reviewed again.
 
 **The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
