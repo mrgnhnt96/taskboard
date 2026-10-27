@@ -9,7 +9,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{jloads_obj, now_iso, RowExt};
-use taskboardd::{board, midna, prflow, reports};
+use taskboardd::{board, lens_pr, midna, prflow, reports};
 
 struct Board {
     app: Arc<App>,
@@ -17,7 +17,7 @@ struct Board {
 }
 
 /// A board whose `lens` records its arguments and folder, and prints a summary (exit 0) or, when `fail`
-/// exists, exits 1.
+/// exists, exits 1; when `slow` exists, it first sleeps 30 seconds.
 fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
@@ -26,7 +26,7 @@ fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let lens = dir.path().join("fake-lens");
     std::fs::write(
         &lens,
-        "#!/bin/sh\nd=$(dirname \"$0\")\necho \"$PWD|$*\" >> \"$d/calls.txt\"\nif [ -f \"$d/fail\" ]; then echo 'Error: no gh login' >&2; exit 1; fi\necho 'Posted 2 findings.'\n",
+        "#!/bin/sh\nd=$(dirname \"$0\")\necho \"$PWD|$*\" >> \"$d/calls.txt\"\nif [ -f \"$d/slow\" ]; then sleep 30; fi\nif [ -f \"$d/fail\" ]; then echo 'Error: no gh login' >&2; exit 1; fi\necho 'Posted 2 findings.'\n",
     )
     .unwrap();
     std::fs::set_permissions(&lens, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -212,4 +212,40 @@ fn a_run_the_board_lost_stops_holding_after_its_timeout() {
     assert_eq!(t.s("pr_phase"), Some("review"));
     let card = b.call("GET", &format!("/tasks/T{id}"), json!({}));
     assert_eq!(card["pr"]["bar"]["lens"]["state"], "failed", "{}", card["pr"]);
+}
+
+#[test]
+fn a_queued_run_is_skipped_once_the_pr_has_merged() {
+    let b = lens_on();
+    let id = b.pr_task();
+    prflow::merge_flow(&b.app, id, vec![("lens", json!({"state": "queued", "head": "h1", "at": now_iso()}))]).unwrap();
+    prflow::mark_merged(&b.app, &b.task(id), "Morgan").unwrap();
+    lens_pr::run(&b.app, id).unwrap();
+    assert!(b.calls().is_empty(), "lens wasn't run");
+    let lens = b.lens(id);
+    assert_eq!(lens["state"], "skipped", "{lens}");
+    assert_eq!(lens["reason"], "the PR merged");
+}
+
+#[test]
+fn a_running_review_is_killed_when_the_pr_merges() {
+    let b = lens_on();
+    std::fs::write(b.dir.path().join("slow"), "").unwrap();
+    let id = b.pr_task();
+    prflow::merge_flow(&b.app, id, vec![("lens", json!({"state": "queued", "head": "h1", "at": now_iso()}))]).unwrap();
+    let app = b.app.clone();
+    let merger = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        prflow::mark_merged(&app, &board::get_task(&app, id).unwrap(), "Morgan").unwrap();
+    });
+    let started = std::time::Instant::now();
+    lens_pr::run(&b.app, id).unwrap();
+    merger.join().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "killed, not waited out: {:?}", started.elapsed());
+    assert_eq!(b.calls().len(), 1, "it had started");
+    let lens = b.lens(id);
+    assert_eq!(lens["state"], "stopped", "{lens}");
+    assert_eq!(lens["reason"], "the PR merged");
+    let events = b.call("GET", &format!("/tasks/T{id}"), json!({})).to_string();
+    assert!(events.contains("stopped the lens review, the PR merged"), "{events}");
 }

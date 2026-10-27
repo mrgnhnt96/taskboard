@@ -740,6 +740,8 @@ fn the_lens_step_shows_after_checks_only_when_lens_ran() {
     assert_eq!(running[1], ("Lens".into(), "Reviewing".into(), view::StepSt::Now));
     assert_eq!(steps(json!({"state": "done"}))[1], ("Lens".into(), "Posted".into(), view::StepSt::Done));
     assert_eq!(steps(json!({"state": "failed", "error": "boom"}))[1], ("Lens".into(), "Failed".into(), view::StepSt::Fail));
+    assert_eq!(steps(json!({"state": "skipped"}))[1], ("Lens".into(), "Skipped".into(), view::StepSt::Done), "the PR merged first");
+    assert_eq!(steps(json!({"state": "stopped"}))[1], ("Lens".into(), "Stopped".into(), view::StepSt::Done));
 }
 
 #[::core::prelude::v1::test]
