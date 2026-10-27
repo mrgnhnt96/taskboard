@@ -260,8 +260,24 @@ pub fn opens_in_background(app: &App, j: &Row) -> bool {
     app.cfg.terminals.background.iter().any(|b| b.trim() == p || Some(b.trim()) == visit.as_deref())
 }
 
+/// Claude's flag that turns slash commands off (the Jira desk's): a terminal opened with it answers
+/// `/compact` with "Unknown command", so the board never sends it one.
+pub const NO_SLASH_COMMANDS: &str = "--disable-slash-commands";
+
+fn slash_commands_off(agent_args: &[String]) -> bool {
+    agent_args.iter().any(|a| a == NO_SLASH_COMMANDS)
+}
+
+/// The board opened this terminal with slash commands off.
+fn opened_without_slash_commands(app: &App, sid: &str) -> bool {
+    let Ok(Some(j)) = app.db.q1("SELECT args FROM jobs WHERE kind = 'agent' AND json_extract(target, '$.session') = ? ORDER BY id DESC LIMIT 1", p![sid]) else {
+        return false;
+    };
+    shlex::split(&board::job_args(&j).st("flags")).is_some_and(|f| slash_commands_off(&f))
+}
+
 /// A live terminal whose conversation has gone cold, with its size and idle minutes.
-fn cold_open(app: &App, sid: &str) -> Option<limits::Conversation> {
+pub fn cold_open(app: &App, sid: &str) -> Option<limits::Conversation> {
     let Ok(Some(s)) = board::get_session(app, Some(sid)) else { return None };
     let cid = s.s("claude_session_id").filter(|c| !c.is_empty())?;
     let c = limits::conversation(app, s.s("project_path").unwrap_or(""), cid, s.s("last_activity"));
@@ -277,8 +293,9 @@ pub fn compact_open_text(c: &limits::Conversation) -> String {
 
 /// A cold open terminal gets `/compact` ahead of whatever the job sends it, logged on the job's task.
 /// The job's target remembers it, so a job retried after Midna went down doesn't compact twice.
+/// A terminal opened with slash commands off is left as it is (the Jira desk is replaced instead).
 fn compact_first(app: &App, j: &Row, sid: &str) -> MResult<()> {
-    if board::job_target(j).get("compacted").is_some() {
+    if board::job_target(j).get("compacted").is_some() || opened_without_slash_commands(app, sid) {
         return Ok(());
     }
     let Some(c) = cold_open(app, sid) else { return Ok(()) };
@@ -329,7 +346,7 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
         }
     }
     let (agent_args, resume) = claude_args(&a)?;
-    let cold = resume.as_deref().and_then(|cid| cold_resume(app, j, &cwd, cid)).is_some();
+    let cold = !slash_commands_off(&agent_args) && resume.as_deref().and_then(|cid| cold_resume(app, j, &cwd, cid)).is_some();
     let prompt = a.s("prompt").filter(|p| !p.is_empty());
     // A slot's terminal is left for the board to `close`: closing itself on exit runs Midna's cleanup.
     let mut params = json!({"kind": "agent", "agent": "claude", "cwd": cwd,
