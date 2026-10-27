@@ -117,18 +117,59 @@ fn needs(app: &App) -> Result<Vec<Value>> {
         a["goal_name"] = goal_name;
         out.push(a);
     }
-    // A task that needs you with no alert up (dismissed, or never raised) still does.
+    // A task that needs you with no alert up (dismissed, or never raised) still does, under a
+    // `task:T<n>` id that Dismiss and Snooze put away (`put_away`).
+    let away = put_away_list(app);
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'needs' ORDER BY updated_at DESC", p![])? {
         let r = rf("task", t.id());
         if out.iter().chain(&snoozed).any(|a| a["task"].as_str() == Some(r.as_str())) {
             continue;
         }
+        if away.get(&r).is_some_and(|p| p["asking"].as_str() == Some(asking(&t).as_str()) || crate::dispatch::snoozed(p)) {
+            continue;
+        }
         let card = board::task_card(app, &t)?;
         let text = card["question"].as_str().or(card["latest"].as_str()).unwrap_or("").to_string();
-        out.push(json!({"id": null, "at": t.v("updated_at"), "text": text, "task": r, "goal": card["goal"]["ref"],
+        out.push(json!({"id": format!("{TASK_ID}{r}"), "at": t.v("updated_at"), "text": text, "task": r, "goal": card["goal"]["ref"],
                         "goal_name": card["goal"]["name"], "card": card}));
     }
     Ok(out)
+}
+
+/// The id prefix of a Needs you item that's a task with no alert up: `task:T12`.
+pub const TASK_ID: &str = "task:";
+
+/// The tasks put away from Needs you while no alert is up, by ref: dismissed (`asking`, what it
+/// asked then) or snoozed (`snoozed_until` / `snoozed_back`, as an alert's).
+const PUT_AWAY: &str = "needs_put_away";
+
+fn put_away_list(app: &App) -> Row {
+    jloads_obj(crate::reqcache::setting(app, PUT_AWAY).ok().flatten().as_deref())
+}
+
+/// What a task that needs you is asking: a new question or a new reason brings a dismissed one back.
+fn asking(t: &Row) -> String {
+    format!("{}|{}|{}", t.st("needs_reason"), t.b("lost"), t.st("question"))
+}
+
+/// Dismiss (`until` None) or Snooze (`Some(until)`, as `dispatch::snooze_to`) on Needs you item
+/// `id`, a `task:T<n>` with no alert up. Returns what was kept, for the app's toast.
+pub fn put_away(app: &App, id: &str, until: Option<Option<f64>>) -> Result<Value> {
+    let t = id.strip_prefix(TASK_ID).and_then(|r| r.trim_start_matches('T').parse::<i64>().ok()).map(|n| board::get_task(app, n));
+    let Some(Ok(t)) = t.filter(|t| t.as_ref().is_ok_and(|t| t.s("status") == Some("needs"))) else {
+        return err(404, "That task doesn't need you now.");
+    };
+    let entry = match until {
+        None => json!({"asking": asking(&t)}),
+        Some(until) => json!({"snoozed_until": until.map(iso), "snoozed_back": until.is_none().then(now_iso)}),
+    };
+    let needs: Vec<String> = app.db.q("SELECT id FROM tasks WHERE status = 'needs'", p![])?.iter().map(|t| rf("task", t.id())).collect();
+    let mut away = put_away_list(app);
+    away.retain(|r, _| needs.contains(r));
+    away.insert(rf("task", t.id()), entry.clone());
+    crate::reqcache::forget(&format!("setting:{PUT_AWAY}"));
+    app.db.set_setting(PUT_AWAY, Some(&jdumps(&Value::Object(away))))?;
+    Ok(entry)
 }
 
 pub fn page(app: &App, project: &str) -> Result<Value> {

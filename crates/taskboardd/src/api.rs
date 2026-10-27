@@ -585,6 +585,10 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             app.db.tx(|| alerts::clear_alerts(app, None, a["id"].as_str()))?;
             Ok(json!({"alerts": alerts::listing(app)}))
         }
+        ("POST", ["alerts", id, "dismiss"]) if id.starts_with(crate::home::TASK_ID) => {
+            crate::home::put_away(app, id, None)?;
+            Ok(json!({"alerts": alerts::listing(app)}))
+        }
         ("POST", ["alerts", id, "dismiss"]) => {
             if let Some(a) = alerts::alerts(app).into_iter().find(|a| a["id"] == *id && alerts::stays(a)) {
                 let why = if a["urgent"] == true {
@@ -603,7 +607,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         // `{mins}`, `{until: "tomorrow"}` (when the work hours start) or `{until: "back"}` (after the
         // owner's next stretch away).
         ("POST", ["alerts", id, "snooze"]) => {
-            if !alerts::alerts(app).iter().any(|a| a["id"] == *id) {
+            let task = id.starts_with(crate::home::TASK_ID);
+            if !task && !alerts::alerts(app).iter().any(|a| a["id"] == *id) {
                 return err(404, "There's no alert with that id.");
             }
             let until = match (body["until"].as_str(), body["mins"].as_i64()) {
@@ -612,6 +617,9 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                 (None, Some(mins)) if (1..=7 * 24 * 60).contains(&mins) => Some(now_ts() + mins as f64 * 60.0),
                 _ => return err(400, "Snooze for a number of minutes (up to a week), until \"tomorrow\" or until \"back\"."),
             };
+            if task {
+                return Ok(json!({"alert": crate::home::put_away(app, id, Some(until))?}));
+            }
             let a = app.db.tx(|| alerts::snooze_to(app, id, until))?;
             alerts::withdraw(app, id);
             Ok(json!({"alert": a}))
