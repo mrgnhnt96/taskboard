@@ -188,6 +188,12 @@ UPDATE goals SET lane = 'slot' WHERE lane IS NULL AND COALESCE(worktree_base, ''
 UPDATE tasks SET lane = 'alone' WHERE lane IS NULL AND alone IS NOT NULL;
 "#;
 
+/// PRs the board saw merge while a re-step wrote their state back to OPEN (fixed in 7ffaa97a). A
+/// merged PR is never read again, so without this they read In review for good.
+const BACKFILL_MERGED: &str = r#"
+UPDATE tasks SET pr_state = 'MERGED' WHERE pr_phase = 'merged' AND COALESCE(pr_state, '') != 'MERGED';
+"#;
+
 /// Tasks from before `task_states` existed get their start and their current status, so the Days
 /// page can draw them.
 const BACKFILL_STATES: &str = r#"
@@ -481,6 +487,7 @@ impl Db {
         add_columns(&conn, crate::code_review::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
         conn.execute_batch(BACKFILL_LANES)?;
+        conn.execute_batch(BACKFILL_MERGED)?;
         let changed: Arc<Mutex<Vec<(String, i64)>>> = Default::default();
         let hooked = changed.clone();
         conn.update_hook(Some(move |_, _: &str, table: &str, rowid: i64| hooked.lock().push((table.to_string(), rowid))));
@@ -754,6 +761,19 @@ mod tests {
         assert_eq!(db.val("SELECT title FROM tasks", p![]).unwrap(), "B");
         db.set_setting("k", Some("v")).unwrap();
         assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn a_merged_phase_backfills_a_stale_open_state() {
+        let db = Db::memory().unwrap();
+        let task = |phase: &str, state: &str| {
+            db.tx(|| db.insert("tasks", vec![("title", "A".into()), ("status", "done".into()), ("pr_phase", phase.into()), ("pr_state", state.into())]))
+                .unwrap()
+        };
+        let (stale, open) = (task("merged", "OPEN"), task("review", "OPEN"));
+        db.inner.lock().conn.borrow().execute_batch(BACKFILL_MERGED).unwrap();
+        let state = |id: i64| db.val("SELECT pr_state FROM tasks WHERE id = ?", p![id]).unwrap();
+        assert_eq!((state(stale), state(open)), ("MERGED".into(), "OPEN".into()));
     }
 
     #[test]
