@@ -763,6 +763,7 @@ pub fn run(app: Arc<App>) {
     let (mut last_tick, mut last_spool, mut last_prs) = (None::<Instant>, Instant::now(), None::<Instant>);
     let mut last_attrs = None::<Instant>;
     let mut last_reviews = None::<Instant>;
+    let mut last_slots = None::<Instant>;
     while !app.stopping() {
         let due = |last: Option<Instant>, every: f64| every > 0.0 && last.map(|l| l.elapsed().as_secs_f64() >= every).unwrap_or(true);
         if due(last_tick, iv.runner) {
@@ -788,6 +789,10 @@ pub fn run(app: Arc<App>) {
         if due(last_attrs, gitattrs::EVERY_SECS) {
             last_attrs = Some(Instant::now());
             safe("attributes", gitattrs::sync(&app).map(|_| ()));
+        }
+        if due(last_slots, crate::slot_usage::EVERY_SECS) {
+            last_slots = Some(Instant::now());
+            safe("slot usage", crate::slot_usage::sample(&app));
         }
         if app.wait_runner(Duration::from_secs(1)) {
             last_tick = None;

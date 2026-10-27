@@ -102,6 +102,7 @@ pub mod slot_ageing;
 pub mod slot_keep;
 pub mod slot_tidy;
 pub mod slots;
+pub mod slot_usage;
 pub mod slowlog;
 pub mod spans;
 pub mod stamp;

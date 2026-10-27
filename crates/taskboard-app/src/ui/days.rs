@@ -178,6 +178,21 @@ fn host_kind(kind: &str) -> &'static str {
     }
 }
 
+/// One project's worktree slot pool on the day: when it sat full, who waited for a slot and who
+/// held one while idle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotRow {
+    pub label: String,
+    /// "full 2 times · 45m"; empty when it never was.
+    pub full: String,
+    /// The pool's full stretches over the timeline's hours.
+    pub spans: Vec<(f32, f32, String)>,
+    /// ("1 task waited 30m", each task and its wait); empty text when none did.
+    pub waited: (String, String),
+    /// ("T12 idle 2h", its title and hold), longest first.
+    pub idle: Vec<(String, String)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     pub kind: String,
@@ -272,6 +287,8 @@ pub struct View {
     pub usage: Vec<(&'static str, Vec<Option<f64>>)>,
     /// Each PR host the board couldn't work with for a while on the day; empty on most days.
     pub hosts: Vec<HostRow>,
+    /// Each project whose slot pool was full, kept a task waiting or was held idle on the day.
+    pub slots: Vec<SlotRow>,
     pub tasks: Vec<TaskRow>,
     pub task_median: String,
     pub task_median_x: f32,
@@ -437,6 +454,34 @@ impl View {
                 HostRow { label, total: format!("held {}", dur(f(h, "held_min"))), spans }
             })
             .filter(|h: &HostRow| !h.spans.is_empty())
+            .collect();
+
+        let slots = arr(day, "slot_pool")
+            .iter()
+            .map(|p| {
+                let project = s(p, "project");
+                let max = p["max_slots"].as_i64().unwrap_or(0);
+                let times = p["full_times"].as_i64().unwrap_or(0);
+                let spans = arr(p, "full")
+                    .iter()
+                    .filter_map(|sp| {
+                        let (x0, x1) = (x_of(s(sp, "from"))?, x_of(s(sp, "to"))?);
+                        Some((x0, x1.max(x0 + 0.002), format!("{project} · all {max} slots held {} – {}", clock(s(sp, "from")), clock(s(sp, "to")))))
+                    })
+                    .collect();
+                let each = |key: &str| arr(p, key).iter().map(|x| (s(x, "ref").to_string(), s(x, "title").to_string(), dur(f(x, "min")))).collect::<Vec<_>>();
+                let waits = each("waits");
+                SlotRow {
+                    label: format!("{project} slots"),
+                    full: if times > 0 { format!("full {} · {}", fmt::plural(times, "time", "times"), dur(f(p, "full_min"))) } else { String::new() },
+                    spans,
+                    waited: (
+                        if waits.is_empty() { String::new() } else { format!("{} waited {}", fmt::plural(waits.len() as i64, "task", "tasks"), dur(f(p, "wait_min"))) },
+                        waits.iter().map(|(r, title, d)| format!("{r} {title} · waited {d}")).collect::<Vec<_>>().join("\n"),
+                    ),
+                    idle: each("idle").into_iter().map(|(r, title, d)| (format!("{r} idle {d}"), format!("{r} {title} · held a slot idle {d}"))).collect(),
+                }
+            })
             .collect();
 
         // How long tasks took this week: working, then waiting on you.
@@ -625,6 +670,7 @@ impl View {
             peak,
             usage,
             hosts,
+            slots,
             tasks,
             task_median: if med > 0.0 { dur(med) } else { String::new() },
             task_median_x: (med / task_max) as f32,
@@ -1053,6 +1099,45 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
         div().flex().flex_col().child(axis).children(lanes).child(running)
     };
     card(t).child(legend).child(body).children((!v.usage.is_empty()).then(|| usage_row(v, t, LABEL))).children(v.hosts.iter().map(|h| host_row(h, t, LABEL)))
+        .children(v.slots.iter().map(|r| slot_row(r, t, LABEL)))
+}
+
+/// A project's slot pool: its full stretches over the timeline's hours, with who waited and who sat idle.
+fn slot_row(r: &SlotRow, t: &Theme, label_w: f32) -> Div {
+    let bands = r.spans.iter().enumerate().map(|(k, (x0, x1, tip))| {
+        div()
+            .id(SharedString::from(format!("days-slots-{}-{k}", r.label)))
+            .absolute()
+            .top(px(4.))
+            .h(px(14.))
+            .left(relative(*x0))
+            .w(relative(x1 - x0))
+            .rounded(px(3.))
+            .bg(t.accent_soft)
+            .tooltip(kit::tip(tip.clone()))
+    });
+    let line = |id: String, text: &str, tip: &str| div().id(SharedString::from(id)).text_color(t.muted).child(text.to_string()).tooltip(kit::tip(tip.to_string()));
+    let waited = (!r.waited.0.is_empty()).then(|| line(format!("days-slots-{}-waited", r.label), &r.waited.0, &r.waited.1));
+    let idle = r.idle.iter().enumerate().map(|(k, (text, tip))| line(format!("days-slots-{}-idle-{k}", r.label), text, tip));
+    div()
+        .flex()
+        .border_t_1()
+        .border_color(t.divider)
+        .pt(px(8.))
+        .child(
+            div()
+                .w(px(label_w))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .text_size(px(12.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(r.label.clone()))
+                .children((!r.full.is_empty()).then(|| div().text_color(t.muted).child(r.full.clone())))
+                .children(waited)
+                .children(idle),
+        )
+        .child(div().relative().flex_1().h(px(22.)).children(bands))
 }
 
 fn host_color(t: &Theme, kind: &str) -> Hsla {
@@ -1509,6 +1594,10 @@ mod tests {
                                    "spans": [{"kind": "limited", "from": "2026-10-08T09:57:00Z", "to": "2026-10-08T10:56:00Z", "why": "Bitbucket answered 429"},
                                              {"kind": "slow", "from": "2026-10-08T10:56:00Z", "to": "2026-10-08T11:56:00Z", "why": ""}]},
                                   {"host": "github", "label": "GitHub", "held_min": 0.0, "spans": []}]);
+        d["slot_pool"] = json!([{"project": "webapp", "max_slots": 4, "full_times": 2, "full_min": 45.0, "waited": 1, "wait_min": 30.0,
+                                 "full": [{"from": "2026-10-08T10:00:00Z", "to": "2026-10-08T10:30:00Z"}, {"from": "2026-10-08T13:00:00Z", "to": "2026-10-08T13:15:00Z"}],
+                                 "waits": [{"task": 242, "ref": "T242", "title": "Retry cap", "min": 30.0}],
+                                 "idle": [{"task": 241, "ref": "T241", "title": "Scrollback", "min": 125.0}]}]);
         d["hourly"] = json!(hourly);
         d["waits"] = waits;
         d["tasks"] = json!([{"ref": "T241", "work_min": 184.0, "wait_min": 58.0}]);
@@ -1555,6 +1644,15 @@ mod tests {
         assert!((v.hosts[0].spans[0].x0 - 0.1188).abs() < 0.001, "9:57 is just before 10: {}", v.hosts[0].spans[0].x0);
         assert!(v.hosts[0].spans[0].tip.starts_with("Bitbucket · Rate-limited ") && v.hosts[0].spans[0].tip.ends_with(" · Bitbucket answered 429"), "{}", v.hosts[0].spans[0].tip);
         assert!(v.hosts[0].spans[1].tip.contains("Easing back in") && !v.hosts[0].spans[1].tip.ends_with(" · "), "{}", v.hosts[0].spans[1].tip);
+        assert_eq!(v.slots.len(), 1);
+        let sl = &v.slots[0];
+        assert_eq!(sl.label, "webapp slots");
+        assert_eq!(sl.full, "full 2 times · 45m");
+        assert_eq!(sl.spans.len(), 2);
+        assert!(sl.spans[0].2.starts_with("webapp · all 4 slots held ") && sl.spans[0].2.contains(" – "), "{}", sl.spans[0].2);
+        assert!(sl.spans[0].2.ends_with(" AM") || sl.spans[0].2.ends_with(" PM"), "12-hour times: {}", sl.spans[0].2);
+        assert_eq!(sl.waited, ("1 task waited 30m".to_string(), "T242 Retry cap · waited 30m".to_string()));
+        assert_eq!(sl.idle, vec![("T241 idle 2h 05m".to_string(), "T241 Scrollback · held a slot idle 2h 05m".to_string())]);
         assert_eq!(v.tasks[0].state, "needs you");
         assert_eq!(v.tasks[0].total, "4h 02m");
         assert_eq!(v.notes[0], ("58m".to_string(), "longest wait on you · T241".to_string()));

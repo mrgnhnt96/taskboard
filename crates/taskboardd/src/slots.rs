@@ -232,13 +232,13 @@ fn repair(app: &App, t: &Row, s: &Row, repo: &str, start: &str) -> Result<bool> 
 }
 
 /// A repo's slots, the last taken first (`seq` counts takes; `used_at` is only to the second).
-fn rows(app: &App, repo: &str) -> Result<Vec<Row>> {
+pub(crate) fn rows(app: &App, repo: &str) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM worktree_slots WHERE repo = ? ORDER BY seq DESC, n", p![repo])
 }
 
 /// The task holding a slot, or None when it's free: never taken, given back, its task gone, or done
 /// with its terminal closed and no PR visit running or about to start.
-fn holder(app: &App, s: &Row) -> Result<Option<Row>> {
+pub(crate) fn holder(app: &App, s: &Row) -> Result<Option<Row>> {
     let Some(t) = board::find_task(app, s.i("task_id"))? else { return Ok(None) };
     if t.s("status") == Some("done")
         && !crate::worktrees::terminal_open(app, &t)?
