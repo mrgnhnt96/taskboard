@@ -295,7 +295,7 @@ The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat objec
   "step_results": [step_result]     // the latest round of each of its steps that ran (see "The PR plan and flow")
 }
 ```
-On this detail, `pr.bar.wd` is the `step_result` of the step with a `bar` name (else null).
+On this detail, `pr.bar.author_review` is the `step_result` of the step with a `bar` name (else null).
 
 ### `GET /tasks/:id/handoff`
 
@@ -540,7 +540,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "no_pr": str|null,              // why it finished without its PR (`tb submit --no-pr`): "No PR: <why>"
   "no_evidence": str|null,        // why it finished without evidence (`tb submit --no-evidence`)
   "stack_on": stack_on|null,      // the task whose PR this one's builds on (`--stack-on`)
-  "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`);
+  "author_review": step_result|null // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.author_review`);
                                   // {"name", "bar", "pending": true} before its first round; null on a task that doesn't end in a PR
 }
 ```
@@ -599,15 +599,15 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
-    "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round, or {"name", "bar", "pending": true}
-                                 // before the first ("Not reviewed by WD yet"); null when the task doesn't end in a PR or the PR is merged or closed
+    "author_review": step_result|null, // the author-side review step (a step with `bar`): its latest round, or {"name", "bar", "pending": true}
+                                 // before the first ("Not reviewed by <bar> yet"); null when the task doesn't end in a PR or the PR is merged or closed
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
                                  // swaps: how many swaps led to this reviewer (the ask ledger); asked_at: when the board or tb asked them
                                  // one pill per reviewer still on the PR, from the host's reviewer states
   }
 }
 ```
-With `bar`, the task panel shows five steps: the review step (named by its `bar`, e.g. WD), Checks (linked to
+With `bar`, the task panel shows five steps: the review step (named by its `bar`, e.g. Critic), Checks (linked to
 `build_url`; "Not needed", "Not this PR's"), You ("Waiting on you" with "Waiting on your review · Mark reviewed ›",
 "Reviewed", "Skipped"), Review ("x of N", "New comments", linked to the PR) and Merge ("Waits on base"), plus a
 "Stacks on T3 · PR #12" line. Without it, the three steps below.
@@ -1452,7 +1452,7 @@ its tip) and the checkout can stay on another branch, for a task in a shared che
 **Steps with rounds** (`[[steps]]`): `per_head = true` passes only for the head commit it ran on (`GET
 /steps?head=<sha>` judges `done` on that commit; the `PreToolUse` hook also holds `git push` to an open PR until
 it passes on the commit being pushed); `min_gap_mins` keeps rounds apart (`next_round_at` in `GET /steps`, and `tb`
-refuses an earlier round); `bar = "WD"` puts it in the PR bar. A check or script may write
+refuses an earlier round); `bar = "Critic"` puts it in the PR bar. A check or script may write
 `{"verdict": "pass"|"fail"|"skip", "headline": str, "findings": [{"id", "title", "severity", "state", "file", "line",
 "detail", "url"}]}` to `$TASKBOARD_RESULT`; the verdict overrides the exit code, and `skip` (a round that couldn't
 review or didn't finish) never blocks, and neither it nor a round stopped at its timeout counts for `min_gap_mins`.
@@ -1478,7 +1478,7 @@ board has no aim, recorded branch or head, so a later take's handoff isn't blank
 republishes its passing round for the PR, with that round (the one that passed on the head, from `passed_rounds` in
 `GET /steps`: `{<step name>: step_result}`, each step's latest passing round on the judged head) as `$TASKBOARD_RESULT`.
 A `tb.*` report's `name` is the step or goal it's about, never the terminal's name. A `[[steps]]` entry
-that can't be done is left out alone, with an alert keyed `steps:<name>` until it's fixed. `pr.bar.wd` is the `bar`
+that can't be done is left out alone, with an alert keyed `steps:<name>` until it's fixed. `pr.bar.author_review` is the `bar`
 step's latest `step_result` on cards as well as in the task detail.
 
 `step_result`:

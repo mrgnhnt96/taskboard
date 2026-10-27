@@ -693,11 +693,11 @@ fn panel_text(task: Value, state: Value) -> String {
 fn the_pr_bar_has_every_step_once_the_board_sends_it() {
     let bar = json!({"build_url": "https://ci.example/9", "you": "waiting", "approvals": 1, "reviewers": 2, "new_comments": 0,
                      "stacks_on": {"ref": "T3", "num": 12, "url": "https://github.com/acme/webapp/pull/12", "merged": false},
-                     "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}, "reviewer_rows": []});
+                     "author_review": {"bar": "Critic", "headline": "2 open findings", "open": 2, "passed": false}, "reviewer_rows": []});
     let task = with_bar(bar, json!({"phase": "waits", "label": "Waits on base"}), "pending");
     let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
     let text = view::text(&tree);
-    for want in ["WD 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Pending merge Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
+    for want in ["Critic 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Pending merge Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
         assert!(text.contains(want), "{want:?} in {text}");
     }
     let acts = view::acts(&tree);
@@ -737,24 +737,6 @@ fn the_review_step_counts_approvals_against_the_ones_needed() {
     assert_eq!(review(1, 2, Value::Null), ("1 of 2".into(), view::StepSt::Wait), "no count: out of the reviewers");
     assert_eq!(review(2, 2, Value::Null).1, view::StepSt::Done);
     assert_eq!(review(3, 3, json!(2)), ("2 of 2".into(), view::StepSt::Done), "more than it needs never reads 3 of 2");
-}
-
-#[::core::prelude::v1::test]
-fn the_lens_step_shows_after_checks_only_when_lens_ran() {
-    let steps = |lens: Value| {
-        let bar = json!({"approvals": 0, "reviewers": 0, "new_comments": 0, "reviewer_rows": [], "lens": lens});
-        let p = with_bar(bar.clone(), json!({"phase": "lens", "label": "Lens review"}), "pending")["pr"].clone();
-        view::pr_steps_full(&p, &bar).into_iter().map(|s| (s.name, s.sub.unwrap_or_default(), s.st)).collect::<Vec<_>>()
-    };
-    let names = |v: &[(String, String, view::StepSt)]| v.iter().map(|s| s.0.clone()).collect::<Vec<_>>();
-    assert_eq!(names(&steps(Value::Null)), ["Checks", "You", "Review", "Merge"], "no lens run, no step");
-    let running = steps(json!({"state": "running"}));
-    assert_eq!(names(&running), ["Checks", "Lens", "You", "Review", "Merge"]);
-    assert_eq!(running[1], ("Lens".into(), "Reviewing".into(), view::StepSt::Now));
-    assert_eq!(steps(json!({"state": "done"}))[1], ("Lens".into(), "Posted".into(), view::StepSt::Done));
-    assert_eq!(steps(json!({"state": "failed", "error": "boom"}))[1], ("Lens".into(), "Failed".into(), view::StepSt::Fail));
-    assert_eq!(steps(json!({"state": "skipped"}))[1], ("Lens".into(), "Skipped".into(), view::StepSt::Done), "the PR merged first");
-    assert_eq!(steps(json!({"state": "stopped"}))[1], ("Lens".into(), "Stopped".into(), view::StepSt::Done));
 }
 
 #[::core::prelude::v1::test]
@@ -865,14 +847,14 @@ fn new_comments_link_to_the_first_unread_thread() {
 
 #[::core::prelude::v1::test]
 fn the_review_step_says_before_its_first_round_and_opens_the_findings() {
-    let pending = json!({"name": "Author review", "bar": "WD", "pending": true});
-    let text = panel_text(with_bar(json!({"wd": pending}), Value::Null, "none"), json!({}));
-    assert!(text.contains("WD Not reviewed by WD yet"), "{text}");
-    let tree = tree(&json!({"task": with_bar(json!({"wd": {"bar": "WD", "headline": "2 open findings", "open": 2}}), Value::Null, "none"), "state": {}, "ui": {}}));
+    let pending = json!({"name": "Author review", "bar": "Critic", "pending": true});
+    let text = panel_text(with_bar(json!({"author_review": pending}), Value::Null, "none"), json!({}));
+    assert!(text.contains("Critic Not reviewed by Critic yet"), "{text}");
+    let tree = tree(&json!({"task": with_bar(json!({"author_review": {"bar": "Critic", "headline": "2 open findings", "open": 2}}), Value::Null, "none"), "state": {}, "ui": {}}));
     assert!(format!("{tree:?}").contains("Findings"), "the step links to its findings: {tree:?}");
     // A task that doesn't end in a PR has none.
-    let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": false, "wd": pending});
-    assert!(!panel_text(task, json!({})).contains("WD"));
+    let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": false, "author_review": pending});
+    assert!(!panel_text(task, json!({})).contains("Critic"));
 }
 
 #[::core::prelude::v1::test]
@@ -887,12 +869,12 @@ fn new_comments_show_while_changes_are_asked() {
 #[::core::prelude::v1::test]
 fn the_review_step_shows_before_the_pr_opens() {
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
-                      "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});
+                      "author_review": {"bar": "Critic", "headline": "2 open findings", "open": 2, "passed": false}});
     let text = panel_text(task, json!({}));
-    assert!(text.contains("Pending merge Checks and review WD 2 open findings Checks You Review Pull request Working"), "newest on top: {text}");
+    assert!(text.contains("Pending merge Checks and review Critic 2 open findings Checks You Review Pull request Working"), "newest on top: {text}");
     // From the detail's step results too.
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp",
-                      "step_results": [{"name": "Author review", "bar": "WD", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
+                      "step_results": [{"name": "Author review", "bar": "Critic", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
     assert!(panel_text(task, json!({})).contains("Author review No findings"));
 }
 

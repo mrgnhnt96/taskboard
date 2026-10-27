@@ -86,7 +86,7 @@ pub struct Step {
     /// Minutes between two rounds of the step (its check or script), on the same commit or not.
     #[serde(default)]
     pub min_gap_mins: Option<f64>,
-    /// A short name for the step in the app's PR bar ("WD"); empty keeps it out of the bar.
+    /// A short name for the step in the app's PR bar ("Critic"); empty keeps it out of the bar.
     #[serde(default)]
     pub bar: String,
     /// A script that publishes the step's passing round for the PR (`tb step publish`), as after a rebase
@@ -1141,7 +1141,7 @@ fn round_card(st: &Step, round: &Round, all: &[Round], triage: &[Value], head: O
     })
 }
 
-/// The latest round of the step the PR bar names (`bar = "WD"`), as in `results`; null when the task's
+/// The latest round of the step the PR bar names (a step with `bar`), as in `results`; null when the task's
 /// project has no such step or it hasn't run.
 pub fn bar_result(app: &App, t: &Row) -> Result<Value> {
     if !for_task(app, t).iter().any(|s| !s.bar.is_empty()) {
@@ -1151,7 +1151,7 @@ pub fn bar_result(app: &App, t: &Row) -> Result<Value> {
 }
 
 /// The PR bar's step on a task that ends in a PR, while it has none or it's still open: its latest round
-/// (`bar_result`), or `{name, bar, pending: true}` before the first ("Not reviewed by WD yet"); null on a
+/// (`bar_result`), or `{name, bar, pending: true}` before the first ("Not reviewed by <bar> yet"); null on a
 /// task that doesn't end in a PR, once its PR is merged or closed, or when its project has no such step.
 pub fn bar_card(app: &App, t: &Row) -> Result<Value> {
     let Some(st) = for_task(app, t).into_iter().find(|s| !s.bar.is_empty()) else { return Ok(Value::Null) };
@@ -1171,7 +1171,7 @@ mod tests {
         let v: BTreeMap<String, String> =
             [("worktree", "/tmp/my wt"), ("pr", ""), ("branch", "feat/a"), ("title", "it's \"done\" $x")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         // An empty one keeps its slot, so the branch still arrives third.
-        assert_eq!(fill_shell("wd review publish {worktree} {pr} {branch}", &v), "wd review publish '/tmp/my wt' '' feat/a");
+        assert_eq!(fill_shell("critic publish {worktree} {pr} {branch}", &v), "critic publish '/tmp/my wt' '' feat/a");
         assert_eq!(fill_shell("echo {title}", &v), r#"echo 'it'"'"'s "done" $x'"#);
         // Already in quotes: escaped for them, not quoted again.
         assert_eq!(fill_shell(r#"echo "{pr}" "{title}""#, &v), r#"echo "" "it's \"done\" \$x""#);
@@ -1241,16 +1241,16 @@ mod tests {
         // #332: the '"'"' idiom inside "…" leaves a quote open, so sh refuses the whole check.
         let toml = r#"
 [[steps]]
-name = "WD review"
+name = "Critic review"
 prompt = "x"
 check = '''
 rc=0
-case $rc in 0) ;; *) printf "%s" "{\"headline\":\"WD couldn'"'"'t review\"}" > "$TASKBOARD_RESULT" ;; esac; exit $rc
+case $rc in 0) ;; *) printf "%s" "{\"headline\":\"Critic couldn'"'"'t review\"}" > "$TASKBOARD_RESULT" ;; esac; exit $rc
 '''
 "#;
         let (good, bad) = parse_lenient(toml).unwrap();
         assert!(good.is_empty());
-        assert_eq!(bad[0].step, "WD review");
+        assert_eq!(bad[0].step, "Critic review");
         assert!(bad[0].why.starts_with("its check script isn't valid sh: line "), "{}", bad[0].why);
         let why = |extra: &str| parse_lenient(&format!("[[steps]]\nname = \"x\"\n{extra}")).unwrap().1.first().map(|b| b.why.clone());
         assert!(why("run = \"if true; then\"\n").unwrap().starts_with("its run script"));

@@ -407,8 +407,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
         o.insert("owner_note".into(), json!(crate::human::note(t)));
         o.insert("lane".into(), crate::worklane::card(app, t)?);
-        // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
-        o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
+        // The PR bar's review step (a step with `bar`) before the PR opens, from its first round.
+        o.insert("author_review".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
     }
     Ok(card)
 }

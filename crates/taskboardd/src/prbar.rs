@@ -1,6 +1,6 @@
 //! What the app's PR bar shows for a task's PR beyond its stage: the build's link, whether checks are
 //! needed or this PR's, the owner's own look, the review count, new comments, and the PR it stacks on.
-//! The author-side review step (`bar` in `[[steps]]`) and reviewer rows go in `wd` and `reviewers`.
+//! The author-side review step (`bar` in `[[steps]]`) and reviewer rows go in `author_review` and `reviewers`.
 
 use serde_json::{json, Value};
 
@@ -133,7 +133,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "waits_on_stack": if t.s("pr_phase") == Some("stack") { json!(stack::stack_hold(app, t)?) } else { Value::Null },
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
         "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
-        "wd": crate::steps::bar_card(app, t)?,
+        "author_review": crate::steps::bar_card(app, t)?,
         "merge_steps": crate::steps::merge_cards(app, t, rec["head"].as_str(), rec["base"].as_str())?,
         "reviewer_rows": rows,
     }))

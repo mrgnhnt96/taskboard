@@ -16,7 +16,7 @@ const REVIEW: &str = r#"
 name = "Author review"
 prompt = "Run the review"
 check = "true"
-bar = "WD"
+bar = "Critic"
 "#;
 
 struct Board {
@@ -118,9 +118,9 @@ fn the_pr_body_lists_design_links_and_local_evidence() {
 fn the_review_step_shows_before_its_first_round_on_tasks_that_end_in_a_pr() {
     let b = new_board(REVIEW);
     let id = b.task(json!({"ships_pr": true}));
-    let wd = steps::bar_card(&b.app, &b.row(id)).unwrap();
-    assert_eq!(wd, json!({"name": "Author review", "bar": "WD", "pending": true}));
-    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["wd"]["pending"], true);
+    let card = steps::bar_card(&b.app, &b.row(id)).unwrap();
+    assert_eq!(card, json!({"name": "Author review", "bar": "Critic", "pending": true}));
+    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["author_review"]["pending"], true);
     // A task that doesn't end in a PR has no review step in its bar.
     let other = b.task(json!({"ships_pr": false}));
     assert_eq!(steps::bar_card(&b.app, &b.row(other)).unwrap(), Value::Null);
