@@ -372,15 +372,24 @@ impl Git {
             .unwrap_or_default()
     }
 
-    /// The working tree as a tree object, untracked files included and ignored ones left out.
+    /// The working tree as a tree object, untracked files included and ignored ones left out. The
+    /// throwaway index starts as a copy of the checkout's own, so `add -A` trusts its stat cache and
+    /// hashes only what changed: from `HEAD` alone it hashes every file, seconds in a big repo.
     fn tree_now(&self) -> Option<String> {
         let index = TempIndex::new();
         let env = index.env();
-        if self.run_env(&["rev-parse", "--verify", "--quiet", "HEAD"], &[], None).is_some() {
+        if !self.seed(&index) && self.run_env(&["rev-parse", "--verify", "--quiet", "HEAD"], &[], None).is_some() {
             self.run_env(&["read-tree", "HEAD"], &env, None)?;
         }
         self.run_env(&["add", "-A", "."], &env, None)?;
         self.run_env(&["write-tree"], &env, None)
+    }
+
+    /// Copies the checkout's index to `index`; false when it has none.
+    fn seed(&self, index: &TempIndex) -> bool {
+        let Some(own) = self.out(&["rev-parse", "--git-path", "index"]) else { return false };
+        let own = Path::new(&self.dir).join(own);
+        own.is_file() && std::fs::copy(&own, &index.path).is_ok()
     }
 
     /// The patch id of the change from commit `from` to `tree`; empty for no change.

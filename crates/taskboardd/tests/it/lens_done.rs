@@ -268,6 +268,45 @@ fn a_change_after_the_review_needs_a_new_one() {
     assert_eq!(b.row(id).st("status"), "done");
 }
 
+// The checkout is read through a copy of its own index: what that index holds mustn't change the answer.
+#[test]
+fn a_new_untracked_file_after_the_review_needs_a_new_one() {
+    let b = new_board(true);
+    b.task();
+    b.review(json!([]));
+    std::fs::write(b.repo.join("logout.rs"), "fn logout() {}\n").unwrap();
+    let (code, why) = b.done().unwrap_err();
+    assert_eq!(code, 409, "{why}");
+    assert!(why.contains("older than the change"), "{why}");
+}
+
+#[test]
+fn a_file_deleted_after_the_review_needs_a_new_one() {
+    let b = new_board(true);
+    b.task();
+    git(&b.repo, &["commit", "-qam", "login on start"]);
+    std::fs::write(b.repo.join("logout.rs"), "fn logout() {}\n").unwrap();
+    git(&b.repo, &["add", "logout.rs"]);
+    git(&b.repo, &["commit", "-qm", "logout"]);
+    b.review(json!([]));
+    std::fs::remove_file(b.repo.join("logout.rs")).unwrap();
+    let (code, why) = b.done().unwrap_err();
+    assert_eq!(code, 409, "{why}");
+    assert!(why.contains("older than the change"), "{why}");
+}
+
+#[test]
+fn a_staged_edit_the_files_no_longer_hold_doesn_t_count() {
+    let b = new_board(true);
+    let id = b.task();
+    b.review(json!([]));
+    std::fs::write(b.repo.join("app.rs"), "fn main() { login(); logout(); }\n").unwrap();
+    git(&b.repo, &["add", "app.rs"]);
+    std::fs::write(b.repo.join("app.rs"), "fn main() { login(); }\n").unwrap();
+    b.done().unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+}
+
 #[test]
 fn an_open_blocker_holds_tb_done_for_the_fix_loop() {
     let b = new_board(true);
