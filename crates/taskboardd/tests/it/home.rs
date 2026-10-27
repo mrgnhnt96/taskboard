@@ -197,10 +197,44 @@ fn a_task_that_needs_you_without_an_alert_still_shows() {
     let (_, t) = goal(&b);
     b.set(t[1], vec![("status", json!("needs")), ("needs_reason", json!("question")), ("question", json!("Which icon?"))]);
     let n = &b.home()["needs"][0];
-    assert_eq!(n["id"], Value::Null, "nothing to dismiss");
+    assert_eq!(n["id"], format!("task:T{}", t[1]), "an id of its own to dismiss or snooze");
     assert_eq!(n["task"], format!("T{}", t[1]));
     assert_eq!(n["text"], "Which icon?");
     assert_eq!(n["goal_name"], "Login");
+}
+
+#[test]
+fn dismissing_a_task_with_no_alert_puts_it_away_until_it_asks_something_new() {
+    let b = new_board();
+    let (_, t) = goal(&b);
+    b.set(t[1], vec![("status", json!("needs")), ("needs_reason", json!("lost")), ("lost", json!(1))]);
+    let id = format!("task:T{}", t[1]);
+    b.post(&format!("alerts/{id}/dismiss"), json!({}));
+    assert_eq!(b.home()["needs"], json!([]));
+
+    b.set(t[1], vec![("latest", json!("Still lost"))]);
+    assert_eq!(b.home()["needs"], json!([]), "a change that asks nothing new keeps it away");
+
+    b.set(t[1], vec![("needs_reason", json!("question")), ("lost", json!(0)), ("question", json!("Which icon?"))]);
+    assert_eq!(b.home()["needs"][0]["id"], id, "a new question brings it back");
+}
+
+#[test]
+fn snoozing_a_task_with_no_alert_puts_it_away_until_its_time() {
+    let b = new_board();
+    let (_, t) = goal(&b);
+    b.set(t[1], vec![("status", json!("needs")), ("needs_reason", json!("lost")), ("lost", json!(1))]);
+    let id = format!("task:T{}", t[1]);
+    let a = b.post(&format!("alerts/{id}/snooze"), json!({"mins": 60}))["alert"].clone();
+    assert!(a["snoozed_until"].is_string(), "the toast says until when");
+    assert_eq!(b.home()["needs"], json!([]));
+
+    let done = t[0];
+    assert_eq!(api::dispatch(&b.app, "POST", &format!("alerts/task:T{done}/snooze"), &Query::new(), &json!({"mins": 15})).unwrap_err().status, 404, "a task that doesn't need you");
+    assert!(api::dispatch(&b.app, "POST", &format!("alerts/{id}/snooze"), &Query::new(), &json!({})).is_err());
+
+    b.post(&format!("alerts/{id}/snooze"), json!({"until": "back"}));
+    assert_eq!(b.home()["needs"], json!([]), "until the owner is away and back");
 }
 
 #[test]

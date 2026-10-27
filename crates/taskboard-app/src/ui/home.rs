@@ -1180,11 +1180,11 @@ mod tests {
     fn an_alert_snoozes_and_says_until_when() {
         let home = json!({"needs": [
             {"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep the old form?", "task": "T5", "urgent": true, "card": card(json!({"ref": "T5", "status": "needs"}))},
-            {"id": null, "at": "2026-10-09T09:00:00Z", "text": "Which icon?", "task": "T6", "card": card(json!({"ref": "T6", "status": "needs"}))}
+            {"id": "task:T6", "at": "2026-10-09T09:00:00Z", "text": "Which icon?", "task": "T6", "card": card(json!({"ref": "T6", "status": "needs"}))}
         ]});
         let asks = asks_vm(&home);
         assert!(asks[0].snooze && !asks[0].dismiss, "an urgent alert can't be dismissed but snoozes");
-        assert!(!asks[1].snooze, "a task with no alert up has nothing to snooze");
+        assert!(asks[1].snooze && asks[1].dismiss, "a task with no alert up snoozes and dismisses by its task:T6 id");
         assert_eq!(snooze_choices().map(|c| c.0), ["15 minutes", "30 minutes", "1 hour", "3 hours", "Tomorrow", "Until I’m back"]);
         assert_eq!(snoozed_note(&json!({"snoozed_until": null, "snoozed_back": "2026-10-09T10:00:00Z"})), "Snoozed until you’re back");
         assert_eq!(snoozed_note(&json!({"snoozed_until": "2020-01-02T09:00:00Z"})), "Snoozed until tomorrow");
