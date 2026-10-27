@@ -23,6 +23,7 @@ pub mod config;
 pub mod days;
 pub mod design;
 pub mod db;
+pub mod default_sync;
 pub mod deliver;
 pub mod devfocus;
 pub mod devices;
