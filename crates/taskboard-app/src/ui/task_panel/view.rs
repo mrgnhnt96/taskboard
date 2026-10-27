@@ -1221,11 +1221,21 @@ fn done_node(c: &Ctx, t: &Value) -> Node {
             body.push(el(K::Line, line));
         }
     }
-    let mut row = vec![c.btn(if failed { "Try again" } else { "Queue again" }, Act::new("requeue", "", &r, &act), Look::Plain, false, None)];
-    if session_live(t) {
-        row.push(c.btn("Close its terminal", Act::new("close-term", "", &r, &act), Look::Danger, false, None));
+    // Failed tasks get Try again; a done one isn't queued again from here. Closing its terminal waits
+    // behind the ⋯ menu.
+    let mut row = Vec::new();
+    if failed {
+        row.push(c.btn("Try again", Act::new("requeue", "", &r, &act), Look::Plain, false, None));
     }
-    body.push(el(K::Row, row));
+    if session_live(t) {
+        row.push(c.btn("", Act::new("term-menu", "", &r, ""), Look::Icon(Icon::More), false, Some("Terminal actions")));
+        if c.ui.term_menu {
+            row.push(el(K::TermMenu, vec![menu_item(c, "Close terminal", "Closes the terminal it ran in", Act::new("close-term", "", &r, &act), true)]));
+        }
+    }
+    if !row.is_empty() {
+        body.push(el(K::TlActs, row));
+    }
     body.extend(c.note(&act));
     let name = if failed { "Failed" } else { "Done" };
     tl_node(if failed { TlSt::Fail } else { TlSt::Done }, tl_head(tl_name(name), "", &fmt::hhmm(s(t, "finished_at"))), body, false)

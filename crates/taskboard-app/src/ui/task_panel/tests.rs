@@ -365,12 +365,24 @@ fn planned_task_queues(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn done_task_requeues(cx: &mut gpui_kit::TestAppContext) {
-    let (w, rec) = parity::window(cx);
+fn done_task_has_no_queue_again(cx: &mut gpui_kit::TestAppContext) {
+    let (w, _rec) = parity::window(cx);
     open(cx, &w, "T1");
-    press(cx, &w, "requeue", None);
-    assert_eq!(rec.last("tasks/T1/requeue"), Some(json!({})));
-    assert_eq!(note("act:T1"), Some(("Back in the queue".into(), false)));
+    assert!(w.update(cx, |m, _, _| view::find_act(&build(m).unwrap(), "requeue", None).is_none()).unwrap());
+}
+
+#[gpui_kit::test]
+fn done_card_closes_its_terminal_behind_the_menu(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    // T2 holds a live terminal; finishing it leaves that terminal open behind a Done card.
+    rec.board().app().db.x("UPDATE tasks SET status = 'done', finished_at = ? WHERE id = 2", taskboardd::p![taskboardd::util::now_iso()]).unwrap();
+    open(cx, &w, "T2");
+    assert!(w.update(cx, |m, _, _| view::find_act(&build(m).unwrap(), "close-term", None).is_none()).unwrap(), "hidden while the menu is shut");
+    press(cx, &w, "term-menu", None);
+    press(cx, &w, "close-term", None);
+    assert_eq!(rec.last("tasks/T2/close-terminal"), Some(json!({"force": false})));
+    assert!(!ui(|u| u.term_menu), "picking the item closes the menu");
+    assert!(note("act:T2").is_some(), "the result lands on the Done card");
 }
 
 #[gpui_kit::test]
