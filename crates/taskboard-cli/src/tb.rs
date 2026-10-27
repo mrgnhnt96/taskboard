@@ -1881,6 +1881,12 @@ enum ProjectCmd {
 enum PrCmd {
     /// Read every PR on the board now, instead of waiting for the next poll
     Check,
+    /// End the board's own hold on a PR host after a rate limit (the slow restart), on the owner's word
+    Lift {
+        /// Only this host (bitbucket, github); every host when left out
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// The PR's stage, checks and review
     Status { task: Option<String> },
     /// Finished this visit to the PR; the board brings you back when it needs you
@@ -6652,6 +6658,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
+            PrCmd::Lift { host } => {
+                let v = c.call("POST", "/prs/limits/lift", Some(json!({"host": host})))?;
+                let lifted: Vec<&str> = v["lifted"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+                if lifted.is_empty() {
+                    out("The board wasn't holding its calls on any host.");
+                }
+                for line in lifted {
+                    out(line);
+                }
+                for line in rate_lines(&v["rate_limits"]) {
+                    out(&line);
+                }
+                Ok(0)
+            }
             PrCmd::Status { task } => {
                 let t = c.pr_task(task)?;
                 let v = c.call_progress("GET", &format!("/tasks/{t}/pr?full=1"), None)?;
@@ -7766,6 +7786,8 @@ mod tests {
     #[test]
     fn tb_pr_check_reads_the_prs_and_says_what_changed() {
         assert!(matches!(Cli::try_parse_from(["tb", "pr", "check"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Check }));
+        assert!(matches!(Cli::try_parse_from(["tb", "pr", "lift"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Lift { host: None } }));
+        assert!(matches!(Cli::try_parse_from(["tb", "pr", "lift", "--host", "bitbucket"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Lift { host: Some(_) } }));
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 2})), "Checked the PRs: 2 tasks changed.");
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 1})), "Checked the PRs: 1 task changed.");
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 0})), "Checked the PRs: nothing changed.");

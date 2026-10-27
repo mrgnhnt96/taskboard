@@ -69,7 +69,7 @@ fn rate_limited(stderr: &str) -> Option<bool> {
     }
 }
 
-/// Whether a `gh` call changes something on GitHub (so `max_per_hour` doesn't hold it back).
+/// Whether a `gh` call changes something on GitHub (so it's paced, and `max_per_hour` keeps room for it).
 fn is_write(args: &[String]) -> bool {
     let a: Vec<&str> = args.iter().map(|x| x.as_str()).collect();
     let method = a.windows(2).find(|w| w[0] == "-X" || w[0] == "--method").map(|w| w[1].to_uppercase());

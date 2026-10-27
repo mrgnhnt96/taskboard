@@ -145,6 +145,13 @@ CREATE INDEX IF NOT EXISTS usage_samples_window ON usage_samples(window, at);
 
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 
+-- Each stretch the board couldn't work with a PR host's account (`prhost/limit.rs`), for the Days
+-- page: `limited` (the host's 429), `slow` (the board easing back in, or the host saying it's near
+-- its limit) and `budget` (the board's own `max_per_hour` used up).
+CREATE TABLE IF NOT EXISTS host_limits(
+  id INTEGER PRIMARY KEY, host TEXT NOT NULL, kind TEXT NOT NULL, from_at TEXT NOT NULL, to_at TEXT NOT NULL, why TEXT);
+CREATE INDEX IF NOT EXISTS host_limits_at ON host_limits(to_at);
+
 -- Each `tb start` or goal run the board refused for want of the owner's word, with the prompt it read,
 -- so phrasings it misses can be fixed from what was really typed (`tb words misses`).
 CREATE TABLE IF NOT EXISTS start_misses(

@@ -635,6 +635,13 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         lo = lo.min(h);
         hi = hi.max(h);
     }
+    let held = host_limits(app, date, now)?;
+    for sp in held.as_array().into_iter().flatten().flat_map(|h| h["spans"].as_array().cloned().unwrap_or_default()) {
+        if let (Some(a), Some(z)) = (hour_of(sp["from"].as_str().unwrap_or("")), hour_of(sp["to"].as_str().unwrap_or(""))) {
+            lo = lo.min(a);
+            hi = hi.max(z);
+        }
+    }
     let wh = hours::get(app);
     let hh = |s: &str| s.split(':').next().and_then(|h| h.parse::<f64>().ok());
     lo = lo.min(hh(&wh.start).unwrap_or(9.0));
@@ -654,6 +661,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     day_json["running"] = json!(s.running);
     day_json["hourly"] = json!(s.hourly);
     day_json["usage"] = crate::usage::day_slots(app, bounds(date).0, now)?;
+    day_json["host_limits"] = held;
     day_json["lanes"] = json!(lanes);
     day_json["waits"] = json!(waits);
     day_json["tasks"] = json!(rows.iter().filter(|(p, _)| !hide.contains(*p)).flat_map(|(_, v)| v["tasks"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>());
@@ -679,6 +687,55 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         "oldest": oldest(app)?.map(date_str),
         "planning": crate::quality::recent(app, date)?.into_iter().filter(|v| !hide.contains(v["project"].as_str().unwrap_or(""))).collect::<Vec<_>>(),
     }))
+}
+
+/// Which kind shows where host stretches overlap: the host's own limit, then the board's budget, then
+/// the slow restart.
+const LIMIT_KINDS: [&str; 3] = ["limited", "budget", "slow"];
+
+/// The stretches the board couldn't work with each PR host on the day (`host_limits`), cut to the
+/// day and to `now`, a kind with less precedence ([`LIMIT_KINDS`]) cut where another covers it:
+/// `[{host, label, spans: [{kind, from, to, why}], limited_min, budget_min, slow_min, held_min}]`.
+fn host_limits(app: &App, date: NaiveDate, now: f64) -> Result<Value> {
+    let (from, to) = bounds(date);
+    let to = to.min(now);
+    let rows = app.db.q("SELECT host, kind, from_at, to_at, why FROM host_limits WHERE to_at > ? AND from_at < ? ORDER BY from_at, id", p![iso(from), iso(to)])?;
+    let mut by_host: BTreeMap<String, Vec<(&'static str, f64, f64, String)>> = BTreeMap::new();
+    for r in &rows {
+        let (Some(a), Some(b)) = (r.s("from_at").and_then(parse_iso), r.s("to_at").and_then(parse_iso)) else { continue };
+        let Some(kind) = LIMIT_KINDS.iter().find(|k| r.s("kind") == Some(**k)) else { continue };
+        let (a, b) = (a.max(from), b.min(to));
+        if b > a {
+            by_host.entry(r.st("host")).or_default().push((kind, a, b, r.st("why")));
+        }
+    }
+    let mut out = vec![];
+    for (host, spans) in by_host {
+        let mut kept: Vec<(&'static str, f64, f64, String)> = vec![];
+        let mut covered: Vec<(f64, f64)> = vec![];
+        for kind in LIMIT_KINDS {
+            for (k, a, b, why) in spans.iter().filter(|s| s.0 == kind) {
+                for (x, y, gap) in cut(*a, *b, &clock::merge(covered.clone())) {
+                    if !gap && y > x {
+                        kept.push((k, x, y, why.clone()));
+                        covered.push((x, y));
+                    }
+                }
+            }
+        }
+        kept.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let total = |k: &str| mins(kept.iter().filter(|s| s.0 == k).map(|s| s.2 - s.1).sum());
+        out.push(json!({
+            "host": host,
+            "label": crate::prhost::limit::label(&host),
+            "spans": kept.iter().map(|(k, a, b, why)| json!({"kind": k, "from": iso(*a), "to": iso(*b), "why": why})).collect::<Vec<_>>(),
+            "limited_min": total("limited"),
+            "budget_min": total("budget"),
+            "slow_min": total("slow"),
+            "held_min": mins(kept.iter().map(|s| s.2 - s.1).sum()),
+        }));
+    }
+    Ok(json!(out))
 }
 
 /// The tasks finished on the day, in the order they finished (a task finished twice counts at its
@@ -802,6 +859,7 @@ pub fn cleanup(app: &App) -> Result<Value> {
         )?;
         let l = app.db.changed("DELETE FROM session_events WHERE at < ?", p![before])?;
         app.db.changed("DELETE FROM usage_samples WHERE at < ?", p![before])?;
+        app.db.changed("DELETE FROM host_limits WHERE to_at < ?", p![before])?;
         Ok((e, s, l))
     })?;
     let days = match summary_days(app) {
@@ -840,6 +898,30 @@ mod tests {
         assert_eq!(week_start(d, Weekday::Mon), NaiveDate::from_ymd_opt(2026, 10, 5).unwrap());
         assert_eq!(week_start(d, Weekday::Thu), d);
         assert_eq!(week_start(d, Weekday::Fri), NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+    }
+
+    #[test]
+    fn the_day_shows_each_host_s_held_stretches_one_kind_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let d = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        let at = |h: f64| start_of(d) + h * 3600.0;
+        for (kind, a, b) in [("limited", 9.95, 10.95), ("slow", 10.95, 11.95), ("budget", 11.5, 12.25), ("limited", -1.0, 0.5)] {
+            app.db.x("INSERT INTO host_limits(host, kind, from_at, to_at, why) VALUES('bitbucket', ?, ?, ?, 'x')", p![kind, iso(at(a)), iso(at(b))]).unwrap();
+        }
+        let v = host_limits(&app, d, at(24.0)).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        let h = &v[0];
+        assert_eq!(h["label"], "Bitbucket");
+        let kinds: Vec<&str> = h["spans"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["limited", "limited", "slow", "budget"]);
+        assert_eq!(h["limited_min"], 90.0, "the one from the night before counts from midnight");
+        assert_eq!(h["slow_min"], 33.0, "cut where the budget covers it");
+        assert_eq!(h["budget_min"], 45.0);
+        assert_eq!(h["held_min"], 168.0);
+        let now = host_limits(&app, d, at(10.45)).unwrap();
+        assert_eq!(now[0]["held_min"], 60.0, "today stops at now");
+        assert!(host_limits(&app, d + Duration::days(1), at(48.0)).unwrap().as_array().unwrap().is_empty());
     }
 
     #[test]
