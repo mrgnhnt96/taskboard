@@ -691,7 +691,10 @@ fn ends_on_question(reply: &str) -> Option<String> {
 /// nothing when the terminal moved on meanwhile (another prompt, another task).
 fn screen_reply(app: &App, tid: i64, sid: &str, name: &str, asked: &str) -> Result<()> {
     let t = board::get_task(app, tid)?;
-    let screened = screen::question(app, Some(&t), asked).unwrap_or(json!({}));
+    let screened = screen::reply_question(app, Some(&t), asked).unwrap_or(json!({}));
+    if screened["verdict"] == "none" {
+        return Ok(());
+    }
     app.db.tx(|| {
         let t = board::get_task(app, tid)?;
         let idle = board::get_session(app, Some(sid))?.map(|s| s.s("status") == Some("idle")).unwrap_or(false);
