@@ -11,7 +11,7 @@
 //! backoff, up to an hour (never shorter than the host's time); only an hour with no limit starts it
 //! over at 5 minutes, since calls getting through between limits is what keeps the account limited.
 //! A call made meanwhile fails at once with "Bitbucket rate-limited until 3:40pm" instead of reaching
-//! the host. Each backoff logs a line with the board's own calls in the last hour, so it's clear
+//! the host; when the host gave no time, it says the time is the board's own backoff. Each backoff logs a line with the board's own calls in the last hour, so it's clear
 //! whether the board used the limit up. [`check`] (every runner tick) raises the `rate-limit:<host>`
 //! alert once a run of limits has lasted 30 minutes inside the work hours, and clears it once the
 //! account is past its limit and the slow restart.
@@ -22,7 +22,9 @@
 //! reads marked [`priority`] (the PR poll's reads of the board's open PRs, whose stage can change, and
 //! the reads of a `tb pr …` command someone asked for) go; every other read (the review sweep, master
 //! breaks, CI reads, …) waits, and [`stretch`] doubles the PR poll's interval. A read held meanwhile
-//! says the host's limit is over and it's the board's own hold; `tb pr lift` ([`Limits::lift`]) ends it. The same happens before a limit when the host's headers say the account is
+//! says the host's limit is over and it's the board's own hold; `tb pr lift` ([`Limits::lift`]) ends it.
+//! It doesn't hold the agents' PR visits or held replies ([`Limits::held_until`]): their writes and
+//! reads go. The same happens before a limit when the host's headers say the account is
 //! near it (Bitbucket's `X-RateLimit-NearLimit`, or `X-RateLimit-Remaining` under a fifth of
 //! `X-RateLimit-Limit`), until its `X-RateLimit-Reset` or for 5 minutes.
 //!
@@ -149,6 +151,8 @@ struct Account {
     next_write: f64,
     /// Calls stop until then.
     until: Option<f64>,
+    /// `until` is the host's time (`Retry-After` / reset); false: the board's own backoff.
+    host_time: bool,
     /// When this run of limits started (kept until a quiet hour).
     since: Option<f64>,
     /// Limits with less than [`QUIET_SECS`] between them: what doubles the backoff.
@@ -343,8 +347,13 @@ pub fn label(host: &str) -> String {
     }
 }
 
-fn until_text(host: &str, until: f64) -> String {
-    format!("{} rate-limited until {}", label(host), local_clock(Some(&iso(until))))
+/// "Bitbucket rate-limited until 3:40pm" when the host gave the time; when the board picked it, says so.
+fn until_text(host: &str, until: f64, host_time: bool) -> String {
+    let at = local_clock(Some(&iso(until)));
+    match host_time {
+        true => format!("{} rate-limited until {at}", label(host)),
+        false => format!("{} rate-limited the account and gave no time, so the board backs off until {at} (its own backoff; `tb pr lift` ends it)", label(host)),
+    }
 }
 
 impl Limits {
@@ -388,7 +397,10 @@ impl Limits {
         a.forget_old(now);
         if let Some(u) = a.until {
             if u > now {
-                return Err(format!("{}; the board holds its calls until then", until_text(host, u)));
+                return Err(match a.host_time {
+                    true => format!("{}; the board holds its calls until then", until_text(host, u, true)),
+                    false => until_text(host, u, false),
+                });
             }
         }
         if let Some(s) = a.slow(now) {
@@ -453,13 +465,14 @@ impl Limits {
             a.strikes += 1;
             a.share = Some((now, a.calls.len()));
         }
+        a.host_time = told == Some(until) || (standing == Some(until) && a.host_time);
         a.until = Some(until);
         a.since.get_or_insert(now);
         a.why = hit.why.clone();
         a.slow_until = Some(until + (until - now).max(FIRST_BACKOFF_SECS));
         a.slow_why = format!("{}'s limit on the account ended at {}; the board is easing back in", label(host), local_clock(Some(&iso(until))));
         let budget = self.budget(host).map(|b| format!(" (budget {b})")).unwrap_or_default();
-        let source = if told == Some(until) { "the host's time" } else { "the board's backoff" };
+        let source = if a.host_time { "the host's time" } else { "the board's backoff" };
         let headers = match hit.headers.is_empty() {
             true => "it sent no Retry-After or X-RateLimit headers".to_string(),
             false => format!("it sent {}", hit.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ")),
@@ -571,16 +584,16 @@ impl Limits {
         self.polls.lock().insert(host.to_string(), Poll { prs, full, calls, at: now });
     }
 
-    /// Each account the board has called: its host, limit and calls in the last hour.
-    /// When the account `key` takes calls again: the end of its limit, or of the slow restart after it.
-    /// None when it isn't held. Other accounts, and other hosts, don't count.
+    /// When the account `key` takes writes again: the end of its limit, or of a spent budget. None
+    /// when it isn't held. The slow restart after a limit doesn't hold it: writes and `tb pr` reads go
+    /// then. Other accounts, and other hosts, don't count.
     pub fn held_until(&self, key: &str, now: f64) -> Option<f64> {
         let budget = self.budget(&self.accounts.lock().get(key)?.host);
         let mut all = self.accounts.lock();
         let a = all.get_mut(key)?;
         a.forget_old(now);
         let spent = budget.filter(|b| a.calls.len() >= *b as usize).map(|b| a.under_at(b as usize, now));
-        a.until.filter(|u| *u > now).or_else(|| a.slow(now)).or(spent)
+        a.until.filter(|u| *u > now).or(spent)
     }
 
     /// The accounts as kept across restarts.
@@ -633,7 +646,7 @@ impl Limits {
                     "limited_until": limited.map(iso),
                     "limited_since": limited.and(a.since).map(iso),
                     "why": limited.map(|_| a.why.clone()),
-                    "text": limited.map(|u| until_text(&a.host, u)),
+                    "text": limited.map(|u| until_text(&a.host, u, a.host_time)),
                     "slow_until": slow.map(iso),
                     "slow_text": slow.map(|s| slow_text(&a.slow_why, s)),
                     "share_text": a.share_text(now),
@@ -655,7 +668,11 @@ impl Limits {
             match (a.until, a.since) {
                 (Some(u), Some(s)) if u > now && now - s >= ALERT_AFTER_SECS && !a.alerted => {
                     a.alerted = true;
-                    out.push((a.host.clone(), format!("{} for {} now: {}. The board's PR reads wait until then.", until_text(&a.host, u), dur_text(now - s), one_line(&a.why, 160))));
+                    let hold = match a.host_time {
+                        true => "The board's PR reads wait until then.",
+                        false => "That time is the board's own backoff, since the host gave none: `tb pr lift` ends it.",
+                    };
+                    out.push((a.host.clone(), format!("{} rate-limited the account {} ago, until {}: {}. {hold}", label(&a.host), dur_text(now - s), local_clock(Some(&iso(u))), one_line(&a.why, 160))));
                 }
                 _ => {}
             }
@@ -700,6 +717,11 @@ fn slow_text(why: &str, until: f64) -> String {
     format!("{why}: it holds its background reads until {} (the PR poll and `tb pr` commands still go; `tb pr lift` ends it)", local_clock(Some(&iso(until))))
 }
 
+/// "4s": a short wait.
+fn dur_secs_text(secs: f64) -> String {
+    format!("{}s", secs.ceil().max(1.0) as i64)
+}
+
 fn dur_text(secs: f64) -> String {
     let mins = (secs / 60.0).ceil().max(1.0) as i64;
     if mins < 60 {
@@ -737,7 +759,9 @@ impl Gate {
         if write {
             let wait = l.write_slot(&self.key, &self.host, now_ts());
             if wait > 0.0 {
-                std::thread::sleep(std::time::Duration::from_secs_f64(wait));
+                // Said as progress, so a `tb pr` command queued behind other writes doesn't time out.
+                let what = format!("a {} write slot ({} from now; writes go out one at a time)", label(&self.host), dur_secs_text(wait));
+                crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || std::thread::sleep(std::time::Duration::from_secs_f64(wait)));
             }
         }
         l.admit(&self.key, &self.host, write, is_priority(), now_ts())?;
@@ -751,7 +775,8 @@ impl Gate {
             }
             Err((e, Some(h))) => {
                 let until = l.hit(&self.key, &self.host, &h, now_ts());
-                Err(format!("{e} ({})", until_text(&self.host, until)))
+                let host_time = l.accounts.lock().get(&self.key).is_some_and(|a| a.host_time);
+                Err(format!("{e} ({})", until_text(&self.host, until, host_time)))
             }
             Err((e, None)) => Err(e),
         }
@@ -896,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn held_until_is_the_account_s_limit_or_slow_restart_alone() {
+    fn held_until_is_the_account_s_own_limit_alone() {
         let l = Limits::default();
         assert_eq!(l.held_until("bb:1", T0), None);
         l.admit("gh:1", "github", false, false, T0).unwrap();
@@ -904,8 +929,26 @@ mod tests {
         assert_eq!(l.held_until("bb:1", T0 + 60.0), Some(T0 + 120.0));
         assert_eq!(l.held_until("bb:2", T0 + 60.0), None, "another account on the host isn't held");
         assert_eq!(l.held_until("gh:1", T0 + 60.0), None, "another host isn't held");
-        let slow = l.held_until("bb:1", T0 + 121.0).expect("the slow restart after it holds it too");
-        assert!(slow > T0 + 121.0, "{slow}");
+        assert_eq!(l.held_until("bb:1", T0 + 121.0), None, "the board's slow restart after it doesn't hold PR visits or replies");
+        assert!(l.admit("bb:1", "bitbucket", false, false, T0 + 121.0).is_err(), "it still holds background reads");
+        assert!(l.admit("bb:1", "bitbucket", true, false, T0 + 121.0).is_ok(), "writes go");
+    }
+
+    #[test]
+    fn a_limit_with_no_time_from_the_host_says_the_board_picked_it() {
+        let l = Limits::default();
+        let until = l.hit("bb:1", "bitbucket", &hit("429"), T0);
+        let e = l.admit("bb:1", "bitbucket", true, false, T0 + 60.0).unwrap_err();
+        assert!(e.starts_with("Bitbucket rate-limited the account and gave no time, so the board backs off until "), "{e}");
+        assert!(e.contains("its own backoff; `tb pr lift` ends it"), "{e}");
+        assert!(l.status(T0 + 60.0)[0]["text"].as_str().unwrap().contains("the board backs off until"));
+        assert!(l.take_log()[0].contains("the board's backoff"));
+        l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(until - T0 + 600.0), ..hit("429") }, T0 + 10.0);
+        let e = l.admit("bb:1", "bitbucket", false, false, T0 + 60.0).unwrap_err();
+        assert!(e.starts_with("Bitbucket rate-limited until "), "a later time from the host is the host's: {e}");
+        l.hit("bb:1", "bitbucket", &hit("429"), T0 + 20.0);
+        let e = l.admit("bb:1", "bitbucket", false, false, T0 + 60.0).unwrap_err();
+        assert!(e.starts_with("Bitbucket rate-limited until "), "a call already out doesn't make it the board's: {e}");
     }
 
     #[test]
@@ -1147,6 +1190,8 @@ mod tests {
         assert!(after.admit("bb:1", "bitbucket", true, false, T0 + 60.0).is_err(), "still limited after the restart");
         assert_eq!(after.held_until("bb:1", T0 + 60.0), Some(until));
         assert_eq!(after.status(T0 + 60.0)[0]["calls_last_hour"], 40, "the hour's calls came back; the one older than an hour aged out");
+        let next = after.hit("bb:1", "bitbucket", &hit("429"), until + 1.0);
+        assert_eq!(next - (until + 1.0), 2.0 * FIRST_BACKOFF_SECS, "the backoff step came back too");
         let later = Limits::default();
         later.restore(&saved, T0 + 2.0 * HOUR + 120.0);
         assert!(later.admit("bb:1", "bitbucket", false, false, T0 + 2.0 * HOUR + 120.0).is_ok(), "an old hold doesn't come back");
