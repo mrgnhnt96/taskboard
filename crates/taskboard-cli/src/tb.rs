@@ -6651,14 +6651,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let (task, rest) = task_and(args, 2);
                 let t = c.pr_task(task)?;
                 let v = c.call_progress("POST", &format!("/tasks/{t}/pr/reply"), Some(json!({"thread": rest[0], "text": rest[1], "resolve": resolve})))?;
-                out(&format!("Replied on thread {}{}. {} open.", rest[0], if v["resolved"] == true { " and resolved it" } else { "" }, plural_threads(&v)));
+                match v["held"].as_str() {
+                    Some(held) => out(&format!("{}{held} {} open.", if v["replied"] == true { format!("Replied on thread {}. ", rest[0]) } else { String::new() }, plural_threads(&v))),
+                    None => out(&format!("Replied on thread {}{}. {} open.", rest[0], if v["resolved"] == true { " and resolved it" } else { "" }, plural_threads(&v))),
+                }
                 Ok(0)
             }
             PrCmd::Ack { args } => {
                 let (task, rest) = task_and(args, 1);
                 let t = c.pr_task(task)?;
                 let v = c.call_progress("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0]})))?;
-                out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v)));
+                match v["held"].as_str() {
+                    Some(held) => out(&format!("{held} {} open.", plural_threads(&v))),
+                    None => out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v))),
+                }
                 Ok(0)
             }
             PrCmd::Thread { args, refresh } => {

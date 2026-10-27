@@ -335,6 +335,112 @@ fn addressed_while_the_host_account_is_limited_ends_the_visit_until_it_lifts() {
     assert!(b.flow(id).get("handled").is_none(), "the visit comes back for the same step");
 }
 
+/// Rate-limits the fake host's account: `held_until` says so and writes fail, as `Limits::admit` would.
+fn limit(h: &FakeHost) {
+    *h.held.lock() = Some(now_ts() + 600.0);
+    *h.write_error.lock() = Some("Bitbucket rate-limited until 3:40 PM".into());
+}
+
+fn lift(h: &FakeHost) {
+    *h.held.lock() = None;
+    *h.write_error.lock() = None;
+}
+
+fn logged(b: &Board, id: i64, has: &str) -> bool {
+    b.app.db.q("SELECT text FROM events WHERE task_id = ?", vec![json!(id)]).unwrap().iter().any(|r| r.st("text").contains(has))
+}
+
+#[test]
+fn a_reply_while_the_host_account_is_limited_is_posted_by_the_board_once_it_lifts() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev"), thread("2", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "comments");
+    limit(&h);
+    let v = b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it", "resolve": true, "who": "The agent"}));
+    let held = v["held"].as_str().unwrap();
+    assert!(held.contains("posts the reply and resolves the thread once the limit is over") && held.contains("don't wait"), "{held}");
+    assert_eq!(v["open_threads"], 1, "thread 1 counts as answered now");
+    assert_eq!(b.flow(id)["held_replies"].as_array().unwrap().len(), 1);
+    assert!(logged(&b, id, "has the board rate-limited"));
+
+    prcmds::post_held(&b.app).unwrap();
+    assert_eq!(b.flow(id)["held_replies"].as_array().unwrap().len(), 1, "still limited: it waits");
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done"}));
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "nothing is open while the board holds the answers");
+
+    lift(&h);
+    h.calls.lock().clear();
+    prcmds::post_held(&b.app).unwrap();
+    assert_eq!(h.calls(), vec!["reply 1 Renamed it", "resolve 1", "reply 2 Done"], "posted in the order they were held");
+    assert!(b.flow(id)["held_replies"].as_array().unwrap().is_empty());
+    assert!(h.rec.lock().threads[0].resolved);
+    assert!(logged(&b, id, "Posted the held reply to") && logged(&b, id, "Resolved"));
+    h.calls.lock().clear();
+    prcmds::post_held(&b.app).unwrap();
+    assert_eq!(h.calls(), Vec::<String>::new(), "nothing is posted twice");
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+}
+
+#[test]
+fn an_ack_while_the_host_account_is_limited_resolves_the_thread_once_it_lifts() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    limit(&h);
+    let v = b.post(&format!("/tasks/T{id}/pr/ack"), json!({"thread": "1"}));
+    assert!(v["held"].as_str().unwrap().contains("resolves the thread once the limit is over"));
+    assert_eq!(v["open_threads"], 0);
+    lift(&h);
+    h.calls.lock().clear();
+    prcmds::post_held(&b.app).unwrap();
+    assert_eq!(h.calls(), vec!["resolve 1"], "no reply, only the resolve");
+    assert!(h.rec.lock().threads[0].resolved);
+}
+
+#[test]
+fn a_write_that_fails_without_a_limit_is_not_held() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    *h.write_error.lock() = Some("thread is locked".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it"})).unwrap_err();
+    assert!(e.contains("Couldn't reply on PR #9: thread is locked"), "{e}");
+    assert!(b.flow(id).get("held_replies").is_none());
+}
+
+#[test]
+fn a_held_reply_the_host_then_refuses_for_another_reason_opens_the_thread_again() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    limit(&h);
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it"}));
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    *h.held.lock() = None;
+    *h.write_error.lock() = Some("thread is locked".into());
+    prcmds::post_held(&b.app).unwrap();
+    assert!(b.flow(id)["held_replies"].as_array().unwrap().is_empty(), "dropped, not tried forever");
+    assert!(logged(&b, id, "Couldn't post the held reply to"));
+    poll(&b);
+    assert_eq!(b.phase(id), "comments", "the thread is open again for the agent");
+}
+
 #[test]
 fn merge_checks_everything_first_then_merges_and_closes_the_branch() {
     let b = board_with(|c| {

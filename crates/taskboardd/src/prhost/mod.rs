@@ -586,11 +586,13 @@ pub struct FakeHost {
     pub stamps_error: Mutex<Option<String>>,
     /// What `held_until` answers: the account rate-limited until then.
     pub held: Mutex<Option<f64>>,
+    /// What `reply` and `resolve` answer instead of writing, while set.
+    pub write_error: Mutex<Option<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -629,6 +631,9 @@ impl PrHost for FakeHost {
     }
     fn reply(&self, _pr: &PrRef, thread: &Thread, body: &str) -> HostResult<()> {
         self.log(format!("reply {} {body}", thread.id));
+        if let Some(e) = self.write_error.lock().clone() {
+            return Err(e);
+        }
         let mut r = self.rec.lock();
         let us = r.us().to_string();
         if let Some(t) = r.threads.iter_mut().find(|t| t.id == thread.id) {
@@ -639,6 +644,9 @@ impl PrHost for FakeHost {
     }
     fn resolve(&self, _pr: &PrRef, thread: &Thread) -> HostResult<bool> {
         self.log(format!("resolve {}", thread.id));
+        if let Some(e) = self.write_error.lock().clone() {
+            return Err(e);
+        }
         if !thread.resolvable {
             return Ok(false);
         }
