@@ -782,9 +782,12 @@ fn build_state_board(app: &App, query: &Query) -> Result<Value> {
     }))
 }
 
-/// The running daemon: its version, how long it has been up and its pid (Settings › System).
+/// The running daemon: its version, how long it has been up, its pid (Settings › System) and the
+/// launchd job running it (`tb daemon restart` kicks that one).
 fn info() -> Value {
-    json!({"version": env!("CARGO_PKG_VERSION"), "uptime_secs": crate::server::STARTED.elapsed().as_secs(), "pid": std::process::id()})
+    // launchd sets XPC_SERVICE_NAME to the job's label; a shell's is "0"
+    let label = std::env::var("XPC_SERVICE_NAME").ok().filter(|l| !l.is_empty() && l != "0");
+    json!({"version": env!("CARGO_PKG_VERSION"), "uptime_secs": crate::server::STARTED.elapsed().as_secs(), "pid": std::process::id(), "launchd_label": label})
 }
 
 fn get_summary(app: &App) -> Result<Value> {
