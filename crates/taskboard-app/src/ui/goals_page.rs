@@ -830,6 +830,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Backend;
     // Beats the glob's `gpui_kit::test`.
     use ::core::prelude::v1::test;
     use chrono::TimeZone;
@@ -971,7 +972,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_shelves_are_built_once_per_answer_and_project(cx: &mut gpui_kit::TestAppContext) {
-        let (w, _rec) = crate::parity::window(cx);
+        let (w, rec) = crate::parity::window(cx);
         let draw = |cx: &mut gpui_kit::TestAppContext| {
             let _ = cx.update_window(w.into(), |_, window, cx| {
                 window.refresh();
@@ -996,6 +997,12 @@ mod tests {
         let picked = built(cx);
         assert!(!Rc::ptr_eq(&first, &picked), "picking a project builds the shelves again");
 
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert!(Rc::ptr_eq(&picked, &built(cx)), "an unchanged answer keeps what was built");
+
+        rec.board().post("goals", json!({"name": "Brushes", "project": "web"})).unwrap();
         w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
         crate::parity::settle(cx);
         draw(cx);
