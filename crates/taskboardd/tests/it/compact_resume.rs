@@ -63,8 +63,12 @@ impl Board {
     }
     /// As `resume`, with the job's row once it ran.
     fn resume_job(&self) -> (i64, taskboardd::util::Row, Vec<(String, Value)>) {
+        self.resume_with("--resume c1")
+    }
+    /// As `resume_job`, with these Claude flags.
+    fn resume_with(&self, flags: &str) -> (i64, taskboardd::util::Row, Vec<(String, Value)>) {
         let t = self.post("/tasks", json!({"title": "Fix the tab bar", "detail": "Do it.", "project": "webapp"}))["id"].as_i64().unwrap();
-        let args = json!({"flags": "--resume c1", "cwd": self.repo, "prompt": "[T1] continue"});
+        let args = json!({"flags": flags, "cwd": self.repo, "prompt": "[T1] continue"});
         let jid = board::create_job(&self.app, "agent", args, Some(t), "start", None).unwrap();
         let job = || self.app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap();
         midna::run_job(&self.app, &job());
@@ -131,4 +135,14 @@ fn a_cold_resume_whose_prompt_couldn_t_queue_says_so() {
     assert_eq!(calls.iter().filter(|(m, _)| m == "session.open").count(), 1, "no second terminal: {calls:?}");
     assert_eq!(job.s("state"), Some("done"), "the terminal opened, so the job isn't retried");
     assert!(job.st("result").contains("Opened S9, but couldn't queue its prompt"), "{}", job.st("result"));
+}
+
+#[test]
+fn a_cold_resume_with_slash_commands_off_opens_with_its_prompt_and_no_compact() {
+    let b = new_board("2000-01-01T00:00:00Z");
+    let (_, _, calls) = b.resume_with("--resume c1 --disable-slash-commands");
+
+    let open = calls.iter().find(|(m, _)| m == "session.open").map(|(_, p)| p).unwrap();
+    assert_eq!(open["prompt"], "[T1] continue", "{open}");
+    assert!(queued(&calls).is_empty(), "/compact would only be an unknown command: {calls:?}");
 }

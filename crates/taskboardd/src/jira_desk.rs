@@ -1,8 +1,8 @@
 //! The Jira desk (`[jira] desk = true`): one Claude terminal in Midna's Background group that finds
 //! or makes the board's tickets. The board sends it one job at a time ("[task-board:J12] …"); it
 //! searches Jira for an open ticket that already covers the work, makes one only when none does, and
-//! reports back with `tb jira J12 ok key=PROJ-1 status="To Do"` (or `fail "<why>"`). The board never
-//! closes it; when it's gone, the next job opens a new one.
+//! reports back with `tb jira J12 ok key=PROJ-1 status="To Do"` (or `fail "<why>"`). The board only
+//! closes it to swap a cold desk for a fresh one; when it's gone, the next job opens a new one.
 
 use serde_json::{json, Value};
 
@@ -33,7 +33,7 @@ fn desks(app: &App) -> Result<(Vec<String>, bool)> {
         p![PURPOSE],
     )? {
         let Some(sid) = jloads_obj(j.s("target")).s("session").map(|s| s.to_string()) else { continue };
-        if live.contains(&sid) {
+        if live.contains(&sid) || closed(app, &sid)? {
             continue;
         }
         match board::get_session(app, Some(&sid))? {
@@ -44,6 +44,14 @@ fn desks(app: &App) -> Result<(Vec<String>, bool)> {
     }
     live.reverse();
     Ok((live, unsynced))
+}
+
+/// The board closes (or closed) this desk, so it's no longer the desk even before Midna's sync sees it go.
+fn closed(app: &App, sid: &str) -> Result<bool> {
+    Ok(app
+        .db
+        .q1("SELECT 1 FROM jobs WHERE kind = 'close' AND state != 'failed' AND json_extract(args, '$.session') = ? LIMIT 1", p![sid])?
+        .is_some())
 }
 
 /// Of several open desks, the one the board keeps: the one working on a job, else the oldest.
@@ -176,9 +184,10 @@ fn open(app: &App, jira_job: i64) -> Result<i64> {
     let dir = if app.cfg.jira.desk_dir.trim().is_empty() { app.cfg.data.clone() } else { expand_home(app.cfg.jira.desk_dir.trim()) };
     let servers = crate::proc::which(&app.cfg.claude).map(|c| crate::jira_claude::mcp_servers(&c, &dir)).unwrap_or_default();
     let flags = format!(
-        "--allowedTools '{}' --disallowedTools '{}' --disable-slash-commands",
+        "--allowedTools '{}' --disallowedTools '{}' {}",
         allowed_tools(app).join(","),
-        denied_tools(app, &servers).join(",")
+        denied_tools(app, &servers).join(","),
+        crate::midna::NO_SLASH_COMMANDS
     );
     let id = board::create_job(
         app,
@@ -220,6 +229,9 @@ pub fn tick(app: &App) -> Result<()> {
     if !ready(app, &sid)? {
         return Ok(());
     }
+    if let Some(c) = crate::midna::cold_open(app, &sid) {
+        return refresh(app, &sid, &c, j.id());
+    }
     app.db.tx(|| {
         let text = job_text(app, &j)?;
         board::create_job(app, "message", json!({"to": sid, "text": text}), j.i("task_id"), PURPOSE, None)?;
@@ -232,6 +244,27 @@ pub fn tick(app: &App) -> Result<()> {
         Ok(())
     })?;
     app.info(format!("jira desk: sent it {}", rf("job", j.id())));
+    Ok(())
+}
+
+/// Swaps a cold desk for a fresh one that takes the next job. The desk runs with slash commands off,
+/// so `/compact` can't shrink it, and it keeps nothing between jobs a new desk would miss.
+fn refresh(app: &App, sid: &str, c: &crate::limits::Conversation, jira_job: i64) -> Result<()> {
+    let force = board::close_rule(board::get_session(app, Some(sid))?.as_ref()) == Some("force");
+    app.db.tx(|| {
+        board::create_job(
+            app,
+            "close",
+            json!({"session": sid, "force": force, "reason": "Task board: the Jira desk went idle; a fresh desk takes the next job"}),
+            None,
+            PURPOSE,
+            None,
+        )?;
+        open(app, jira_job).map(|_| ())
+    })?;
+    let mins = c.idle_mins.unwrap_or(0.0) as i64;
+    let size = c.tokens.map(|n| format!(" ({} tokens)", crate::limits::tokens_text(n))).unwrap_or_default();
+    app.info(format!("jira desk: {sid} has been idle {mins} min{size}; closing it for a fresh desk"));
     Ok(())
 }
 

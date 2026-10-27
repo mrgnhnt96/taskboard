@@ -562,6 +562,45 @@ fn the_desk_opens_once_while_midna_syncs_and_keeps_one_desk() {
 }
 
 #[test]
+fn a_cold_desk_is_swapped_for_a_fresh_one_instead_of_sent_compact() {
+    let b = board_with(|c, _| c.jira.desk = true);
+    let desk_jobs = || b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
+    let cwd = b.dir.path().to_string_lossy().to_string();
+    let desk = |sid: &str| json!({"id": sid, "name": "TB Jira desk", "agent": "claude", "cwd": cwd, "status": {"state": "idle"}});
+    b.new_task(json!({"jira": "create"}));
+    b.tick();
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s9"}).to_string(), desk_jobs()[0].id()]).unwrap();
+    midna::sync(&b.app, &[desk("s9")], &[]).unwrap();
+    board::session_event(&b.app, "s9", "reply", "Ready.", None).unwrap();
+
+    // Its conversation went idle past the cold limit before the next job.
+    b.app.db.x("UPDATE sessions SET claude_session_id = 'c9' WHERE id = 's9'", taskboardd::p![]).unwrap();
+    let file = taskboardd::transcript::transcript_file(&b.app.cfg.claude_projects, &cwd, "c9");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, json!({"type": "user", "message": {"content": "hi"}, "timestamp": "2000-01-01T00:00:00Z"}).to_string()).unwrap();
+    b.tick();
+
+    let closes = b.jobs("kind = 'close'");
+    assert_eq!(closes.len(), 1);
+    assert_eq!(board::job_args(&closes[0]).st("session"), "s9");
+    assert_eq!(desk_jobs().len(), 2, "a fresh desk opens for the job");
+    assert!(b.jobs("kind = 'message' AND purpose = 'jira_desk'").is_empty(), "the cold desk gets neither the job nor /compact");
+    assert!(b.get("/jira")["desk_session"].is_null(), "the closed desk isn't the desk any more");
+
+    // The close went through but no sync has seen s9 go: the fresh desk is still the one kept.
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE kind = 'close'", taskboardd::p![]).unwrap();
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s10"}).to_string(), desk_jobs()[1].id()]).unwrap();
+    midna::sync(&b.app, &[desk("s9"), desk("s10")], &[]).unwrap();
+    board::session_event(&b.app, "s10", "reply", "Ready.", None).unwrap();
+    b.tick();
+    assert_eq!(b.jobs("kind = 'close'").len(), 1, "the fresh desk isn't closed as an extra");
+    let sent = b.jobs("kind = 'message' AND purpose = 'jira_desk'");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(board::job_args(&sent[0]).st("to"), "s10");
+    assert_eq!(b.get("/jira")["desk_session"], "s10");
+}
+
+#[test]
 fn the_desk_fails_a_job_with_its_reason() {
     let b = board_with(|c, _| {
         c.jira.desk = true;

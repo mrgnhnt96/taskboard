@@ -442,6 +442,19 @@ fn a_message_job_compacts_a_cold_open_terminal_first() {
 }
 
 #[test]
+fn a_cold_terminal_opened_with_slash_commands_off_never_gets_compact() {
+    let b = board_with(|c| c.midna = fake_midna(&c.data.clone()));
+    let id = b.new_task();
+    let opened = board::create_job(&b.app, "agent", json!({"cwd": "/somewhere", "flags": "--allowedTools 'Bash(tb jira:*)' --disable-slash-commands"}), None, "jira_desk", None).unwrap();
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", p![json!({"session": "s1"}).to_string(), opened]).unwrap();
+
+    b.transcript(61_500, 90);
+    b.run(board::create_job(&b.app, "message", json!({"to": "s1", "text": "Hello"}), Some(id), "jira_desk", None).unwrap());
+    assert_eq!(b.typed(), ["Hello"], "/compact would only be an unknown command");
+    assert!(b.compact_events(id).is_empty());
+}
+
+#[test]
 fn compacting_an_open_terminal_says_how_cold_it_was() {
     let c = taskboardd::limits::Conversation { tokens: Some(150_000), idle_mins: Some(72.4) };
     assert_eq!(
