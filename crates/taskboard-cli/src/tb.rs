@@ -2437,7 +2437,8 @@ fn unanswered(e: CallError, went_quiet: &str) -> String {
         CallError::Refused(m) => m,
         CallError::Unreachable(e) => format!("the board isn't answering ({e}). Is `taskboard serve` running?"),
         CallError::TimedOut(e) => format!(
-            "the board {went_quiet} ({e}). It may still be working on it: check before running it again (tb pr status shows where a PR is)."
+            "the board {went_quiet} ({e}). It keeps working on the request after tb stops waiting, so it may still go through: \
+             look before running it again, or it may be done twice (tb pr status shows where a PR is)."
         ),
     }
 }
