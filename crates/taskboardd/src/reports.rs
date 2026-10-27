@@ -1807,10 +1807,12 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     if waitsfor::blocker(app, &t)?.is_none() {
         let what = if until_merged { "which is merged" } else { "which is ready" };
         r.log(t.id(), "note", &format!("Needs {names}, {what}{}", if why.is_empty() { String::new() } else { format!(": {why}") }), None)?;
-        let mut text = waitsfor::bring_in_text(app, &t)?;
+        let stacked = waitsfor::stack_on_open(app, &t)?;
+        let t = board::get_task(app, t.id())?;
+        let mut text = waitsfor::ready_text(app, &t)?;
         let merged_ids = waitsfor::merged_ids(&t);
         let mut open = vec![];
-        for n in &wanted_ids {
+        for n in wanted_ids.iter().filter(|n| Some(**n) != stacked) {
             if !merged_ids.contains(n) && !waitsfor::merged(app, board::find_task(app, Some(*n))?.as_ref())? {
                 open.push(rf("task", *n));
             }

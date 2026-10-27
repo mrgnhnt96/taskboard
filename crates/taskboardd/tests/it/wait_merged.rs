@@ -7,7 +7,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{Row, RowExt};
-use taskboardd::{board, midna, p, reports, runner, waitsfor};
+use taskboardd::{board, midna, p, prflow, reports, runner, stack, waitsfor};
 
 struct Board {
     app: Arc<App>,
@@ -74,8 +74,13 @@ fn done_with_open_pr(b: &Board) -> (i64, i64) {
     b.on("s1", one);
     b.report("tb.done", "s1", json!({"summary": "Done.", "pr": "https://github.com/acme/webapp/pull/9"}));
     assert_eq!(b.row(one).i("pr_num"), Some(9));
+    on_branch(&b, one, "feat/endpoint");
     b.on("s2", two);
     (one, two)
+}
+
+fn on_branch(b: &Board, id: i64, branch: &str) {
+    prflow::merge_flow(&b.app, id, vec![("rec", json!({"state": "OPEN", "branch": branch, "base": "main"}))]).unwrap();
 }
 
 #[test]
@@ -120,15 +125,74 @@ fn a_declined_pr_says_so_and_keeps_it_waiting() {
 }
 
 #[test]
-fn a_plain_wait_on_done_work_is_ready_and_hints_at_merged() {
+fn a_wait_on_done_work_with_an_open_pr_stacks_on_it() {
     let b = new_board();
     let (one, two) = done_with_open_pr(&b);
     let out = b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}")]}));
     assert_eq!(out["parked"], false, "{out}");
     let text = out["context"].as_str().unwrap();
-    assert!(text.contains(&format!("run tb wait-for T{one} --merged instead")), "{text}");
-    assert!(waitsfor::merged_ids(&b.row(two)).is_empty());
-    assert_eq!(b.row(two).s("status"), Some("working"));
+    assert!(text.contains(&format!("This task stacks on T{one} (branch feat/endpoint, PR #9)")), "{text}");
+    assert!(text.contains("open the PR into feat/endpoint"), "{text}");
+    assert!(!text.contains("--merged instead"), "a stack waits for the merge itself: {text}");
+    assert!(!text.contains("This task needs work from another task"), "{text}");
+    let t = b.row(two);
+    assert_eq!(t.i("pr_after"), Some(one));
+    assert!(waitsfor::ids(&t).is_empty(), "the wait became the stack");
+    assert_eq!(t.s("stack_merge"), None, "a tail merge");
+    assert_eq!(stack::base_branch(&b.app, &t).unwrap().as_deref(), Some("feat/endpoint"));
+    assert!(stack::holds(&b.app, &t).unwrap(), "its PR waits for #9");
+    assert_eq!(t.s("status"), Some("working"));
+}
+
+#[test]
+fn a_parked_wait_stacks_once_the_work_is_done_with_its_pr_open() {
+    let b = new_board();
+    let one = b.task("Add the endpoint");
+    let two = b.task("Use the endpoint");
+    b.on("s1", one);
+    b.on("s2", two);
+    let dir = b.app.cfg.claude_projects.join("-webapp");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("c-s2.jsonl"), "{\"type\":\"user\"}\n").unwrap();
+    let out = b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}")], "why": "Needs the endpoint"}));
+    assert_eq!(out["parked"], true, "{out}");
+
+    b.report("tb.done", "s1", json!({"summary": "Done.", "pr": "https://github.com/acme/webapp/pull/9"}));
+    on_branch(&b, one, "feat/endpoint");
+    runner::start_queued(&b.app).unwrap();
+    let t = b.row(two);
+    assert_eq!(t.i("pr_after"), Some(one), "it stacks before it starts again");
+    assert!(waitsfor::ids(&t).is_empty());
+    let jobs = b.starts(two);
+    assert_eq!(jobs.len(), 1);
+    let prompt = board::job_args(&jobs[0]).st("prompt").to_string();
+    assert!(prompt.contains("open the PR into feat/endpoint"), "{prompt}");
+    assert!(!prompt.contains("This task needs work from another task"), "the stack line replaces the rebase advice: {prompt}");
+}
+
+#[test]
+fn a_wait_on_a_merged_pr_stays_a_plain_wait_on_main() {
+    let b = new_board();
+    let (one, two) = done_with_open_pr(&b);
+    board::update_task(&b.app, one, vec![("pr_state", json!("MERGED")), ("pr_phase", json!("merged"))]).unwrap();
+    let out = b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}")]}));
+    assert_eq!(out["parked"], false, "{out}");
+    let text = out["context"].as_str().unwrap();
+    assert!(!text.contains("stacks on"), "{text}");
+    let t = b.row(two);
+    assert_eq!(t.i("pr_after"), None);
+    assert_eq!(waitsfor::ids(&t), vec![one]);
+    assert_eq!(stack::base_branch(&b.app, &t).unwrap(), None);
+}
+
+#[test]
+fn a_merged_wait_on_an_open_pr_stays_a_wait() {
+    let b = new_board();
+    let (one, two) = done_with_open_pr(&b);
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}")], "merged": true}));
+    let t = b.row(two);
+    assert_eq!(t.i("pr_after"), None, "--merged asks for main, not a stack");
+    assert_eq!(waitsfor::ids(&t), vec![one]);
 }
 
 #[test]
