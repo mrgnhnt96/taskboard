@@ -326,6 +326,19 @@ impl PrHost for GithubHost {
         Ok(out)
     }
 
+    fn commits(&self, pr: &PrRef) -> HostResult<Vec<String>> {
+        let mut out = vec![];
+        for page in 1..=3 {
+            let v = self.api("GET", &format!("repos/{}/pulls/{}/commits?per_page=100&page={page}", pr.repo, pr.num), &[])?;
+            let list = v.as_array().cloned().unwrap_or_default();
+            out.extend(list.iter().filter_map(|c| c["sha"].as_str()).map(str::to_string));
+            if list.len() < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
         if head.is_empty() {
             return Ok(Cancelled::Stopped(vec![]));

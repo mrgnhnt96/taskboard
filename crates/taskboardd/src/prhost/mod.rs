@@ -28,6 +28,7 @@
 //! | [`base_failures`](PrHost::base_failures): checks failing on the base's last few commits | check runs and statuses of `commits?sha=<base>` | statuses of `commits/<base>` |
 //! | [`members`](PrHost::members): who can review in the repo (the reviewer picker, `picker.rs`) | `repos/{repo}/collaborators` | `workspaces/{ws}/members` |
 //! | [`recent_comments`](PrHost::recent_comments): every comment on the repo's last few PRs, whole (review bots, `botrun.rs`) | GraphQL `pullRequests(orderBy: UPDATED_AT)` with their comments, reviews and review comments | `pullrequests?sort=-updated_on`, then each one's `/comments` |
+//! | [`commits`](PrHost::commits): the PR's commits (`tb pr merge` checks it carries no other open PR's head) | `repos/{repo}/pulls/{n}/commits` | `…/pullrequests/{n}/commits` |
 //! | [`my_open_prs`](PrHost::my_open_prs): the board's account's open PRs in a repo, opened by the board or by hand (`prbuilds.rs`) | `gh pr list --author @me --state open` | `pullrequests?state=OPEN` by the account's `{uuid}` (`GET /user`) |
 //!
 //! Users are named by the host's own id ([`Reviewer::user`]): a GitHub login, a Bitbucket account's
@@ -475,6 +476,11 @@ pub trait PrHost: Send + Sync {
     fn files(&self, _pr: &PrRef) -> HostResult<Vec<String>> {
         Err(format!("the board can't list a {} PR's files", self.id()))
     }
+    /// The full hashes of the PR's own commits, the ones its merge brings into its base (the first few
+    /// hundred).
+    fn commits(&self, _pr: &PrRef) -> HostResult<Vec<String>> {
+        Err(format!("the board can't list a {} PR's commits", self.id()))
+    }
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;
@@ -566,6 +572,8 @@ pub struct FakeHost {
     pub comments: Mutex<Vec<Comment>>,
     /// What `my_open_prs` answers (any repo).
     pub open_prs: Mutex<Vec<OpenPr>>,
+    /// What `commits` answers (any PR); empty: the record's head alone.
+    pub commits: Mutex<Vec<String>>,
     /// The builds `cancel_builds` stops.
     pub stops: Mutex<Vec<String>>,
     /// What `request_reviews` answers instead of asking, while set.
@@ -594,7 +602,7 @@ pub struct FakeHost {
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -723,6 +731,11 @@ impl PrHost for FakeHost {
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
         self.log(if head.is_empty() { format!("cancel #{}", pr.num) } else { format!("cancel {head}") });
         Ok(Cancelled::Stopped(self.stops.lock().clone()))
+    }
+    fn commits(&self, pr: &PrRef) -> HostResult<Vec<String>> {
+        self.log(format!("commits {}", pr.num));
+        let listed = self.commits.lock().clone();
+        Ok(if listed.is_empty() { vec![self.rec.lock().head.clone()] } else { listed })
     }
     fn my_open_prs(&self, repo: &str) -> HostResult<Vec<OpenPr>> {
         self.log(format!("open prs {repo}"));
