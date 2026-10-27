@@ -5676,7 +5676,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out("No worktree slots yet.");
             }
             for s in slots {
-                let holder = s["held_by"].as_str().map(|h| format!("held by {h}")).unwrap_or_else(|| "free".into());
+                let holder = match (s["held_by"].as_str(), s["kept_by"].as_str()) {
+                    (Some(h), _) => format!("held by {h}"),
+                    (None, Some(k)) => format!("kept by {k} (uncommitted changes)"),
+                    (None, None) => "free".into(),
+                };
                 let used = s["used_at"].as_str().map(|u| format!(" · last used {}", local_when(u))).unwrap_or_default();
                 let size = s["size_kb"].as_i64().map(|k| format!(" · {}", disk_size(k))).unwrap_or_default();
                 let waiting = s["waiting"].as_array().filter(|a| !a.is_empty()).map(|a| format!(" · waiting: {}", a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
