@@ -187,7 +187,7 @@ pub fn progress(g: &Value) -> (Vec<(St, i64)>, String, String) {
         n.extend(counts.into_iter().filter(|(_, x)| *x > 0));
         i(g, "total")
     };
-    let order = [St::Done, St::Working, St::Needs, St::Review, St::Failed, St::Queued, St::Planned];
+    let order = [St::Done, St::Pending, St::Working, St::Needs, St::Review, St::Failed, St::Queued, St::Planned];
     let parts: Vec<(St, i64)> = order.iter().filter_map(|st| n.get(st).map(|x| (*st, *x))).collect();
     let lead = format!("{} of {total}", n.get(&St::Done).copied().unwrap_or(0));
     let mut tail = " done".to_string();

@@ -512,6 +512,11 @@ pub fn tile_vm(c: &Value) -> Tile {
                     "rebase" => ("Conflicts", "down", with(label)),
                     "comments" => ("Comments", "goal", num.clone()),
                     "merge" => ("Ready to merge", "up", num.clone()),
+                    // Approved, held until the PR it stacks on merges: "PR #59 · after T212".
+                    "waits" => match opt_s(&p["bar"]["waits_on_base"], "ref") {
+                        Some(base) => ("Pending merge", "up", format!("{num} · after {base}")),
+                        None => ("Pending merge", "up", num.clone()),
+                    },
                     // Partly approved: "PR #119 · 1 of 2 approved", out of the approvals it needs.
                     _ => {
                         let have = p["bar"]["approvals"].as_i64().unwrap_or(0);

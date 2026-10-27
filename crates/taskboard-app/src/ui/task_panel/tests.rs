@@ -684,7 +684,7 @@ fn the_pr_bar_has_every_step_once_the_board_sends_it() {
     let task = with_bar(bar, json!({"phase": "waits", "label": "Waits on base"}), "pending");
     let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
     let text = view::text(&tree);
-    for want in ["WD 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Merged Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
+    for want in ["WD 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Pending merge Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
         assert!(text.contains(want), "{want:?} in {text}");
     }
     let acts = view::acts(&tree);
@@ -696,7 +696,7 @@ fn the_pr_bar_has_every_step_once_the_board_sends_it() {
 fn the_stack_card_says_how_it_merges_and_the_parent_waits_on_its_stack() {
     let so = |merge: &str| json!({"ref": "T3", "num": 12, "url": "https://github.com/acme/webapp/pull/12", "merged": false, "merge": merge});
     let tail = panel_text(with_bar(json!({"stacks_on": so("tail")}), json!({"phase": "waits", "label": "Waits on base"}), "approved"), json!({}));
-    assert!(tail.contains("Stacks on T3 PR #12 Tail merge") && tail.contains("Merged Waits on base"), "{tail}");
+    assert!(tail.contains("Stacks on T3 PR #12 Tail merge") && tail.contains("Pending merge Waits on base"), "{tail}");
     let head = panel_text(with_bar(json!({"stacks_on": so("head")}), json!({"phase": "merge", "label": "Merging"}), "approved"), json!({}));
     assert!(head.contains("Stacks on T3 PR #12 Head merge") && !head.contains("Waits on base"), "{head}");
     // What the base is at, and the Merge step to its running build; no builds yet isn't "Not needed".
@@ -704,12 +704,12 @@ fn the_stack_card_says_how_it_merges_and_the_parent_waits_on_its_stack() {
     let bar = json!({"stacks_on": so("tail"), "waits_on_base": wb, "checks": "none_yet"});
     let task = with_bar(bar.clone(), json!({"phase": "waits", "label": "Waits on base"}), "approved");
     let text = panel_text(task.clone(), json!({}));
-    assert!(text.contains("Merged Waits on T3") && text.contains("T3's checks running, 2 of 5 passed") && text.contains("Checks None yet"), "{text}");
+    assert!(text.contains("Pending merge Waits on T3") && text.contains("T3's checks running, 2 of 5 passed") && text.contains("Checks None yet"), "{text}");
     let merge = view::pr_steps_full(&task["pr"], &bar).pop().unwrap();
     assert!(format!("{:?}", merge.link).contains("https://ci.example/7"), "{:?}", merge.link);
     let why = "T5's PR #14 head-merges into it and has to merge first";
     let parent = panel_text(with_bar(json!({"waits_on_stack": why}), json!({"phase": "stack", "label": "Waits on stack"}), "approved"), json!({}));
-    assert!(parent.contains("Merged Waits on stack") && parent.contains(why), "{parent}");
+    assert!(parent.contains("Pending merge Waits on stack") && parent.contains(why), "{parent}");
 }
 
 #[::core::prelude::v1::test]
@@ -876,7 +876,7 @@ fn the_review_step_shows_before_the_pr_opens() {
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
                       "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});
     let text = panel_text(task, json!({}));
-    assert!(text.contains("Merged Checks and review WD 2 open findings Checks You Review Pull request Working"), "newest on top: {text}");
+    assert!(text.contains("Pending merge Checks and review WD 2 open findings Checks You Review Pull request Working"), "newest on top: {text}");
     // From the detail's step results too.
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp",
                       "step_results": [{"name": "Author review", "bar": "WD", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
@@ -899,7 +899,7 @@ fn no_pr_shows_why_with_its_refs_linked() {
 fn the_pr_plan_shows_on_a_task_without_a_pr() {
     let t = |ships: bool| json!({"ref": "T6", "id": 6, "title": "x", "status": "queued", "project": "webapp", "ships_pr": ships});
     // The whole way ahead, its steps in place as once the PR is open, the last stop on top.
-    assert!(panel_text(t(true), json!({})).contains("Merged Checks and review Checks You Review Pull request"));
+    assert!(panel_text(t(true), json!({})).contains("Pending merge Checks and review Checks You Review Pull request"));
     assert!(!panel_text(t(false), json!({})).contains("Pull request"), "a task that doesn't end in a PR stops at Done");
 }
 

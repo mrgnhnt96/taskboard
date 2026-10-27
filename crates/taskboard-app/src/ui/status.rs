@@ -1,5 +1,5 @@
-//! The six statuses every list shows (Needs you, Working, Queued, In review, Done, Failed, and
-//! Planned for work nothing runs yet): one chip color each, the same everywhere. The detail a
+//! The statuses every list shows (Needs you, Working, Queued, In review, Pending merge, Done,
+//! Failed, and Planned for work nothing runs yet): one chip color each, the same everywhere. The detail a
 //! task's old pill carried ("Question", "Checks failed", "Starting"…) goes on the row's line.
 // The Needs you, Goals, Tasks and goal pages draw their rows with it.
 #![allow(dead_code)]
@@ -17,6 +17,8 @@ pub enum St {
     Working,
     Queued,
     Review,
+    /// Approved and green, held behind the PR it stacks on (a tail merge).
+    Pending,
     Done,
     Failed,
     Planned,
@@ -29,6 +31,7 @@ impl St {
             St::Working => "Working",
             St::Queued => "Queued",
             St::Review => "In review",
+            St::Pending => "Pending merge",
             St::Done => "Done",
             St::Failed => "Failed",
             St::Planned => "Planned",
@@ -42,9 +45,10 @@ impl St {
             St::Failed => 1,
             St::Working => 2,
             St::Review => 3,
-            St::Queued => 4,
-            St::Planned => 5,
-            St::Done => 6,
+            St::Pending => 4,
+            St::Queued => 5,
+            St::Planned => 6,
+            St::Done => 7,
         }
     }
 
@@ -55,6 +59,7 @@ impl St {
             St::Working => (t.accent_fg, t.accent_soft, t.accent),
             St::Queued => (t.text_2, t.seg, t.border_2),
             St::Review => (t.results, t.results_soft, t.results),
+            St::Pending => (t.up_fg, gpui_kit::transparent_black(), t.up),
             St::Done => (t.up_fg, t.up_soft, t.up),
             St::Failed => (t.down, t.down_soft, t.down),
             St::Planned => (t.muted, gpui_kit::transparent_black(), t.border),
@@ -105,6 +110,7 @@ pub fn row(c: &Value) -> Row {
         "Checks failed" | "Conflicts" => (St::Review, format!("{} · {}", tile.status, tile.line), true, String::new()),
         "Checks running" | "Comments" | "Ready to merge" => (St::Review, format!("{} · {}", tile.status, tile.line), false, String::new()),
         "In review" => (St::Review, tile.line, false, String::new()),
+        "Pending merge" => (St::Pending, tile.line, false, String::new()),
         "Failed" => (St::Failed, opt_s(c, "summary").unwrap_or("").to_string(), false, fmt::hhmm(when)),
         "Done" if !crate::ui::goal::awaiting_merge(c) => (St::Done, opt_s(c, "summary").map(str::to_string).unwrap_or_default(), false, fmt::hhmm(when)),
         // A label this match doesn't know yet goes by the task itself, never to Done: a done task
@@ -132,13 +138,16 @@ fn by_task(c: &Value) -> St {
     }
 }
 
+/// The chip's width: fits "Pending merge", the longest label.
+pub const CHIP_W: f32 = 104.;
+
 /// The status chip, a fixed width so rows line up.
 pub fn chip(t: &Theme, st: St) -> Div {
     let (fg, bg, line) = st.colors(t);
     kit::pill(fg, bg, st.label())
-        .w(px(84.))
+        .w(px(CHIP_W))
         .justify_center()
-        .when(st == St::Planned, |d| d.border_1().border_color(line))
+        .when(matches!(st, St::Planned | St::Pending), |d| d.border_1().border_color(line))
 }
 
 /// A bar split by status: (status, how many), in the order given.
@@ -150,7 +159,12 @@ pub fn bar(t: &Theme, parts: &[(St, i64)], h: f32) -> Div {
     }
     for (st, n) in parts.iter().copied().filter(|(_, n)| *n > 0) {
         let (_, _, solid) = st.colors(t);
-        let mut seg = div().h_full().bg(if st == St::Queued || st == St::Planned { t.border_2 } else { solid });
+        let fill = match st {
+            St::Queued | St::Planned => t.border_2,
+            St::Pending => solid.opacity(0.5),
+            _ => solid,
+        };
+        let mut seg = div().h_full().bg(fill);
         seg.style().flex_grow = Some(n as f32);
         seg.style().flex_shrink = Some(1.);
         seg.style().flex_basis = Some(relative(0.).into());
@@ -212,9 +226,20 @@ mod tests {
         assert_eq!(by_task(&card(json!({"status": "working"}))), St::Working);
         assert_eq!(by_task(&card(json!({"status": "needs"}))), St::Needs);
         // Every phase the daemon can send on an open PR, known or new, stays in review.
-        for phase in ["checks", "fix", "rebase", "comments", "merge", "review", "rereview", "steps", "waits", "stack", "ask", "something-new"] {
+        for phase in ["checks", "fix", "rebase", "comments", "merge", "review", "rereview", "steps", "stack", "ask", "something-new"] {
             let c = card(json!({"status": "done", "pr": {"num": 7, "state": "OPEN", "stage": {"phase": phase}}}));
             assert_eq!(row(&c).st, St::Review, "phase {phase}");
         }
+    }
+
+    #[test]
+    fn an_approved_pr_held_behind_its_base_is_pending_merge() {
+        let bar = json!({"waits_on_base": {"ref": "T212", "line": "T212 waiting on its own base"}});
+        let c = card(json!({"status": "done", "pr": {"num": 59, "state": "OPEN", "stage": {"phase": "waits", "label": "Waits on base"}, "bar": bar}}));
+        let r = row(&c);
+        assert_eq!((r.st, r.line.as_str()), (St::Pending, "PR #59 · after T212"));
+        let no_base = card(json!({"status": "done", "pr": {"num": 59, "state": "OPEN", "stage": {"phase": "waits"}}}));
+        assert_eq!(row(&no_base).line, "PR #59");
+        assert!(St::Pending.open());
     }
 }

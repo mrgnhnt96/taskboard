@@ -217,6 +217,7 @@ fn pill(g: &Value, t: &Tally) -> (St, &'static str) {
         _ if n(St::Working) > 0 => (St::Working, St::Working.label()),
         _ if t.stuck() > 0 => (St::Failed, St::Failed.label()),
         _ if n(St::Review) > 0 => (St::Review, St::Review.label()),
+        _ if n(St::Pending) > 0 => (St::Pending, St::Pending.label()),
         _ if n(St::Queued) > 0 || opt_s(g, "after_blocker").is_some() => (St::Queued, St::Queued.label()),
         // A task that finished failed is history once the goal moves on; it says Failed only
         // when nothing else is live. A failure the goal stops on already says Needs you.
@@ -513,7 +514,7 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Div {
             1.,
         ))
         .child(div().flex_none().w(px(190.)).truncate().text_size(px(12.)).text_color(if row.loud { loud_fg } else { t.muted }).child(task_meta(c, &row)))
-        .child(div().flex_none().w(px(96.)).flex().justify_end().child(status::chip(t, row.st)))
+        .child(div().flex_none().w(px(status::CHIP_W + 12.)).flex().justify_end().child(status::chip(t, row.st)))
 }
 
 fn goal_tasks(t: &Theme, d: Option<&Value>, cx: &mut Context<MainWindow>) -> Div {

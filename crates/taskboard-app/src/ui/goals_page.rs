@@ -131,6 +131,7 @@ pub(crate) struct Tally {
     needs: i64,
     working: i64,
     review: i64,
+    pending: i64,
     queued: i64,
     planned: i64,
     done: i64,
@@ -146,6 +147,7 @@ impl Tally {
             St::Needs => self.needs += 1,
             St::Working => self.working += 1,
             St::Review => self.review += 1,
+            St::Pending => self.pending += 1,
             St::Queued => self.queued += 1,
             St::Planned => self.planned += 1,
             St::Done => self.done += 1,
@@ -171,6 +173,7 @@ impl Tally {
             needs: i(g, "needs"),
             working: (i(g, "active") - i(g, "needs")).max(0),
             review,
+            pending: 0,
             queued: i(g, "queued"),
             planned: i(g, "planned"),
             done: i(g, "done"),
@@ -186,7 +189,7 @@ impl Tally {
 
     /// The bar's parts, finished work first.
     pub(crate) fn parts(&self) -> Vec<(St, i64)> {
-        vec![(St::Done, self.done), (St::Review, self.review), (St::Working, self.working), (St::Needs, self.needs), (St::Failed, self.failed), (St::Queued, self.queued), (St::Planned, self.planned)]
+        vec![(St::Done, self.done), (St::Pending, self.pending), (St::Review, self.review), (St::Working, self.working), (St::Needs, self.needs), (St::Failed, self.failed), (St::Queued, self.queued), (St::Planned, self.planned)]
     }
 }
 
@@ -255,6 +258,9 @@ fn now_line(t: &Tally, stopped: bool) -> (String, St) {
     if bits.is_empty() && t.review > 0 {
         bits.push(format!("{} in review", t.review));
     }
+    if bits.is_empty() && t.pending > 0 {
+        bits.push(format!("{} pending merge", t.pending));
+    }
     let st = if t.needs > 0 {
         St::Needs
     } else if t.failed > 0 {
@@ -263,6 +269,8 @@ fn now_line(t: &Tally, stopped: bool) -> (String, St) {
         St::Working
     } else if t.review > 0 {
         St::Review
+    } else if t.pending > 0 {
+        St::Pending
     } else {
         St::Queued
     };
@@ -296,7 +304,7 @@ fn next_line(g: &Value, d: Option<&Value>) -> String {
     if let Some((t, _)) = rows.iter().find(|(_, r)| r.st == St::Failed) {
         return format!("{} failed", s(t, "ref"));
     }
-    let review: Vec<String> = rows.iter().filter(|(_, r)| r.st == St::Review).map(|(t, r)| if r.line.is_empty() { s(t, "ref").to_string() } else { r.line.clone() }).collect();
+    let review: Vec<String> = rows.iter().filter(|(_, r)| matches!(r.st, St::Review | St::Pending)).map(|(t, r)| if r.line.is_empty() { s(t, "ref").to_string() } else { r.line.clone() }).collect();
     if !review.is_empty() {
         return review.join(" · ");
     }
@@ -615,7 +623,7 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
             cx.stop_propagation();
             m.open_task(o1.clone(), cx);
         })));
-    } else if let (St::Review, Some(url)) = (row.st, pr_url) {
+    } else if let (St::Review | St::Pending, Some(url)) = (row.st, pr_url) {
         act = act.child(kit::btn_small(t, SharedString::from(format!("goals-pr-{r}")), "Open PR").on_click(move |_, _, cx| {
             cx.stop_propagation();
             cx.open_url(&url);
