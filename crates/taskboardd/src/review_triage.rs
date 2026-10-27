@@ -120,7 +120,8 @@ fn prompt(app: &App, t: &Row, n: u64, result: &Value, intent: &str, diff: &str, 
          For each finding, judge only whether this task's change caused it, and record its outcome:\n\
          - fix: this task's change caused it and it's real; the task's agent fixes it.\n\
          - backlog: real, but this task's change didn't cause it; the board files it in the task's backlog.\n\
-         - dismiss: not real, already handled, or not worth acting on.\n\n\
+         - dismiss: not real, already handled, or not worth acting on.\n\
+         A finding that asks to undo what the task or its goal sets out to do is dismiss, saying so.\n\n\
          Record each one, with a one-line reason, as soon as you've judged it: {tb} finding {me} <id> fix|backlog|dismiss \"<reason>\"\n\
          {tb} finding {me} lists them with what's left. Never change code, commit or run the project's tools: read the diff and the files \
          (git diff, git log and git show are fine) and judge. When every finding has an outcome, the board closes this terminal.\n\n\
