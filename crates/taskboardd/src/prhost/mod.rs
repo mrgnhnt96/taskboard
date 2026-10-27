@@ -679,6 +679,9 @@ impl PrHost for FakeHost {
     }
     fn re_request_reviews(&self, _pr: &PrRef, users: &[String]) -> HostResult<()> {
         self.log(format!("re-request {}", users.join(",")));
+        if let Some(e) = self.write_error.lock().clone() {
+            return Err(e);
+        }
         for r in self.rec.lock().reviewers.iter_mut().filter(|r| users.contains(&r.user)) {
             r.requested = true;
         }

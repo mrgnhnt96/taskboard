@@ -949,6 +949,23 @@ fn reviewer_pills_say_when_each_was_asked_and_the_ask_stage_shows_its_bar() {
 }
 
 #[::core::prelude::v1::test]
+fn a_reviewer_asked_to_look_again_says_when_or_that_the_ask_is_queued() {
+    let at = (crate::fmt::now() - chrono::Duration::days(2)).to_rfc3339();
+    let rows = json!([{"name": "Ana", "user": "ana", "state": "rereview", "changes": true, "swaps": 0,
+                       "asked_at": at, "rereview_at": at, "rereview_queued": false},
+                      {"name": "Bo", "user": "bo", "state": "rereview", "changes": true, "swaps": 0,
+                       "asked_at": at, "rereview_at": null, "rereview_queued": true},
+                      {"name": "Cy", "user": "cy", "state": "changes", "swaps": 0, "asked_at": at}]);
+    let bar = json!({"approvals": 0, "reviewers": 3, "new_comments": 0, "reviewer_rows": rows});
+    let text = panel_text(with_bar(bar, json!({"phase": "rereview"}), "changes"), json!({}));
+    let when = crate::fmt::day_time(&at);
+    assert!(when.ends_with("am") || when.ends_with("pm"), "12-hour: {when}");
+    assert!(text.contains(&format!("Ana Changes asked Re-review asked {when}")), "{text}");
+    assert!(text.contains("Bo Changes asked Re-review queued"), "{text}");
+    assert!(text.contains("Cy Changes asked Asked") && !text.contains("Cy Changes asked Re-review"), "{text}");
+}
+
+#[::core::prelude::v1::test]
 fn a_waiting_reviewer_says_how_long_the_pr_has_waited_on_them() {
     let at = (crate::fmt::now() - chrono::Duration::minutes(125)).to_rfc3339();
     let rows = json!([{"name": "Ana", "user": "ana", "state": "waiting", "swaps": 0, "asked_at": at},

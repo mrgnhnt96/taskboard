@@ -8,7 +8,8 @@
 //! younger than [`HELD_SECS`], and `tb pr reply` / `tb pr ack` write to the host once and note the
 //! write on that copy. When they do read, callers asking at once share the one read ([`shared_read`]).
 //! A reply or resolve the host refuses while the PR's account is rate-limited is kept and posted by
-//! the board once the limit is over ([`post_held`]), so the agent doesn't wait for it.
+//! the board once the limit is over ([`post_held`]), so the agent doesn't wait for it. So is the ask
+//! `addressed` makes for another review ([`ask_held_rereviews`]).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -378,7 +379,11 @@ fn after(app: &App, id: i64, out: Value) -> Result<Value> {
 }
 
 /// `tb pr addressed`: refuses while threads are open; then asks each reviewer with a standing request
-/// for changes (not one swapped off) to review again, and ends the visit.
+/// for changes (not one swapped off) to review again, and ends the visit. Each ask is kept per reviewer
+/// in the PR's flow (`rereview_asks`: when, the request it answers, and whether it's `queued`), so the
+/// bar shows it until that reviewer reviews again. One the host refuses while the PR's account is
+/// rate-limited is queued and sent by the board once the limit is over ([`ask_held_rereviews`]).
+/// `sent` says which: `host` (asked now), `queued`, or `local` (nobody to ask; recorded on the board).
 pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     if let Some(why) = crate::slots::visit_end_refusal(app, &board::get_task(app, id)?, body)? {
         return err(409, why);
@@ -400,32 +405,117 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let review = prflow::review_of(&f, &rec);
     let users: Vec<String> = review.requesters.iter().map(|(u, _)| u.clone()).filter(|u| !u.is_empty()).collect();
+    // When the host has the board rate-limited, the ask waits for the limit to end.
+    let mut held = None;
     if !users.is_empty() {
-        host(app, &pr)?.re_request_reviews(&pr, &users).map_err(|e| {
-            prflow::wait_out_limit(app, id, &pr, body, "comments", ApiError::new(502, format!("Couldn't ask for another review on PR #{}: {e}.", pr.num)))
-        })?;
+        if let Err(e) = on_host(&pr, "asking for another review on", || host(app, &pr)?.re_request_reviews(&pr, &users).map_err(|e| ApiError::new(502, e))) {
+            match prflow::host_held(app, &pr) {
+                Some(until) => held = Some(until),
+                None => return err(502, format!("Couldn't ask for another review on PR #{}: {}.", pr.num, e.message)),
+            }
+        }
     }
     let asked: Vec<String> = review.requesters.iter().map(|(u, n)| if n.is_empty() { u.clone() } else { n.clone() }).collect();
+    let sent = match (users.is_empty(), held) {
+        (true, _) => "local",
+        (false, None) => "host",
+        (false, Some(_)) => "queued",
+    };
+    let site = prhost::limit::label(&pr.host);
+    let until = held.map(|u| local_clock(Some(&iso(u))));
+    let at = now_iso();
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         prflow::waited(app, &t)?;
         crate::asks::asked_again(app, &t, &review.requesters, &who_of(app, body))?;
+        let mut asks = flow(&t).get("rereview_asks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        for user in &users {
+            let r = rec["reviewers"].as_array().into_iter().flatten().find(|r| r["user"].as_str() == Some(user.as_str())).cloned().unwrap_or(Value::Null);
+            let name = r["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(user);
+            asks.insert(user.to_lowercase(), json!({"user": user, "name": name, "at": at, "changes_at": r["changes_at"], "queued": held.is_some()}));
+        }
         prflow::merge_flow(
             app,
             id,
             fields!["answered_changes" => rec["changes_at"].clone(),
                     "answered_changes_by" => crate::asks::changes_by(&rec),
-                    "addressed" => json!({"at": now_iso(), "head": rec["head"], "asked": asked, "asked_ids": users})],
+                    "rereview_asks" => Value::Object(asks),
+                    "addressed" => json!({"at": at, "head": rec["head"], "asked": asked, "asked_ids": users, "sent": sent})],
         )?;
-        let text = if asked.is_empty() {
-            format!("Addressed the review on PR #{}", pr.num)
-        } else {
-            format!("Addressed the review on PR #{} and asked {} to look again", pr.num, asked.join(", "))
+        let text = match &until {
+            _ if asked.is_empty() => format!("Addressed the review on PR #{}", pr.num),
+            None => format!("Addressed the review on PR #{} and asked {} to look again", pr.num, asked.join(", ")),
+            Some(by) => format!("Addressed the review on PR #{}; {site} has the board rate-limited, so it asks {} to look again once the limit is over, by {by}", pr.num, asked.join(", ")),
         };
         board::log_event(app, id, &who_of(app, body), "status", &text).map(|_| ())
     })?;
     crate::reports::give_back_slot(app, id);
-    after(app, id, json!({"asked": asked}))
+    let out = json!({"asked": asked, "sent": sent, "site": site, "until": until});
+    // Reading the PR again would only fail while the account is held: step it on the copy just read.
+    if held.is_none() {
+        return after(app, id, out);
+    }
+    app.db.tx(|| prflow::step(app, &board::get_task(app, id)?, &rec).map(|_| ()))?;
+    answered(app, id, out)
+}
+
+/// How long the board waits before asking for a queued re-review again after the host refused it for
+/// a reason other than its rate limit.
+const REREVIEW_RETRY_SECS: f64 = 900.0;
+
+/// The PR sweep: sends the re-review asks `tb pr addressed` queued while the PR's host had the board
+/// rate-limited, once the limit is over. One the host still refuses for the limit waits; one it refuses
+/// for another reason stays queued and is tried again every [`REREVIEW_RETRY_SECS`] (said once on the
+/// task's log), so it's never dropped while it stands. A read that sees the reviewer review again
+/// drops it (`prflow::step`), and a merged or declined PR drops its queue.
+pub fn ask_held_rereviews(app: &App) -> Result<()> {
+    let sql = "SELECT * FROM tasks WHERE pr_num IS NOT NULL AND EXISTS \
+               (SELECT 1 FROM json_each(pr_flow, '$.rereview_asks') WHERE json_extract(value, '$.queued') = 1)";
+    for t in app.db.q(sql, p![])? {
+        let (id, Some(pr)) = (t.id(), PrRef::of(&t)) else { continue };
+        let f = flow(&t);
+        if matches!(t.s("pr_phase"), Some("merged" | "declined")) {
+            prflow::merge_flow(app, id, fields!["rereview_asks" => null, "rereview_retry_at" => null, "rereview_error" => null])?;
+            continue;
+        }
+        if f.get("rereview_retry_at").and_then(|v| v.as_str()).and_then(parse_iso).is_some_and(|at| at > now_ts()) {
+            continue;
+        }
+        let Ok(h) = prhost::host_for(app, &pr.host) else { continue };
+        if h.held_until().is_some() {
+            continue;
+        }
+        let queued: Vec<Value> = f.get("rereview_asks").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()).filter(|a| a["queued"] == true).cloned().collect();
+        let users: Vec<String> = queued.iter().filter_map(|a| a["user"].as_str().map(str::to_string)).collect();
+        let names = queued.iter().filter_map(|a| a["name"].as_str().or(a["user"].as_str())).collect::<Vec<_>>().join(", ");
+        match h.re_request_reviews(&pr, &users) {
+            Ok(()) => app.db.tx(|| {
+                let mut asks = flow(&board::get_task(app, id)?).get("rereview_asks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                let at = now_iso();
+                for a in asks.values_mut().filter(|a| a["queued"] == true && a["user"].as_str().is_some_and(|u| users.iter().any(|x| x == u))) {
+                    a["queued"] = json!(false);
+                    a["at"] = json!(at);
+                }
+                prflow::merge_flow(app, id, fields!["rereview_asks" => Value::Object(asks), "rereview_retry_at" => null, "rereview_error" => null])?;
+                board::log_event(app, id, board::BOARD, "status", &format!("Asked {names} to look again on PR #{}, held over the rate limit", pr.num)).map(|_| ())
+            })?,
+            Err(_) if prflow::host_held(app, &pr).is_some() => {}
+            Err(e) => {
+                let e = one_line(&e, 200);
+                let again = iso(now_ts() + REREVIEW_RETRY_SECS);
+                let first = f.get("rereview_error").and_then(|v| v.as_str()) != Some(e.as_str());
+                app.db.tx(|| {
+                    prflow::merge_flow(app, id, fields!["rereview_retry_at" => again, "rereview_error" => e.clone()])?;
+                    if first {
+                        let text = format!("Couldn't ask {names} to look again on PR #{} yet; the board tries again every {} minutes: {e}", pr.num, (REREVIEW_RETRY_SECS / 60.0) as i64);
+                        board::log_event(app, id, board::BOARD, "status", &text)?;
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Why the PR can't merge right now (empty: it can). Checks the record as just read. `owner_approved`: the
@@ -949,6 +1039,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         .map(|mut r| {
             let gone = off.iter().any(|o| r["user"].as_str() == Some(o.as_str()));
             r["swapped_off"] = json!(gone);
+            r["rereview"] = prflow::rereview_ask(&f, &r).map(|a| json!({"at": a["at"], "queued": a["queued"] == true})).unwrap_or(Value::Null);
             r
         })
         .collect();

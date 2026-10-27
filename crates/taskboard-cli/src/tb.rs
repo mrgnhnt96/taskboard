@@ -2267,14 +2267,7 @@ fn print_pr_status(t: &str, v: &Value) {
         out(&format!("Reviewers{}:", approvals_words(&live["approvals"])));
         for r in reviewers {
             let name = r["name"].as_str().filter(|n| !n.is_empty()).or(r["user"].as_str()).unwrap_or("");
-            let state = match r["state"].as_str().unwrap_or("") {
-                "approved" => "approved",
-                "changes" if r["requested"] == true => "asked for changes, asked to look again",
-                "changes" => "asked for changes",
-                "commented" => "commented",
-                _ => "hasn't reviewed yet",
-            };
-            out(&format!("  {name}: {state}{}", if r["swapped_off"] == true { " (swapped off)" } else { "" }));
+            out(&format!("  {name}: {}{}", reviewer_state(&r), if r["swapped_off"] == true { " (swapped off)" } else { "" }));
         }
     }
     let open = live["open_threads"].as_array().cloned().unwrap_or_default();
@@ -2694,10 +2687,44 @@ impl Ctx {
     }
 }
 
-/// What `tb pr addressed` says. A retaken task (`tb take`, still working) only finishes with `tb submit`,
+/// A reviewer's line in `tb pr status`. Asked to look again (`rereview`) holds only until they review
+/// again, and says when, or that the ask waits on the host's rate limit.
+fn reviewer_state(r: &Value) -> String {
+    let again = &r["rereview"];
+    let st = r["state"].as_str().unwrap_or("");
+    if again.is_object() && !matches!(st, "approved" | "commented") {
+        let was = if st == "changes" { "asked for changes, " } else { "" };
+        return match again["at"].as_str() {
+            _ if again["queued"] == true => format!("{was}re-review queued (the board asks once the rate limit is over)"),
+            Some(at) => format!("{was}asked to look again {}", local_when(at)),
+            None => format!("{was}asked to look again"),
+        };
+    }
+    match st {
+        "approved" => "approved",
+        "changes" => "asked for changes",
+        "commented" => "commented",
+        _ => "hasn't reviewed yet",
+    }
+    .to_string()
+}
+
+/// What `tb pr addressed` says: whom it asked to look again and how (`sent`): through the host now,
+/// `queued` while the host has the board rate-limited (the board sends it once the limit is over), or
+/// `local` (nobody to ask). A retaken task (`tb take`, still working) only finishes with `tb submit`,
 /// so it isn't told to stop.
-fn addressed_line(t: &str, asked: &[&str], status: &str) -> String {
-    let did = if asked.is_empty() { format!("Recorded {t}'s review as addressed.") } else { format!("Asked {} to review {t}'s PR again.", asked.join(", ")) };
+fn addressed_line(t: &str, v: &Value, status: &str) -> String {
+    let asked: Vec<&str> = v["asked"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let site = v["site"].as_str().filter(|s| !s.is_empty()).unwrap_or("the host");
+    let did = match v["sent"].as_str() {
+        _ if asked.is_empty() => format!("Recorded {t}'s review as addressed on the board only: nobody on the PR has a request for changes to ask about again."),
+        Some("queued") => format!(
+            "{site} has the board rate-limited, so asking {} to review {t}'s PR again is queued: the board sends it once the limit is over{}. Don't run this again.",
+            asked.join(", "),
+            v["until"].as_str().map(|u| format!(", by {u}")).unwrap_or_default()
+        ),
+        _ => format!("Asked {} through {site} to review {t}'s PR again.", asked.join(", ")),
+    };
     if matches!(status, "working" | "needs") {
         format!("{did} {t} is still taken: push your changes, then run tb submit \"<summary>\" to finish it.")
     } else {
@@ -6709,9 +6736,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             PrCmd::Addressed { task } => {
                 let t = c.pr_task(task)?;
                 let v = c.call_progress("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({})))?;
-                let asked: Vec<&str> = v["asked"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
                 let status = c.call("GET", &format!("/tasks/{t}"), None).ok().and_then(|d| d["status"].as_str().map(str::to_string)).unwrap_or_default();
-                out(&addressed_line(&t, &asked, &status));
+                out(&addressed_line(&t, &v, &status));
                 Ok(0)
             }
             PrCmd::Reviewers { task, ask, replace, with, drop, count, dry_run } => {
@@ -8044,12 +8070,37 @@ mod tests {
 
     #[test]
     fn pr_addressed_on_a_retaken_task_points_to_submit() {
-        let visit = addressed_line("T4", &["Pat"], "done");
-        assert_eq!(visit, "Asked Pat to review T4's PR again. The board watches the PR and brings this conversation back when it needs you. You can stop here.");
-        let retaken = addressed_line("T4", &[], "working");
-        assert_eq!(retaken, "Recorded T4's review as addressed. T4 is still taken: push your changes, then run tb submit \"<summary>\" to finish it.");
+        let visit = addressed_line("T4", &json!({"asked": ["Pat"], "sent": "host", "site": "GitHub"}), "done");
+        assert_eq!(visit, "Asked Pat through GitHub to review T4's PR again. The board watches the PR and brings this conversation back when it needs you. You can stop here.");
+        let retaken = addressed_line("T4", &json!({"asked": [], "sent": "local"}), "working");
+        assert_eq!(
+            retaken,
+            "Recorded T4's review as addressed on the board only: nobody on the PR has a request for changes to ask about again. T4 is still taken: push your changes, then run tb submit \"<summary>\" to finish it."
+        );
         assert!(!retaken.contains("stop here"));
-        assert!(addressed_line("T4", &[], "needs").contains("tb submit"));
+        assert!(addressed_line("T4", &json!({"asked": []}), "needs").contains("tb submit"));
+    }
+
+    #[test]
+    fn pr_addressed_says_when_the_ask_waits_on_the_rate_limit() {
+        let v = json!({"asked": ["Stefan"], "sent": "queued", "site": "Bitbucket", "until": "8:22am"});
+        assert_eq!(
+            addressed_line("T4", &v, "done"),
+            "Bitbucket has the board rate-limited, so asking Stefan to review T4's PR again is queued: the board sends it once the limit is over, by 8:22am. Don't run this again. \
+             The board watches the PR and brings this conversation back when it needs you. You can stop here."
+        );
+    }
+
+    #[test]
+    fn pr_status_says_a_re_review_only_while_it_stands() {
+        let asked = reviewer_state(&json!({"state": "changes", "requested": true, "rereview": {"at": "2026-10-27T15:26:00Z", "queued": false}}));
+        assert!(asked.starts_with("asked for changes, asked to look again Oct 27, "), "{asked}");
+        assert!(asked.ends_with("AM") || asked.ends_with("PM"), "12-hour time: {asked}");
+        let queued = reviewer_state(&json!({"state": "changes", "rereview": {"at": "2026-10-27T15:26:00Z", "queued": true}}));
+        assert_eq!(queued, "asked for changes, re-review queued (the board asks once the rate limit is over)");
+        // Bitbucket keeps every reviewer requested: that alone isn't an ask to look again.
+        assert_eq!(reviewer_state(&json!({"state": "changes", "requested": true})), "asked for changes");
+        assert_eq!(reviewer_state(&json!({"state": "approved", "rereview": {"at": "2026-10-27T15:26:00Z"}})), "approved");
     }
 
     #[test]

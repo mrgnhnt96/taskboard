@@ -350,6 +350,98 @@ fn logged(b: &Board, id: i64, has: &str) -> bool {
     b.app.db.q("SELECT text FROM events WHERE task_id = ?", vec![json!(id)]).unwrap().iter().any(|r| r.st("text").contains(has))
 }
 
+/// The reviewer row the task card shows for `user`.
+fn reviewer_row(b: &Board, id: i64, user: &str) -> Value {
+    let card = board::task_card(&b.app, &b.task(id)).unwrap();
+    card["pr"]["bar"]["reviewer_rows"].as_array().unwrap().iter().find(|r| r["user"] == user).cloned().unwrap_or(Value::Null)
+}
+
+/// A PR whose reviewer `rev` asked for changes at `t1`, with their one thread answered.
+fn changes_asked(b: &Board) -> (i64, Arc<FakeHost>) {
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("2026-10-26T15:00:00Z".into());
+    rec.reviewers = vec![Reviewer { changes_at: Some("2026-10-26T15:00:00Z".into()), ..reviewer("rev", "changes") }];
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(b, rec);
+    poll(b);
+    b.post(&format!("/tasks/T{id}/pr/ack"), json!({"thread": "1"}));
+    (id, h)
+}
+
+#[test]
+fn addressed_says_it_asked_through_the_host_and_the_row_shows_when() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    let v = b.post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!((v["sent"].as_str(), v["asked"].clone()), (Some("host"), json!(["REV"])));
+    assert!(h.calls().contains(&"re-request rev".to_string()));
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!((row["state"].as_str(), row["changes"].as_bool(), row["rereview_queued"].as_bool()), (Some("rereview"), Some(true), Some(false)), "{row}");
+    assert!(row["rereview_at"].is_string() && row["asked_at"] == row["rereview_at"], "{row}");
+}
+
+#[test]
+fn addressed_while_writes_are_limited_queues_the_ask_and_the_board_sends_it_once_the_limit_lifts() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    limit(&h);
+    let v = b.post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(v["sent"], "queued", "{v}");
+    assert!(v["until"].is_string() && v["site"] == "Bitbucket", "{v}");
+    assert_eq!(b.phase(id), "rereview");
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!((row["state"].as_str(), row["rereview_queued"].as_bool()), (Some("rereview"), Some(true)), "{row}");
+    assert!(row["rereview_at"].is_null(), "not asked yet: {row}");
+    prcmds::ask_held_rereviews(&b.app).unwrap();
+    assert_eq!(b.flow(id)["rereview_asks"]["rev"]["queued"], true, "still held: the ask waits");
+    lift(&h);
+    let before = h.calls().iter().filter(|c| *c == "re-request rev").count();
+    prcmds::ask_held_rereviews(&b.app).unwrap();
+    assert_eq!(h.calls().iter().filter(|c| *c == "re-request rev").count(), before + 1);
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!(row["rereview_queued"], false, "{row}");
+    assert!(row["rereview_at"].is_string(), "{row}");
+    assert!(logged(&b, id, "Asked REV to look again on PR #9, held over the rate limit"));
+    prcmds::ask_held_rereviews(&b.app).unwrap();
+    assert_eq!(h.calls().iter().filter(|c| *c == "re-request rev").count(), before + 1, "sent once");
+}
+
+#[test]
+fn a_queued_ask_the_host_refuses_is_tried_again_not_dropped() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    limit(&h);
+    b.post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"}));
+    *h.held.lock() = None;
+    *h.write_error.lock() = Some("Bitbucket said 500".into());
+    prcmds::ask_held_rereviews(&b.app).unwrap();
+    let f = b.flow(id);
+    assert_eq!(f["rereview_asks"]["rev"]["queued"], true, "kept for the next try");
+    assert!(f["rereview_retry_at"].is_string(), "{f}");
+    assert!(logged(&b, id, "Couldn't ask REV to look again on PR #9 yet"));
+}
+
+#[test]
+fn the_re_review_ask_clears_when_that_reviewer_asks_for_changes_again_or_approves() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    b.post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "rereview");
+    let mut rec = h.rec.lock().clone();
+    rec.reviewers = vec![Reviewer { changes_at: Some("2099-01-01T00:00:00Z".into()), ..reviewer("rev", "changes") }];
+    fake(&b, rec.clone());
+    poll(&b);
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!((row["state"].as_str(), row["rereview_at"].is_null()), (Some("changes"), true), "a new round: {row}");
+    assert!(b.flow(id)["rereview_asks"].get("rev").is_none(), "{}", b.flow(id));
+    rec.reviewers = vec![reviewer("rev", "approved")];
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "approved");
+}
+
 #[test]
 fn a_reply_while_the_host_account_is_limited_is_posted_by_the_board_once_it_lifts() {
     let b = board_with(|_| {});

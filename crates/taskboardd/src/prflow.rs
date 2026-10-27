@@ -1180,6 +1180,40 @@ fn waiting_since(f: &Row, rec: &Value) -> Option<Value> {
     (since != had).then_some(Value::Object(since))
 }
 
+/// Whether `ask` (an entry of `rereview_asks`: `tb pr addressed` asked the reviewer to look again)
+/// still stands for reviewer `r` as just read: until they review again. An approval or a comment
+/// ends it, and so does a request for changes newer than the one it answered.
+pub fn rereview_stands(ask: &Value, r: &Value) -> bool {
+    match r["state"].as_str().unwrap_or("") {
+        "approved" | "commented" => false,
+        "changes" => match (ask["changes_at"].as_str().and_then(parse_iso), r["changes_at"].as_str().and_then(parse_iso)) {
+            (Some(was), Some(now)) => now <= was,
+            (None, Some(now)) => ask["at"].as_str().and_then(parse_iso).is_some_and(|at| now <= at),
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
+/// The re-review ask on reviewer `r` that still stands, if any.
+pub fn rereview_ask<'a>(f: &'a Row, r: &Value) -> Option<&'a Value> {
+    let user = r["user"].as_str().filter(|u| !u.is_empty())?.to_lowercase();
+    f.get("rereview_asks")?.get(&user).filter(|a| rereview_stands(a, r))
+}
+
+/// `rereview_asks` updated by a read: an ask drops out once its reviewer reviewed again or left the
+/// PR. None when unchanged (or the record has no reviewer list).
+fn rereview_asks(f: &Row, rec: &Value) -> Option<Value> {
+    let had = f.get("rereview_asks").and_then(|v| v.as_object())?;
+    let list = rec["reviewers"].as_array()?;
+    let kept: serde_json::Map<String, Value> = had
+        .iter()
+        .filter(|(user, ask)| list.iter().any(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user)) && rereview_stands(ask, r)))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    (kept.len() != had.len()).then_some(Value::Object(kept))
+}
+
 pub fn swapped_off(f: &Row) -> Vec<String> {
     str_list(f.get("swapped_off").unwrap_or(&Value::Null))
 }
@@ -1570,6 +1604,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     if let Some(since) = waiting_since(&f, rec) {
         changes.push(("waiting_since", since));
+    }
+    if let Some(asks) = rereview_asks(&f, rec) {
+        changes.push(("rereview_asks", asks));
     }
     if !head.is_empty() {
         changes.push(("head", json!(head)));
