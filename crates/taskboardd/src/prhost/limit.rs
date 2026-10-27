@@ -56,6 +56,18 @@
 //! a priority read or a queued write waits on the account. A background read that can't go within
 //! [`BACKGROUND_WAIT_SECS`] is skipped with an error; the next poll asks again.
 //!
+//! # Sharing reads
+//!
+//! The same read on an account goes out once ([`Gate::read`]): a read whose URL is already in flight
+//! waits for that answer instead of sending its own, and an answer is kept for [`KEEP_SECS`] for the
+//! same read again. Only the read that goes counts in the limits. A write drops the reads it may
+//! change once it's done ([`Limits::wrote`]): a write to a PR (`…/pullrequests/<n>…`) drops that PR's
+//! reads and the account's reads of no one PR (lists, searches, commit statuses); any other write
+//! drops all the account's reads. A read in flight then still answers those already waiting on it, but
+//! isn't kept and later reads don't wait on it. A host's error is shared with those waiting but not
+//! kept; a read that never reached the host (skipped, or the account limited) lets each one waiting
+//! try itself.
+//!
 //! # On the Days page
 //!
 //! Each stretch the board couldn't work with an account goes in `host_limits` ([`Span`], written on
@@ -78,7 +90,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -139,6 +151,8 @@ const PRIORITY_SHARE: f64 = 0.2;
 pub const PRIORITY_WAIT_SECS: f64 = 60.0;
 /// A background read that can't go within this is skipped.
 pub const BACKGROUND_WAIT_SECS: f64 = 5.0;
+/// How long a read's answer is kept for the same read on the account.
+pub const KEEP_SECS: f64 = 30.0;
 
 /// A limit with no `Retry-After` / reset: 5 minutes, doubling while it keeps coming back.
 const FIRST_BACKOFF_SECS: f64 = 300.0;
@@ -356,6 +370,8 @@ pub struct Limits {
     log: Mutex<Vec<String>>,
     /// The last PR poll by host.
     polls: Mutex<HashMap<String, Poll>>,
+    /// Reads in flight or answered lately, by account and URL ([`Gate::read`]).
+    shared: Mutex<HashMap<(String, String), Shared>>,
 }
 
 /// What one PR poll cost on a host.
@@ -875,6 +891,131 @@ pub fn limits() -> &'static Limits {
     ALL.get_or_init(Limits::default)
 }
 
+/// A read shared on an account: in flight, or answered lately.
+#[derive(Debug)]
+enum Shared {
+    Flying(Arc<Flight>),
+    Kept { at: f64, v: Value },
+}
+
+/// A read one caller makes for everyone asking the same.
+#[derive(Debug, Default)]
+pub struct Flight {
+    landed: Mutex<Option<Landed>>,
+    done: parking_lot::Condvar,
+}
+
+impl Flight {
+    fn wait(&self) -> Landed {
+        let mut landed = self.landed.lock();
+        loop {
+            match &*landed {
+                Some(l) => return l.clone(),
+                None => self.done.wait(&mut landed),
+            }
+        }
+    }
+}
+
+/// How a shared read ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Landed {
+    /// The host's answer, for everyone waiting.
+    Answer(std::result::Result<Value, String>),
+    /// It never reached the host (skipped, or the account limited): each one waiting tries itself.
+    Retry,
+}
+
+/// A read's place among the account's shared reads ([`Limits::join`]).
+#[derive(Debug)]
+pub enum Join {
+    /// The answer kept from the same read lately.
+    Kept(Value),
+    /// The same read is in flight: wait for it.
+    Wait(Arc<Flight>),
+    /// None is: this caller makes it, and lands it for the rest ([`Limits::land`]).
+    Lead(Arc<Flight>),
+}
+
+#[cfg(test)]
+impl Join {
+    fn kept(self) -> Option<Value> {
+        match self {
+            Join::Kept(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+/// The PR a host URL is about: its path up to `pullrequests/<n>`, lowercased; None for a read of no
+/// one PR.
+fn pr_scope(url: &str) -> Option<String> {
+    const MARK: &str = "/pullrequests/";
+    let path = url.split(['?', '#']).next()?.to_ascii_lowercase();
+    let at = path.find(MARK)? + MARK.len();
+    let n = path[at..].split('/').next()?;
+    (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then(|| path[..at + n.len()].to_string())
+}
+
+impl Limits {
+    /// A read of `url` on account `key`: the answer kept from the last [`KEEP_SECS`], else the same
+    /// read in flight, else this caller leads it.
+    pub fn join(&self, key: &str, url: &str, now: f64) -> Join {
+        let mut shared = self.shared.lock();
+        shared.retain(|_, s| !matches!(s, Shared::Kept { at, .. } if now - *at >= KEEP_SECS));
+        let k = (key.to_string(), url.to_string());
+        match shared.get(&k) {
+            Some(Shared::Kept { v, .. }) => Join::Kept(v.clone()),
+            Some(Shared::Flying(f)) => Join::Wait(f.clone()),
+            None => {
+                let f = Arc::new(Flight::default());
+                shared.insert(k, Shared::Flying(f.clone()));
+                Join::Lead(f)
+            }
+        }
+    }
+
+    /// The read `flight` led landed: wakes those waiting on it, and keeps its answer unless it's an
+    /// error or a write dropped the read meanwhile.
+    pub fn land(&self, key: &str, url: &str, flight: &Arc<Flight>, landed: Landed, now: f64) {
+        {
+            let mut shared = self.shared.lock();
+            let k = (key.to_string(), url.to_string());
+            if matches!(shared.get(&k), Some(Shared::Flying(f)) if Arc::ptr_eq(f, flight)) {
+                match &landed {
+                    Landed::Answer(Ok(v)) => shared.insert(k, Shared::Kept { at: now, v: v.clone() }),
+                    _ => shared.remove(&k),
+                };
+            }
+        }
+        *flight.landed.lock() = Some(landed);
+        flight.done.notify_all();
+    }
+
+    /// A write to `url` on account `key` is done: drops the account's shared reads it may change. A
+    /// write to a PR drops that PR's reads and those of no one PR; any other write drops them all.
+    pub fn wrote(&self, key: &str, url: &str) {
+        let scope = pr_scope(url);
+        self.shared.lock().retain(|(k, u), _| k != key || scope.as_ref().is_some_and(|s| pr_scope(u).is_some_and(|r| &r != s)));
+    }
+}
+
+/// Lands a led read when the leader is done with it, or `Retry` should it unwind before it lands, so
+/// those waiting never wait forever.
+struct Leading<'a> {
+    l: &'a Limits,
+    key: &'a str,
+    url: &'a str,
+    flight: Arc<Flight>,
+    landed: Option<Landed>,
+}
+
+impl Drop for Leading<'_> {
+    fn drop(&mut self) {
+        self.l.land(self.key, self.url, &self.flight, self.landed.take().unwrap_or(Landed::Retry), now_ts());
+    }
+}
+
 /// A read's turn under the minute's cap ([`Limits::read_turn`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Turn {
@@ -941,6 +1082,48 @@ impl Gate {
             }
             Err((e, None)) => Err(e),
         }
+    }
+
+    /// A read of `url` through [`call`](Gate::call), shared on the account (see "Sharing reads"): the
+    /// same read in flight is waited for, and a kept answer is used, instead of calling the host.
+    pub fn read(&self, url: &str, f: impl FnOnce() -> std::result::Result<(Value, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<Value, String> {
+        self.read_on(limits(), url, f)
+    }
+
+    fn read_on(&self, l: &Limits, url: &str, f: impl FnOnce() -> std::result::Result<(Value, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<Value, String> {
+        loop {
+            let flight = match l.join(&self.key, url, now_ts()) {
+                Join::Kept(v) => return Ok(v),
+                Join::Wait(flight) => match flight.wait() {
+                    Landed::Answer(a) => return a,
+                    Landed::Retry => continue,
+                },
+                Join::Lead(flight) => flight,
+            };
+            let mut lead = Leading { l, key: &self.key, url, flight, landed: None };
+            let mut reached = false;
+            let res = self.call_on(l, BACKGROUND_WAIT_SECS, false, || {
+                reached = true;
+                f()
+            });
+            lead.landed = Some(match reached {
+                true => Landed::Answer(res.clone()),
+                false => Landed::Retry,
+            });
+            return res;
+        }
+    }
+
+    /// A write to `url` through [`call`](Gate::call); then drops the shared reads it may change
+    /// ([`Limits::wrote`]).
+    pub fn write<T>(&self, url: &str, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+        self.write_on(limits(), url, f)
+    }
+
+    fn write_on<T>(&self, l: &Limits, url: &str, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+        let res = self.call_on(l, BACKGROUND_WAIT_SECS, true, f);
+        l.wrote(&self.key, url);
+        res
     }
 
     /// How long a read waits for its turn ([`Limits::read_turn`]); a background read asks again until
@@ -1675,5 +1858,179 @@ mod tests {
         let st = l.status(T0);
         let at = st[0]["poll_text"].as_str().unwrap().split(", at ").nth(1).unwrap().split(',').next().unwrap().to_string();
         assert!(at.ends_with("am") || at.ends_with("pm"), "12-hour time: {at}");
+    }
+
+    const PR1: &str = "https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/1";
+    const PR2: &str = "https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/2";
+
+    /// Who holds the read of `url` in flight: the shared map, its leader and each one waiting.
+    fn holding(l: &Limits, key: &str, url: &str) -> usize {
+        match l.shared.lock().get(&(key.to_string(), url.to_string())) {
+            Some(Shared::Flying(f)) => Arc::strong_count(f),
+            _ => 0,
+        }
+    }
+
+    fn wait_until_held(l: &Limits, key: &str, url: &str, n: usize) {
+        let give_up = now_ts() + 5.0;
+        while holding(l, key, url) < n {
+            assert!(now_ts() < give_up, "{n} never held the read");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn calls(l: &Limits, key: &str) -> usize {
+        l.accounts.lock().get(key).map_or(0, |a| a.calls.len())
+    }
+
+    #[test]
+    fn pr_scope_is_the_url_up_to_the_pr_number() {
+        assert_eq!(pr_scope(&format!("{PR1}/comments?pagelen=100")).as_deref(), Some("https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/1"));
+        assert_eq!(pr_scope(PR1), pr_scope(&format!("{PR1}/merge")));
+        assert_ne!(pr_scope(PR1), pr_scope(&format!("{PR1}2")), "PR 12 isn't PR 1");
+        assert_eq!(pr_scope("https://dev.azure.com/o/p/_apis/git/repositories/r/pullRequests/7?x=1"), pr_scope("https://dev.azure.com/o/p/_apis/git/repositories/r/pullrequests/7"));
+        assert_eq!(pr_scope("https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests?state=OPEN"), None);
+        assert_eq!(pr_scope("https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/"), None);
+        assert_eq!(pr_scope("https://api.bitbucket.org/2.0/repositories/ws/repo/commit/abc/statuses"), None);
+    }
+
+    #[test]
+    fn the_same_read_in_flight_goes_out_once_and_both_get_its_answer() {
+        let l = Limits::default();
+        let gate = Gate::new("bitbucket", "bb:fly".into());
+        let reached = std::sync::atomic::AtomicUsize::new(0);
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let (gate, l, reached) = (&gate, &l, &reached);
+        let (first, second) = std::thread::scope(|s| {
+            let first = s.spawn(move || {
+                gate.read_on(l, PR1, || {
+                    reached.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    wait.recv().unwrap();
+                    Ok((json!({"id": 1}), None))
+                })
+            });
+            wait_until_held(l, "bb:fly", PR1, 2);
+            let second = s.spawn(|| {
+                gate.read_on(l, PR1, || {
+                    reached.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok((json!({"id": "its own"}), None))
+                })
+            });
+            wait_until_held(l, "bb:fly", PR1, 3);
+            go.send(()).unwrap();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(first, Ok(json!({"id": 1})));
+        assert_eq!(second, Ok(json!({"id": 1})), "the second waited for the first's answer");
+        assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 1, "one read reached the host");
+        assert_eq!(calls(l, "bb:fly"), 1, "and counts as one call");
+    }
+
+    #[test]
+    fn an_answer_is_kept_30s_for_the_same_read_on_the_account() {
+        let l = Limits::default();
+        let gate = Gate::new("bitbucket", "bb:keep".into());
+        let mut reached = 0;
+        for _ in 0..3 {
+            let v = gate
+                .read_on(&l, PR1, || {
+                    reached += 1;
+                    Ok((json!({"id": 1}), None))
+                })
+                .unwrap();
+            assert_eq!(v, json!({"id": 1}));
+        }
+        assert_eq!(reached, 1, "the kept answer was used");
+        assert_eq!(calls(&l, "bb:keep"), 1);
+        assert!(matches!(l.join("bb:keep", &format!("{PR1}/comments"), now_ts()), Join::Lead(_)), "another URL isn't shared");
+        assert!(matches!(l.join("bb:other", PR1, now_ts()), Join::Lead(_)), "another account isn't shared");
+        assert!(matches!(l.join("bb:keep", PR1, now_ts() + KEEP_SECS - 1.0), Join::Kept(_)));
+        assert!(matches!(l.join("bb:keep", PR1, now_ts() + KEEP_SECS), Join::Lead(_)), "it's read again after 30s");
+    }
+
+    #[test]
+    fn a_write_to_a_pr_drops_its_reads_and_lists_but_not_another_pr_s() {
+        let l = Limits::default();
+        let gate = Gate::new("bitbucket", "bb:w".into());
+        let list = "https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests?state=OPEN";
+        let comments = format!("{PR1}/comments?pagelen=100");
+        for url in [PR1, comments.as_str(), PR2, list] {
+            gate.read_on(&l, url, || Ok((json!(url), None))).unwrap();
+        }
+        Gate::new("bitbucket", "bb:else".into()).read_on(&l, PR1, || Ok((json!("else"), None))).unwrap();
+        let mut wrote = 0;
+        gate.write_on(&l, &format!("{PR1}/merge"), || {
+            wrote += 1;
+            Ok(((), None))
+        })
+        .unwrap();
+        assert_eq!(wrote, 1);
+        let now = now_ts();
+        assert!(matches!(l.join("bb:w", PR1, now), Join::Lead(_)), "the PR's read is dropped");
+        assert!(matches!(l.join("bb:w", &comments, now), Join::Lead(_)), "and its comments");
+        assert!(matches!(l.join("bb:w", list, now), Join::Lead(_)), "and the list it's in");
+        assert_eq!(l.join("bb:w", PR2, now).kept(), Some(json!(PR2)), "another PR's read stays");
+        assert_eq!(l.join("bb:else", PR1, now).kept(), Some(json!("else")), "another account's stays");
+        l.wrote("bb:w", "https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests");
+        assert!(matches!(l.join("bb:w", PR2, now), Join::Lead(_)), "a write to no one PR drops them all");
+        assert_eq!(l.join("bb:else", PR1, now).kept(), Some(json!("else")));
+    }
+
+    #[test]
+    fn a_read_in_flight_when_a_write_lands_answers_its_waiters_but_isn_t_kept_or_joined() {
+        let l = Limits::default();
+        let Join::Lead(before) = l.join("bb:1", PR1, T0) else { panic!("no read in flight yet") };
+        let Join::Wait(waiting) = l.join("bb:1", PR1, T0) else { panic!("the same read waits") };
+        assert!(Arc::ptr_eq(&before, &waiting));
+        l.wrote("bb:1", PR1);
+        let Join::Lead(after) = l.join("bb:1", PR1, T0 + 1.0) else { panic!("a read after the write doesn't wait on the one before") };
+        l.land("bb:1", PR1, &before, Landed::Answer(Ok(json!("old"))), T0 + 2.0);
+        assert_eq!(waiting.wait(), Landed::Answer(Ok(json!("old"))), "those already waiting get its answer");
+        assert!(matches!(l.join("bb:1", PR1, T0 + 3.0), Join::Wait(f) if Arc::ptr_eq(&f, &after)), "the answer from before the write isn't kept");
+        l.land("bb:1", PR1, &after, Landed::Answer(Ok(json!("new"))), T0 + 4.0);
+        assert_eq!(l.join("bb:1", PR1, T0 + 5.0).kept(), Some(json!("new")));
+    }
+
+    #[test]
+    fn a_host_error_is_shared_with_those_waiting_but_not_kept() {
+        let l = Limits::default();
+        let Join::Lead(f) = l.join("bb:1", PR1, T0) else { panic!() };
+        let Join::Wait(w) = l.join("bb:1", PR1, T0) else { panic!() };
+        l.land("bb:1", PR1, &f, Landed::Answer(Err("Bitbucket answered 500".into())), T0 + 1.0);
+        assert_eq!(w.wait(), Landed::Answer(Err("Bitbucket answered 500".into())));
+        assert!(matches!(l.join("bb:1", PR1, T0 + 2.0), Join::Lead(_)), "the next read asks again");
+    }
+
+    #[test]
+    fn a_read_that_never_reached_the_host_lets_those_waiting_try_themselves() {
+        let l = Limits::default();
+        l.hit("bb:held", "bitbucket", &Hit { retry_after: Some(600.0), ..hit("429") }, now_ts());
+        let gate = Gate::new("bitbucket", "bb:held".into());
+        let Join::Lead(led) = l.join("bb:held", PR1, now_ts()) else { panic!() };
+        let mut reached = false;
+        let res = std::thread::scope(|s| {
+            let waiter = s.spawn(|| {
+                gate.read_on(&l, PR1, || {
+                    reached = true;
+                    Ok((json!(1), None))
+                })
+            });
+            wait_until_held(&l, "bb:held", PR1, 3);
+            l.land("bb:held", PR1, &led, Landed::Retry, now_ts());
+            waiter.join().unwrap()
+        });
+        let e = res.unwrap_err();
+        assert!(e.starts_with("Bitbucket rate-limited until "), "the waiter tried itself and was held: {e}");
+        assert!(!reached);
+        assert!(matches!(l.join("bb:held", PR1, now_ts()), Join::Lead(_)), "nothing kept, nothing left in flight");
+    }
+
+    #[test]
+    fn a_leader_that_unwinds_doesn_t_leave_its_read_in_flight() {
+        let l = Limits::default();
+        let gate = Gate::new("bitbucket", "bb:panic".into());
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gate.read_on(&l, PR1, || panic!("the read broke"))));
+        assert!(unwound.is_err());
+        assert!(matches!(l.join("bb:panic", PR1, now_ts()), Join::Lead(_)));
     }
 }

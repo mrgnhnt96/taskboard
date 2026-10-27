@@ -79,42 +79,52 @@ impl Http for BasicHttp {
     fn limit_key(&self) -> Option<String> {
         Some(self.gate.key.clone())
     }
+    /// A GET is shared on the account with the same read in flight or kept lately; anything else is a
+    /// write, which then drops the reads it may change (`limit` "Sharing reads").
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
+        match method {
+            "GET" => self.gate.read(url, || self.send(method, url, body)),
+            _ => self.gate.write(url, || self.send(method, url, body)),
+        }
+    }
+}
+
+impl BasicHttp {
+    /// One call to the host, as the gate takes it: the answer, and the rate limit its headers report.
+    fn send(&self, method: &str, url: &str, body: Option<&Value>) -> std::result::Result<(Value, Option<super::limit::Hit>), (String, Option<super::limit::Hit>)> {
         let svc = self.service;
-        self.gate.call(method != "GET", || {
-            let req = self.agent.request(method, url).set("Authorization", &self.auth).set("Accept", "application/json");
-            let res = match body {
-                Some(b) => req.send_json(b.clone()),
-                None => req.call(),
-            };
-            match res {
-                Ok(r) => {
-                    let hit = limit_headers(&r, false, &format!("{svc} said the account has no calls left this hour"));
-                    if let Some(h) = headroom(&r).filter(|_| hit.is_none()) {
-                        self.gate.headroom(&h);
-                    }
-                    let text = r.into_string().unwrap_or_default();
-                    if text.trim().is_empty() {
-                        return Ok((Value::Null, hit));
-                    }
-                    Ok((serde_json::from_str(&text).unwrap_or(Value::Null), hit))
+        let req = self.agent.request(method, url).set("Authorization", &self.auth).set("Accept", "application/json");
+        let res = match body {
+            Some(b) => req.send_json(b.clone()),
+            None => req.call(),
+        };
+        match res {
+            Ok(r) => {
+                let hit = limit_headers(&r, false, &format!("{svc} said the account has no calls left this hour"));
+                if let Some(h) = headroom(&r).filter(|_| hit.is_none()) {
+                    self.gate.headroom(&h);
                 }
-                Err(ureq::Error::Status(code, r)) => {
-                    let hit = limit_headers(&r, code == 429, &format!("{svc} answered {code}"));
-                    let v: Value = r.into_json().unwrap_or(Value::Null);
-                    let why = v["error"]["message"].as_str().unwrap_or("").to_string();
-                    Err((
-                        match code {
-                            401 if svc == "Bitbucket" => "Bitbucket answered 401: it didn't accept Taskboard's Bitbucket token; sign in again in Settings ▸ Accounts".to_string(),
-                            _ if why.is_empty() => format!("{svc} answered {code}"),
-                            _ => format!("{svc} answered {code}: {why}"),
-                        },
-                        hit,
-                    ))
+                let text = r.into_string().unwrap_or_default();
+                if text.trim().is_empty() {
+                    return Ok((Value::Null, hit));
                 }
-                Err(_) => Err((format!("Can't reach {svc}"), None)),
+                Ok((serde_json::from_str(&text).unwrap_or(Value::Null), hit))
             }
-        })
+            Err(ureq::Error::Status(code, r)) => {
+                let hit = limit_headers(&r, code == 429, &format!("{svc} answered {code}"));
+                let v: Value = r.into_json().unwrap_or(Value::Null);
+                let why = v["error"]["message"].as_str().unwrap_or("").to_string();
+                Err((
+                    match code {
+                        401 if svc == "Bitbucket" => "Bitbucket answered 401: it didn't accept Taskboard's Bitbucket token; sign in again in Settings ▸ Accounts".to_string(),
+                        _ if why.is_empty() => format!("{svc} answered {code}"),
+                        _ => format!("{svc} answered {code}: {why}"),
+                    },
+                    hit,
+                ))
+            }
+            Err(_) => Err((format!("Can't reach {svc}"), None)),
+        }
     }
 }
 
