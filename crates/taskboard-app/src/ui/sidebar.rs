@@ -240,7 +240,9 @@ fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     }
     wrap = wrap.child(crate::ui::hours::pill(m, t, cx));
     if let Some(u) = st.get("usage").and_then(crate::app::usage_view) {
-        wrap = wrap.child(crate::app::usage_pill(t, &u));
+        wrap = wrap.child(
+            div().id("usage-pill-go").cursor_pointer().child(crate::app::usage_pill(t, &u)).on_click(cx.listener(|m, _, _, cx| m.go(crate::app::Page::Days, cx))),
+        );
     }
     wrap = wrap.children(crate::ui::prwatch::pills(&st, t));
     if let Some(h) = crate::app::hooks_item(m, t, cx) {

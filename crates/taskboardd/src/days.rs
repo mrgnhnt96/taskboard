@@ -653,6 +653,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     day_json["peak_first"] = json!(s.running.iter().position(|n| *n == peak && peak > 0));
     day_json["running"] = json!(s.running);
     day_json["hourly"] = json!(s.hourly);
+    day_json["usage"] = crate::usage::day_slots(app, bounds(date).0, now)?;
     day_json["lanes"] = json!(lanes);
     day_json["waits"] = json!(waits);
     day_json["tasks"] = json!(rows.iter().filter(|(p, _)| !hide.contains(*p)).flat_map(|(_, v)| v["tasks"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>());
@@ -800,6 +801,7 @@ pub fn cleanup(app: &App) -> Result<Value> {
             p![before],
         )?;
         let l = app.db.changed("DELETE FROM session_events WHERE at < ?", p![before])?;
+        app.db.changed("DELETE FROM usage_samples WHERE at < ?", p![before])?;
         Ok((e, s, l))
     })?;
     let days = match summary_days(app) {

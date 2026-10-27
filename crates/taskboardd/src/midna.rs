@@ -1088,6 +1088,9 @@ pub fn sync_loop(app: Arc<App>) {
             Ok(()) | Err(MidnaError::Down(_)) => {}
             Err(MidnaError::Refused(e)) => app.info(format!("midna: list failed: {e}")),
         }
+        if let Err(e) = crate::usage::record(&app) {
+            app.info(format!("usage: couldn't keep the reading: {}", e.message));
+        }
         app.sleep(app.cfg.intervals.midna_sync);
     }
 }
