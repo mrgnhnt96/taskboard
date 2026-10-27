@@ -417,6 +417,14 @@ local_hint = ""                      # how to turn a local bit on while testing,
 [releases]
 on = false
 
+# Pre-PR code review (docs/REVIEW-PROTOCOL.md): with a command set, a task's `tb submit` waits in the
+# "in code review" stage while the board runs it with sh -c in the task's worktree. A project can name
+# its own or turn it off (`tb project set <name> --code-review '<command>'|none|default`).
+[code_review]
+command = ""                          # empty: no review stage
+timeout_mins = 30                     # the reviewer is killed past this; a failed or timed-out one is tried once more
+max_rounds = 5
+
 # Who reviews a PR (`tb pr reviewers` with no names, and the `ask` stage): `count` people from the
 # project's roster (`tb reviewers`), one a main contributor of the changed files, the rest in turn.
 # A reviewer is due at their last ask + open asks x turn_gap_hours / weight; weight = automation level

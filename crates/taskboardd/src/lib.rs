@@ -18,6 +18,7 @@ pub mod builds;
 pub mod chain;
 pub mod checkin;
 pub mod clock;
+pub mod code_review;
 pub mod comments;
 pub mod config;
 pub mod days;
@@ -182,6 +183,7 @@ pub fn start_threads(app: &Arc<App>) {
         spawn(app, "suggest", suggest::run);
         spawn(app, "spans", spans::run);
         spawn(app, "review", review::run);
+        spawn(app, "code-review", code_review::run);
     } else {
         spawn(app, "spool", |a| {
             while !a.stopping() {

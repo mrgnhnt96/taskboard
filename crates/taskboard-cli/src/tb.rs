@@ -1872,6 +1872,9 @@ enum ProjectCmd {
         /// A command tb release cut runs in the checkout, with the release name, before recording the release (none: no script)
         #[arg(long = "release-script")]
         release_script: Option<String>,
+        /// The reviewer the board runs on a task's code before its PR (docs/REVIEW-PROTOCOL.md): a command, none, or default (config.toml's [code_review] command)
+        #[arg(long = "code-review")]
+        code_review: Option<String>,
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
@@ -5518,6 +5521,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 match c.report_progress("tb.done", f, task.as_deref())? {
                     None => out(SAVED),
                     Some(v) if !v["task"].is_string() => out(NO_TASK),
+                    Some(v) if v["code_review"] == true => out(v["message"].as_str().unwrap_or("")),
                     Some(v) => out(&format!("{} is submitted.{}", v["task"].as_str().unwrap_or(""), then_next(&v))),
                 }
                 return Ok(0);
@@ -5544,6 +5548,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             };
             if !v["task"].is_string() {
                 out(NO_TASK);
+                return Ok(0);
+            }
+            if v["code_review"] == true {
+                out(v["message"].as_str().unwrap_or(""));
                 return Ok(0);
             }
             let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
@@ -6964,6 +6972,11 @@ fn project_line(p: &Value) -> String {
     };
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
+    let review = match (p["code_review"].as_str(), p["code_review_set"].as_str()) {
+        (Some(cmd), _) => format!(" · code review {cmd}"),
+        (None, Some(_)) => " · no code review".to_string(),
+        (None, None) => String::new(),
+    };
     let gaps: String = p["setup_gaps"]
         .as_array()
         .map(|a| a.iter().map(|g| format!("\n  Needs setup: {}. To fix it: {}", g["text"].as_str().unwrap_or(""), g["fix"].as_str().unwrap_or(""))).collect())
@@ -6973,7 +6986,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().filter_map(|w| w.as_str()).map(|w| format!("\n  Worktree no task claims (left for you): {w}")).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
+        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{review}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -7038,7 +7051,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, releases, release_tags, release_script } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, releases, release_tags, release_script, code_review } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             for (key, flag, v) in [
                 ("min_slots", "--min-slots", min_slots),
@@ -7077,6 +7090,9 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             if let Some(s) = release_script {
                 body.insert("release_script".into(), json!(s));
+            }
+            if let Some(s) = code_review {
+                body.insert("code_review".into(), json!(s));
             }
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
