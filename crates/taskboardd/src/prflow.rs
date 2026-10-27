@@ -588,16 +588,18 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
             let v = crate::steps::vars_at(app, t, rec["head"].as_str());
             let each: Vec<String> = left.iter().map(|s| s.filled(&v)).map(|s| format!("- {} ({}): {}", s.name, s.what(), s.how(&tb))).collect();
             format!(
-                "It's approved and every check is green, but its merge waits on {} on its head ({}):\n{}\nOnce they've \
+                "{}, but its merge waits on {} on its head ({}):\n{}\nOnce they've \
                  passed, the board moves the PR on to its merge. Don't merge it in this visit.",
+                if is_approved(app, t, rec) { "It's approved and every check is green" } else { "Every check is green" },
                 if left.len() == 1 { "this step" } else { "these steps" },
                 short(rec["head"].as_str().unwrap_or(""), 7),
                 each.join("\n")
             )
         }
         "merge" => format!(
-            "It's approved and every check is green. Merge it with {tb} pr merge {r}: it checks the PR once more, then \
-             merges it with the repository's default strategy and deletes its branch."
+            "{} Merge it with {tb} pr merge {r}: it checks the PR once more, then merges it with the repository's \
+             default strategy and deletes its branch.",
+            if is_approved(app, t, rec) { "It's approved and every check is green." } else { "Every check is green and nothing holds it." }
         ),
         "ask" => format!(
             "{} has reviewed it. Ask for reviews with {tb} pr reviewers {r}: the board picks the reviewers (a main \
@@ -617,6 +619,11 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
         ),
     ]
     .join("\n")
+}
+
+/// Its reviewers approved it, as against reaching the merge with its review skipped or off.
+fn is_approved(app: &App, t: &Row, rec: &Value) -> bool {
+    approved(app, t, &review_of(&flow(t), rec))
 }
 
 /// The conversation a PR visit resumes: the task's own, kept aside while fresh visits run (`resume_cid`).
