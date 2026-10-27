@@ -30,7 +30,7 @@ fn new_board(runner: bool) -> Board {
     std::fs::write(
         &exe,
         format!(
-            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s %s\\n' \"$2\" \"$3\" >> \"$d/calls\"\ncase \"$2 $3\" in\n  session.open*) echo '{{\"id\": \"S9\"}}' ;;\n  session.get*S-slot*) echo '{{\"cwd\": \"{slot}/crates\"}}' ;;\n  session.get*) echo '{{\"cwd\": \"{plain}\"}}' ;;\n  session.list*) echo '{exited}' ;;\n  project.list*|events.list*) echo '[]' ;;\n  settings.get*cleanup.keep*) echo '{{\"value\": [\"main\"]}}' ;;\n  *) echo '{{}}' ;;\nesac\n"
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s %s\\n' \"$2\" \"$3\" >> \"$d/calls\"\ncase \"$2 $3\" in\n  session.open*) echo '{{\"id\": \"S9\"}}' ;;\n  session.get*S-slot*) echo '{{\"cwd\": \"{slot}/crates\"}}' ;;\n  session.get*) echo '{{\"cwd\": \"{plain}\"}}' ;;\n  session.list*) echo '{exited}' ;;\n  project.list*|events.list*) echo '[]' ;;\n  settings.set*cleanup.keep*) echo \"$3\" > \"$d/set\"; echo '{{}}' ;;\n  settings.get*cleanup.keep*) if [ -f \"$d/set\" ]; then sed 's/.*\"value\":\\(\\[.*\\]\\).*/{{\"value\":\\1}}/' \"$d/set\"; else echo '{{\"value\": [\"main\"]}}'; fi ;;\n  *) echo '{{}}' ;;\nesac\n"
         ),
     )
     .unwrap();
@@ -97,7 +97,7 @@ fn a_slot_tab_whose_claude_exited_closes_with_cleanup_off() {
 
 #[test]
 fn the_pool_s_slots_go_in_midna_s_cleanup_keep_once() {
-    let b = new_board(false);
+    let b = new_board(true);
     b.app.db.insert("worktree_slots", vec![("repo", json!(b.plain)), ("n", json!(1)), ("path", json!(b.slot)), ("made_at", json!("2026-10-27T19:47:33Z"))]).unwrap();
     midna::sync_once(&b.app).unwrap();
     midna::sync_once(&b.app).unwrap();
@@ -105,4 +105,31 @@ fn the_pool_s_slots_go_in_midna_s_cleanup_keep_once() {
     assert_eq!(sets, [json!({"key": "cleanup.keep", "value": ["main", b.slot]})], "{sets:?}");
     let gets = b.calls("settings.get").into_iter().filter(|c| c["key"] == "cleanup.keep").count();
     assert_eq!(gets, 1, "a sync with the same slots asks Midna nothing");
+}
+
+#[test]
+fn a_removed_slot_comes_out_of_cleanup_keep_and_the_owners_entries_stay() {
+    let b = new_board(true);
+    b.app.db.insert("worktree_slots", vec![("repo", json!(b.plain)), ("n", json!(1)), ("path", json!(b.slot)), ("made_at", json!("2026-10-27T19:47:33Z"))]).unwrap();
+    midna::sync_once(&b.app).unwrap();
+    b.app.db.x("DELETE FROM worktree_slots", p![]).unwrap();
+    midna::sync_once(&b.app).unwrap();
+    let sets: Vec<Value> = b.calls("settings.set").into_iter().filter(|c| c["key"] == "cleanup.keep").collect();
+    assert_eq!(sets, [json!({"key": "cleanup.keep", "value": ["main", b.slot]}), json!({"key": "cleanup.keep", "value": ["main"]})], "{sets:?}");
+}
+
+#[test]
+fn a_refused_settings_set_is_asked_again_on_the_next_sync() {
+    let b = new_board(true);
+    b.app.db.insert("worktree_slots", vec![("repo", json!(b.plain)), ("n", json!(1)), ("path", json!(b.slot)), ("made_at", json!("2026-10-27T19:47:33Z"))]).unwrap();
+    // Midna down for the set only: a refusal, not the daemon being away.
+    let exe = b.dir.path().join("fake-midna");
+    let ok = std::fs::read_to_string(&exe).unwrap();
+    std::fs::write(&exe, ok.replace("settings.set*cleanup.keep*)", "settings.set*cleanup.keep*) echo nope >&2; exit 1 ;;\n  settings.unused*)")).unwrap();
+    midna::sync_once(&b.app).unwrap();
+    std::fs::write(&exe, ok).unwrap();
+    midna::sync_once(&b.app).unwrap();
+    let sets = b.calls("settings.set").into_iter().filter(|c| c["key"] == "cleanup.keep").count();
+    assert_eq!(sets, 2, "the refused set is tried again");
+    assert_eq!(std::fs::read_to_string(b.dir.path().join("set")).unwrap().contains(&b.slot), true);
 }
