@@ -434,6 +434,14 @@ pub fn task_for_session(app: &App, sid: Option<&str>) -> Result<Option<Row>> {
     }
 }
 
+/// The task terminal `sid` last handed in, once it's on none.
+pub fn submitted_by(app: &App, sid: &str) -> Result<Option<Row>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    app.db.q1("SELECT * FROM tasks WHERE session_id = ? AND status = 'done' ORDER BY finished_at DESC, id DESC LIMIT 1", p![sid])
+}
+
 pub fn get_session(app: &App, sid: Option<&str>) -> Result<Option<Row>> {
     match sid.filter(|s| !s.is_empty()) {
         Some(sid) => app.db.q1("SELECT * FROM sessions WHERE id = ?", p![sid]),

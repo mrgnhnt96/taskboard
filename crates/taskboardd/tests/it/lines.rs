@@ -379,6 +379,18 @@ fn whoami_carries_the_tasks_detail() {
 }
 
 #[test]
+fn whoami_keeps_the_task_a_terminal_handed_in_for_its_status_bar() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    assert!(b.get("whoami?session=s1")["submitted"].is_null(), "not while it's on a task");
+    b.report("tb.done", "s1", json!({"summary": "Fixed it.", "pr": "https://github.com/acme/webapp/pull/7"}));
+    let w = b.get("whoami?session=s1");
+    assert!(w["task"].is_null(), "the terminal is on no task");
+    assert_eq!(w["submitted"]["ref"], t1);
+    assert_eq!(w["submitted"]["pr"]["num"], 7);
+}
+
+#[test]
 fn a_failed_task_handed_in_later_is_submitted_or_done_and_its_terminal_stays_put() {
     let b = new_board();
     let t1 = b.on_task("s1", "Fix the header");
