@@ -876,7 +876,7 @@ fn the_review_step_shows_before_the_pr_opens() {
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
                       "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});
     let text = panel_text(task, json!({}));
-    assert!(text.contains("Pull request Checks and review WD 2 open findings Checks You Review Merged"), "{text}");
+    assert!(text.contains("Merged Checks and review WD 2 open findings Checks You Review Pull request Working"), "newest on top: {text}");
     // From the detail's step results too.
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp",
                       "step_results": [{"name": "Author review", "bar": "WD", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
@@ -884,12 +884,12 @@ fn the_review_step_shows_before_the_pr_opens() {
 }
 
 #[::core::prelude::v1::test]
-fn a_canceled_pr_shows_why_with_its_refs_linked() {
+fn no_pr_shows_why_with_its_refs_linked() {
     let task = json!({"ref": "T5", "id": 5, "title": "Fix it", "status": "done", "project": "webapp",
                       "no_pr": "T3 fixed it in ABC-7.", "ships_pr": true, "no_evidence": "no UI change"});
     let tree = tree(&json!({"task": task, "state": {"jira": {"enabled": true, "site": "acme.atlassian.net"}}, "ui": {}}));
     let text = view::text(&tree);
-    assert!(text.contains("PR canceled: T3 fixed it in ABC-7 .") && text.contains("No evidence: no UI change"), "{text}");
+    assert!(text.contains("No PR: T3 fixed it in ABC-7 .") && text.contains("No evidence: no UI change"), "{text}");
     assert!(view::acts(&tree).iter().any(|a| a == "open-task"), "T3 opens its task");
     let links = format!("{tree:?}");
     assert!(links.contains("https://acme.atlassian.net/browse/ABC-7"), "the ticket links to Jira");
@@ -898,8 +898,8 @@ fn a_canceled_pr_shows_why_with_its_refs_linked() {
 #[::core::prelude::v1::test]
 fn the_pr_plan_shows_on_a_task_without_a_pr() {
     let t = |ships: bool| json!({"ref": "T6", "id": 6, "title": "x", "status": "queued", "project": "webapp", "ships_pr": ships});
-    // The whole way ahead, its steps in place as once the PR is open.
-    assert!(panel_text(t(true), json!({})).contains("Pull request Checks and review Checks You Review Merged"));
+    // The whole way ahead, its steps in place as once the PR is open, the last stop on top.
+    assert!(panel_text(t(true), json!({})).contains("Merged Checks and review Checks You Review Pull request"));
     assert!(!panel_text(t(false), json!({})).contains("Pull request"), "a task that doesn't end in a PR stops at Done");
 }
 

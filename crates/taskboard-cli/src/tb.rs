@@ -94,6 +94,7 @@ enum Cmd {
     /// Hand the task in (a failed one too, with --task): with its PR it waits in review until the PR merges; with --no-pr it's finished
     #[command(alias = "done")]
     Submit {
+        /// What's different now, for the owner: one or two short plain sentences, little to no jargon
         summary: String,
         /// The PR this task opened (or put its link in the summary)
         #[arg(long, conflicts_with_all = ["pr_body", "no_pr"])]
