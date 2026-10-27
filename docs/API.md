@@ -384,7 +384,7 @@ issue_card + {
 
 ### `GET /sessions`
 
-Query: `project=all`. Returns `{"sessions": [session_row]}` (all live Claude terminals). Used by the Sessions page.
+Query: `project=all`. Returns `{"sessions": [session_row]}` (all live Claude terminals). Used by the app's search.
 
 ### `GET /sessions/closed`
 

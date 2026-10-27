@@ -293,6 +293,21 @@ fn the_state_carries_each_projects_release_waits_and_backlog() {
 }
 
 #[test]
+fn the_state_counts_each_projects_open_tasks_outside_goals_and_lists_them() {
+    let (_d, app) = new_board();
+    let g = call(&app, "POST", "/goals", json!({"name": "Ship login", "project": "webapp"}))["id"].as_i64().unwrap();
+    let (open, finished) = (task(&app, "webapp", "Loose end", None), task(&app, "webapp", "Finished one", None));
+    task(&app, "webapp", "Goal work", Some(g));
+    task(&app, "api", "Elsewhere", None);
+    done(&app, finished, None);
+    assert_eq!(state_project(&app, "webapp")["loose_open"], 1, "not done, not in a goal");
+    assert_eq!(state_project(&app, "api")["loose_open"], 1);
+    let got = try_call(&app, "GET", "/tasks", &[("project", "webapp"), ("goal", "none"), ("status", "open")], json!({})).unwrap();
+    let ids: Vec<i64> = got["tasks"].as_array().unwrap().iter().map(|t| t["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, [open]);
+}
+
+#[test]
 fn the_release_list_pages_and_counts_the_whole_project() {
     let (_d, app) = new_board();
     releases_on(&app, "webapp");

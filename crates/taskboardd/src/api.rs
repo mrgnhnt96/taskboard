@@ -999,7 +999,7 @@ fn list_tasks(app: &App, query: &Query) -> Result<Value> {
     let mut rows = vec![];
     for t in app.db.q("SELECT * FROM tasks ORDER BY id DESC", p![])? {
         if ids.as_ref().is_none_or(|ids| ids.contains(&t.id()))
-            && (status == "all" || t.s("status") == Some(status))
+            && (status == "all" || t.s("status") == Some(status) || (status == "open" && t.s("status") != Some("done")))
             && project_match(t.s("project"), project)
             && task_goal_match(app, &t, goal)?
         {

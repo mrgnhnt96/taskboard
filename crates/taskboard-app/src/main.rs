@@ -125,9 +125,8 @@ fn main() {
                 name: "View".into(),
                 items: vec![
                     MenuItem::action("Needs you", app::GoBoard),
-                    MenuItem::action("Running", app::GoSessions),
+                    MenuItem::action("Projects", app::GoProjects),
                     MenuItem::action("Goals", app::GoGoals),
-                    MenuItem::action("Tasks", app::GoTasks),
                     MenuItem::action("Backlog", app::GoBacklog),
                     MenuItem::action("Days", app::GoDays),
                     MenuItem::separator(),

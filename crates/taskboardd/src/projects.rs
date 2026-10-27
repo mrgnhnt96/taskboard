@@ -470,12 +470,17 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
 
 /// The projects with what the Projects page shows of each: `releases` (on or off), and while on its
 /// `latest_release` (`ref`, `name`, `cut_at`; null before the first cut) and `unreleased` count (both
-/// null while off), the projects it `waits_on`, and how many backlog issues it has open (`backlog_open`).
+/// null while off), the projects it `waits_on`, how many backlog issues it has open (`backlog_open`)
+/// and how many tasks outside any goal aren't done (`loose_open`).
 pub fn facts(app: &App, list: &[Value]) -> Result<Vec<Value>> {
     let (latest, unreleased) = crate::releases::latest_and_unreleased(app)?;
     let mut backlog: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for r in app.db.q("SELECT project, COUNT(*) AS n FROM issues WHERE state = 'open' AND project IS NOT NULL GROUP BY project", p![])? {
         backlog.insert(r.st("project"), r.i("n").unwrap_or(0));
+    }
+    let mut loose: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in app.db.q("SELECT project, COUNT(*) AS n FROM tasks WHERE goal_id IS NULL AND status != 'done' AND project IS NOT NULL GROUP BY project", p![])? {
+        loose.insert(r.st("project"), r.i("n").unwrap_or(0));
     }
     let waits = waits_on_overrides(app)?;
     Ok(list
@@ -490,6 +495,7 @@ pub fn facts(app: &App, list: &[Value]) -> Result<Vec<Value>> {
             o.insert("unreleased".into(), if on { json!(unreleased.get(name).copied().unwrap_or(0)) } else { Value::Null });
             o.insert("waits_on".into(), waits.get(name).cloned().filter(|v| v.is_array()).unwrap_or(json!([])));
             o.insert("backlog_open".into(), json!(backlog.get(name).copied().unwrap_or(0)));
+            o.insert("loose_open".into(), json!(loose.get(name).copied().unwrap_or(0)));
             d
         })
         .collect())

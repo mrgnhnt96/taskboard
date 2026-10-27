@@ -551,13 +551,13 @@ fn header_chips_drop_the_attachments_and_open_the_project(cx: &mut gpui_kit::Tes
     press(cx, &w, "att-drop", None);
     w.update(cx, |m, _, cx| super::go(m, &view::Go::Url(String::new()), cx)).unwrap();
     assert!(!ui(|u| u.att_drop));
-    // The project chip: the Tasks page filtered to that project.
+    // The project chip: the Projects page on that project.
     let project = control(cx, &w, "open-project", None).arg;
     assert!(!project.is_empty());
     press(cx, &w, "open-project", Some(&project));
     w.update(cx, |m, _, _| {
-        assert_eq!(m.page, Page::Tasks);
-        assert_eq!(m.tasks.project.as_deref(), Some(project.as_str()));
+        assert_eq!(m.page, Page::Projects);
+        assert_eq!(m.projects.selected.as_deref(), Some(project.as_str()));
     })
     .unwrap();
 }

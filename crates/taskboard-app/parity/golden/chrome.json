@@ -21889,15 +21889,6 @@
       "expect": "(1) Backlog"
     },
     {
-      "name": "title sessions 0",
-      "input": {
-        "fn": "title",
-        "page": "sessions",
-        "needs": 0
-      },
-      "expect": "Sessions"
-    },
-    {
       "name": "mdLite 0",
       "input": {
         "fn": "mdLite",

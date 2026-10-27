@@ -20,11 +20,9 @@ pub mod releases;
 pub mod review;
 pub mod search;
 pub mod select;
-pub mod sessions;
 pub mod sidebar;
 pub mod status;
 pub mod task_panel;
-pub mod tasks;
 pub mod text_input;
 
 /// Both the same answer, or both none: what a page built from one still holds for the other.

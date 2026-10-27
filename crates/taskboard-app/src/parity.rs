@@ -186,7 +186,7 @@ mod tests {
     #[gpui_kit::test]
     fn notification_links_open_the_right_place(cx: &mut gpui_kit::TestAppContext) {
         use crate::app::{Page, Panel};
-        let (w, _rec) = window(cx);
+        let (w, rec) = window(cx);
         w.update(cx, |m, _, cx| m.open_link("taskboard://task/t3", cx)).unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
@@ -199,11 +199,8 @@ mod tests {
         w.update(cx, |m, _, _| assert_eq!(m.page, Page::Goal("G1".into()))).unwrap();
         w.update(cx, |m, _, cx| m.open_link("taskboard://session/fake-s2", cx)).unwrap();
         settle(cx);
-        w.update(cx, |m, _, _| {
-            assert_eq!(m.page, Page::Sessions);
-            assert_eq!(m.sessions.selected.as_deref(), Some("fake-s2"));
-        })
-        .unwrap();
+        w.update(cx, |m, _, _| assert_eq!(m.page, Page::Goal("G1".into()), "a terminal shows in Midna, the page stays")).unwrap();
+        assert!(rec.posts().iter().any(|(p, _)| p == "sessions/fake-s2/focus"));
         w.update(cx, |m, _, cx| m.open_link("taskboard://", cx)).unwrap();
         w.update(cx, |m, _, _| assert_eq!(m.page, Page::Board)).unwrap();
         // The web board's routes, which `tb` prints after its page URL.
@@ -239,26 +236,11 @@ mod tests {
     }
 
     /// Lists keep what they showed when a refresh fails, remember why, and clear it on the
-    /// next good answer (`SS.listErr`, `SS.detailErr`, `goalErr`, `issueErr`).
+    /// next good answer (`goalErr`, `issueErr`).
     #[gpui_kit::test]
     fn failed_fetches_keep_the_page_and_say_why(cx: &mut gpui_kit::TestAppContext) {
         use crate::app::Page;
         let (w, rec) = window(cx);
-        // Sessions: list and detail.
-        rec.fail("sessions", 500, "The board hit an error. It's in the board's log.");
-        rec.fail("sessions/fake-s1", 404, "There's nothing at that address.");
-        w.update(cx, |m, _, cx| {
-            m.sessions.selected = Some("fake-s1".into());
-            m.go(Page::Sessions, cx);
-        })
-        .unwrap();
-        settle(cx);
-        w.update(cx, |m, _, _| {
-            assert_eq!(m.data.errs.sessions.as_deref(), Some("The board hit an error. It's in the board's log."));
-            assert_eq!(m.data.errs.session.as_deref(), Some("There's nothing at that address."));
-            assert!(m.data.session.is_none(), "a failed detail for another terminal shows nothing");
-        })
-        .unwrap();
         // Goal page.
         rec.fail("goals/G1", 500, "Boom.");
         w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();

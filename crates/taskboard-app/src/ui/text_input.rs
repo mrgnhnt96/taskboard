@@ -90,13 +90,6 @@ impl TextField {
         cx.notify();
     }
 
-    /// Select the whole text (typing replaces it).
-    pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        self.selected = 0..self.content.len();
-        self.reversed = false;
-        cx.notify();
-    }
-
     /// Clear, overwriting the old buffer first so a secret doesn't linger in memory.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         if self.content.is_empty() {
