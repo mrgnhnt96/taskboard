@@ -2112,7 +2112,10 @@ fn lens_review(r: &Report, t: &Row) -> Result<()> {
     if r.away(t)? || !r.b("no_lens").trim().is_empty() {
         return Ok(());
     }
-    let Some(review) = crate::lens::review(app, t, cwd)? else { return Ok(()) };
+    // Reading a big checkout takes a while: say so, or tb gives up on a quiet board.
+    let Some(review) = crate::progress::waiting("lens's check of the checkout", crate::progress::WAITING_EVERY, || crate::lens::review(app, t, cwd))? else {
+        return Ok(());
+    };
     app.db.tx(|| {
         for (_, text) in &review.notes {
             r.log(t.id(), "note", text, None)?;
