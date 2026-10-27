@@ -3,6 +3,8 @@
 use serde_json::{json, Value};
 
 use crate::app::App;
+use crate::days::SLOTS;
+use crate::p;
 use crate::util::*;
 
 const WINDOWS: &[(&str, &str)] = &[("five_hour", "5h"), ("seven_day", "7d")];
@@ -151,6 +153,74 @@ pub fn state(app: &App) -> Value {
     }
 }
 
+/// A window's reading is kept when it changes, and this often while it holds, so a gap in the
+/// readings means the board wasn't reading.
+const SAMPLE_EVERY_SECS: f64 = 10.0 * 60.0;
+/// A slot this long past its window's last reading has none.
+const SAMPLE_GAP_SECS: f64 = 30.0 * 60.0;
+const SLOT_SECS: f64 = 600.0;
+
+/// Keeps each window's reading in `usage_samples` when it changed or the last is old.
+pub fn record(app: &App) -> Result<()> {
+    let st = state(app);
+    let now = now_ts();
+    for w in st["windows"].as_array().into_iter().flatten() {
+        let (Some(key), Some(pct)) = (w["key"].as_str(), w["pct"].as_f64()) else { continue };
+        let last = app.db.q1("SELECT at, pct FROM usage_samples WHERE window = ? ORDER BY at DESC LIMIT 1", p![key])?;
+        let held = last.is_some_and(|r| r.f("pct") == Some(pct) && r.s("at").and_then(parse_iso).is_some_and(|t| now - t < SAMPLE_EVERY_SECS));
+        if !held {
+            app.db.insert("usage_samples", vec![("at", json!(iso(now))), ("window", json!(key)), ("pct", json!(pct)), ("resets_at", w["resets_at"].clone())])?;
+        }
+    }
+    Ok(())
+}
+
+/// The day from `from` (its start) per window, in the Days page's 10-minute slots (`slots`). A
+/// window with no reading all day is left out.
+pub fn day_slots(app: &App, from: f64, now: f64) -> Result<Value> {
+    let to = from + SLOTS as f64 * SLOT_SECS;
+    let mut out = Row::new();
+    for (key, _) in WINDOWS {
+        let rows = app.db.q(
+            "SELECT at, pct, resets_at FROM usage_samples WHERE window = ? AND at >= ? AND at < ? ORDER BY at",
+            p![key, iso(from - SAMPLE_GAP_SECS), iso(to)],
+        )?;
+        let samples: Vec<(f64, f64, Option<f64>)> = rows.iter().filter_map(|r| Some((r.s("at").and_then(parse_iso)?, r.f("pct")?, r.s("resets_at").and_then(parse_iso)))).collect();
+        let s = slots(&samples, from, now);
+        if s.iter().any(Option::is_some) {
+            out.insert(key.to_string(), json!(s));
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+/// Each slot's highest reading, else the reading before it while that's recent (0 once its window
+/// reset); None when there's no reading or the slot is still to come.
+fn slots(samples: &[(f64, f64, Option<f64>)], from: f64, now: f64) -> Vec<Option<f64>> {
+    let mut next = 0;
+    let mut last: Option<(f64, f64, Option<f64>)> = None;
+    (0..SLOTS)
+        .map(|n| {
+            let (a, b) = (from + n as f64 * SLOT_SECS, from + (n + 1) as f64 * SLOT_SECS);
+            if a > now {
+                return None;
+            }
+            let mut hi: Option<f64> = None;
+            while let Some(x) = samples.get(next).filter(|x| x.0 < b) {
+                if x.0 >= a {
+                    hi = Some(hi.map_or(x.1, |h| h.max(x.1)));
+                }
+                last = Some(*x);
+                next += 1;
+            }
+            hi.or_else(|| {
+                let (at, pct, resets) = last?;
+                (a - at <= SAMPLE_GAP_SECS).then(|| if resets.is_some_and(|r| r <= a) { 0.0 } else { pct })
+            })
+        })
+        .collect()
+}
+
 /// When the usage is used up, the time it's back: the latest reset of the windows at their limit
 /// (5-hour or 7-day). It holds until that reset unless the window that ran out is reported in a new
 /// period, so a report that leaves the window out, or an older one from before it ran out, can't let
@@ -225,6 +295,22 @@ mod out_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_day_slots_its_readings_and_leaves_gaps_and_the_future_empty() {
+        const FROM: f64 = 1_800_000_000.0;
+        let at = |slot: f64| FROM + slot * SLOT_SECS;
+        let samples = [(at(0.2), 10.0, Some(at(3.0))), (at(0.7), 14.0, Some(at(3.0))), (at(5.5), 30.0, None)];
+        let s = slots(&samples, FROM, at(7.0));
+        assert_eq!(s.len(), SLOTS);
+        assert_eq!(s[0], Some(14.0), "the slot's highest");
+        assert_eq!(s[1], Some(14.0), "held from the last reading");
+        assert_eq!(s[3], Some(0.0), "the window reset");
+        assert_eq!(s[4], None, "too long since a reading");
+        assert_eq!(s[5], Some(30.0));
+        assert_eq!(s[7], Some(30.0));
+        assert_eq!(s[8], None, "still to come");
+    }
 
     fn report(v: Value) -> Row {
         v.as_object().unwrap().clone()

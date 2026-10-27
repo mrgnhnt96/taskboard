@@ -138,6 +138,11 @@ CREATE INDEX IF NOT EXISTS task_states_task ON task_states(task_id, at);
 CREATE TABLE IF NOT EXISTS day_stats(
   date TEXT NOT NULL, project TEXT NOT NULL, data TEXT, at TEXT, PRIMARY KEY(date, project));
 
+-- Each window's usage (`usage.rs`) when it changed, and every few minutes while it holds, for the Days page's usage line.
+CREATE TABLE IF NOT EXISTS usage_samples(
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL, window TEXT NOT NULL, pct REAL NOT NULL, resets_at TEXT);
+CREATE INDEX IF NOT EXISTS usage_samples_window ON usage_samples(window, at);
+
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 
 -- Each `tb start` or goal run the board refused for want of the owner's word, with the prompt it read,

@@ -240,6 +240,9 @@ pub struct View {
     /// Terminals working in each ten-minute slot of the shown hours (`None`: still to come).
     pub running: Vec<Option<i64>>,
     pub peak: i64,
+    /// Each usage window's label and its used percentage in the same slots (`None`: no reading or
+    /// still to come); empty when there's no reading all day.
+    pub usage: Vec<(&'static str, Vec<Option<f64>>)>,
     pub tasks: Vec<TaskRow>,
     pub task_median: String,
     pub task_median_x: f32,
@@ -380,6 +383,13 @@ impl View {
         };
         let running = ((from_hour * 6) as usize..(to_hour * 6) as usize).map(|k| (k <= now_slot).then(|| run.get(k).and_then(|x| x.as_i64()).unwrap_or(0))).collect();
         let peak = day["peak"].as_i64().unwrap_or(0);
+        let usage = [("five_hour", "5h"), ("seven_day", "7d")]
+            .into_iter()
+            .filter_map(|(key, label)| {
+                let all = day["usage"][key].as_array()?;
+                Some((label, ((from_hour * 6) as usize..(to_hour * 6) as usize).map(|k| all.get(k).and_then(|x| x.as_f64())).collect()))
+            })
+            .collect();
 
         // How long tasks took this week: working, then waiting on you.
         let mut tasks: Vec<TaskRow> = arr(v, "week_tasks")
@@ -565,6 +575,7 @@ impl View {
             now_x,
             running,
             peak,
+            usage,
             tasks,
             task_median: if med > 0.0 { dur(med) } else { String::new() },
             task_median_x: (med / task_max) as f32,
@@ -992,7 +1003,65 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
     } else {
         div().flex().flex_col().child(axis).children(lanes).child(running)
     };
-    card(t).child(legend).child(body)
+    card(t).child(legend).child(body).children((!v.usage.is_empty()).then(|| usage_row(v, t, LABEL)))
+}
+
+/// The usage windows' lines over the timeline's hours, 0 to 100%, with each slot's readings on hover.
+fn usage_row(v: &View, t: &Theme, label_w: f32) -> Div {
+    const H: f32 = 56.;
+    let colors = [t.accent, t.goal];
+    let lines: Vec<(Hsla, Vec<Option<f64>>)> = v.usage.iter().zip(colors).map(|((_, pts), c)| (c, pts.clone())).collect();
+    let n = v.running.len().max(1);
+    let grid = t.divider;
+    let chart = canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let (w, h) = (b.size.width.as_f32(), b.size.height.as_f32());
+            let x = |k: usize| b.origin.x + px(w * (k as f32 + 0.5) / n as f32);
+            let y = |pct: f64| b.origin.y + px(h - 2. - (h - 4.) * (pct.clamp(0.0, 100.0) / 100.0) as f32);
+            for g in [50.0, 100.0] {
+                let mut p = PathBuilder::stroke(px(1.)).dash_array(&[px(3.), px(3.)]);
+                p.move_to(point(b.origin.x, y(g)));
+                p.line_to(point(b.origin.x + px(w), y(g)));
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, grid);
+                }
+            }
+            for (c, pts) in &lines {
+                // A run of readings is one line; a slot with none breaks it.
+                let mut p = PathBuilder::stroke(px(2.));
+                let mut prev = false;
+                for (k, pct) in pts.iter().enumerate() {
+                    match pct {
+                        Some(pct) if prev => p.line_to(point(x(k), y(*pct))),
+                        Some(pct) => p.move_to(point(x(k), y(*pct))),
+                        None => {}
+                    }
+                    prev = pct.is_some();
+                }
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, *c);
+                }
+            }
+        },
+    );
+    let targets = div().absolute().inset_0().flex().children((0..n).map(|k| {
+        let at = (v.from_hour * 60 + k as i64 * 10) as f64;
+        let read: Vec<String> = v.usage.iter().filter_map(|(label, pts)| pts.get(k).copied().flatten().map(|p| format!("{label} {}%", p.round() as i64))).collect();
+        div()
+            .id(SharedString::from(format!("days-usage-{k}")))
+            .flex_1()
+            .h_full()
+            .when(!read.is_empty(), |d| d.tooltip(kit::tip(format!("{} · {}", hour_clock(at), read.join(" · ")))))
+    }));
+    let key = div().flex().flex_col().gap(px(2.)).text_color(t.muted).children(v.usage.iter().zip(colors).map(|((label, _), c)| legend_item(t, div().w(px(12.)).h(px(2.)).bg(c), *label)));
+    div()
+        .flex()
+        .border_t_1()
+        .border_color(t.divider)
+        .pt(px(8.))
+        .child(div().w(px(label_w)).flex_none().flex().flex_col().gap(px(4.)).text_size(px(12.)).child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child("Usage")).child(key))
+        .child(div().relative().flex_1().h(px(H)).border_b_1().border_color(t.border_2).child(chart.absolute().top_0().left_0().size_full()).child(targets))
 }
 
 fn hour_clock(min: f64) -> String {
@@ -1338,6 +1407,9 @@ mod tests {
                            "wait_min": 64.0, "peak": 3, "peak_slots": 5, "peak_first": 60});
         d["by_project"] = json!({"webapp": 500.0, "api": 206.0});
         d["running"] = json!(vec![0; 144]);
+        let mut five = vec![Value::Null; 144];
+        five[54] = json!(12.0);
+        d["usage"] = json!({"five_hour": five});
         d["hourly"] = json!(hourly);
         d["waits"] = waits;
         d["tasks"] = json!([{"ref": "T241", "work_min": 184.0, "wait_min": 58.0}]);
@@ -1373,6 +1445,10 @@ mod tests {
         assert!((v.lanes[0].bars[0].x0 - 0.0292).abs() < 0.001, "9:14 is just after 9");
         assert_eq!(v.running.len(), 48);
         assert_eq!(v.running[47], None, "after now is still to come");
+        assert_eq!(v.usage.len(), 1, "only the windows with a reading");
+        assert_eq!(v.usage[0].0, "5h");
+        assert_eq!(v.usage[0].1.len(), 48);
+        assert_eq!(v.usage[0].1[0], Some(12.0), "9 AM's slot");
         assert_eq!(v.tasks[0].state, "needs you");
         assert_eq!(v.tasks[0].total, "4h 02m");
         assert_eq!(v.notes[0], ("58m".to_string(), "longest wait on you · T241".to_string()));
