@@ -441,6 +441,11 @@ impl PrHost for BitbucketHost {
         Ok(stats.iter().filter_map(|d| d["new"]["path"].as_str().or_else(|| d["old"]["path"].as_str())).map(str::to_string).collect())
     }
 
+    fn commits(&self, pr: &PrRef) -> HostResult<Vec<String>> {
+        let list = self.get_all(&format!("{}/commits?pagelen=100&fields=next,values.hash", self.pr_url(pr)), 3)?;
+        Ok(list.iter().filter_map(|c| c["hash"].as_str()).map(str::to_string).collect())
+    }
+
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
         let runs = match self.get_all(&format!("{}/pipelines/?sort=-created_on&pagelen=50", self.repo_url(&pr.repo)), 1) {
             Ok(r) => r,

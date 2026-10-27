@@ -651,6 +651,47 @@ fn stacked_base(app: &App, t: &Row, rec: &Value) -> Result<Option<String>> {
     }))
 }
 
+/// Other tasks' open PRs in this PR's repo whose head commit this PR carries. Merging it would bring
+/// their work into its base too, and the host would mark them merged out from under whoever still works
+/// on them (lens#22 carried #21's head and merged it). Asks the host for the PR's commits only when there
+/// are open PRs to look for; when it can't say, the merge waits.
+fn carried_prs(app: &App, t: &Row, pr: &PrRef) -> Result<Option<String>> {
+    let others: Vec<Row> = app
+        .db
+        .q(
+            "SELECT * FROM tasks WHERE id != ? AND pr_host = ? AND pr_repo = ? AND pr_num IS NOT NULL AND pr_num != ? \
+             AND json_extract(pr_flow, '$.rec.head') IS NOT NULL ORDER BY id",
+            p![t.id(), pr.host, pr.repo, pr.num],
+        )?
+        .into_iter()
+        .filter(board::pr_still_open)
+        .collect();
+    if others.is_empty() {
+        return Ok(None);
+    }
+    let h = host(app, pr)?;
+    let commits = on_host(pr, "listing the commits of", || h.commits(pr))
+        .map_err(|e| ApiError::new(502, format!("Couldn't list PR #{}'s commits to check that it carries no other open PR's work: {e}.", pr.num)))?;
+    // (task, PR number, short head) of each carried PR, once per PR.
+    let mut carried: Vec<(String, i64, String)> = vec![];
+    for o in &others {
+        let head = flow(o).get("rec").and_then(|r| r["head"].as_str().map(str::to_string)).unwrap_or_default();
+        let num = o.i0("pr_num");
+        let has = |c: &String| !c.is_empty() && (c.starts_with(&head) || head.starts_with(c.as_str()));
+        if head.is_empty() || carried.iter().any(|c| c.1 == num) || !commits.iter().any(has) {
+            continue;
+        }
+        carried.push((rf("task", o.id()), num, head.chars().take(7).collect()));
+    }
+    let Some((first, _, _)) = carried.first() else { return Ok(None) };
+    let which: Vec<String> = carried.iter().map(|(task, num, head)| format!("{task}'s PR #{num} (its head {head})")).collect();
+    Ok(Some(format!(
+        "it carries {}, which hasn't merged, and merging this would mark it merged too. Wait for it to merge (tb wait-for {first} --merged), or stack this task on it (tb task set {} --stack-on {first})",
+        which.join(" and "),
+        rf("task", t.id())
+    )))
+}
+
 /// `tb pr merge`: checks the PR once more through its host, then merges it and deletes its branch.
 pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     let agent = as_bool(body.get("agent"), false);
@@ -683,6 +724,9 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
             app.db.tx(|| prflow::note_checks_running(app, &t, rec["head"].as_str().unwrap_or(""), &running, board::BOARD))?;
         }
         return err(409, format!("PR #{} can't merge yet: {}.", pr.num, blockers.join("; ")));
+    }
+    if let Some(carried) = carried_prs(app, &t, &pr)? {
+        return err(409, format!("PR #{} can't merge yet: {carried}.", pr.num));
     }
     progress::stage("Nothing blocks the merge");
     // The merge deletes this PR's branch, and a host may close a PR that goes into a deleted branch: move

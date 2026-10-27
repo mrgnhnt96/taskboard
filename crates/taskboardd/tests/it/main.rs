@@ -46,6 +46,7 @@ mod lessons;
 mod limits;
 mod lines;
 mod live_fix;
+mod merge_carried;
 mod merge_checks_running;
 mod merge_progress;
 mod merge_retry;
