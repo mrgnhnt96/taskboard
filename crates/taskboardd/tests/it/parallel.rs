@@ -1042,7 +1042,7 @@ fn a_slot_with_uncommitted_or_unpushed_work_is_not_given_back() {
 }
 
 #[test]
-fn failing_or_parking_gives_the_slot_back_when_it_is_clean() {
+fn failing_or_parking_gives_the_slot_back_its_uncommitted_work_saved() {
     let b = new_board();
     git_repo(&b);
     let g = b.side_by_side();
@@ -1061,8 +1061,10 @@ fn failing_or_parking_gives_the_slot_back_when_it_is_clean() {
 
     std::fs::write(Path::new(&slot(&b, 2)).join("loose"), "x\n").unwrap();
     b.report("tb.fail", "s2", json!({"reason": "Can't."}));
-    assert_eq!(slot_row(&b, 2).i("task_id"), Some(two), "failing keeps a slot with work only there");
-    assert!(b.card(two)["log"].to_string().contains("Kept its worktree slot"), "{}", b.card(two)["log"]);
+    assert!(slot_row(&b, 2).i("task_id").is_none(), "failing gives the slot back");
+    assert_eq!(git(Path::new(&slot(&b, 2)), &["status", "--porcelain"]), "", "clean");
+    assert_eq!(git(Path::new(&slot(&b, 2)), &["show", &format!("wip/T{two}-slot-2:loose")]), "x", "its work saved off it");
+    assert!(b.card(two)["log"].to_string().contains(&format!("to branch wip/T{two}-slot-2")), "{}", b.card(two)["log"]);
 }
 
 #[test]
