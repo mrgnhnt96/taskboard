@@ -713,6 +713,7 @@ pub fn prs(app: &App) -> Result<()> {
     }
     prflow::late_reads(app)?;
     prflow::waits_over(app)?;
+    crate::prcmds::post_held(app)?;
     prflow::prompts_missed(app)?;
     app.db.tx(|| crate::prbuilds::sweep(app))?;
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;

@@ -7,11 +7,14 @@
 //! `tb pr thread` serves the board's own copy of the PR (its last poll or stream event) while it's
 //! younger than [`HELD_SECS`], and `tb pr reply` / `tb pr ack` write to the host once and note the
 //! write on that copy. When they do read, callers asking at once share the one read ([`shared_read`]).
+//! A reply or resolve the host refuses while the PR's account is rate-limited is kept and posted by
+//! the board once the limit is over ([`post_held`]), so the agent doesn't wait for it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -141,26 +144,56 @@ pub fn reply(app: &App, id: i64, body: &Value) -> Result<Value> {
     let pr = pr_of(&t)?;
     let th = find_thread(&rec, pr.num, &want)?;
     let h = host(app, &pr)?;
-    on_host(&pr, "replying on", || h.reply(&pr, &th, &text)).map_err(|e| ApiError::new(502, format!("Couldn't reply on PR #{}: {e}.", pr.num)))?;
     let resolve = as_bool(body.get("resolve"), false);
-    let resolved = if resolve { on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)).map_err(|e| ApiError::new(502, format!("Replied, but couldn't resolve the thread: {e}.")))? } else { false };
+    if let Err(e) = on_host(&pr, "replying on", || h.reply(&pr, &th, &text)) {
+        return match hold(app, id, &pr, &th, &text, resolve, &who_of(app, body))? {
+            Some(said) => answered(app, id, json!({"thread": th.id, "resolved": false, "held": said})),
+            None => err(502, format!("Couldn't reply on PR #{}: {e}.", pr.num)),
+        };
+    }
+    let resolved = if resolve {
+        match on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)) {
+            Ok(r) => r,
+            Err(e) => match hold(app, id, &pr, &th, "", true, &who_of(app, body))? {
+                Some(said) => {
+                    posted(app, id, &pr, &th, &text, true, false, &who_of(app, body))?;
+                    return answered(app, id, json!({"thread": th.id, "replied": true, "resolved": false, "held": said}));
+                }
+                None => return err(502, format!("Replied, but couldn't resolve the thread: {e}.")),
+            },
+        }
+    } else {
+        false
+    };
+    posted(app, id, &pr, &th, &text, resolve, resolved, &who_of(app, body))?;
+    answered(app, id, json!({"thread": th.id, "resolved": resolved}))
+}
+
+/// Notes on the board a reply (or, with no `text`, a resolve) the host has taken on `th`.
+fn posted(app: &App, id: i64, pr: &PrRef, th: &Thread, text: &str, resolve: bool, resolved: bool, who: &str) -> Result<()> {
     app.db.tx(|| {
         // A plain comment has no thread on the host to carry the reply: the board remembers it was answered.
         if !th.resolvable || resolve {
-            ack_locally(app, id, &th)?;
+            ack_locally(app, id, th)?;
         }
         let what = if resolved { "Replied to and resolved" } else { "Replied to" };
-        board::log_event(app, id, &who_of(app, body), "status", &format!("{what} {} on PR #{}: {}", thread_name(&th), pr.num, one_line(&text, 200))).map(|_| ())
+        board::log_event(app, id, who, "status", &format!("{what} {} on PR #{}: {}", thread_name(th), pr.num, one_line(text, 200))).map(|_| ())
     })?;
+    note_write(app, id, th, text, resolved)
+}
+
+/// Notes a reply (none when `text` is empty) and a resolve on `th` in the board's copy of the PR.
+fn note_write(app: &App, id: i64, th: &Thread, text: &str, resolved: bool) -> Result<()> {
     noted(app, id, &th.id, |rec, held| {
-        let us = prflow::us(rec).to_string();
-        let at = now_iso();
-        held.replies.push(prhost::Reply { author: us.clone(), author_name: us.clone(), text: one_line(&text, prhost::REPLY_MAX), body: prhost::whole(&text), at: at.clone() });
-        held.last_author = us;
-        held.last_at = at;
+        if !text.is_empty() {
+            let us = prflow::us(rec).to_string();
+            let at = now_iso();
+            held.replies.push(prhost::Reply { author: us.clone(), author_name: us.clone(), text: one_line(text, prhost::REPLY_MAX), body: prhost::whole(text), at: at.clone() });
+            held.last_author = us;
+            held.last_at = at;
+        }
         held.resolved |= resolved;
-    })?;
-    answered(app, id, json!({"thread": th.id, "resolved": resolved}))
+    })
 }
 
 /// `tb pr ack <thread>`: resolved without a reply (on the board only, where the host can't resolve it).
@@ -171,7 +204,13 @@ pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
     let th = find_thread(&rec, pr.num, &want)?;
     let resolved = if th.resolvable && !th.resolved {
         let h = host(app, &pr)?;
-        on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)).map_err(|e| ApiError::new(502, format!("Couldn't resolve the thread: {e}.")))?
+        match on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)) {
+            Ok(r) => r,
+            Err(e) => match hold(app, id, &pr, &th, "", true, &who_of(app, body))? {
+                Some(said) => return answered(app, id, json!({"thread": th.id, "resolved": false, "held": said})),
+                None => return err(502, format!("Couldn't resolve the thread: {e}.")),
+            },
+        }
     } else {
         false
     };
@@ -181,6 +220,104 @@ pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
     })?;
     noted(app, id, &th.id, |_, held| held.resolved |= resolved)?;
     answered(app, id, json!({"thread": th.id, "resolved": resolved}))
+}
+
+/// A reply (or, with no `text`, a resolve) the host refused while the PR's account was rate-limited,
+/// kept in the PR's flow (`held_replies`) until [`post_held`] posts it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HeldReply {
+    thread: Thread,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    resolve: bool,
+}
+
+fn held_replies(t: &Row) -> Vec<HeldReply> {
+    flow(t).get("held_replies").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// Keeps a write on `th` that the host refused, when the PR's account is rate-limited, for
+/// [`post_held`] to make once the limit is over, and counts the thread answered on the board now.
+/// What to tell the caller; None (nothing kept) when the account isn't held: it failed for another reason.
+fn hold(app: &App, id: i64, pr: &PrRef, th: &Thread, text: &str, resolve: bool, who: &str) -> Result<Option<String>> {
+    let Some(until) = prflow::host_held(app, pr) else { return Ok(None) };
+    let at = local_clock(Some(&iso(until)));
+    let site = prhost::limit::label(&pr.host);
+    let what = match (text.is_empty(), resolve) {
+        (true, _) => "resolves the thread",
+        (false, true) => "posts the reply and resolves the thread",
+        (false, false) => "posts the reply",
+    };
+    app.db.tx(|| {
+        let mut held = held_replies(&board::get_task(app, id)?);
+        held.push(HeldReply { thread: th.clone(), text: text.to_string(), resolve });
+        prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+        ack_locally(app, id, th)?;
+        board::log_event(app, id, who, "status", &format!("{site} has the board rate-limited: it {what} on {} of PR #{} once the limit is over, by {at}", thread_name(th), pr.num)).map(|_| ())
+    })?;
+    Ok(Some(format!("{site} has the board rate-limited, so the board {what} once the limit is over, by {at}. The thread counts as answered now: carry on, and don't wait for it or try again.")))
+}
+
+/// Takes the local answer off `th` again, unless someone spoke on it since.
+fn unack_locally(app: &App, id: i64, th: &Thread) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let mut acks = flow(&t).get("threads_acked").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    if acks.get(&th.id).and_then(|v| v.as_str()) == Some(th.last_id.as_str()) {
+        acks.remove(&th.id);
+    }
+    prflow::merge_flow(app, id, fields!["threads_acked" => Value::Object(acks)]).map(|_| ())
+}
+
+/// The PR sweep: posts each PR's held replies and resolves, oldest first, once its host takes them.
+/// One the host still refuses for the limit waits with those after it (a reply that went through
+/// waits as its resolve alone); one it refuses for another reason is dropped, said on the task's log,
+/// and its thread counts as open again.
+pub fn post_held(app: &App) -> Result<()> {
+    for t in app.db.q("SELECT * FROM tasks WHERE pr_num IS NOT NULL AND json_extract(pr_flow, '$.held_replies[0]') IS NOT NULL", p![])? {
+        let (id, Some(pr)) = (t.id(), PrRef::of(&t)) else { continue };
+        let Ok(h) = prhost::host_for(app, &pr.host) else { continue };
+        let mut held = held_replies(&t);
+        while let Some(mut r) = held.first().cloned() {
+            let name = thread_name(&r.thread);
+            let wrote = if r.text.is_empty() { Ok(()) } else { h.reply(&pr, &r.thread, &r.text) };
+            if wrote.is_ok() && !r.text.is_empty() {
+                let text = std::mem::take(&mut r.text);
+                held[0] = r.clone();
+                if !r.resolve {
+                    held.remove(0);
+                }
+                app.db.tx(|| {
+                    prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+                    board::log_event(app, id, board::BOARD, "status", &format!("Posted the held reply to {name} on PR #{}: {}", pr.num, one_line(&text, 200))).map(|_| ())
+                })?;
+                note_write(app, id, &r.thread, &text, false)?;
+                continue;
+            }
+            let wrote = wrote.and_then(|_| h.resolve(&pr, &r.thread));
+            match wrote {
+                Ok(resolved) => {
+                    held.remove(0);
+                    app.db.tx(|| {
+                        prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+                        board::log_event(app, id, board::BOARD, "status", &format!("Resolved {name} on PR #{}, held over the rate limit", pr.num)).map(|_| ())
+                    })?;
+                    note_write(app, id, &r.thread, "", resolved)?;
+                }
+                Err(_) if prflow::host_held(app, &pr).is_some() => break,
+                Err(e) => {
+                    held.remove(0);
+                    let what = if r.text.is_empty() { "resolve" } else { "reply to" };
+                    app.db.tx(|| {
+                        prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+                        unack_locally(app, id, &r.thread)?;
+                        board::log_event(app, id, board::BOARD, "status", &format!("Couldn't post the held {what} {name} on PR #{}, so it's open again: {}", pr.num, one_line(&e, 200))).map(|_| ())
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `tb pr thread <thread> [--refresh]`: one thread with its whole text and replies, as the board's
