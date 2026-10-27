@@ -43,7 +43,18 @@
 //! seconds drew a 429 at 107 calls in the hour), so each account's writes go out one slot at a time,
 //! `[hosts.<host>] write_gap_secs` apart (Bitbucket 2s, GitHub 1s by default): a write whose slot
 //! hasn't come waits for it ([`Limits::write_slot`]). A merge that moves stacked PRs first is a queue
-//! of paced writes, not a burst.
+//! of paced writes, not a burst. The line is bounded: past [`WRITE_LINE`] writes waiting, a write
+//! fails at once saying the account's write queue is full, rather than parking one more thread.
+//!
+//! # Pacing reads
+//!
+//! Reads are capped per account per minute, `[hosts.<host>] max_reads_per_minute` (Bitbucket 30 by
+//! default; unset elsewhere, 0 turns it off): never more than that in any 60 seconds
+//! ([`Limits::read_turn`]). [`priority`] reads and writes go ahead of background reads: a priority
+//! read takes the next free turn in line (failing at once when that's over [`PRIORITY_WAIT_SECS`]
+//! away), while a background read keeps a fifth of the minute free for them, and doesn't start while
+//! a priority read or a queued write waits on the account. A background read that can't go within
+//! [`BACKGROUND_WAIT_SECS`] is skipped with an error; the next poll asks again.
 //!
 //! # On the Days page
 //!
@@ -85,6 +96,9 @@ pub struct HostConfig {
     pub max_per_hour: Option<u32>,
     /// The least time between two writes on the account; unset: [`default_write_gap`].
     pub write_gap_secs: Option<f64>,
+    /// The most reads the board makes on the account in a minute; unset:
+    /// [`default_reads_per_minute`]; 0: no cap.
+    pub max_reads_per_minute: Option<u32>,
 }
 
 /// The board's own hourly budget on a host when `max_per_hour` isn't set: 90% of what the host
@@ -105,6 +119,26 @@ pub fn default_write_gap(host: &str) -> f64 {
         _ => 0.0,
     }
 }
+
+/// The board's reads a minute on an account when `max_reads_per_minute` isn't set: Bitbucket drew
+/// 429s at 55 and 120 calls in a minute.
+pub fn default_reads_per_minute(host: &str) -> Option<u32> {
+    match host {
+        "bitbucket" => Some(30),
+        _ => None,
+    }
+}
+
+/// The most writes waiting on an account; one more fails at once.
+pub const WRITE_LINE: usize = 10;
+/// The window the read cap counts over.
+const READ_WINDOW_SECS: f64 = 60.0;
+/// The share of the minute's reads kept for priority reads.
+const PRIORITY_SHARE: f64 = 0.2;
+/// A priority read whose turn is further off than this fails at once.
+pub const PRIORITY_WAIT_SECS: f64 = 60.0;
+/// A background read that can't go within this is skipped.
+pub const BACKGROUND_WAIT_SECS: f64 = 5.0;
 
 /// A limit with no `Retry-After` / reset: 5 minutes, doubling while it keeps coming back.
 const FIRST_BACKOFF_SECS: f64 = 300.0;
@@ -149,6 +183,9 @@ struct Account {
     writes: VecDeque<f64>,
     /// The next write's slot: writes go out no closer than the host's write gap.
     next_write: f64,
+    /// The reads' turns in the last minute, in order; a priority read's turn can be ahead of now.
+    #[serde(skip)]
+    reads: VecDeque<f64>,
     /// Calls stop until then.
     until: Option<f64>,
     /// `until` is the host's time (`Retry-After` / reset); false: the board's own backoff.
@@ -177,6 +214,25 @@ impl Account {
         }
         while self.writes.front().is_some_and(|t| *t <= now - HOUR) {
             self.writes.pop_front();
+        }
+        while self.reads.front().is_some_and(|t| *t <= now - READ_WINDOW_SECS) {
+            self.reads.pop_front();
+        }
+    }
+
+    /// Writes waiting for their slot: the slots taken past the one that's next.
+    fn write_line(&self, gap: f64, now: f64) -> usize {
+        match gap > 0.0 && self.next_write > now {
+            true => (((self.next_write - now) / gap).ceil() as usize).saturating_sub(1),
+            false => 0,
+        }
+    }
+
+    /// The first time at or after `now` a read keeps the minute's reads within `stop`.
+    fn read_free_at(&self, stop: usize, now: f64) -> f64 {
+        match self.reads.len().checked_sub(stop.max(1)) {
+            Some(i) => (self.reads[i] + READ_WINDOW_SECS).max(now),
+            None => now,
         }
     }
 
@@ -377,15 +433,107 @@ impl Limits {
         self.dirty.lock().0 = true;
     }
 
+    /// The most reads on `host` in a minute: `max_reads_per_minute`, else [`default_reads_per_minute`];
+    /// None: no cap.
+    fn reads_per_minute(&self, host: &str) -> Option<u32> {
+        match self.hosts.lock().get(host).and_then(|c| c.max_reads_per_minute) {
+            Some(n) => Some(n).filter(|n| *n > 0),
+            None => default_reads_per_minute(host),
+        }
+    }
+
     /// Takes the next write slot on `key`: how long a write made now waits for it (0: it goes now).
     /// Each write takes the slot after the last one's, so writes asked for together go out one by one.
-    pub fn write_slot(&self, key: &str, host: &str, now: f64) -> f64 {
+    /// Err: [`WRITE_LINE`] writes already wait, so this one fails now rather than joining them.
+    pub fn write_slot(&self, key: &str, host: &str, now: f64) -> std::result::Result<f64, String> {
         let gap = self.write_gap(host);
         let mut all = self.accounts.lock();
         let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
+        let line = a.write_line(gap, now);
+        if line >= WRITE_LINE {
+            return Err(format!(
+                "the account's {} write queue is full: {line} writes wait, one every {} ([hosts.{host}] write_gap_secs); try again in {}",
+                label(host),
+                dur_secs_text(gap),
+                dur_secs_text(a.next_write - now - line as f64 * gap)
+            ));
+        }
         let at = a.next_write.max(now);
         a.next_write = at + gap;
-        at - now
+        Ok(at - now)
+    }
+
+    /// Why a call on `a` can't go out now (the limit, the slow restart, the budget), without counting it.
+    fn refusal(&self, a: &mut Account, host: &str, write: bool, priority: bool, budget: Option<u32>, now: f64) -> Option<String> {
+        if let Some(u) = a.until {
+            if u > now {
+                return Some(match a.host_time {
+                    true => format!("{}; the board holds its calls until then", until_text(host, u, true)),
+                    false => until_text(host, u, false),
+                });
+            }
+        }
+        if let Some(s) = a.slow(now) {
+            if !write && !priority {
+                return Some(slow_text(&a.slow_why, s));
+            }
+        }
+        let b = budget?;
+        let (stop, what) = if write { (b as usize, "writes") } else { (read_stop(b), "reads") };
+        if a.calls.len() < stop {
+            return None;
+        }
+        let free_at = a.under_at(stop, now);
+        self.spans.lock().push(Span::Open {
+            host: host.to_string(),
+            kind: "budget",
+            from: now,
+            to: free_at,
+            why: format!("The board made {} of its {b} {} calls this hour; {what} waited", a.calls.len(), label(host)),
+        });
+        Some(format!(
+            "the board made {} of its {b} {} calls this hour ([hosts.{host}] max_per_hour); {what} wait until {}",
+            a.calls.len(),
+            label(host),
+            local_clock(Some(&iso(free_at)))
+        ))
+    }
+
+    /// A read's turn on `key` under the minute's cap ([`Turn`]). A `priority` read takes the next free
+    /// turn in line; a background one only goes now, and only while it leaves the priority share free
+    /// and no priority read or write waits on the account.
+    pub fn read_turn(&self, key: &str, host: &str, priority: bool, now: f64) -> Turn {
+        let budget = self.budget(host);
+        let cap = self.reads_per_minute(host);
+        let gap = self.write_gap(host);
+        let mut all = self.accounts.lock();
+        let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
+        a.forget_old(now);
+        if let Some(e) = self.refusal(a, host, false, priority, budget, now) {
+            return Turn::Refused(e);
+        }
+        let Some(cap) = cap else { return Turn::Now };
+        let last = a.reads.back().copied().unwrap_or(now);
+        if priority {
+            let at = a.read_free_at(cap as usize, now).max(last);
+            if at - now > PRIORITY_WAIT_SECS {
+                return Turn::Refused(format!(
+                    "the account's {} read queue is full: it takes {cap} reads a minute ([hosts.{host}] max_reads_per_minute) and the next free turn is {} away; try again then",
+                    label(host),
+                    dur_secs_text(at - now)
+                ));
+            }
+            a.reads.push_back(at);
+            return match at > now {
+                true => Turn::At(at),
+                false => Turn::Now,
+            };
+        }
+        if last > now || a.write_line(gap, now) > 0 || a.reads.len() >= background_stop(cap) {
+            return Turn::Later;
+        }
+        a.reads.push_back(now);
+        Turn::Now
     }
 
     /// Whether a call on `key` may go out now; counts it when it does. `priority`: a read that still
@@ -395,37 +543,8 @@ impl Limits {
         let mut all = self.accounts.lock();
         let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
         a.forget_old(now);
-        if let Some(u) = a.until {
-            if u > now {
-                return Err(match a.host_time {
-                    true => format!("{}; the board holds its calls until then", until_text(host, u, true)),
-                    false => until_text(host, u, false),
-                });
-            }
-        }
-        if let Some(s) = a.slow(now) {
-            if !write && !priority {
-                return Err(slow_text(&a.slow_why, s));
-            }
-        }
-        if let Some(b) = budget {
-            let (stop, what) = if write { (b as usize, "writes") } else { (read_stop(b), "reads") };
-            if a.calls.len() >= stop {
-                let free_at = a.under_at(stop, now);
-                self.spans.lock().push(Span::Open {
-                    host: host.to_string(),
-                    kind: "budget",
-                    from: now,
-                    to: free_at,
-                    why: format!("The board made {} of its {b} {} calls this hour; {what} waited", a.calls.len(), label(host)),
-                });
-                return Err(format!(
-                    "the board made {} of its {b} {} calls this hour ([hosts.{host}] max_per_hour); {what} wait until {}",
-                    a.calls.len(),
-                    label(host),
-                    local_clock(Some(&iso(free_at)))
-                ));
-            }
+        if let Some(e) = self.refusal(a, host, write, priority, budget, now) {
+            return Err(e);
         }
         a.calls.push_back(now);
         if write {
@@ -616,6 +735,7 @@ impl Limits {
             a.calls = calls.into();
             a.writes = writes.into();
             a.next_write = a.next_write.max(here.next_write);
+            a.reads = std::mem::take(&mut here.reads);
             *here = a;
         }
     }
@@ -653,6 +773,8 @@ impl Limits {
                     "poll_text": polls.get(&a.host).map(Poll::text),
                     "calls_last_hour": a.calls.len(),
                     "max_per_hour": self.budget(&a.host),
+                    "reads_last_minute": a.reads.iter().filter(|t| **t <= now).count(),
+                    "max_reads_per_minute": self.reads_per_minute(&a.host),
                     "stretch": stretch.get(&a.host).map(|(f, _)| *f).filter(|f| *f > 1.0),
                 })
             })
@@ -707,6 +829,20 @@ impl Limits {
     }
 }
 
+/// Background reads stop here, keeping the rest of the minute's `cap` for priority reads.
+fn background_stop(cap: u32) -> usize {
+    (cap as f64 * (1.0 - PRIORITY_SHARE)).floor().max(1.0) as usize
+}
+
+/// What a background read that didn't get a turn in [`BACKGROUND_WAIT_SECS`] says.
+fn skip_text(host: &str, cap: Option<u32>) -> String {
+    format!(
+        "skipped this {} read: the account is at its {} reads a minute ([hosts.{host}] max_reads_per_minute), or `tb pr` commands and writes went first; the next poll asks again",
+        label(host),
+        cap.unwrap_or_default()
+    )
+}
+
 /// Reads stop here, keeping the rest of budget `b` for writes.
 fn read_stop(b: u32) -> usize {
     (b as f64 * (1.0 - WRITE_RESERVE)).floor().max(1.0) as usize
@@ -739,6 +875,22 @@ pub fn limits() -> &'static Limits {
     ALL.get_or_init(Limits::default)
 }
 
+/// A read's turn under the minute's cap ([`Limits::read_turn`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Turn {
+    /// It goes now.
+    Now,
+    /// A priority read's turn, ahead of now: it waits for it.
+    At(f64),
+    /// A background read that can't go yet: it asks again shortly, or is skipped.
+    Later,
+    /// It can't go: why.
+    Refused(String),
+}
+
+/// How often a background read waiting for a turn asks again.
+const RETRY_SECS: f64 = 0.5;
+
 /// One account's way to its host: every call goes through [`Gate::call`].
 #[derive(Debug, Clone)]
 pub struct Gate {
@@ -755,16 +907,24 @@ impl Gate {
     /// Makes the call unless the account is limited (or out of budget, or restarting slowly, for a
     /// read); notes a limit the call's answer reports (`limited` reads it from the error).
     pub fn call<T>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
-        let l = limits();
-        if write {
-            let wait = l.write_slot(&self.key, &self.host, now_ts());
-            if wait > 0.0 {
-                // Said as progress, so a `tb pr` command queued behind other writes doesn't time out.
-                let what = format!("a {} write slot ({} from now; writes go out one at a time)", label(&self.host), dur_secs_text(wait));
-                crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || std::thread::sleep(std::time::Duration::from_secs_f64(wait)));
-            }
+        self.call_on(limits(), write, f)
+    }
+
+    fn call_on<T>(&self, l: &Limits, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+        let priority = is_priority();
+        let wait = match write {
+            true => l.write_slot(&self.key, &self.host, now_ts())?,
+            false => self.read_wait(l, priority)?,
+        };
+        if wait > 0.0 {
+            // Said as progress, so a `tb pr` command queued behind other calls doesn't time out.
+            let what = match write {
+                true => format!("a {} write slot ({} from now; writes go out one at a time)", label(&self.host), dur_secs_text(wait)),
+                false => format!("a {} read turn ({} from now; the account takes so many reads a minute)", label(&self.host), dur_secs_text(wait)),
+            };
+            crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || std::thread::sleep(std::time::Duration::from_secs_f64(wait)));
         }
-        l.admit(&self.key, &self.host, write, is_priority(), now_ts())?;
+        l.admit(&self.key, &self.host, write, priority, now_ts())?;
         count(&self.host);
         match f() {
             Ok((v, hit)) => {
@@ -779,6 +939,22 @@ impl Gate {
                 Err(format!("{e} ({})", until_text(&self.host, until, host_time)))
             }
             Err((e, None)) => Err(e),
+        }
+    }
+
+    /// How long a read waits for its turn ([`Limits::read_turn`]); a background read asks again until
+    /// [`BACKGROUND_WAIT_SECS`] have gone by, then is skipped.
+    fn read_wait(&self, l: &Limits, priority: bool) -> std::result::Result<f64, String> {
+        let give_up = now_ts() + BACKGROUND_WAIT_SECS;
+        loop {
+            let now = now_ts();
+            match l.read_turn(&self.key, &self.host, priority, now) {
+                Turn::Now => return Ok(0.0),
+                Turn::At(at) => return Ok(at - now),
+                Turn::Refused(e) => return Err(e),
+                Turn::Later if now < give_up => std::thread::sleep(std::time::Duration::from_secs_f64(RETRY_SECS.min(give_up - now))),
+                Turn::Later => return Err(skip_text(&self.host, l.reads_per_minute(&self.host))),
+            }
         }
     }
 
@@ -1117,16 +1293,143 @@ mod tests {
     #[test]
     fn writes_on_an_account_go_out_one_slot_apart() {
         let l = Limits::default();
-        assert_eq!(l.write_slot("bb:1", "bitbucket", T0), 0.0, "the first goes now");
-        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 0.5), 1.5, "the next waits out the 2s gap");
-        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 0.5), 3.5, "and the one after, its own slot");
-        assert_eq!(l.write_slot("bb:2", "bitbucket", T0 + 0.5), 0.0, "another account has its own slots");
-        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 60.0), 0.0, "a quiet account writes at once");
-        assert_eq!(l.write_slot("gh:1", "github", T0), 0.0);
-        assert_eq!(l.write_slot("gh:1", "github", T0), 1.0, "GitHub's gap is a second");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0), Ok(0.0), "the first goes now");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 0.5), Ok(1.5), "the next waits out the 2s gap");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 0.5), Ok(3.5), "and the one after, its own slot");
+        assert_eq!(l.write_slot("bb:2", "bitbucket", T0 + 0.5), Ok(0.0), "another account has its own slots");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 60.0), Ok(0.0), "a quiet account writes at once");
+        assert_eq!(l.write_slot("gh:1", "github", T0), Ok(0.0));
+        assert_eq!(l.write_slot("gh:1", "github", T0), Ok(1.0), "GitHub's gap is a second");
         l.set_hosts([("bitbucket".to_string(), HostConfig { write_gap_secs: Some(5.0), ..Default::default() })].into());
-        assert_eq!(l.write_slot("bb:3", "bitbucket", T0), 0.0);
-        assert_eq!(l.write_slot("bb:3", "bitbucket", T0), 5.0, "write_gap_secs sets it");
+        assert_eq!(l.write_slot("bb:3", "bitbucket", T0), Ok(0.0));
+        assert_eq!(l.write_slot("bb:3", "bitbucket", T0), Ok(5.0), "write_gap_secs sets it");
+    }
+
+    fn reads_a_minute(host: &str, n: u32) -> BTreeMap<String, HostConfig> {
+        [(host.to_string(), HostConfig { max_reads_per_minute: Some(n), ..Default::default() })].into()
+    }
+
+    #[test]
+    fn a_full_write_line_fails_at_once_naming_the_queue() {
+        let l = Limits::default();
+        for i in 0..=WRITE_LINE {
+            assert_eq!(l.write_slot("bb:1", "bitbucket", T0), Ok(2.0 * i as f64), "write {i} takes its slot");
+        }
+        let e = l.write_slot("bb:1", "bitbucket", T0).unwrap_err();
+        assert!(e.contains("Bitbucket write queue is full") && e.contains("10 writes wait"), "{e}");
+        assert!(e.contains("try again in 2s"), "{e}");
+        assert_eq!(l.write_slot("bb:2", "bitbucket", T0), Ok(0.0), "another account's line is its own");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 2.0), Ok(20.0), "a slot that went out lets one more in");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0 + 60.0), Ok(0.0), "the line empties");
+    }
+
+    #[test]
+    fn reads_a_minute_default_to_30_on_bitbucket_and_0_turns_them_off() {
+        let l = Limits::default();
+        assert_eq!(l.reads_per_minute("bitbucket"), Some(30));
+        assert_eq!(l.reads_per_minute("github"), None);
+        l.set_hosts(reads_a_minute("bitbucket", 0));
+        assert_eq!(l.reads_per_minute("bitbucket"), None);
+        for i in 0..100 {
+            assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0 + i as f64 * 0.01), Turn::Now, "no cap: read {i} goes");
+        }
+        l.set_hosts(reads_a_minute("bitbucket", 10));
+        assert_eq!(l.reads_per_minute("bitbucket"), Some(10));
+    }
+
+    #[test]
+    fn no_minute_holds_more_reads_than_the_cap() {
+        let l = Limits::default();
+        let mut went = vec![];
+        let mut t = T0;
+        while t < T0 + 300.0 {
+            let priority = (t - T0) as i64 % 3 == 0;
+            match l.read_turn("bb:1", "bitbucket", priority, t) {
+                Turn::Now => went.push(t),
+                Turn::At(at) => went.push(at),
+                Turn::Later | Turn::Refused(_) => {}
+            }
+            t += 0.25;
+        }
+        went.sort_by(f64::total_cmp);
+        assert!(went.len() > 120, "reads kept going: {}", went.len());
+        for (i, at) in went.iter().enumerate() {
+            let in_minute = went[i..].iter().take_while(|t| **t < at + 60.0).count();
+            assert!(in_minute <= 30, "{in_minute} reads in the minute from {at}");
+        }
+    }
+
+    #[test]
+    fn background_reads_leave_a_fifth_of_the_minute_to_priority_reads() {
+        let l = Limits::default();
+        for i in 0..24 {
+            assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0), Turn::Now, "background read {i}");
+        }
+        assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0), Turn::Later, "the rest is the priority share");
+        for i in 0..6 {
+            assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::Now, "priority read {i} still goes");
+        }
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0 + 1.0), Turn::At(T0 + 60.0), "past the cap, the next turn in the minute");
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0 + 1.0), Turn::At(T0 + 60.0));
+        assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0 + 59.0), Turn::Later, "a background read waits behind them");
+        assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0 + 121.0), Turn::Now, "a quiet minute later it goes");
+    }
+
+    #[test]
+    fn a_priority_read_more_than_a_minute_off_fails_at_once() {
+        let l = Limits::default();
+        l.set_hosts(reads_a_minute("bitbucket", 2));
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::Now);
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::Now);
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::At(T0 + 60.0));
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::At(T0 + 60.0));
+        let Turn::Refused(e) = l.read_turn("bb:1", "bitbucket", true, T0) else { panic!("a turn two minutes off") };
+        assert!(e.contains("Bitbucket read queue is full") && e.contains("max_reads_per_minute"), "{e}");
+        assert_eq!(l.status(T0)[0]["reads_last_minute"], 2, "turns ahead of now aren't counted yet");
+        assert_eq!(l.status(T0)[0]["max_reads_per_minute"], 2);
+    }
+
+    #[test]
+    fn background_reads_yield_to_a_waiting_write() {
+        let l = Limits::default();
+        l.write_slot("bb:1", "bitbucket", T0).unwrap();
+        assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0), Turn::Now, "a write that went out holds nothing");
+        assert_eq!(l.write_slot("bb:1", "bitbucket", T0), Ok(2.0));
+        assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0), Turn::Later, "a write waits for its slot");
+        assert_eq!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::Now, "a priority read doesn't");
+        assert_eq!(l.read_turn("bb:1", "bitbucket", false, T0 + 2.0), Turn::Now, "once it went, reads go again");
+    }
+
+    #[test]
+    fn a_limited_account_takes_no_read_turns() {
+        let l = Limits::default();
+        l.hit("bb:1", "bitbucket", &hit("429"), T0);
+        assert!(matches!(l.read_turn("bb:1", "bitbucket", true, T0), Turn::Refused(_)));
+        assert_eq!(l.status(T0)[0]["reads_last_minute"], 0, "a refused read holds no turn");
+    }
+
+    #[test]
+    fn a_background_read_with_no_turn_is_skipped_and_reaches_no_host() {
+        let l = Limits::default();
+        l.set_hosts(reads_a_minute("bitbucket", 1));
+        let gate = Gate::new("bitbucket", "bb:skip".into());
+        let mut reached = 0;
+        gate.call_on(&l, false, || {
+            reached += 1;
+            Ok(((), None))
+        })
+        .unwrap();
+        let start = now_ts();
+        let e = gate
+            .call_on(&l, false, || {
+                reached += 1;
+                Ok(((), None))
+            })
+            .unwrap_err();
+        let waited = now_ts() - start;
+        assert!(e.starts_with("skipped this Bitbucket read") && e.contains("the next poll asks again"), "{e}");
+        assert!((BACKGROUND_WAIT_SECS - 0.1..BACKGROUND_WAIT_SECS + 2.0).contains(&waited), "it waited {waited}s");
+        assert_eq!(reached, 1, "the skipped read never went out");
     }
 
     #[test]
