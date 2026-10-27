@@ -485,6 +485,9 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
             });
         }
     }
+    if let Some(why) = crate::lens_pr::blocker(app, &f) {
+        out.push(why);
+    }
     let open = prflow::open_threads(&f, rec);
     let tasks = open.iter().filter(|x| x["kind"] == "task").count() as i64;
     let threads = open.len() as i64 - tasks;

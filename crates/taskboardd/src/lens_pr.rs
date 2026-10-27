@@ -3,13 +3,16 @@
 //! comments. Runs go one at a time on their own thread (`App::queue_lens`): one takes
 //! about 15 minutes.
 //!
-//! The run is kept in the PR's flow as `lens`: `{state: queued|running|done|failed, head, at,
-//! started_at?, finished_at?, error?, log?}`. While it's queued or running the PR shows the `lens`
-//! stage ("Lens review") in place of `review` or `ask`; every other stage (a failed check, comments,
-//! ready to merge) still wins, so it never holds a merge. A run the board lost (it restarted midway)
-//! stops holding once its timeout has passed. Each PR is reviewed once: a later push isn't
-//! reviewed again, and a PR first read while lens was off isn't reviewed at all. A PR that merges or
-//! closes first needs no review: a queued run is `skipped` and a running one killed and `stopped`.
+//! The run is kept in the PR's flow as `lens`: `{state: queued|running|done|failed|skipped|stopped,
+//! head, at, tries, started_at?, finished_at?, error?, log?, reason?, by?}`. Until it's done the review
+//! holds the merge: the PR shows the `lens` stage ("Lens review") ahead of review and merge (only a
+//! failed check, a rebase or comments come first), and `tb pr merge` refuses. Its findings then hold
+//! the merge as open threads until each is resolved (`Thread::lens_finding`). A run that fails, or one
+//! the board lost (it restarted midway, so it's past its timeout), is tried again once; a second failure
+//! asks the owner, who runs it again (`tb pr lens --retry`) or lets the PR go without it (`--skip`).
+//! Each PR is reviewed once: a later push isn't reviewed again, and a PR first read while lens was off
+//! isn't reviewed at all. A PR that merges or closes first needs no review: a queued run is `skipped`
+//! and a running one killed and `stopped`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,49 +31,150 @@ fn timeout_secs(app: &App) -> f64 {
     app.cfg.pr.lens.timeout_mins.max(1.0) * 60.0
 }
 
-/// The run holds the stage: queued or running, and not past its timeout (with a minute's grace).
-pub fn holds(app: &App, f: &Row) -> bool {
+/// Times a run is tried before the owner is asked.
+const TRIES: i64 = 2;
+
+/// The review holds the merge: it hasn't finished (done, or skipped or stopped), failed runs included.
+pub fn holds(_app: &App, f: &Row) -> bool {
     let Some(l) = f.get("lens").filter(|l| l.is_object()) else { return false };
+    !matches!(l["state"].as_str(), Some("done" | "skipped" | "stopped"))
+}
+
+/// Why the review holds the merge, for `tb pr merge`'s refusal: None when it doesn't.
+pub fn blocker(app: &App, f: &Row) -> Option<String> {
+    if !holds(app, f) {
+        return None;
+    }
+    let l = &f["lens"];
+    Some(match l["state"].as_str() {
+        Some("failed") => format!(
+            "the lens review failed ({}): {} runs it again with tb pr lens --retry, or lets it go with --skip \"<why>\"",
+            l["error"].as_str().unwrap_or("it didn't finish"),
+            app.cfg.owner
+        ),
+        _ => "lens is still reviewing it".into(),
+    })
+}
+
+/// queued or running, and past its timeout (with a minute's grace): the board lost it (it restarted).
+fn lost(app: &App, l: &Value) -> bool {
     if !matches!(l["state"].as_str(), Some("queued" | "running")) {
         return false;
     }
     let since = l["started_at"].as_str().or(l["at"].as_str()).and_then(parse_iso).unwrap_or(0.0);
-    now_ts() - since < timeout_secs(app) + 60.0
+    now_ts() - since >= timeout_secs(app) + 60.0
 }
 
 /// The Lens step of the PR bar: null when lens never ran on the PR; a run the board lost reads failed.
 pub fn bar(app: &App, f: &Row) -> Value {
     let Some(l) = f.get("lens").filter(|l| l.is_object()) else { return Value::Null };
     let mut l = l.clone();
-    if matches!(l["state"].as_str(), Some("queued" | "running")) && !holds(app, f) {
+    if lost(app, &l) {
         l["state"] = json!("failed");
         l["error"] = json!("didn't finish");
     }
     l
 }
 
+fn queue(app: &App, id: i64) {
+    app.queue_lens(Box::new(move |a| {
+        if let Err(e) = run(a, id) {
+            a.info(format!("lens: T{id}: {e}"));
+        }
+    }));
+}
+
 /// Starts the review of a PR the board is reading for the first time, before that read is stepped.
-/// Nothing when lens is off for its project, the PR isn't open or the board has read it before.
+/// Nothing when lens is off for its project, the PR isn't open or the board has read it before. A run
+/// the board lost is counted as failed: tried again, or the owner asked.
 pub fn kick(app: &App, id: i64, rec: &Value) -> Result<()> {
+    let open = rec["state"].as_str().unwrap_or("OPEN").eq_ignore_ascii_case("OPEN");
+    let t = board::get_task(app, id)?;
+    if let Some(l) = jloads_obj(t.s("pr_flow")).get("lens").filter(|l| open && lost(app, l)) {
+        let tries = l["tries"].as_i64().unwrap_or(1);
+        return failed(app, &t, tries, "it didn't finish (the board restarted)", Value::Null);
+    }
     let queued = app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let f = jloads_obj(t.s("pr_flow"));
-        let open = rec["state"].as_str().unwrap_or("OPEN").eq_ignore_ascii_case("OPEN");
         if f.contains_key("rec") || f.contains_key("lens") || !open || !on(app, t.s("project")) {
             return Ok(false);
         }
         let head: String = rec["head"].as_str().unwrap_or("").chars().take(12).collect();
-        prflow::merge_flow(app, id, fields!["lens" => json!({"state": "queued", "head": head, "at": now_iso()})])?;
+        prflow::merge_flow(app, id, fields!["lens" => json!({"state": "queued", "head": head, "at": now_iso(), "tries": 1})])?;
         Ok(true)
     })?;
     if queued {
-        app.queue_lens(Box::new(move |a| {
-            if let Err(e) = run(a, id) {
-                a.info(format!("lens: T{id}: {e}"));
-            }
-        }));
+        queue(app, id);
     }
     Ok(())
+}
+
+/// A run failed on its `tries`th try: queued again while it has tries left, else failed, holding the
+/// merge, with the owner asked.
+fn failed(app: &App, t: &Row, tries: i64, why: &str, log: Value) -> Result<()> {
+    let (id, num) = (t.id(), t.i0("pr_num"));
+    if tries < TRIES {
+        update(app, id, json!({"state": "queued", "at": now_iso(), "tries": tries + 1, "started_at": null, "error": why, "log": log}))?;
+        board::log_event(app, id, "lens", "status", &format!("PR #{num}: the lens review failed ({why}), so it runs again"))?;
+        queue(app, id);
+        return Ok(());
+    }
+    update(app, id, json!({"state": "failed", "finished_at": now_iso(), "error": why, "log": log}))?;
+    app.db.tx(|| {
+        board::log_event(app, id, "lens", "status", &format!("PR #{num}: the lens review failed: {why}"))?;
+        crate::dispatch::add_alert(
+            app,
+            &format!(
+                "PR #{num} for {} waits on its lens review, which failed twice ({why}): tb pr lens {} --retry, or --skip \"<why>\"",
+                rf("task", id),
+                rf("task", id)
+            ),
+            Some(id),
+            t.i("goal_id"),
+            None,
+            Some("pr"),
+        )
+    })?;
+    Ok(())
+}
+
+/// `tb pr lens --retry`: runs a failed (or lost) review again. `--skip "<why>"`: the PR goes on without
+/// it.
+pub fn act(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let f = jloads_obj(t.s("pr_flow"));
+    let Some(l) = f.get("lens").filter(|l| l.is_object()) else {
+        return err(409, format!("lens hasn't reviewed {}'s PR.", rf("task", id)));
+    };
+    let who = board::caller(app, body, &app.cfg.owner);
+    let num = t.i0("pr_num");
+    let skip = one_line(&body_str(body, "skip"), 500);
+    if !skip.is_empty() {
+        if as_bool(body.get("agent"), false) {
+            return err(403, format!("Only {} lets a PR go without its lens review. Run tb pr wait and leave it to them.", app.cfg.owner));
+        }
+        if !holds(app, &f) {
+            return err(409, format!("PR #{num}'s lens review isn't holding it."));
+        }
+        update(app, id, json!({"state": "skipped", "finished_at": now_iso(), "reason": skip, "by": who}))?;
+        board::log_event(app, id, &who, "status", &format!("PR #{num}: goes on without its lens review: {skip}"))?;
+    } else if as_bool(body.get("retry"), false) {
+        if !(l["state"] == "failed" || lost(app, l)) {
+            return err(409, format!("PR #{num}'s lens review hasn't failed (it's {}).", l["state"].as_str().unwrap_or("unknown")));
+        }
+        update(app, id, json!({"state": "queued", "at": now_iso(), "tries": 1, "started_at": null, "finished_at": null}))?;
+        board::log_event(app, id, &who, "status", &format!("PR #{num}: the lens review runs again"))?;
+        queue(app, id);
+    } else {
+        return err(400, "Say what to do: --retry, or --skip \"<why>\".");
+    }
+    let t = board::get_task(app, id)?;
+    if let Some(rec) = jloads_obj(t.s("pr_flow")).get("rec").filter(|r| r.is_object()).cloned() {
+        app.db.tx(|| prflow::step(app, &t, &rec))?;
+    }
+    let t = board::get_task(app, id)?;
+    Ok(json!({"ok": true, "task": rf("task", id), "lens": jloads_obj(t.s("pr_flow")).get("lens").cloned(), "pr": board::pr_card(app, &t)}))
 }
 
 /// lens's PR pass on PR `num`.
@@ -119,8 +223,8 @@ pub fn run(app: &App, id: i64) -> Result<()> {
             board::log_event(app, id, "lens", "status", &format!("PR #{num}: lens reviewed it and posted what it found"))?;
         }
         Err((why, log)) => {
-            update(app, id, json!({"state": "failed", "finished_at": finished_at, "error": why, "log": log}))?;
-            board::log_event(app, id, "lens", "status", &format!("PR #{num}: the lens review failed: {why}"))?;
+            let tries = jloads_obj(t.s("pr_flow")).get("lens").and_then(|l| l["tries"].as_i64()).unwrap_or(1);
+            failed(app, &t, tries, why, log.clone())?;
         }
     }
     let t = board::get_task(app, id)?;

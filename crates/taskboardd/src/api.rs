@@ -298,6 +298,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "slot", "claim"]) => slot_claim(app, tid(id)?, body),
         ("POST", ["tasks", id, "slot", "release"]) => slot_release(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "lens"]) => crate::lens_pr::act(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reply"]) => crate::prcmds::reply(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "ack"]) => crate::prcmds::ack(app, tid(id)?, body),

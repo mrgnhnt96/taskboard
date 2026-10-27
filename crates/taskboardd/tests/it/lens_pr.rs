@@ -139,17 +139,45 @@ fn a_project_can_turn_it_on_or_off() {
 }
 
 #[test]
-fn a_failed_run_is_noted_and_the_pr_moves_on() {
+fn a_failed_run_is_tried_again_then_holds_the_pr_and_asks_the_owner() {
     let b = lens_on();
     std::fs::write(b.dir.path().join("fail"), "").unwrap();
     let id = b.pr_task();
     prflow::apply(&b.app, id, &green()).unwrap();
+    assert_eq!(b.calls().len(), 2, "tried twice");
     let lens = b.lens(id);
     assert_eq!(lens["state"], "failed", "{lens}");
     assert_eq!(lens["error"], "no gh login");
+    assert_eq!(b.task(id).s("pr_phase"), Some("lens"), "it still holds the PR");
+    let card = b.call("GET", &format!("/tasks/T{id}"), json!({})).to_string();
+    assert!(card.contains("so it runs again"), "{card}");
+    assert!(card.contains("the lens review failed: no gh login"), "{card}");
+    let alerts = taskboardd::dispatch::alerts(&b.app);
+    assert!(alerts.iter().any(|a| a.to_string().contains("--retry")), "the owner is asked: {alerts:?}");
+}
+
+#[test]
+fn the_owner_runs_a_failed_review_again_or_lets_the_pr_go_without_it() {
+    let b = lens_on();
+    std::fs::write(b.dir.path().join("fail"), "").unwrap();
+    let id = b.pr_task();
+    prflow::apply(&b.app, id, &green()).unwrap();
+    let refused = api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/pr/lens"), &Query::new(), &json!({"skip": "lens is down", "agent": true}));
+    assert_eq!(refused.unwrap_err().status, 403, "an agent can't skip it");
+    std::fs::remove_file(b.dir.path().join("fail")).unwrap();
+    b.call("POST", &format!("/tasks/T{id}/pr/lens"), json!({"retry": true}));
+    assert_eq!(b.calls().len(), 3);
+    assert_eq!(b.lens(id)["state"], "done");
+    assert_eq!(b.task(id).s("pr_phase"), Some("review"), "done, the PR moves on");
+
+    let id = b.pr_task();
+    std::fs::write(b.dir.path().join("fail"), "").unwrap();
+    prflow::apply(&b.app, id, &green()).unwrap();
+    b.call("POST", &format!("/tasks/T{id}/pr/lens"), json!({"skip": "lens is down today"}));
+    let lens = b.lens(id);
+    assert_eq!(lens["state"], "skipped", "{lens}");
+    assert_eq!(lens["reason"], "lens is down today");
     assert_eq!(b.task(id).s("pr_phase"), Some("review"));
-    let bar = b.call("GET", &format!("/tasks/T{id}"), json!({}));
-    assert!(bar.to_string().contains("the lens review failed: no gh login"), "{bar}");
 }
 
 #[test]
@@ -160,7 +188,7 @@ fn without_lens_installed_the_run_fails() {
     prflow::apply(&b.app, id, &green()).unwrap();
     assert!(b.calls().is_empty());
     assert_eq!(b.lens(id)["error"], "lens isn't installed");
-    assert_eq!(b.task(id).s("pr_phase"), Some("review"));
+    assert_eq!(b.task(id).s("pr_phase"), Some("lens"));
 }
 
 #[test]
@@ -186,7 +214,7 @@ fn while_lens_runs_the_pr_shows_the_lens_stage_before_review() {
 }
 
 #[test]
-fn lens_never_holds_a_failed_check_or_a_merge() {
+fn lens_holds_the_merge_but_not_a_failed_check() {
     let b = board_with(|c| {
         c.pr.lens.on = true;
         c.pr.approvals = 1;
@@ -201,17 +229,50 @@ fn lens_never_holds_a_failed_check_or_a_merge() {
     let mut approved = green();
     approved["approvals"] = json!(1);
     approved["review_decision"] = json!("APPROVED");
-    assert_eq!(b.step_with_lens(id, running, &approved).s("pr_phase"), Some("merge"));
+    let t = b.step_with_lens(id, running, &approved);
+    assert_eq!(t.s("pr_phase"), Some("lens"), "an approved PR waits for lens");
+    let blockers = taskboardd::prcmds::merge_blockers(&b.app, &t, &approved, true).unwrap();
+    assert_eq!(blockers, ["lens is still reviewing it"]);
+    let done = json!({"state": "done", "head": "h1", "at": now_iso()});
+    assert_eq!(b.step_with_lens(id, done, &approved).s("pr_phase"), Some("merge"));
 }
 
 #[test]
-fn a_run_the_board_lost_stops_holding_after_its_timeout() {
+fn its_findings_hold_the_merge_until_resolved_though_lens_posts_as_us() {
+    let b = board_with(|c| {
+        c.pr.lens.on = true;
+        c.pr.approvals = 1;
+    });
+    let id = b.pr_task();
+    let mut rec = green();
+    rec["approvals"] = json!(1);
+    rec["review_decision"] = json!("APPROVED");
+    rec["viewer"] = json!("morgan");
+    let finding = |resolved: bool| {
+        json!({"id": "th1", "kind": "review", "resolvable": true, "resolved": resolved, "author": "morgan", "author_name": "morgan",
+               "last_author": "morgan", "last_id": "c1", "last_at": now_iso(), "text": "Off by one",
+               "body": "Off by one.\n\n<!-- lens:finding key=abc -->"})
+    };
+    let done = json!({"state": "done", "head": "h1", "at": now_iso()});
+    rec["threads"] = json!([finding(false)]);
+    assert_eq!(b.step_with_lens(id, done.clone(), &rec).s("pr_phase"), Some("comments"));
+    rec["threads"] = json!([finding(true)]);
+    assert_eq!(b.step_with_lens(id, done, &rec).s("pr_phase"), Some("merge"));
+}
+
+#[test]
+fn a_run_the_board_lost_is_run_again() {
     let b = lens_on();
     let id = b.pr_task();
-    let t = b.step_with_lens(id, json!({"state": "running", "head": "h1", "at": "2020-01-01T00:00:00Z", "started_at": "2020-01-01T00:00:00Z"}), &green());
-    assert_eq!(t.s("pr_phase"), Some("review"));
+    let t = b.step_with_lens(id, json!({"state": "running", "head": "h1", "at": "2020-01-01T00:00:00Z", "started_at": "2020-01-01T00:00:00Z", "tries": 1}), &green());
+    assert_eq!(t.s("pr_phase"), Some("lens"), "it still holds");
     let card = b.call("GET", &format!("/tasks/T{id}"), json!({}));
     assert_eq!(card["pr"]["bar"]["lens"]["state"], "failed", "{}", card["pr"]);
+    prflow::apply(&b.app, id, &green()).unwrap();
+    assert_eq!(b.calls().len(), 1, "the next read runs it again");
+    let lens = b.lens(id);
+    assert_eq!(lens["state"], "done", "{lens}");
+    assert_eq!(lens["tries"], 2);
 }
 
 #[test]

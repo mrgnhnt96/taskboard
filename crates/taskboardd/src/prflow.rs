@@ -1304,6 +1304,11 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if (review.changes && !answered) || new_comments {
         return "comments".into();
     }
+    // Lens reviewing the PR (`lens_pr.rs`) holds what comes after it until it's done: the review, the
+    // merge. Its findings come back as comments.
+    if crate::lens_pr::holds(app, &f) {
+        return "lens".into();
+    }
     let review_skipped = review_skipped(app, t, &f, rec);
     if review.changes && answered && !review_skipped {
         // The changes are pushed; the reviewer who asked for them hasn't looked again yet.
@@ -1321,11 +1326,6 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         }
         // The task's merge steps (`before = "merge"`) hold only the merge, judged on the PR's head.
         return if merge_steps_left(app, t, rec).is_empty() { "merge" } else { "steps" }.into();
-    }
-    // Lens reviewing a new PR (`lens_pr.rs`) comes before asking anyone: only stages that wait on someone
-    // else make way for it, so it never holds a merge.
-    if crate::lens_pr::holds(app, &f) {
-        return "lens".into();
     }
     if crate::reviewers::ask_stage_on(app, t.s("project")) && f.contains_key("reviewed") && !f.contains_key("asked") {
         return "ask".into();
