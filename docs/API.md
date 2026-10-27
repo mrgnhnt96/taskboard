@@ -534,7 +534,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "kind": "agent"|"design"|"human", // design (`--kind design`): "Design" pill; ends with its design attached, no PR. human: an H<n> task
   "ships_pr": bool,               // it ends in a PR: its own setting, else its project's (`pr_flow` / a git remote)
   "ships_pr_set": bool|null,      // its own setting (`tb task set --pr yes|no`); null = the project's default
-  "no_pr": str|null,              // why it finished without its PR (`tb submit --no-pr`): "PR canceled: <why>"
+  "no_pr": str|null,              // why it finished without its PR (`tb submit --no-pr`): "No PR: <why>"
   "no_evidence": str|null,        // why it finished without evidence (`tb submit --no-evidence`)
   "stack_on": stack_on|null,      // the task whose PR this one's builds on (`--stack-on`)
   "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`);
@@ -1413,7 +1413,7 @@ summary instead. A follow-up task on a shipped ticket moves it to In Progress on
 doesn't ship a PR only comments its summary when it finishes. The ticket moves to `[jira] in_review` once reviewers
 have been asked (stage `review`, `rereview`, `comments`, `merge` or `waits`), not at `ask`. The why can't be blank (400) and is one line of at most 100 characters (400 past that). **`--no-evidence
 "<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons and ticket keys linked to Jira; the
-goal row says "PR canceled: <why>" (its task and ticket refs linked) and the wave rail's "PR canceled" chip carries
+goal row says "No PR: <why>" (its task and ticket refs linked) and the wave rail's "No PR" chip carries
 the why.
 
 **`tb submit` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), unless its repo has

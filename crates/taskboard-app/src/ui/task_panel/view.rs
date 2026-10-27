@@ -811,7 +811,9 @@ fn card_panel(c: &Ctx, t: &Value) -> Node {
     let mut kids = vec![top_row(c, Some(t)), txt(or_empty(&t["title"]), St::Title)];
     kids.extend(head_chips(c, t));
     if pr_of(t).is_some() {
-        kids.push(el(K::Tline, pr_nodes(c, t)));
+        let mut nodes = pr_nodes(c, t);
+        nodes.reverse();
+        kids.push(el(K::Tline, nodes));
     }
     kids.push(txt("Loading…", St::Muted));
     el(K::Col, kids)
@@ -1058,7 +1060,8 @@ fn tl_name(name: &str) -> Node {
     txt(name, St::TlH)
 }
 
-/// `timeline(t)`: where it started, the steps it passed, what it's doing now and what's left.
+/// `timeline(t)`: what's left on top, then what it's doing now, the steps it passed and where it
+/// started at the bottom, so the stop it's at reads first.
 fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
     if s(t, "kind") == "human" {
         return human_tab(c, t);
@@ -1076,6 +1079,7 @@ fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
         nodes.push(now_node(c, t));
     }
     nodes.extend(pr_nodes(c, t));
+    nodes.reverse();
     vec![el(K::Tline, nodes)]
 }
 
@@ -1210,7 +1214,7 @@ fn done_node(c: &Ctx, t: &Value) -> Node {
     let act = format!("act:{r}");
     let failed = b(t, "failed");
     let mut body = vec![txt(opt_s(t, "summary").or(opt_s(t, "latest")).unwrap_or("No summary was given."), St::TlText)];
-    for (k, label) in [("no_pr", "PR canceled:"), ("no_evidence", "No evidence:")] {
+    for (k, label) in [("no_pr", "No PR:"), ("no_evidence", "No evidence:")] {
         if let Some(why) = opt_s(t, k) {
             let mut line = vec![txt(label, St::Strong)];
             line.extend(linkify(c, why));

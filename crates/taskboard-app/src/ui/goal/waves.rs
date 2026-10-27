@@ -33,7 +33,6 @@ pub struct WRow {
     pub design: bool,
     pub row: status::Row,
     pub pr: String,
-    pub pr_url: Option<String>,
 }
 
 /// A card: its header (none when the goal has no waves), the gate under it, its rows.
@@ -117,7 +116,7 @@ pub fn pr_cell(t: &Value) -> String {
         };
     }
     if let Some(why) = fmt::opt_s(t, "no_pr") {
-        return format!("PR canceled: {why}");
+        return format!("No PR: {why}");
     }
     if let Some(br) = fmt::opt_s(t, "branch") {
         return br.to_string();
@@ -136,7 +135,6 @@ pub fn wrow(t: &Value) -> WRow {
         design: kit::is_design(t),
         row: status::row(t),
         pr: pr_cell(t),
-        pr_url: t["pr"]["url"].as_str().filter(|u| !u.is_empty()).map(str::to_string),
     }
 }
 
@@ -232,16 +230,8 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         d.style().flex_basis = Some(relative(0.).into());
         d
     };
+    // Just words: a click here opens the task like the rest of the row; its panel links the PR.
     let pr = div().flex_none().w(px(120.)).min_w_0().truncate().text_size(px(12.)).text_color(t.muted).child(x.pr.clone());
-    let pr = match x.pr_url.clone() {
-        Some(url) => div()
-            .id(SharedString::from(format!("goal-pr-{}", x.r)))
-            .flex_none()
-            .child(pr.cursor_pointer().hover(move |s| s.text_color(link).underline()))
-            .on_click(move |_, _, cx| cx.open_url(&url))
-            .into_any_element(),
-        None => pr.into_any_element(),
-    };
     div()
         .id(SharedString::from(format!("goal-task-{}", x.r)))
         .flex()
@@ -355,7 +345,7 @@ mod tests {
         assert_eq!(pr_cell(&json!({"pr": {"num": 398, "state": "MERGED"}})), "PR #398 merged");
         assert_eq!(pr_cell(&json!({"pr": {"num": 4, "state": "OPEN", "stage": {"label": "In review"}}})), "PR #4 · In review");
         assert_eq!(pr_cell(&json!({"status": "queued", "ships_pr": true})), "Ships one PR");
-        assert_eq!(pr_cell(&json!({"status": "done", "ships_pr": true, "no_pr": "not needed"})), "PR canceled: not needed");
+        assert_eq!(pr_cell(&json!({"status": "done", "ships_pr": true, "no_pr": "not needed"})), "No PR: not needed");
     }
 
     #[test]

@@ -1108,7 +1108,7 @@ function timeline(t) {
   if (t.status === 'done') nodes.push(doneNode(t));
   if (t.status !== 'done' || prStopped(t)) nodes.push(nowNode(t));
   nodes.push(...prNodes(t));
-  return `<ol class="tline">${nodes.join('')}</ol>`;
+  return `<ol class="tline">${nodes.reverse().join('')}</ol>`;
 }
 
 function startedNode(t) {
