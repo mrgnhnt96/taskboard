@@ -301,7 +301,7 @@ impl PrHost for GithubHost {
     }
 
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()> {
-        self.gh(s(&["pr", "edit", &pr.num.to_string(), "-R", &pr.repo, "--base", base])).map(|_| ())
+        super::limit::last_wins(format!("{}#{} base", pr.repo, pr.num), || self.gh(s(&["pr", "edit", &pr.num.to_string(), "-R", &pr.repo, "--base", base]))).map(|_| ())
     }
 
     fn description(&self, pr: &PrRef) -> HostResult<String> {
@@ -310,7 +310,7 @@ impl PrHost for GithubHost {
     }
 
     fn set_description(&self, pr: &PrRef, body: &str) -> HostResult<()> {
-        self.api("PATCH", &format!("repos/{}/pulls/{}", pr.repo, pr.num), &[("body", body)]).map(|_| ())
+        super::limit::last_wins(format!("{}#{} description", pr.repo, pr.num), || self.api("PATCH", &format!("repos/{}/pulls/{}", pr.repo, pr.num), &[("body", body)])).map(|_| ())
     }
 
     fn files(&self, pr: &PrRef) -> HostResult<Vec<String>> {
@@ -829,6 +829,32 @@ pub(crate) mod tests {
         assert!(!has(&["run", "cancel", "6"]));
         assert!(has(&["--base", "develop"]));
         assert!(has(&["POST", "repos/acme/webapp/pulls", "head=feat", "base=main", "title=Add x"]));
+    }
+
+    /// Each `gh` call, joined, with the last-wins key it was marked with (`limit::last_wins`).
+    struct Marked(FakeGh, Arc<Mutex<Vec<(String, Option<String>)>>>);
+
+    impl Gh for Marked {
+        fn run(&self, args: &[String]) -> HostResult<String> {
+            self.1.lock().push((args.join(" "), crate::prhost::limit::last_wins_key()));
+            self.0.run(args)
+        }
+    }
+
+    #[test]
+    fn writes_that_only_set_a_pr_s_state_are_last_wins_by_field() {
+        let marks = Arc::new(Mutex::new(vec![]));
+        let h = GithubHost::new(Box::new(Marked(FakeGh { answers: vec![("", "{}".into())], calls: Arc::new(Mutex::new(vec![])) }, marks.clone())));
+        h.retarget(&pr(), "develop").unwrap();
+        h.set_description(&pr(), "## Summary").unwrap();
+        h.request_reviews(&pr(), &["rev".into()]).unwrap();
+        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: false }).unwrap();
+        let marks = marks.lock().clone();
+        let mark = |want: &str| marks.iter().find(|(c, _)| c.contains(want)).map(|(_, k)| k.clone()).unwrap_or_else(|| panic!("no call with {want}: {marks:?}"));
+        assert_eq!(mark("--base develop"), Some("acme/webapp#9 base".into()));
+        assert_eq!(mark("PATCH repos/acme/webapp/pulls/9"), Some("acme/webapp#9 description".into()));
+        assert_eq!(mark("requested_reviewers"), None, "asking for reviewers adds to the list, so each one goes");
+        assert_eq!(mark("pr merge"), None);
     }
 
     #[test]

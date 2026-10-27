@@ -73,6 +73,16 @@
 //! such a change ([`fresh`]: after an event or a hint, and `tb pr` commands) take only an answer sent
 //! after they began: one kept from before, or in flight since before, is read again.
 //!
+//! # Collapsing writes
+//!
+//! A write that only sets a PR's state (its reviewers, its base, its description) is marked
+//! [`last_wins`] with the PR and the field it sets. While one waits in the line for its slot, a newer
+//! one with the same key on the account replaces it ([`Limits::queue_last`]): the newer one takes the
+//! older one's place (it goes out at that slot, and doesn't take one of its own, so it never finds the
+//! line full), the older one never reaches the host, and its caller gets the newer one's answer. A
+//! write already gone out isn't replaced; the next one waits for a slot of its own. Merges, comments,
+//! approvals and anything else not marked never collapse: each goes out.
+//!
 //! # On the Days page
 //!
 //! Each stretch the board couldn't work with an account goes in `host_limits` ([`Span`], written on
@@ -93,6 +103,7 @@
 //! and [`Limits::note_poll`]), on `/state` (`rate_limits`), `GET /prs/feed` (`tb feed`) and
 //! `POST /prs/refresh` (`tb pr check`).
 
+use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, OnceLock};
@@ -328,6 +339,7 @@ thread_local! {
     static PRIORITY: Cell<bool> = const { Cell::new(false) };
     static FRESH: Cell<Option<f64>> = const { Cell::new(None) };
     static COUNTED: RefCell<Option<HashMap<String, usize>>> = const { RefCell::new(None) };
+    static LAST_WINS: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Runs `f` and counts the calls it made that reached each host, by host id.
@@ -372,6 +384,26 @@ fn fresh_since() -> f64 {
     FRESH.with(|s| s.get()).unwrap_or(f64::NEG_INFINITY)
 }
 
+/// Runs `f` with its writes marked last-wins under `key`, the PR and the field they set (`<PR>
+/// reviewers`): each only sets state, so a newer one with the same key replaces one still waiting for
+/// its slot (see "Collapsing writes"). Never for a merge, a comment or an approval.
+pub fn last_wins<T>(key: String, f: impl FnOnce() -> T) -> T {
+    /// Puts back the key outside, even when `f` panics: a pooled thread mustn't keep marking writes.
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAST_WINS.with(|k| k.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(LAST_WINS.with(|k| k.replace(Some(key))));
+    f()
+}
+
+/// The key the current thread's writes are marked with, set by an enclosing [`last_wins`], if any.
+pub(super) fn last_wins_key() -> Option<String> {
+    LAST_WINS.with(|k| k.borrow().clone())
+}
+
 /// Every account's limits and calls.
 #[derive(Debug, Default)]
 pub struct Limits {
@@ -392,6 +424,9 @@ pub struct Limits {
     polls: Mutex<HashMap<String, Poll>>,
     /// Reads in flight or answered lately, by account and URL ([`Gate::request`]).
     shared: Mutex<HashMap<(String, String), Shared>>,
+    /// Last-wins writes waiting for their slot, by account, key and the answer's type
+    /// ([`Limits::queue_last`]).
+    queued: Mutex<HashMap<(String, String, TypeId), Queued>>,
 }
 
 /// What one PR poll cost on a host.
@@ -1029,6 +1064,103 @@ impl Limits {
     }
 }
 
+/// A last-wins write waiting for its slot ([`Limits::queue_last`]).
+#[derive(Debug)]
+struct Queued {
+    /// When its slot comes, epoch seconds.
+    at: f64,
+    /// Whose write goes: each newer one that replaces it takes the next turn.
+    turn: u64,
+    /// What the one that goes lands for every caller it stands for: an `Outcome<T>`.
+    out: Arc<dyn Any + Send + Sync>,
+}
+
+/// How a last-wins write ended, for every caller it replaced.
+#[derive(Debug)]
+pub struct Outcome<T> {
+    res: Mutex<Option<std::result::Result<T, String>>>,
+    done: parking_lot::Condvar,
+}
+
+impl<T: Clone> Outcome<T> {
+    fn wait(&self) -> std::result::Result<T, String> {
+        let mut res = self.res.lock();
+        loop {
+            match &*res {
+                Some(r) => return r.clone(),
+                None => self.done.wait(&mut res),
+            }
+        }
+    }
+}
+
+impl<T> Outcome<T> {
+    fn land(&self, res: std::result::Result<T, String>) {
+        *self.res.lock() = Some(res);
+        self.done.notify_all();
+    }
+}
+
+impl Limits {
+    /// Queues a last-wins write marked `last` on account `key` ([`last_wins`]): when one with the same
+    /// key still waits for its slot, this one replaces it, taking its slot and its outcome, so it takes
+    /// no slot of its own and never finds the line full; else it takes the next slot
+    /// ([`write_slot`](Limits::write_slot)). Gives when the slot comes (epoch seconds), this caller's
+    /// turn ([`go_last`](Limits::go_last)) and the outcome it shares.
+    pub fn queue_last<T: Send + Sync + 'static>(&self, key: &str, host: &str, last: &str, now: f64) -> std::result::Result<(f64, u64, Arc<Outcome<T>>), String> {
+        let mut queued = self.queued.lock();
+        let k = (key.to_string(), last.to_string(), TypeId::of::<T>());
+        // Keyed by the answer's type too, so the outcome is always one this caller can read.
+        if let Some(q) = queued.get_mut(&k) {
+            if let Ok(out) = q.out.clone().downcast::<Outcome<T>>() {
+                q.turn += 1;
+                return Ok((q.at, q.turn, out));
+            }
+        }
+        let at = now + self.write_slot(key, host, now)?;
+        let out = Arc::new(Outcome { res: Mutex::new(None), done: parking_lot::Condvar::new() });
+        queued.insert(k, Queued { at, turn: 0, out: out.clone() });
+        Ok((at, 0, out))
+    }
+
+    /// Whether the last-wins write queued with `turn` and `out` goes now its slot has come: false when a
+    /// newer one replaced it. The one that goes leaves the queue, so a write after it takes a slot of
+    /// its own.
+    pub fn go_last<T: Send + Sync + 'static>(&self, key: &str, last: &str, turn: u64, out: &Arc<Outcome<T>>) -> bool {
+        let mut queued = self.queued.lock();
+        let k = (key.to_string(), last.to_string(), TypeId::of::<T>());
+        let ours = queued.get(&k).is_some_and(|q| q.turn == turn && Arc::as_ptr(&q.out) as *const () == Arc::as_ptr(out) as *const ());
+        if ours {
+            queued.remove(&k);
+        }
+        ours
+    }
+}
+
+/// Lands a last-wins write's outcome for the callers it replaced once it's done, or an error should it
+/// unwind first, so they never wait forever.
+struct LastWins<'a, T: Send + Sync + 'static> {
+    l: &'a Limits,
+    key: &'a str,
+    last: &'a str,
+    turn: u64,
+    out: Arc<Outcome<T>>,
+    /// A newer write replaced this one: that one lands the outcome.
+    replaced: bool,
+    /// This one went out.
+    went: bool,
+    res: Option<std::result::Result<T, String>>,
+}
+
+impl<T: Send + Sync + 'static> Drop for LastWins<'_, T> {
+    fn drop(&mut self) {
+        if self.replaced || !(self.went || self.l.go_last(self.key, self.last, self.turn, &self.out)) {
+            return;
+        }
+        self.out.land(self.res.take().unwrap_or_else(|| Err("the write that replaced this one broke off before it was done".into())));
+    }
+}
+
 /// Lands a led read when the leader is done with it, or `Retry` should it unwind before it lands, so
 /// those waiting never wait forever.
 struct Leading<'a> {
@@ -1075,18 +1207,45 @@ impl Gate {
     }
 
     /// Makes the call unless the account is limited (or out of budget, or restarting slowly, for a
-    /// read); notes a limit the call's answer reports (`limited` reads it from the error).
-    pub fn call<T>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+    /// read); notes a limit the call's answer reports (`limited` reads it from the error). A write
+    /// marked [`last_wins`] may be replaced by a newer one while it waits (see "Collapsing writes").
+    pub fn call<T: Clone + Send + Sync + 'static>(&self, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         self.call_on(limits(), BACKGROUND_WAIT_SECS, write, f)
     }
 
     /// [`Gate::call`] on `l`, a background read asking for its turn for `patience` seconds.
-    fn call_on<T>(&self, l: &Limits, patience: f64, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+    fn call_on<T: Clone + Send + Sync + 'static>(&self, l: &Limits, patience: f64, write: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         let priority = is_priority();
+        if let (true, Some(last)) = (write, last_wins_key()) {
+            return self.write_last(l, &last, priority, f);
+        }
         let wait = match write {
             true => l.write_slot(&self.key, &self.host, now_ts())?,
             false => self.read_wait(l, priority, patience)?,
         };
+        self.wait_turn(write, wait);
+        self.go(l, write, priority, f)
+    }
+
+    /// A write marked [`last_wins`] under `last`: waits for its slot, unless a newer one with the same
+    /// key replaced it meanwhile; then it gives that one's answer instead of calling the host.
+    fn write_last<T: Clone + Send + Sync + 'static>(&self, l: &Limits, last: &str, priority: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+        let (at, turn, out) = l.queue_last::<T>(&self.key, &self.host, last, now_ts())?;
+        let mut mine = LastWins { l, key: &self.key, last, turn, out, replaced: false, went: false, res: None };
+        self.wait_turn(true, at - now_ts());
+        if !l.go_last(&self.key, last, turn, &mine.out) {
+            mine.replaced = true;
+            let what = format!("the newer {} write to the same PR that replaced this one", label(&self.host));
+            return crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || mine.out.wait());
+        }
+        mine.went = true;
+        let res = self.go(l, true, priority, f);
+        mine.res = Some(res.clone());
+        res
+    }
+
+    /// Waits `wait` seconds for a call's turn.
+    fn wait_turn(&self, write: bool, wait: f64) {
         if wait > 0.0 {
             // Said as progress, so a `tb pr` command queued behind other calls doesn't time out.
             let what = match write {
@@ -1095,6 +1254,10 @@ impl Gate {
             };
             crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || std::thread::sleep(std::time::Duration::from_secs_f64(wait)));
         }
+    }
+
+    /// Makes the call once its turn has come, unless the account is limited or out of budget.
+    fn go<T>(&self, l: &Limits, write: bool, priority: bool, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         l.admit(&self.key, &self.host, write, priority, now_ts())?;
         count(&self.host);
         match f() {
@@ -1155,7 +1318,7 @@ impl Gate {
 
     /// A write to `url`; then drops the shared reads it may change ([`Limits::wrote`]), even when it
     /// failed: it may have gone through all the same.
-    fn write_on<T>(&self, l: &Limits, url: &str, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
+    fn write_on<T: Clone + Send + Sync + 'static>(&self, l: &Limits, url: &str, f: impl FnOnce() -> std::result::Result<(T, Option<Hit>), (String, Option<Hit>)>) -> std::result::Result<T, String> {
         let res = self.call_on(l, BACKGROUND_WAIT_SECS, true, f);
         l.wrote(&self.key, url);
         res
@@ -1418,6 +1581,15 @@ mod tests {
         assert!(!is_priority());
         assert!(priority(|| priority(is_priority) && is_priority()));
         assert!(!is_priority());
+    }
+
+    #[test]
+    fn last_wins_puts_back_the_key_outside_even_when_its_writes_panic() {
+        let inner = last_wins("PR1 base".into(), || last_wins("PR1 description".into(), last_wins_key));
+        assert_eq!(inner.as_deref(), Some("PR1 description"));
+        let panicked = std::panic::catch_unwind(|| last_wins("PR1 base".into(), || panic!("the write broke")));
+        assert!(panicked.is_err());
+        assert_eq!(last_wins_key(), None, "the thread's later writes aren't marked");
     }
 
     #[test]
@@ -2200,5 +2372,141 @@ mod tests {
         l.land("bb:2", PR1, &new, Landed::Answer(Ok(json!("new"))), T0 + 6.0);
         assert_eq!(l.join_after("bb:2", PR1, T0 + 7.0, T0 + 2.0).kept(), Some(json!("new")), "kept and sent since");
         assert!(matches!(l.join_after("bb:2", PR1, T0 + 7.0, T0 + 2.5), Join::Lead(_)), "kept but sent before");
+    }
+
+    #[test]
+    fn a_newer_last_wins_write_takes_the_queued_one_s_slot_and_outcome() {
+        let l = Limits::default();
+        let (at, turn, older) = l.queue_last::<String>("bb:1", "bitbucket", "PR1 reviewers", T0).unwrap();
+        assert_eq!((at, turn), (T0, 0));
+        let (at, turn, newer) = l.queue_last::<String>("bb:1", "bitbucket", "PR1 reviewers", T0 + 0.5).unwrap();
+        assert_eq!((at, turn), (T0, 1), "it goes at the older one's slot");
+        assert!(Arc::ptr_eq(&older, &newer), "and lands the outcome the older one waits on");
+        assert_eq!(l.queue_last::<String>("bb:1", "bitbucket", "PR1 base", T0 + 0.5).unwrap().0, T0 + 2.0, "it took no slot of its own; another field takes the next");
+        assert_eq!(l.queue_last::<String>("bb:1", "bitbucket", "PR2 reviewers", T0 + 0.5).unwrap().0, T0 + 4.0, "and so does another PR");
+        assert_eq!(l.queue_last::<String>("bb:2", "bitbucket", "PR1 reviewers", T0 + 0.5).unwrap().0, T0 + 0.5, "another account's line is its own");
+        assert!(!l.go_last("bb:1", "PR1 reviewers", 0, &older), "the older one was replaced");
+        assert!(l.go_last("bb:1", "PR1 reviewers", 1, &newer), "the newer one goes");
+        assert!(!l.go_last("bb:1", "PR1 reviewers", 1, &newer), "once");
+        let (at, turn, after) = l.queue_last::<String>("bb:1", "bitbucket", "PR1 reviewers", T0 + 1.0).unwrap();
+        assert_eq!((at, turn), (T0 + 6.0, 0), "a write after one went out waits for a slot of its own");
+        assert!(!Arc::ptr_eq(&older, &after));
+        assert!(!l.go_last("bb:1", "PR1 reviewers", 0, &older), "a replaced write slow to wake never takes the later one's turn");
+    }
+
+    #[test]
+    fn a_full_write_line_still_lets_a_last_wins_write_replace_a_queued_one() {
+        let l = Limits::default();
+        l.queue_last::<String>("bb:1", "bitbucket", "PR1 base", T0).unwrap();
+        for _ in 0..WRITE_LINE {
+            l.write_slot("bb:1", "bitbucket", T0).unwrap();
+        }
+        assert!(l.write_slot("bb:1", "bitbucket", T0).is_err(), "the line is full");
+        assert_eq!(l.queue_last::<String>("bb:1", "bitbucket", "PR1 base", T0).map(|(at, turn, _)| (at, turn)), Ok((T0, 1)), "it takes the queued one's place");
+        let e = l.queue_last::<String>("bb:1", "bitbucket", "PR1 description", T0).unwrap_err();
+        assert!(e.contains("write queue is full"), "{e}");
+    }
+
+    /// Whose turn the last-wins write marked `last` on `key` is, while one waits for its slot.
+    fn queued_turn(l: &Limits, key: &str, last: &str) -> Option<u64> {
+        l.queued.lock().get(&(key.to_string(), last.to_string(), TypeId::of::<String>())).map(|q| q.turn)
+    }
+
+    fn wait_until_queued(l: &Limits, key: &str, last: &str, turn: u64) {
+        let give_up = now_ts() + 5.0;
+        while queued_turn(l, key, last) != Some(turn) {
+            assert!(now_ts() < give_up, "turn {turn} never queued");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// `l` with writes on Bitbucket `gap` seconds apart.
+    fn gapped(gap: f64) -> Limits {
+        let l = Limits::default();
+        l.set_hosts([("bitbucket".to_string(), HostConfig { write_gap_secs: Some(gap), ..Default::default() })].into());
+        l
+    }
+
+    #[test]
+    fn a_queued_last_wins_write_is_replaced_by_a_newer_one_and_gets_its_answer() {
+        let l = gapped(1.0);
+        let gate = Gate::new("bitbucket", "bb:lw".into());
+        l.write_slot("bb:lw", "bitbucket", now_ts()).unwrap();
+        let reached = Mutex::new(vec![]);
+        let (gate, l, reached) = (&gate, &l, &reached);
+        let write = |last: Option<&'static str>, answer: &'static str| {
+            let f = move || {
+                gate.call_on(l, BACKGROUND_WAIT_SECS, true, || {
+                    reached.lock().push(answer);
+                    Ok((answer.to_string(), None))
+                })
+            };
+            match last {
+                Some(last) => last_wins(last.to_string(), f),
+                None => f(),
+            }
+        };
+        let (older, newer, base, plain) = std::thread::scope(|s| {
+            let older = s.spawn(move || write(Some("PR1 reviewers"), "older"));
+            wait_until_queued(l, "bb:lw", "PR1 reviewers", 0);
+            let newer = s.spawn(move || write(Some("PR1 reviewers"), "newer"));
+            wait_until_queued(l, "bb:lw", "PR1 reviewers", 1);
+            let base = s.spawn(move || write(Some("PR1 base"), "base"));
+            let plain = s.spawn(move || write(None, "plain"));
+            (older.join().unwrap(), newer.join().unwrap(), base.join().unwrap(), plain.join().unwrap())
+        });
+        assert_eq!(older, Ok("newer".to_string()), "the replaced caller gets the newer one's answer");
+        assert_eq!(newer, Ok("newer".to_string()));
+        assert_eq!((base, plain), (Ok("base".to_string()), Ok("plain".to_string())), "another field and an unmarked write each go");
+        let mut reached = reached.lock().clone();
+        reached.sort();
+        assert_eq!(reached, vec!["base", "newer", "plain"], "the older one never reached the host");
+        assert_eq!(calls(l, "bb:lw"), 3);
+        assert_eq!(queued_turn(l, "bb:lw", "PR1 reviewers"), None, "nothing left queued");
+    }
+
+    #[test]
+    fn a_last_wins_write_already_gone_out_isn_t_replaced() {
+        let l = gapped(0.2);
+        let gate = Gate::new("bitbucket", "bb:out".into());
+        let (inside, is_in) = std::sync::mpsc::channel::<()>();
+        let (finish, finished) = std::sync::mpsc::channel::<()>();
+        let (gate, l) = (&gate, &l);
+        let (first, second) = std::thread::scope(|s| {
+            let first = s.spawn(move || {
+                last_wins("PR1 base".into(), || {
+                    gate.call_on(l, BACKGROUND_WAIT_SECS, true, || {
+                        inside.send(()).unwrap();
+                        finished.recv().unwrap();
+                        Ok(("first".to_string(), None))
+                    })
+                })
+            });
+            is_in.recv().unwrap();
+            let second = s.spawn(move || last_wins("PR1 base".into(), || gate.call_on(l, BACKGROUND_WAIT_SECS, true, || Ok(("second".to_string(), None)))));
+            wait_until_queued(l, "bb:out", "PR1 base", 0);
+            finish.send(()).unwrap();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!((first, second), (Ok("first".to_string()), Ok("second".to_string())), "each went out with its own answer");
+        assert_eq!(calls(l, "bb:out"), 2);
+    }
+
+    #[test]
+    fn a_replaced_write_hears_when_the_newer_one_breaks_off() {
+        let l = gapped(0.5);
+        let gate = Gate::new("bitbucket", "bb:broke".into());
+        l.write_slot("bb:broke", "bitbucket", now_ts()).unwrap();
+        let (gate, l) = (&gate, &l);
+        let older = std::thread::scope(|s| {
+            let older = s.spawn(move || last_wins("PR1 description".into(), || gate.call_on(l, BACKGROUND_WAIT_SECS, true, || Ok(("older".to_string(), None)))));
+            wait_until_queued(l, "bb:broke", "PR1 description", 0);
+            let newer = s.spawn(move || last_wins("PR1 description".into(), || gate.call_on::<String>(l, BACKGROUND_WAIT_SECS, true, || panic!("the write broke"))));
+            assert!(newer.join().is_err());
+            older.join().unwrap()
+        });
+        let e = older.unwrap_err();
+        assert!(e.contains("broke off"), "{e}");
+        assert_eq!(queued_turn(l, "bb:broke", "PR1 description"), None);
     }
 }
