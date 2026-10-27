@@ -10,6 +10,9 @@ use taskboardd::config::Config;
 use taskboardd::hooks;
 use taskboardd::steps::{self, Step};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// How long tb waits for the board: for the whole answer to a quick call, and for each stage of a long
 /// one on the progress stream (the board says "still waiting on …" while one slow call runs).
@@ -654,6 +657,11 @@ enum Cmd {
         #[command(subcommand)]
         action: WordsCmd,
     },
+    /// The board's daemon: restart it (agents and their terminals keep running through it)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCmd,
+    },
     /// Tell the board where this tb is
     Hello,
     /// Claude Code hook (used by the plugin)
@@ -670,6 +678,12 @@ enum Cmd {
         #[arg(long)]
         pass: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Restart the daemon under launchd and wait for it to answer again
+    Restart,
 }
 
 #[derive(Subcommand)]
@@ -2362,6 +2376,45 @@ static STDOUT_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// than panicking or stopping before the work is done.
 /// A failed call as a sentence: the board's refusal, a board that isn't there, or one that `went_quiet`
 /// (it took the request and may still be working on it, so a retry could do it twice).
+/// `tb daemon restart`: `launchctl kickstart -k` the daemon's job, then wait for a new pid to answer.
+fn daemon_restart(cfg: &taskboardd::config::Config) -> Result<i32, String> {
+    let before = client::request(cfg, "GET", "/info", None, 2.0).ok();
+    let label = before
+        .as_ref()
+        .and_then(|i| i["launchd_label"].as_str().map(str::to_string))
+        .or_else(bundle_daemon_label)
+        .ok_or("the daemon isn't run by launchd here (no app bundle around this tb), so restart it the way you started it")?;
+    let uid = Command::new("/usr/bin/id").arg("-u").output().map_err(|e| e.to_string())?;
+    let target = format!("gui/{}/{label}", String::from_utf8_lossy(&uid.stdout).trim());
+    let kick = Command::new("/bin/launchctl").args(["kickstart", "-k", &target]).output().map_err(|e| e.to_string())?;
+    if !kick.status.success() {
+        return Err(format!("launchctl kickstart {target} failed: {}", String::from_utf8_lossy(&kick.stderr).trim()));
+    }
+    let old_pid = before.as_ref().and_then(|i| i["pid"].as_u64());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+        if let Ok(i) = client::request(cfg, "GET", "/info", None, 2.0) {
+            if i["pid"].as_u64() != old_pid {
+                out(&format!("Restarted the daemon: {} · pid {}.", i["version"].as_str().unwrap_or("?"), i["pid"].as_u64().unwrap_or(0)));
+                return Ok(0);
+            }
+        }
+    }
+    Err(format!("restarted {label}, but it isn't answering yet: launchctl print {target} shows why"))
+}
+
+/// The label of the LaunchAgent in the app bundle this tb runs from (`Contents/MacOS/tb` or the plugin's copy).
+fn bundle_daemon_label() -> Option<String> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let app = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))?;
+    let mut plists: Vec<PathBuf> = std::fs::read_dir(app.join("Contents/Library/LaunchAgents")).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "plist")).collect();
+    plists.sort();
+    let out = Command::new("/usr/bin/plutil").args(["-extract", "Label", "raw", "-o", "-"]).arg(plists.first()?).output().ok()?;
+    let label = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !label.is_empty()).then_some(label)
+}
+
 fn unanswered(e: CallError, went_quiet: &str) -> String {
     match e {
         CallError::Refused(m) => m,
@@ -6701,6 +6754,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Daemon { action: DaemonCmd::Restart } => daemon_restart(&c.cfg),
         Cmd::Hello => {
             let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "tb".into());
             match c.report("tb.hello", json!({"tb_path": exe, "plugin_version": env!("CARGO_PKG_VERSION")}), None, TB_TIMEOUT)? {
