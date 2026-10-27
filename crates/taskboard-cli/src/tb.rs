@@ -4567,11 +4567,16 @@ fn dry_run_line(v: &Value) -> String {
 }
 
 fn pr_reviewers_line(t: &str, v: &Value) -> String {
-    let names = |k: &str| -> Vec<String> { v[k].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x["name"].as_str().map(|s| s.to_string())).collect() };
+    let names_where = |k: &str, keep: &dyn Fn(&Value) -> bool| -> Vec<String> { v[k].as_array().cloned().unwrap_or_default().iter().filter(|x| keep(x)).filter_map(|x| x["name"].as_str().map(|s| s.to_string())).collect() };
+    let names = |k: &str| names_where(k, &|_| true);
     let mut parts = vec![];
-    let asked = names("asked");
+    let asked = names_where("asked", &|x| x["queued"] != true);
     if !asked.is_empty() {
         parts.push(format!("asked {}", asked.join(", ")));
+    }
+    let queued = names_where("asked", &|x| x["queued"] == true);
+    if !queued.is_empty() {
+        parts.push(format!("queued asking {} to look again (the host has the board rate-limited; the board asks once the limit is over)", queued.join(", ")));
     }
     if let Some(r) = v["replaced"].as_object() {
         parts.push(format!("asked {} in place of {}", r["new"].as_str().unwrap_or(""), r["old"].as_str().unwrap_or("")));
@@ -8114,6 +8119,14 @@ mod tests {
         // Bitbucket keeps every reviewer requested: that alone isn't an ask to look again.
         assert_eq!(reviewer_state(&json!({"state": "changes", "requested": true})), "asked for changes");
         assert_eq!(reviewer_state(&json!({"state": "approved", "rereview": {"at": "2026-10-27T15:26:00Z"}})), "approved");
+    }
+
+    #[test]
+    fn pr_reviewers_says_a_re_review_held_over_the_rate_limit_is_queued() {
+        let v = json!({"asked": [{"name": "Ana", "queued": false}, {"name": "Bo", "queued": true}]});
+        let line = pr_reviewers_line("T5", &v);
+        assert!(line.starts_with("Asked Ana; queued asking Bo to look again (the host has the board rate-limited; the board asks once the limit is over) on T5's PR."), "{line}");
+        assert!(pr_reviewers_line("T5", &json!({"asked": [{"name": "Ana"}]})).starts_with("Asked Ana on T5's PR."));
     }
 
     #[test]

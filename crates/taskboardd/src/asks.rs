@@ -347,13 +347,27 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         on_host_call("swap the reviewer", &|| h.replace_reviewer(&pr, &old.user, &new.user)).map_err(|e| fail("swap the reviewer", e))?;
         crate::progress::stage(&format!("Asked {} in place of {} on {on_host}", new.name, old.name));
     }
+    // Someone whose last word is a request for changes is asked to look again, as `tb pr addressed`
+    // does; while the host has the board rate-limited that ask is queued for the board to send.
+    let (again, fresh): (Vec<(Who, String)>, Vec<(Who, String)>) = want.into_iter().partition(|(w, _)| wants_changes(&rec, &w.user));
     let mut asked: Vec<(Who, String)> = vec![];
-    if !want.is_empty() {
-        let users: Vec<String> = want.iter().map(|(w, _)| w.user.clone()).collect();
+    if !fresh.is_empty() {
+        let users: Vec<String> = fresh.iter().map(|(w, _)| w.user.clone()).collect();
         on_host_call("ask for reviews", &|| h.request_reviews(&pr, &users)).map_err(|e| fail("ask for reviews", e))?;
-        crate::progress::stage(&format!("Asked {} on {on_host}", want.iter().map(|(w, _)| w.name.clone()).collect::<Vec<_>>().join(", ")));
-        asked.extend(want);
+        crate::progress::stage(&format!("Asked {} on {on_host}", fresh.iter().map(|(w, _)| w.name.clone()).collect::<Vec<_>>().join(", ")));
+        asked.extend(fresh);
     }
+    let mut queued = false;
+    if !again.is_empty() {
+        let users: Vec<String> = again.iter().map(|(w, _)| w.user.clone()).collect();
+        match on_host_call("ask for another review", &|| h.re_request_reviews(&pr, &users)) {
+            Ok(()) => crate::progress::stage(&format!("Asked {} to look again on {on_host}", again.iter().map(|(w, _)| w.name.clone()).collect::<Vec<_>>().join(", "))),
+            Err(_) if prflow::host_held(app, &pr).is_some() => queued = true,
+            Err(e) => return Err(fail("ask for another review", e)),
+        }
+    }
+    let rereviews: Vec<Who> = again.iter().map(|(w, _)| w.clone()).collect();
+    asked.extend(again);
     // The host may answer a removal without making it: only what a fresh read shows counts.
     let mut stuck: Vec<Who> = vec![];
     if to_drop.is_some() || swap.is_some() {
@@ -392,6 +406,9 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
                 reviewers::record_ask(app, &t, &w.user, &w.name, why, &by, None)?;
             }
         }
+        if !rereviews.is_empty() {
+            record_rereviews(app, &t, &rec, &rereviews, queued)?;
+        }
         if !asked.is_empty() {
             reviewers::note(app, &t, &by, &format!("Asked {} to review PR #{num}", asked.iter().map(|(w, _)| w.name.clone()).collect::<Vec<_>>().join(", ")))?;
         }
@@ -420,13 +437,36 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
     Ok(json!({
         "task": rf("task", id),
-        "asked": asked.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>(),
+        "asked": asked.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why, "queued": queued && rereviews.iter().any(|r| r.user == w.user)})).collect::<Vec<_>>(),
         "dropped": dropped.iter().map(|w| json!({"user": w.user, "name": w.name})).collect::<Vec<_>>(),
         "replaced": replaced.as_ref().map(|(o, n)| json!({"old": o.name, "new": n.name})),
         "short": short,
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
         "pr": board::pr_card(app, &t),
     }))
+}
+
+/// The reviewer `user` as the PR lists them, or null.
+fn on_record<'a>(rec: &'a Value, user: &str) -> &'a Value {
+    rec["reviewers"].as_array().and_then(|l| l.iter().find(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user)))).unwrap_or(&Value::Null)
+}
+
+/// Whether `user`'s standing word on the PR is a request for changes.
+fn wants_changes(rec: &Value, user: &str) -> bool {
+    on_record(rec, user)["state"] == "changes"
+}
+
+/// Keeps each of `who` in the PR's `rereview_asks` (as `tb pr addressed` does), answering their
+/// standing request for changes, so the status and the card show the ask until they review again.
+/// A `queued` one waits for the board to send it once the host's rate limit is over.
+fn record_rereviews(app: &App, t: &Row, rec: &Value, who: &[Who], queued: bool) -> Result<()> {
+    let mut asks = flow(t).get("rereview_asks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let at = now_iso();
+    for w in who {
+        let changes_at = on_record(rec, &w.user)["changes_at"].clone();
+        asks.insert(w.user.to_lowercase(), json!({"user": w.user, "name": w.name, "at": at, "changes_at": changes_at, "queued": queued}));
+    }
+    prflow::merge_flow(app, t.id(), fields!["rereview_asks" => Value::Object(asks)]).map(|_| ())
 }
 
 /// A failed ask for reviews while the PR's host account is rate-limited ends the visit until the limit

@@ -423,6 +423,66 @@ fn a_queued_ask_the_host_refuses_is_tried_again_not_dropped() {
     assert!(logged(&b, id, "Couldn't ask REV to look again on PR #9 yet"));
 }
 
+/// The reviewer `user`'s entry in what `tb pr status` reads.
+fn status_reviewer(b: &Board, id: i64, user: &str) -> Value {
+    let v = prcmds::status(&b.app, id).unwrap();
+    v["reviewers"].as_array().unwrap().iter().find(|r| r["user"] == user).cloned().unwrap_or(Value::Null)
+}
+
+#[test]
+fn asking_a_reviewer_who_asked_for_changes_shows_a_re_review_until_they_review_again() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    let v = b.post(&format!("/tasks/T{id}/pr/reviewers"), json!({"ask": ["rev"], "who": "The agent"}));
+    assert_eq!(v["asked"][0]["queued"], false, "{v}");
+    assert!(h.calls().contains(&"re-request rev".to_string()), "{:?}", h.calls());
+    let r = status_reviewer(&b, id, "rev");
+    assert_eq!((r["state"].as_str(), r["rereview"]["queued"].as_bool()), (Some("changes"), Some(false)), "{r}");
+    assert!(r["rereview"]["at"].is_string(), "{r}");
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!((row["state"].as_str(), row["changes"].as_bool(), row["rereview_queued"].as_bool()), (Some("rereview"), Some(true), Some(false)), "{row}");
+    assert!(row["rereview_at"].is_string(), "{row}");
+    let mut rec = h.rec.lock().clone();
+    rec.reviewers = vec![reviewer("rev", "approved")];
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "approved");
+    assert!(status_reviewer(&b, id, "rev")["rereview"].is_null());
+}
+
+#[test]
+fn asking_a_reviewer_who_asked_for_changes_while_writes_are_limited_queues_the_re_review() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    limit(&h);
+    let v = b.post(&format!("/tasks/T{id}/pr/reviewers"), json!({"ask": ["rev"], "who": "The agent"}));
+    assert_eq!(v["asked"][0]["queued"], true, "{v}");
+    assert_eq!(status_reviewer(&b, id, "rev")["rereview"]["queued"], true);
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!((row["state"].as_str(), row["rereview_queued"].as_bool()), (Some("rereview"), Some(true)), "{row}");
+    assert!(row["rereview_at"].is_null(), "not sent yet: {row}");
+    lift(&h);
+    prcmds::ask_held_rereviews(&b.app).unwrap();
+    assert_eq!(h.calls().iter().filter(|c| *c == "re-request rev").count(), 2, "{:?}", h.calls());
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!(row["rereview_queued"], false, "{row}");
+    assert!(row["rereview_at"].is_string(), "{row}");
+}
+
+#[test]
+fn asking_a_new_reviewer_records_no_re_review() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    let mut rec = h.rec.lock().clone();
+    rec.reviewers.push(reviewer("bo", "pending"));
+    let h = fake(&b, rec);
+    poll(&b);
+    b.post(&format!("/tasks/T{id}/pr/reviewers"), json!({"ask": ["bo"], "who": "The agent"}));
+    assert!(h.calls().contains(&"request bo".to_string()), "{:?}", h.calls());
+    assert!(b.flow(id)["rereview_asks"].get("bo").is_none(), "{}", b.flow(id));
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "changes");
+}
+
 #[test]
 fn the_re_review_ask_clears_when_that_reviewer_asks_for_changes_again_or_approves() {
     let b = board_with(|_| {});
