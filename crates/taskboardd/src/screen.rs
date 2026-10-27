@@ -12,9 +12,10 @@ use crate::{board, handoff, proc};
 
 const SKILL_QUESTIONS: &str = include_str!("../../../plugin/task-board/skills/task-board/questions.md");
 
-fn verdict_schema() -> Value {
+fn verdict_schema(reply: bool) -> Value {
+    let verdicts = if reply { json!(["answered", "ask", "none"]) } else { json!(["answered", "ask"]) };
     json!({"type": "object", "required": ["verdict"], "properties": {
-        "verdict": {"enum": ["answered", "ask"]}, "answer": {"type": "string"},
+        "verdict": {"enum": verdicts}, "answer": {"type": "string"},
         "source": {"type": "string"}, "question": {"type": "string"}}})
 }
 
@@ -130,7 +131,7 @@ fn rules(app: &App) -> String {
     out.join("\n\n")
 }
 
-fn prompt(app: &App, t: Option<&Row>, question: &str) -> Result<String> {
+fn prompt(app: &App, t: Option<&Row>, question: &str, reply: bool) -> Result<String> {
     let owner = &app.cfg.owner;
     let mut parts = vec![format!(
         "An agent working on {owner}'s task board wants to ask {owner} a question. Decide whether the rules and \
@@ -138,6 +139,12 @@ fn prompt(app: &App, t: Option<&Row>, question: &str) -> Result<String> {
          source (a file name or 'the task').\n- ask: they don't, or you're unsure. Rewrite the question for {owner} in \
          plain words: say what it's about, explain every reference and term, and keep it short.\nNever invent a rule."
     )];
+    if reply {
+        parts.push(format!(
+            "This is the end of the agent's reply, not a question it filed. When it asks {owner} nothing (it says \
+             nothing needs {owner}, only reports what happened, or says what it will do next), answer none."
+        ));
+    }
     parts.push(format!("The question:\n{question}"));
     if let Some(t) = t {
         parts.push(format!("The task's handoff:\n{}", clip(&handoff::build(app, t.id())?, 5000)));
@@ -163,11 +170,20 @@ fn prompt(app: &App, t: Option<&Row>, question: &str) -> Result<String> {
 
 /// Returns `{verdict, answer?, source?, question?}`, or None when screening is off or fails.
 pub fn question(app: &App, t: Option<&Row>, text: &str) -> Option<Value> {
+    screen(app, t, text, false)
+}
+
+/// Like [`question`] for the end of a turn's reply, which may ask nothing: then `{verdict: "none"}`.
+pub fn reply_question(app: &App, t: Option<&Row>, text: &str) -> Option<Value> {
+    screen(app, t, text, true)
+}
+
+fn screen(app: &App, t: Option<&Row>, text: &str, reply: bool) -> Option<Value> {
     if !app.cfg.questions.screen {
         return None;
     }
     let claude = proc::which(&app.cfg.claude)?;
-    let p = prompt(app, t, text).ok()?;
+    let p = prompt(app, t, text, reply).ok()?;
     let q = &app.cfg.questions;
     let args: Vec<String> = vec![
         "-p".into(),
@@ -183,7 +199,7 @@ pub fn question(app: &App, t: Option<&Row>, text: &str) -> Option<Value> {
         "--max-budget-usd".into(),
         q.budget_usd.clone(),
         "--json-schema".into(),
-        verdict_schema().to_string(),
+        verdict_schema(reply).to_string(),
         "--output-format".into(),
         "json".into(),
     ];
@@ -205,6 +221,7 @@ pub fn question(app: &App, t: Option<&Row>, text: &str) -> Option<Value> {
             let q = v["question"].as_str().filter(|q| !q.trim().is_empty()).map(|q| q.to_string());
             Some(json!({"verdict": "ask", "question": q}))
         }
+        Some("none") if reply => Some(json!({"verdict": "none"})),
         _ => None,
     }
 }

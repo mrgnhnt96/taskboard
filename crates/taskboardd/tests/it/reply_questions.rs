@@ -88,6 +88,15 @@ fn a_turn_that_doesn_t_ask_isn_t_put_to_the_owner() {
 }
 
 #[test]
+fn a_reply_the_screener_finds_asks_nothing_isn_t_put_to_the_owner() {
+    let b = board_screening(json!({"verdict": "none"}));
+    b.stop("Nothing needs you right now. When #52 merges, or if a check fails, let me know and I'll finish the merge then.");
+    assert_eq!(b.task().s("status"), Some("working"));
+    assert!(b.alerts().is_empty());
+    assert!(b.answers().is_empty());
+}
+
+#[test]
 fn a_question_the_rules_answer_is_typed_back_to_the_agent() {
     let b = board_screening(json!({"verdict": "answered", "answer": "Cap it at 3.", "source": "CLAUDE.md"}));
     b.stop("Tell me which cap you want.");
