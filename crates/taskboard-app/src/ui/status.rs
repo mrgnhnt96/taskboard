@@ -98,10 +98,11 @@ pub fn row(c: &Value) -> Row {
         "Needs you" | "Needs setup" if s(c, "status") == "needs" => (St::Needs, opt_s(c, "latest").unwrap_or(&tile.line).to_string(), true, short(fmt::ago(when))),
         "Needs you" | "Needs setup" => (St::Needs, tile.line, true, String::new()),
         "Working" => (St::Working, opt_s(c, "latest").unwrap_or("").to_string(), false, run),
+        "Maybe stuck" => (St::Working, format!("Maybe stuck · {}", tile.line), true, run),
         "Compacting" => (St::Working, tile.line, false, run),
         "Starting" => (St::Working, format!("Starting · {}", tile.line), false, String::new()),
         "Queued" => (St::Queued, opt_s(c, "waiting").map(str::to_string).unwrap_or_default(), false, String::new()),
-        "Checks failed" => (St::Review, format!("Checks failed · {}", tile.line), true, String::new()),
+        "Checks failed" | "Conflicts" => (St::Review, format!("{} · {}", tile.status, tile.line), true, String::new()),
         "Checks running" | "Comments" | "Ready to merge" => (St::Review, format!("{} · {}", tile.status, tile.line), false, String::new()),
         "In review" => (St::Review, tile.line, false, String::new()),
         "Failed" => (St::Failed, opt_s(c, "summary").unwrap_or("").to_string(), false, fmt::hhmm(when)),
@@ -176,5 +177,14 @@ mod tests {
         let merged = row(&card(json!({"status": "done", "pr": {"num": 4, "state": "MERGED"}})));
         assert_eq!((merged.st, merged.line.as_str()), (St::Done, "PR #4 merged"));
         assert_eq!(row(&card(json!({"status": "done", "failed": true}))).st, St::Failed);
+    }
+
+    #[test]
+    fn an_open_pr_with_conflicts_is_in_review_and_a_stuck_task_is_still_working() {
+        let pr = json!({"num": 50, "state": "OPEN", "stage": {"phase": "rebase", "label": "Rebasing"}});
+        let conflicts = row(&card(json!({"status": "done", "pr": pr})));
+        assert_eq!((conflicts.st, conflicts.line.as_str(), conflicts.loud), (St::Review, "Conflicts · PR #50 · Rebasing", true));
+        let stuck = row(&card(json!({"stuck": {"since": "2026-10-27T10:00:00Z"}})));
+        assert_eq!((stuck.st, stuck.loud), (St::Working, true));
     }
 }
