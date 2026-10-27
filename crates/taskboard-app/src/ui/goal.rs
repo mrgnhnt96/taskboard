@@ -88,7 +88,7 @@ fn has_pr(t: &Value) -> bool {
     t["pr"].is_object() && !t["pr"]["num"].is_null()
 }
 
-fn awaiting_merge(t: &Value) -> bool {
+pub(crate) fn awaiting_merge(t: &Value) -> bool {
     s(t, "status") == "done" && !b(t, "failed") && has_pr(t) && pr_open(&t["pr"])
 }
 
