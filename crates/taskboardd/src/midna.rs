@@ -1072,6 +1072,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     read_settings(app);
     register_links(app);
     crate::statusbar::offer(app);
+    crate::slot_keep::sync(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         let cwd = sessions.as_array().and_then(|all| all.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(sid.as_str()))).and_then(|s| s.get("cwd")).and_then(|c| c.as_str());
         if let Err(e) = close(app, &sid, cwd, false) {
