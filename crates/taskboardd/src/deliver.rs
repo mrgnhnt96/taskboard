@@ -24,6 +24,8 @@ fn what(purpose: &str) -> &'static str {
         "ship" => "the nudge to ship it",
         "follow" => "the rebase note",
         "line_next" => "the next task in its line",
+        "code_review" => "the code review's word",
+        "code_review_fix" => "the code review's fix list",
         _ => "the board's message",
     }
 }
@@ -37,6 +39,8 @@ fn done_text(purpose: &str, to: &str) -> String {
         "ship" => format!("{to} stopped with its work committed but no PR, so the board told it to ship it"),
         "follow" => format!("Told {to} to rebase onto the work it builds on"),
         "line_next" => format!("Moved {to} on to the next task in its line"),
+        "code_review" => format!("Told {to} its tb submit was turned back after its code review"),
+        "code_review_fix" => format!("Sent {to} its code review's findings to fix"),
         _ => format!("Delivered a message to {to}"),
     }
 }

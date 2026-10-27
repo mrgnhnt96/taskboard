@@ -47,7 +47,7 @@ variable of the same name:
 | `TASKBOARD_TASK` | the task's ref, `T<n>` |
 | `TASKBOARD_ROUND` | this round's number, `1` up to `max_rounds` |
 | `TASKBOARD_INTENT` | path to a markdown file with the task's title and detail and its goal's done-when |
-| `TASKBOARD_PREVIOUS` | path to the previous round's result JSON, each finding with its triage `outcome` (`fix`, `backlog` or `dismiss`) and `reason` added. Unset on round 1 |
+| `TASKBOARD_PREVIOUS` | path to the previous round's result JSON, each finding with its triage `outcome` (`fix`, `backlog` or `dismiss`) and `reason` added, and `fixed` (what the task's agent says it changed, or null) on a `fix` finding. Unset on round 1 |
 | `TASKBOARD_STATE_DIR` | a directory for this task that the board keeps across rounds and deletes when the task ends |
 | `TASKBOARD_RESULT` | the path the reviewer writes its result to |
 
@@ -101,11 +101,13 @@ The reviewer never changes the worktree, commits, pushes or touches the PR host.
 1. The code is done: the agent runs `tb submit`, and round *n* runs.
 2. Verdict `fail`: a fresh triage agent marks each finding `fix`, `backlog` or `dismiss`, with a reason
    (`backlog` files a backlog item).
-3. The task's own agent is resumed with the `fix` findings.
+3. The task's own agent is resumed with the `fix` findings (see Fixing).
 4. On its next `tb submit`: if the worktree changed, round *n+1* runs; otherwise the task carries on.
 
 The loop stops when a round has no `fix` findings, when the code is unchanged, or at `max_rounds` (5). At the
-cap with fixes still open, the board opens the PR anyway and alerts the owner.
+cap with fixes still open, the board opens the PR anyway and alerts the owner. The PR body ends with a short
+`## Code review` section: how many rounds ran, and how many findings were fixed, backlogged, dismissed or
+left open.
 
 A submit turned back after its review (a branch that isn't pushed, say) doesn't run the reviewer again
 while the code is as it was reviewed.
@@ -139,3 +141,20 @@ The outcomes are kept on the round and go to the next round's reviewer in `TASKB
 finding has one, the board closes the triage terminal and logs the counts on the task. If the triage agent
 can't open, its terminal closes, or it runs past an hour, the board closes it, carries on and alerts the
 owner with the findings left.
+
+## Fixing (board side)
+
+A triaged round with `fix` findings, below `max_rounds`, drops the held `tb submit` and hands the task back
+to its own agent (`state: "fixing"` on its card, with how many are marked fixed). The agent gets a message
+listing each `fix` finding with the triage reason, the path to the round's `findings.json`, and how to mark
+one fixed:
+
+```
+tb finding T<n>                                        # the findings to fix and which are left
+tb finding T<n> F1 fixed "<what you changed>"          # from the task's own terminal, once it's fixed
+```
+
+The note is one line of 300 characters at most; a finding is marked fixed once. Then it commits, pushes
+and runs `tb submit` again as before. A changed worktree runs the next round, whose reviewer sees each
+`fixed` note in `TASKBOARD_PREVIOUS`. An unchanged one carries on to the PR, and the owner is alerted with
+any `fix` finding not marked fixed.

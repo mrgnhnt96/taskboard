@@ -547,6 +547,9 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str, given_
     crate::progress::stage(&format!("{branch} is pushed and up to date with {base}"));
     let (main, footer) = split_footer(body);
     let mut text = main.trim_end().to_string();
+    if let Some(review) = crate::code_review::summary(app, t.id())? {
+        text += &format!("\n\n{review}");
+    }
     if cfg.context {
         let ctx = context_block(app, t)?;
         if !ctx.is_empty() {

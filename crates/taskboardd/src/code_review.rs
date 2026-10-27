@@ -31,7 +31,8 @@ impl Default for CodeReviewConfig {
 }
 
 /// `tasks.code_review`: the stage a task is in while its review runs, as JSON (`state`, `round`,
-/// `tries`, the held `tb submit` report as `body`, `since`). Null outside it.
+/// `tries`, the held `tb submit` report as `body`, `since`), and while its agent fixes a round's
+/// findings (`fixing`). Null outside it.
 pub const ADDED: &[(&str, &str, &str)] = &[("tasks", "code_review", "TEXT")];
 
 /// Projects' own reviewer commands: a command, or "" for none.
@@ -42,6 +43,8 @@ const TRIES: u64 = 2;
 const TICK_SECS: f64 = 5.0;
 const OUTPUT_MAX: usize = 4000;
 pub const EVENT: &str = "code_review";
+/// The stage's state while the task's own agent fixes a triaged round's `fix` findings.
+pub const FIXING: &str = "fixing";
 
 fn overrides(app: &App) -> Result<Row> {
     Ok(jloads_obj(app.db.get_setting(SETTING)?.as_deref()))
@@ -95,8 +98,19 @@ pub fn stage(t: &Row) -> Option<Value> {
     t.s("code_review").and_then(|s| serde_json::from_str::<Value>(s).ok()).filter(|v| v.is_object())
 }
 
+/// The task waits on its review: a round queued, running or in triage (not while its agent fixes one).
 pub fn in_review(t: &Row) -> bool {
-    stage(t).is_some()
+    stage(t).is_some_and(|s| s["state"] != FIXING)
+}
+
+/// The task's agent is fixing a round's findings: that stage.
+pub fn fixing(t: &Row) -> Option<Value> {
+    stage(t).filter(|s| s["state"] == FIXING)
+}
+
+/// The rounds the task's review has run (a round whose reviewer failed counts).
+fn rounds_run(done: &[Value]) -> u64 {
+    done.iter().filter_map(|r| r["round"].as_u64()).max().unwrap_or(0)
 }
 
 pub(crate) fn save_stage(app: &App, id: i64, stage: Option<&Value>) -> Result<()> {
@@ -135,15 +149,32 @@ pub fn card(app: &App, t: &Row) -> Result<Value> {
     if s["state"] == review_triage::STATE {
         card["triage"] = review_triage::progress(app, t.id(), s["round"].as_u64().unwrap_or(1))?;
     }
+    if s["state"] == FIXING {
+        card["fix"] = review_triage::fix_progress(app, t.id(), s["round"].as_u64().unwrap_or(1))?;
+    }
     Ok(card)
 }
 
 /// Before `tb submit` (outside its transaction): when the task's project has a reviewer and its code
 /// hasn't been reviewed as it stands, holds the report and puts the task in code review. The reply for
 /// the agent then, else `None` to carry on with the submit. A report sent on later (`spooled`) skips the
-/// checks the agent would have heard: the held submit meets them again when it carries on.
+/// checks the agent would have heard: the held submit meets them again when it carries on. A submit
+/// while the agent fixes a round's findings runs the next round when the code changed, else ends the
+/// fixing and carries on.
 pub fn gate(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Value>> {
-    if body["code_review_replay"] == true || board::handed_in(t) {
+    if body["code_review_replay"] == true {
+        return Ok(None);
+    }
+    let was = fixing(t);
+    let held = hold(app, body, t, spooled)?;
+    if let (None, Some(s)) = (&held, was) {
+        review_triage::end_fixing(app, t, &s)?;
+    }
+    Ok(held)
+}
+
+fn hold(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Value>> {
+    if board::handed_in(t) {
         return Ok(None);
     }
     let Some(_) = command(app, &t.st("project"))? else { return Ok(None) };
@@ -156,7 +187,8 @@ pub fn gate(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Va
         return err(409, format!("{me} is already in code review. End your turn: the board carries on once the review is in."));
     }
     let done = rounds(app, t.id())?;
-    if done.len() as u64 >= app.cfg.code_review.max_rounds as u64 {
+    let run = rounds_run(&done);
+    if run >= app.cfg.code_review.max_rounds as u64 {
         return Ok(None);
     }
     let dir = worktree(app, t);
@@ -182,7 +214,7 @@ pub fn gate(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Va
         o.remove("at");
         o.insert("task".into(), json!(me));
     }
-    let round = done.len() + 1;
+    let round = run + 1;
     let stage = json!({"state": "queued", "round": round, "tries": 0, "since": now_iso(), "body": held});
     app.db.tx(|| {
         save_stage(app, t.id(), Some(&stage))?;
@@ -261,6 +293,9 @@ fn round(app: &App, id: i64) -> Result<bool> {
     }
     if triaging {
         return review_triage::tick(app, &t, stage).map(|_| false);
+    }
+    if stage["state"] == FIXING {
+        return Ok(false);
     }
     let Some(cmd) = command(app, &t.st("project"))? else {
         return carry_on(app, &t, stage, None).map(|_| false);
@@ -460,8 +495,8 @@ pub(crate) fn intent_text(app: &App, t: &Row) -> String {
     s
 }
 
-/// The last round's result before round `n`, each finding with the outcome its triage gave it, written
-/// for the reviewer to read.
+/// The last round's result before round `n`, each finding with the outcome its triage gave it (and the
+/// task agent's note when it marked it fixed), written for the reviewer to read.
 fn previous(app: &App, id: i64, n: u64, here: &Path) -> Option<PathBuf> {
     let last = rounds(app, id).ok()?.into_iter().rev().find(|r| r["ok"] == true && r["round"].as_u64().is_some_and(|m| m < n))?;
     let mut result = last["result"].clone();
@@ -473,11 +508,45 @@ fn previous(app: &App, id: i64, n: u64, here: &Path) -> Option<PathBuf> {
         let t = &triage[f["id"].as_str().unwrap_or("")];
         f["outcome"] = t["outcome"].clone();
         f["reason"] = t["reason"].clone();
+        f["fixed"] = t["fixed"].clone();
     }
     result["protocol"] = json!(1);
     let path = here.join("previous.json");
     std::fs::write(&path, jdumps(&result)).ok()?;
     Some(path)
+}
+
+/// The PR description's account of the task's code review: how many rounds it took and what came of
+/// their findings. None when it had no round.
+pub fn summary(app: &App, task_id: i64) -> Result<Option<String>> {
+    let done = rounds(app, task_id)?;
+    let run = rounds_run(&done);
+    if run == 0 {
+        return Ok(None);
+    }
+    let (mut fixed, mut open, mut backlog, mut dismissed) = (0, 0, 0, 0);
+    for r in done.iter().filter(|r| r["ok"] == true) {
+        for tr in r["triage"].as_object().into_iter().flat_map(|o| o.values()) {
+            match tr["outcome"].as_str() {
+                Some("fix") if tr["fixed"].is_string() => fixed += 1,
+                Some("fix") => open += 1,
+                Some("backlog") => backlog += 1,
+                Some("dismiss") => dismissed += 1,
+                _ => {}
+            }
+        }
+    }
+    let took = if run == 1 { "1 round".to_string() } else { format!("{run} rounds") };
+    let line = if fixed + open + backlog + dismissed == 0 {
+        format!("- {took}, nothing to fix")
+    } else {
+        let mut l = format!("- {took}: {fixed} fixed, {backlog} backlogged, {dismissed} dismissed");
+        if open > 0 {
+            l += &format!(", {open} left open");
+        }
+        l
+    };
+    Ok(Some(format!("## Code review\n\n{line}")))
 }
 
 /// Clears the folders of tasks that are no longer in code review and have been handed in.
