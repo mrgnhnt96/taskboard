@@ -1,13 +1,13 @@
 //! Search (⌘K and the sidebar's search box): a palette over the page that finds tasks, goals,
 //! backlog issues and terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
-use crate::app::{MainWindow, Page};
-use crate::fmt::{self, arr, i, s};
+use crate::app::MainWindow;
+use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::goals_page::{GoalGroup, goal_group};
 use crate::ui::modals::Modal;
-use crate::ui::status::St;
+use crate::ui::status::{self, St};
 use crate::ui::text_input::FieldChanged;
-use crate::ui::{issue_panel, kit, sessions, sidebar, tasks};
+use crate::ui::{issue_panel, kit, sidebar};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
@@ -106,14 +106,49 @@ fn group(kind: Kind, hits: Vec<Hit>) -> Group {
     Group { kind, total: hits.len(), hits: hits.into_iter().take(PER_GROUP).collect() }
 }
 
+/// One task the board found.
+struct Item {
+    id: i64,
+    r: String,
+    title: String,
+    project: String,
+    /// (ref, name) of its goal.
+    goal: Option<(String, String)>,
+    wave: Option<i64>,
+    /// Still to do: not done, and not failed once finished (a lost terminal can still be restarted).
+    open: bool,
+    row: status::Row,
+}
+
+fn items(v: &Value) -> Vec<Item> {
+    arr(v, "tasks")
+        .iter()
+        .map(|c| {
+            let row = status::row(c);
+            let open = row.st != St::Done && !(row.st == St::Failed && s(c, "status") == "done");
+            let g = &c["goal"];
+            Item {
+                id: i(c, "id"),
+                r: fmt::ref_of(c, "T"),
+                title: s(c, "title").to_string(),
+                project: s(c, "project").to_string(),
+                goal: g.is_object().then(|| (fmt::ref_of(g, "G"), s(g, "name").to_string())),
+                wave: c["wave"].as_i64(),
+                open,
+                row,
+            }
+        })
+        .collect()
+}
+
 fn task_hits(tasks: &Value, w: &[String]) -> Vec<Hit> {
-    let items = tasks::items(tasks);
+    let items = items(tasks);
     // With nothing typed: the tasks still to do, those that need you first.
-    let items: Vec<tasks::Item> = if w.is_empty() { items.into_iter().filter(|it| it.open).collect() } else { items };
+    let items: Vec<Item> = if w.is_empty() { items.into_iter().filter(|it| it.open).collect() } else { items };
     let rows = items
         .into_iter()
         .map(|it| {
-            let g = it.goal.as_ref().map(|(r, n, _)| (r.as_str(), n.as_str()));
+            let g = it.goal.as_ref().map(|(r, n)| (r.as_str(), n.as_str()));
             let m = score(&it.r, &it.title, &[&it.project, g.map(|g| g.1).unwrap_or("")], w);
             (it, m)
         })
@@ -122,8 +157,8 @@ fn task_hits(tasks: &Value, w: &[String]) -> Vec<Hit> {
         .into_iter()
         .map(|(it, hl)| {
             let place = match (&it.goal, it.wave) {
-                (Some((g, _, _)), Some(n)) => format!("{g} · wave {n}"),
-                (Some((g, _, _)), None) => g.clone(),
+                (Some((g, _)), Some(n)) => format!("{g} · wave {n}"),
+                (Some((g, _)), None) => g.clone(),
                 (None, _) => it.project.clone(),
             };
             Hit { target: Target::Task(it.r.clone()), r: it.r, title: it.title, hl, place, dot: Dot::Status(it.row.st) }
@@ -183,8 +218,33 @@ fn terminal_status(x: &Value) -> (u8, Dot, String) {
     match s(x, "status") {
         "needs" | "offline" => (0, Dot::Status(St::Needs), "needs you".into()),
         "working" | "waiting" => (1, Dot::Status(St::Working), "working".into()),
-        _ => (2, Dot::Idle, format!("idle {}", sessions::long_ago(sessions::idle_ms(x)))),
+        _ => (2, Dot::Idle, format!("idle {}", long_ago(idle_ms(x)))),
     }
+}
+
+/// Since `last_activity` (else `seen_at`), 0 when neither parses. The board's `idle_secs` wins
+/// when it sends one: it leaves out the time the Mac slept.
+fn idle_ms(x: &Value) -> i64 {
+    if let Some(secs) = x.get("idle_secs").and_then(|v| v.as_i64()) {
+        return secs * 1000;
+    }
+    opt_s(x, "last_activity").or(opt_s(x, "seen_at")).and_then(fmt::parse).map(|t| (fmt::now() - t).num_milliseconds()).unwrap_or(0)
+}
+
+/// "under a minute", "12 min", "2 h 5 min", "3 h", "2 days".
+fn long_ago(ms: i64) -> String {
+    let m = (ms as f64 / 60000.).round() as i64;
+    if m < 1 {
+        return "under a minute".into();
+    }
+    if m < 60 {
+        return format!("{m} min");
+    }
+    let (h, r) = (m / 60, m % 60);
+    if h < 24 {
+        return if r > 0 && h < 6 { format!("{h} h {r} min") } else { format!("{h} h") };
+    }
+    fmt::plural((h as f64 / 24.).round() as i64, "day", "days")
 }
 
 fn terminal_hits(sessions: &Value, w: &[String]) -> Vec<Hit> {
@@ -335,10 +395,7 @@ fn go(m: &mut MainWindow, target: Target, window: &mut Window, cx: &mut Context<
         Target::Task(r) => m.open_task(r, cx),
         Target::Goal(r) => crate::ui::goal::open(m, &r, false, cx),
         Target::Issue(r) => m.open_issue(r, cx),
-        Target::Terminal(id) => {
-            m.go(Page::Sessions, cx);
-            sessions::open(m, &id, cx);
-        }
+        Target::Terminal(id) => m.show_in_midna(&id, cx),
     }
 }
 

@@ -10,9 +10,9 @@ This is the audit of the native app against it, one web behaviour per row, with 
 | Task panel | `taskPanel`, `overviewTab`, `contextTab`, `logTab`, `prBar`, `attachList`, `metaRows`, … | [task.md](parity/task.md) | 23 | 24 | 1 |
 | Goal page | `goalMain`, `goalTasks`, `notesAside`, `goalBacklog`, `bulkBar`, `goalRunButtons`, … | [goal.md](parity/goal.md) | 10 | 34 | 2 |
 | Issue panel (the web's Backlog page is replaced by the native planning page, `ui/backlog.rs`) | `issueAside`, `issuePanel`, `issueActions`, … | [backlog.md](parity/backlog.md) | 12 | 29 | 0 |
-| Sessions page | all of `sessions.js` + the rename helpers | [sessions.md](parity/sessions.md) | 23 | 32 | 5 |
+| Sessions page | removed (terminal links show the terminal in Midna); [sessions.md](parity/sessions.md) is the old audit | — | — | — | — |
 | Forms and pickers | removed (the app has no forms); `localeCompare` still checked | [forms.md](parity/forms.md) | — | — | — |
-| **Total** | | | **111** | **200** | **24** |
+| **Total** | | | **88** | **168** | **19** |
 
 "Fixed in the audit" means the first native version differed from the web and now matches it: wording,
 what shows when, ordering, which buttons are offered, request bodies, keys, saved state. Every native

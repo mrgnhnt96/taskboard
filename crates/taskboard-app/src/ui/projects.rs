@@ -1,7 +1,8 @@
-//! The Projects page: every project on the left (the ones with open goals first, then the rest
-//! under "No open goals"), and the picked one on the right: its path, latest release, the projects
-//! it waits for, its backlog, its open goals (each opening in place to its tasks, `GET /goals/:id`)
-//! and the goals it finished. The facts come from the state's `projects`; read-only.
+//! The Projects page: every project on the left (the ones with open goals or tasks first, then the
+//! rest under "Nothing open"), and the picked one on the right: its path, latest release, the
+//! projects it waits for, its backlog, its open goals (each opening in place to its tasks,
+//! `GET /goals/:id`), its open tasks outside any goal (`GET /tasks?goal=none&status=open`) and the
+//! goals it finished. The facts come from the state's `projects`; read-only.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
@@ -27,11 +28,13 @@ pub struct State {
     pub open: HashSet<String>,
     /// Every finished goal, not only the newest.
     pub show_all: bool,
-    /// The "No open goals" projects listed; folded by default.
+    /// The "Nothing open" projects listed; folded by default.
     pub show_idle: bool,
     /// `GET /goals/:id` for the picked project's open goals and the finished ones open, by ref.
     pub details: HashMap<String, Value>,
-    /// Counts each change to `details`.
+    /// The picked project's open tasks outside any goal, as `GET /tasks` answered, and for which project.
+    pub loose: Option<(String, Value)>,
+    /// Counts each change to `details` and `loose`.
     rev: u64,
     built: Option<Rc<Built>>,
 }
@@ -41,6 +44,19 @@ impl State {
     pub fn land(&mut self, r: String, g: Value) {
         self.details.insert(r, g);
         self.rev += 1;
+    }
+
+    /// Project `p`'s open tasks outside any goal, as `GET /tasks` answered.
+    pub fn land_loose(&mut self, p: String, v: Value) {
+        if self.loose.as_ref() != Some(&(p.clone(), v.clone())) {
+            self.loose = Some((p, v));
+            self.rev += 1;
+        }
+    }
+
+    /// The tasks outside any goal held, for a task panel to show before its own answer.
+    pub fn loose_rows(&self) -> &[Value] {
+        self.loose.as_ref().map(|(_, v)| arr(v, "tasks")).unwrap_or(&[])
     }
 }
 
@@ -55,6 +71,8 @@ struct Built {
     picked: Option<String>,
     header: Header,
     active: Vec<GoalLine>,
+    /// The open tasks outside any goal; None until they've loaded for the project picked.
+    loose: Option<Vec<Value>>,
     /// The finished goals shown, and how many there are.
     done: (Vec<DoneLine>, usize),
 }
@@ -67,7 +85,8 @@ impl Built {
         let picked = selected(&m.projects, &open, &idle);
         let p = picked.as_deref().unwrap_or_default();
         let (header, active, done) = (header(&st, p), active(&goals, &m.projects.details, p), finished(&goals, p, m.projects.show_all));
-        Built { state, goals, asked: asked(m), open, idle, picked, header, active, done }
+        let loose = m.projects.loose.as_ref().filter(|(lp, _)| lp == p).map(|(_, v)| loose(v));
+        Built { state, goals, asked: asked(m), open, idle, picked, header, active, loose, done }
     }
 
     fn holds(&self, m: &MainWindow) -> bool {
@@ -93,12 +112,19 @@ pub struct ProjectRow {
     pub needs: bool,
     pub waits_on: Vec<String>,
     pub finished: usize,
+    /// Open tasks outside any goal.
+    pub tasks: i64,
 }
 
 impl ProjectRow {
-    /// "5 goals · 2 running", "6 goals · queued", "1 goal · waits for lens".
+    /// "5 goals · 2 running", "6 goals · queued", "1 goal · waits for lens", "1 goal · 3 tasks",
+    /// "2 tasks".
     pub fn sub(&self) -> String {
-        let mut v = fmt::plural(self.open as i64, "goal", "goals");
+        let mut v = match (self.open, self.tasks) {
+            (0, n) if n > 0 => fmt::plural(n, "task", "tasks"),
+            (g, 0) => fmt::plural(g as i64, "goal", "goals"),
+            (g, n) => format!("{} · {}", fmt::plural(g as i64, "goal", "goals"), fmt::plural(n, "task", "tasks")),
+        };
         if self.running > 0 {
             v.push_str(&format!(" · {} running", self.running));
         } else if self.queued {
@@ -135,11 +161,30 @@ pub fn list(state: &Value, goals: &[Value]) -> (Vec<ProjectRow>, Vec<ProjectRow>
                 }
             }
             let running = arr(state, "sessions").iter().filter(|x| s(x, "project") == name && s(x, "status") == "working").count();
-            ProjectRow { name, open, running, queued, needs, waits_on: strings(p, "waits_on"), finished }
+            ProjectRow { name, open, running, queued, needs, waits_on: strings(p, "waits_on"), finished, tasks: i(p, "loose_open") }
         })
         .collect();
     rows.sort_by(|a, b| locale_cmp(&a.name, &b.name));
-    rows.into_iter().partition(|r| r.open > 0)
+    rows.into_iter().partition(|r| r.open > 0 || r.tasks > 0)
+}
+
+/// The project the page shows, for what it fetches.
+pub fn picked(m: &MainWindow) -> Option<String> {
+    let (open, idle) = list(m.state(), &m.data.goals);
+    selected(&m.projects, &open, &idle)
+}
+
+/// The Projects page on `project` (a task's project chip).
+pub fn open_for(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>) {
+    m.projects.selected = Some(project.to_string());
+    m.go(Page::Projects, cx);
+}
+
+/// The open tasks outside any goal, those that need you first, then newest first.
+pub fn loose(v: &Value) -> Vec<Value> {
+    let mut rows = arr(v, "tasks").to_vec();
+    rows.sort_by_key(|c| (status::row(c).st.rank(), -i(c, "id")));
+    rows
 }
 
 /// The project shown: the one picked while it's still there, else the first in the list.
@@ -399,7 +444,7 @@ fn project_list(t: &Theme, open: &[ProjectRow], idle: &[ProjectRow], picked: Opt
                 .pt(px(18.))
                 .pb(px(4.))
                 .cursor_pointer()
-                .child(section(t, format!("No open goals · {}", idle.len())))
+                .child(section(t, format!("Nothing open · {}", idle.len())))
                 .child(div().flex_1())
                 .child(chevron(t, shown))
                 .on_click(cx.listener(|m, _, _, cx| {
@@ -603,6 +648,14 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, "Active".into()))).child(c);
     }
 
+    if let Some(tasks) = b.loose.as_ref().filter(|v| !v.is_empty()) {
+        let mut c = card(&t);
+        for (n, task) in tasks.iter().enumerate() {
+            c = c.child(task_row(&t, task, cx).when(n == 0, |d| d.border_t_0()));
+        }
+        main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, format!("Tasks · {}", tasks.len())))).child(c);
+    }
+
     let (done, n) = (&b.done.0, b.done.1);
     if n > 0 {
         let more = n > FINISHED_SHOWN;
@@ -627,8 +680,8 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         }
         main = main.child(label).child(c);
     }
-    if act.is_empty() && n == 0 {
-        main = main.child(div().mt(px(22.)).child(kit::empty(&t, "No goals")));
+    if act.is_empty() && n == 0 && b.loose.as_ref().is_some_and(Vec::is_empty) {
+        main = main.child(div().mt(px(22.)).child(kit::empty(&t, "No goals or tasks")));
     }
     shell.child(main).into_any_element()
 }
@@ -774,6 +827,47 @@ mod tests {
         assert_eq!(wanted(&st, &state(), &gs), ["G1", "G2", "G5"]);
         st.open.insert("G3".into());
         assert_eq!(wanted(&st, &state(), &gs), ["G1", "G2", "G3", "G5"]);
+    }
+
+    #[test]
+    fn a_project_with_only_tasks_outside_goals_is_open() {
+        let mut st = state();
+        st["projects"][2]["loose_open"] = json!(3);
+        st["projects"][3]["loose_open"] = json!(2);
+        let (open, idle) = list(&st, &goals());
+        let got: Vec<(&str, String)> = open.iter().map(|r| (r.name.as_str(), r.sub())).collect();
+        assert_eq!(got, [("api", "1 goal · queued".into()), ("docs", "1 goal · 3 tasks · waits for web".into()), ("lens", "2 tasks".into()), ("web", "3 goals · 2 running".into())]);
+        assert!(idle.is_empty());
+    }
+
+    #[test]
+    fn tasks_outside_goals_list_those_needing_you_first_then_newest() {
+        let v = json!({"tasks": [
+            {"id": 1, "ref": "T1", "title": "Old", "status": "queued"},
+            {"id": 2, "ref": "T2", "title": "Stuck", "status": "needs"},
+            {"id": 3, "ref": "T3", "title": "New", "status": "queued"},
+        ]});
+        assert_eq!(loose(&v).iter().map(|c| s(c, "ref")).collect::<Vec<_>>(), ["T2", "T3", "T1"]);
+    }
+
+    #[gpui_kit::test]
+    fn the_page_shows_the_projects_open_tasks_outside_goals(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        let (w, rec) = crate::parity::window(cx);
+        let made = |body: Value| rec.board().post("tasks", body).unwrap()["ref"].as_str().unwrap().to_string();
+        let g = rec.board().post("goals", json!({"name": "Ship it", "project": "webapp"})).unwrap()["id"].clone();
+        let (loose_ref, in_goal) = (made(json!({"title": "Loose end", "project": "webapp"})), made(json!({"title": "Goal work", "project": "webapp", "goal_id": g})));
+        w.update(cx, |m, _, cx| open_for(m, "webapp", cx)).unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |m, _, _| {
+            assert_eq!(m.page, Page::Projects);
+            let refs: Vec<&str> = m.projects.loose_rows().iter().map(|c| s(c, "ref")).collect();
+            assert!(refs.contains(&loose_ref.as_str()), "{refs:?}");
+            assert!(!refs.contains(&in_goal.as_str()), "a goal's task stays under its goal: {refs:?}");
+            let row = list(m.state(), &m.data.goals).0.into_iter().find(|r| r.name == "webapp").expect("webapp lists with the open projects");
+            assert_eq!(row.tasks as usize, refs.len(), "the list's count matches the section");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

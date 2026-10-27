@@ -284,7 +284,7 @@ fn seed_attachments(board: &Board, dir: &std::path::Path) {
     }
 }
 
-/// A few live terminals for the Sessions page and the board's terminal strip.
+/// A few live terminals for search and the board's terminal strip.
 fn seed_sessions(board: &Board) {
     use taskboardd::util::now_iso;
     let now = now_iso();

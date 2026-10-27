@@ -95,10 +95,8 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
     let st = m.state_rc();
     let page = m.page.clone();
     let needs = m.data.home.as_ref().map(|h| arr(h, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).count() as i64).unwrap_or_else(|| m.needs_count());
-    let running = arr(&st, "sessions").iter().filter(|x| s(x, "status") == "working").count();
     let projects = arr(&st, "projects").len();
     let counts = &st["counts"];
-    let open_tasks = i(counts, "queued") + i(counts, "working") + i(counts, "needs");
     let all_goals = m.data.goals.clone();
     let goals = active_goals(&all_goals);
     let active_goals = goals.len();
@@ -128,10 +126,8 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         .child(search_box(t, cx))
         .child(div().h(px(6.)))
         .child(nav("nav-needs", "Needs you", kit::dot(t.warn, 8.), (needs > 0).then(|| (needs.to_string(), true)), Page::Board, on(Page::Board), cx))
-        .child(nav("nav-running", "Running", kit::dot(t.accent, 8.), (running > 0).then(|| (running.to_string(), false)), Page::Sessions, on(Page::Sessions), cx))
         .child(nav("nav-projects", "Projects", square(t.text, true), (projects > 0).then(|| (projects.to_string(), false)), Page::Projects, on(Page::Projects), cx))
         .child(nav("nav-goals", "Goals", square(t.goal, false), (active_goals > 0).then(|| (active_goals.to_string(), false)), Page::Goals, on(Page::Goals) || matches!(page, Page::Goal(_)), cx))
-        .child(nav("nav-tasks", "Tasks", square(t.muted, true), (open_tasks > 0).then(|| (open_tasks.to_string(), false)), Page::Tasks, on(Page::Tasks), cx))
         .child(nav("nav-backlog", "Backlog", kit::dot(t.backlog_dot, 8.), (untriaged > 0).then(|| (untriaged.to_string(), false)), Page::Backlog, on(Page::Backlog), cx))
         .child(nav("nav-ideas", "Ideas", kit::dot(t.goal, 8.), None, Page::Ideas, on(Page::Ideas) || matches!(page, Page::Idea(_)), cx))
         .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days) || page == Page::Review, cx));

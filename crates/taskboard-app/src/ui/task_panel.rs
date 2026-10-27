@@ -585,7 +585,7 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             }
             save_meta(m, &id, "Removed", cx);
         }
-        "open-project" => crate::ui::tasks::open_for(m, &a.arg, cx),
+        "open-project" => crate::ui::projects::open_for(m, &a.arg, cx),
         "att-drop" => {
             ui(|u| u.att_drop = !u.att_drop);
             cx.notify();
@@ -710,7 +710,7 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
             m.go(Page::Goal(r.clone()), cx);
         }
         // The terminal itself, in Midna: the board stays where it is.
-        Go::Session(id) => crate::ui::sessions::menu_focus(m, id, cx),
+        Go::Session(id) => m.show_in_midna(id, cx),
         Go::Issue(r) => {
             m.go(Page::Board, cx);
             m.open_issue(r.clone(), cx);

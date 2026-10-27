@@ -41,15 +41,12 @@ type Settle = Box<dyn FnOnce(&mut MainWindow, &mut Context<MainWindow>)>;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
     Board,
-    /// Every task, grouped and filtered.
-    Tasks,
     /// Every goal, as cards: active, deprioritized or finished.
     Goals,
     /// A goal ref, `G3`.
     Goal(String),
     /// The backlog: triage it by making goals from untriaged issues.
     Backlog,
-    Sessions,
     /// Every project and its goals (`ui::projects`).
     Projects,
     Days,
@@ -101,11 +98,8 @@ pub struct Data {
     pub issue: Option<Value>,
     /// `GET /goals/:id` for the goal page, shared with what the page builds from it.
     pub goal: Option<Rc<Value>>,
-    /// `GET /sessions`, `GET /sessions/closed`, `GET /sessions/:id` for the Sessions page; the
-    /// lists behind `Rc` so the page builds its rows once per answer.
+    /// `GET /sessions` for the ⌘K palette's terminals.
     pub sessions: Option<Rc<Value>>,
-    pub closed: Option<Rc<Value>>,
-    pub session: Option<Value>,
     /// `GET /days` for the Days page, shared with the view the page builds from it.
     pub days: Option<Rc<Value>>,
     /// `GET /home` and today's `GET /days` for the home page.
@@ -131,7 +125,6 @@ pub struct Errs {
     pub issue: Option<String>,
     pub goal: Option<String>,
     pub sessions: Option<String>,
-    pub session: Option<String>,
     pub days: Option<String>,
     pub review: Option<String>,
     pub ideas: Option<String>,
@@ -229,13 +222,11 @@ pub struct MainWindow {
     pub board: ui::board::State,
     pub goal_page: ui::goal::State,
     pub backlog: ui::backlog::State,
-    pub sessions: ui::sessions::State,
     pub task_panel: ui::task_panel::State,
     pub issue_panel: ui::issue_panel::State,
     pub hours: ui::hours::State,
     pub days: ui::days::State,
     pub review: ui::review::State,
-    pub tasks: ui::tasks::State,
     pub goals: ui::goals_page::State,
     pub projects: ui::projects::State,
     pub releases: ui::releases::State,
@@ -310,13 +301,11 @@ impl MainWindow {
             board: Default::default(),
             goal_page: Default::default(),
             backlog: Default::default(),
-            sessions: Default::default(),
             task_panel: Default::default(),
             issue_panel: Default::default(),
             hours: Default::default(),
             days: Default::default(),
             review: Default::default(),
-            tasks: Default::default(),
             goals: Default::default(),
             projects: Default::default(),
             releases: Default::default(),
@@ -342,10 +331,8 @@ impl MainWindow {
         if let Ok(p) = std::env::var("TASKBOARD_PAGE") {
             m.page = match p.as_str() {
                 "backlog" | "plan" => Page::Backlog,
-                "sessions" => Page::Sessions,
                 "days" => Page::Days,
                 "review" => Page::Review,
-                "tasks" => Page::Tasks,
                 "goals" => Page::Goals,
                 "projects" => Page::Projects,
                 "releases" => Page::Releases,
@@ -359,12 +346,6 @@ impl MainWindow {
         // Dev: `TASKBOARD_PICK=B2,B3` checks those issues on the Backlog page (screenshots).
         if let Ok(p) = std::env::var("TASKBOARD_PICK") {
             m.backlog.picked = p.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
-        }
-        // Dev: `TASKBOARD_TASKS_BY=status|project` groups the Tasks page that way (screenshots).
-        match std::env::var("TASKBOARD_TASKS_BY").as_deref() {
-            Ok("status") => m.tasks.group = ui::tasks::GroupBy::Status,
-            Ok("project") => m.tasks.group = ui::tasks::GroupBy::Project,
-            _ => {}
         }
         // Dev: `TASKBOARD_GOALS_OPEN=G1,G2` opens those goals in place on the Goals page (screenshots).
         if let Ok(v) = std::env::var("TASKBOARD_GOALS_OPEN") {
@@ -520,11 +501,8 @@ impl MainWindow {
     /// Switch pages without touching the history.
     fn visit(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
-            // `resetPageState`: leaving Sessions drops its picking state; another goal's page
-            // starts empty; arriving on the Backlog starts with no kept rows or selection.
-            if self.page == Page::Sessions {
-                ui::sessions::left(self);
-            }
+            // `resetPageState`: another goal's page starts empty; arriving on the Backlog starts
+            // with no kept rows or selection.
             if matches!(self.page, Page::Goal(_)) {
                 self.goal_page.reset_for("");
                 if let Some(g) = self.data.goal.take() {
@@ -574,7 +552,7 @@ impl MainWindow {
                 // What the clicked row already knows shows at once; the rest fills in when the
                 // task's own answer lands.
                 self.data.task = None;
-                self.data.task_card = task_card(&self.data, &self.goals.details, &self.tasks.held.rows, &r);
+                self.data.task_card = task_card(&self.data, &self.goals.details, &self.projects.loose_rows(), &r);
                 self.data.errs.task = None;
                 self.task_panel = Default::default();
                 self.fetch_panel(r.clone(), format!("tasks/{r}"), cx);
@@ -687,16 +665,11 @@ impl MainWindow {
             ("goals", _) => self.open_goals(cx),
             ("idea" | "ideas", r) if !r.is_empty() => ui::idea::open(self, &r.to_uppercase(), cx),
             ("ideas", _) => self.go(Page::Ideas, cx),
-            ("session", id) if !id.is_empty() => {
-                self.sessions.selected = Some(id.to_string());
-                self.go(Page::Sessions, cx);
-                self.refresh(cx);
-            }
+            ("session", id) if !id.is_empty() => self.show_in_midna(id, cx),
             ("backlog" | "plan", _) => self.go(Page::Backlog, cx),
-            ("sessions", _) => self.go(Page::Sessions, cx),
             ("days", _) => self.go(Page::Days, cx),
             ("review" | "reviews", id) => ui::review::open(self, id.parse().ok(), cx),
-            ("tasks", _) => self.go(Page::Tasks, cx),
+            ("tasks", _) => self.go(Page::Projects, cx),
             ("projects", p) => {
                 if !p.is_empty() {
                     self.projects.selected = Some(p.to_string());
@@ -788,9 +761,6 @@ impl MainWindow {
             cx.notify();
             return;
         }
-        if ui::sessions::escape(self, window, cx) {
-            return;
-        }
         if self.modal.is_some() {
             self.set_modal(None, window, cx);
             return;
@@ -820,6 +790,11 @@ impl MainWindow {
         ok: impl FnOnce(&mut MainWindow, Value, &mut Context<MainWindow>) + 'static,
     ) {
         self.post_or(path, body, cx, ok, |m, e, cx| m.toast(e.message, true, cx));
+    }
+
+    /// A terminal link (a task's, ⌘K's, a notification's): bring that terminal up in Midna.
+    pub fn show_in_midna(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.post(format!("sessions/{id}/focus"), json!({}), cx, |m, _, cx| m.toast("Showing it in Midna", false, cx));
     }
 
     /// Like [`post`](Self::post) with the caller handling the error (inline notes in forms).
@@ -1137,7 +1112,7 @@ fn releases_wanted(m: &MainWindow) -> Vec<String> {
     releases_shown(m).into_iter().map(|(p, _)| p).chain(rows).collect()
 }
 
-/// Task `r`'s row in the lists already loaded (the board's columns, the Tasks page, home, a goal
+/// Task `r`'s row in the lists already loaded (the board's columns, the Projects page, home, a goal
 /// page), for its panel to show before `GET /tasks/:id` answers.
 fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, held: &[Value], r: &str) -> Option<Value> {
     let state = d.state.as_ref();
@@ -1168,14 +1143,13 @@ struct Wants {
     /// The Goals page's goals in progress, each fetched in full for its row.
     goal_rows: Vec<String>,
     sessions: bool,
-    session: Option<String>,
     days_q: Option<Vec<(&'static str, String)>>,
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
     /// The ⌘K palette's query, for its tasks and backlog issues (`GET /search?palette=1`).
     palette: Option<String>,
-    /// The Tasks page: its first page of `GET /tasks`, and the held tasks to ask for again.
-    task_page: Option<Vec<i64>>,
+    /// The Projects page: the picked project, for its open tasks outside any goal.
+    loose: Option<String>,
     /// The Review page: the list, and the picked review (`None`: the newest).
     review: Option<Option<i64>>,
     /// A Releases page: the projects it lists (with how many releases of each), and its rows in full.
@@ -1202,13 +1176,11 @@ struct Got {
     goal: Option<(String, Answer)>,
     goal_rows: Vec<(String, Answer)>,
     sessions: Option<Answer>,
-    closed: Option<Value>,
-    session: Option<(String, Answer)>,
     days: Option<Answer>,
     home: Option<Value>,
     today: Option<Value>,
     palette: Option<(String, Value)>,
-    task_page: Option<Result<ui::paged::Fresh, String>>,
+    loose: Option<(String, Answer)>,
     reviews: Option<Answer>,
     review: Option<(i64, Answer)>,
     releases: Vec<(String, Answer)>,
@@ -1246,12 +1218,11 @@ impl Wants {
                 _ => vec![],
             },
             // The ⌘K palette searches the terminal list too.
-            sessions: m.page == Page::Sessions || ui::search::is_open(m),
-            session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
+            sessions: ui::search::is_open(m),
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
             palette: ui::search::query(m, cx),
-            task_page: (m.page == Page::Tasks).then(|| m.tasks.held.recheck(|v| v["status"] != "done")),
+            loose: (m.page == Page::Projects).then(|| ui::projects::picked(m)).flatten(),
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
             release_rows: ui::releases::open_rows(&m.releases, &m.page),
@@ -1277,7 +1248,7 @@ impl Wants {
             q.extend(since.map(|s| ("since", s)));
             q
         }
-        let Wants { state_q, task, issue, goal, goal_rows, sessions, session, days_q, home, palette, task_page, review, releases, release_rows, ideas, idea } = self;
+        let Wants { state_q, task, issue, goal, goal_rows, sessions, days_q, home, palette, loose, review, releases, release_rows, ideas, idea } = self;
         let Since { state: state_since, goals: goals_since } = since;
         add(&mut c, "state", move |be| Got { state: Some(be.get("state", &since_q(state_q, state_since))), ..Got::default() });
         add(&mut c, "goals", move |be| Got { goals: get(be, "goals", &since_q(vec![], goals_since)).ok(), ..Got::default() });
@@ -1295,10 +1266,6 @@ impl Wants {
         }
         if sessions {
             add(&mut c, "sessions", |be| Got { sessions: Some(get(be, "sessions", &[("project", "all".into())])), ..Got::default() });
-            add(&mut c, "closed", |be| Got { closed: get(be, "sessions/closed", &[("project", "all".into())]).ok(), ..Got::default() });
-        }
-        if let Some(id) = session {
-            add(&mut c, "session", move |be| Got { session: Some((id.clone(), get(be, &format!("sessions/{id}"), &[]))), ..Got::default() });
         }
         if let Some(q) = days_q {
             add(&mut c, "days", move |be| Got { days: Some(get(be, "days", &q)), ..Got::default() });
@@ -1310,8 +1277,11 @@ impl Wants {
         if let Some(q) = palette {
             add(&mut c, "palette", move |be| Got { palette: ui::search::ask(be, &q).ok().map(|v| (q, v)), ..Got::default() });
         }
-        if let Some(ids) = task_page {
-            add(&mut c, "task_page", move |be| Got { task_page: Some(ui::paged::Paged::fetch(be, "tasks", "tasks", &[], ui::tasks::PAGE, ids)), ..Got::default() });
+        if let Some(p) = loose {
+            add(&mut c, "loose", move |be| {
+                let q = [("project", p.clone()), ("goal", "none".into()), ("status", "open".into())];
+                Got { loose: Some((p, get(be, "tasks", &q))), ..Got::default() }
+            });
         }
         if let Some(id) = review {
             add(&mut c, "reviews", move |be| {
@@ -1414,8 +1384,8 @@ impl Got {
         let mut f = Fingerprint::new(asked);
         // The board and goal list by their stamps, so an unchanged answer prints as the one it stands for.
         f.add(&self.state.as_ref().map(|a| a.as_ref().map(Stamped))).add(&self.goals.as_ref().map(Stamped)).add(&self.task).add(&self.issue).add(&self.goal).add(&self.goal_rows);
-        f.add(&self.sessions).add(&self.closed).add(&self.session).add(&self.home).add(&self.palette);
-        f.add(&self.task_page).add(&self.reviews).add(&self.review).add(&self.releases).add(&self.release_rows);
+        f.add(&self.sessions).add(&self.home).add(&self.palette);
+        f.add(&self.loose).add(&self.reviews).add(&self.review).add(&self.releases).add(&self.release_rows);
         f.add(&self.ideas).add(&self.idea);
         f.skip = fingerprint::DAY_CLOCKS;
         f.add(&self.days).add(&self.today);
@@ -1431,9 +1401,7 @@ impl Got {
             || err(self.issue.as_ref().map(|(_, a)| a))
             || err(self.goal.as_ref().map(|(_, a)| a))
             || err(self.sessions.as_ref())
-            || err(self.session.as_ref().map(|(_, a)| a))
             || err(self.days.as_ref())
-            || err(self.task_page.as_ref())
             || err(self.reviews.as_ref())
             || err(self.review.as_ref().map(|(_, a)| a))
             || err(self.ideas.as_ref())
@@ -1452,9 +1420,6 @@ impl Got {
         }
         if asked.home != now.home {
             self.home = None;
-        }
-        if asked.task_page != now.task_page {
-            self.task_page = None;
         }
         if asked.ideas != now.ideas {
             self.ideas = None;
@@ -1554,9 +1519,6 @@ impl Got {
         if let Some(v) = self.sessions {
             land_rc(&mut d.sessions, &mut d.errs.sessions, v, |v| v);
         }
-        if self.closed.is_some() {
-            d.closed = self.closed.map(Rc::new);
-        }
         if let Some(v) = self.days {
             if m.page == Page::Days {
                 land_rc(&mut d.days, &mut d.errs.days, v, |v| v);
@@ -1578,17 +1540,8 @@ impl Got {
                 }
             }
         }
-        if let Some(Ok(f)) = self.task_page.filter(|_| m.page == Page::Tasks) {
-            m.tasks.held.land("tasks", f);
-        }
-        if let Some((id, v)) = self.session {
-            if m.sessions.selected.as_deref() == Some(id.as_str()) {
-                // `sessionsLoads`: a failed fetch for another terminal than the one shown clears it.
-                if v.is_err() && d.session.as_ref().and_then(|x| x["id"].as_str()) != Some(id.as_str()) {
-                    d.session = None;
-                }
-                land(&mut d.session, &mut d.errs.session, v, |v| v);
-            }
+        if let Some((p, Ok(v))) = self.loose.filter(|_| m.page == Page::Projects) {
+            m.projects.land_loose(p, v);
         }
     }
 }
@@ -1615,16 +1568,15 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", CloseOverlay, Some("MainWindow")),
         // In the sidebar's order.
         KeyBinding::new("cmd-1", GoBoard, Some("MainWindow")),
-        KeyBinding::new("cmd-2", GoSessions, Some("MainWindow")),
+        KeyBinding::new("cmd-2", GoProjects, Some("MainWindow")),
         KeyBinding::new("cmd-3", GoGoals, Some("MainWindow")),
-        KeyBinding::new("cmd-4", GoTasks, Some("MainWindow")),
         KeyBinding::new("cmd-5", GoBacklog, Some("MainWindow")),
         KeyBinding::new("cmd-6", GoDays, Some("MainWindow")),
         KeyBinding::new("cmd-k", Search, Some("MainWindow")),
@@ -1653,12 +1605,10 @@ impl Render for MainWindow {
 
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
-            Page::Tasks => ui::tasks::render(self, window, cx),
             Page::Goals => ui::goals_page::render(self, window, cx),
             Page::Projects => ui::projects::render(self, window, cx),
             Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
-            Page::Sessions => ui::sessions::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),
             Page::Releases | Page::ReleasesOf(_) => ui::releases::render(self, window, cx),
@@ -1680,9 +1630,8 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &CloseOverlay, window, cx| m.escape(window, cx)))
             .on_action(cx.listener(|m, _: &GoBoard, _, cx| m.go(Page::Board, cx)))
             .on_action(cx.listener(|m, _: &GoBacklog, _, cx| m.go(Page::Backlog, cx)))
-            .on_action(cx.listener(|m, _: &GoSessions, _, cx| m.go(Page::Sessions, cx)))
+            .on_action(cx.listener(|m, _: &GoProjects, _, cx| m.go(Page::Projects, cx)))
             .on_action(cx.listener(|m, _: &GoDays, _, cx| m.go(Page::Days, cx)))
-            .on_action(cx.listener(|m, _: &GoTasks, _, cx| m.go(Page::Tasks, cx)))
             .on_action(cx.listener(|m, _: &GoGoals, _, cx| m.go(Page::Goals, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .on_action(cx.listener(|m, _: &CopyRef, _, cx| copy_ref(m, cx)))
@@ -1746,12 +1695,10 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Goal(_) | Page::Goals => "Goals",
         Page::Projects => "Projects",
         Page::Backlog => "Backlog",
-        Page::Sessions => "Sessions",
         Page::Days => "Days",
         Page::Review => "Review",
         Page::Releases | Page::ReleasesOf(_) => "Releases",
         Page::Ideas | Page::Idea(_) => "Ideas",
-        Page::Tasks => "Tasks",
         Page::Board => "Task board",
     };
     if needs > 0 { format!("({needs}) {base}") } else { base.to_string() }
@@ -2353,7 +2300,6 @@ mod tests {
             let page = match i["page"].as_str().unwrap() {
                 "goal" => Page::Goal("G1".into()),
                 "backlog" => Page::Backlog,
-                "sessions" => Page::Sessions,
                 _ => Page::Board,
             };
             json!(page_title(&page, i["needs"].as_i64().unwrap()))
@@ -2762,7 +2708,7 @@ mod tests {
     fn a_page_change_keeps_the_board_from_the_refresh_out(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
-            slow_refresh(m, &rec, cx, |m, cx| m.go(Page::Tasks, cx));
+            slow_refresh(m, &rec, cx, |m, cx| m.go(Page::Projects, cx));
             assert_eq!(m.state()["marker"], "slow", "the board it read lands");
             assert!(m.data.goals.iter().any(|g| g["ref"] == "G99"), "so do the goals");
             assert!(m.data.home.as_ref().is_none_or(|h| h["marker"] != "slow"), "the Board page's own answer doesn't");
@@ -2813,13 +2759,14 @@ mod tests {
             .unwrap();
             settle(cx);
         };
-        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Sessions, cx)).unwrap();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Projects, cx)).unwrap();
+        w.update(cx, |m: &mut MainWindow, window, cx| ui::search::open(m, window, cx)).unwrap();
         draw(cx);
-        w.update(cx, |m: &mut MainWindow, window, cx| window.focus(&m.sessions.search.as_ref().unwrap().focus, cx)).unwrap();
         cx.simulate_keystrokes(w.into(), "cmd-left");
         settle(cx);
         w.update(cx, |m: &mut MainWindow, window, cx| {
-            assert!(m.page == Page::Sessions, "the field keeps ⌘← for its cursor");
+            assert!(m.page == Page::Projects, "the field keeps ⌘← for its cursor");
+            ui::search::close(m, window, cx);
             window.focus(&m.focus, cx);
         })
         .unwrap();

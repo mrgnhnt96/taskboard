@@ -1,7 +1,7 @@
 //! A long list the board sends a page at a time (`?limit=&before=`, answered with the page, the
 //! `total` that match and the `next` page's cursor): the rows held so far, by id. A refresh asks
 //! for the first page again plus the held rows that may have changed, and the list nears its end
-//! before the next older page is asked for. The Tasks page keeps one; the other long lists can too.
+//! before the next older page is asked for. The Ideas page keeps one; the other long lists can too.
 use crate::backend::Backend;
 use crate::fmt::arr;
 use serde_json::Value;

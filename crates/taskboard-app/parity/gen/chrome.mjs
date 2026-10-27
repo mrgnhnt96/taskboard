@@ -358,7 +358,7 @@ for (const [name, m, cur] of [
 
 // ---------------------------------------------------------------- page title
 
-for (const [page, needs] of [['board', 0], ['board', 3], ['goal', 0], ['goal', 2], ['backlog', 1], ['sessions', 0]]) {
+for (const [page, needs] of [['board', 0], ['board', 3], ['goal', 0], ['goal', 2], ['backlog', 1]]) {
   const w = web();
   w.set('S.state', state({ counts: { needs, open_issues: 0, done_hidden: 0 } }));
   w.run(`S.route = { page: ${JSON.stringify(page)}, id: null, q: {} }; renderBanner = () => {}; patch = () => {}; renderMenus = () => {}; renderPage = () => {}; renderPanel = () => {}; document = { title: '', querySelector: () => null, querySelectorAll: () => [] }`);
