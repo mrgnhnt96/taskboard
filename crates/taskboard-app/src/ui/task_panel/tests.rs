@@ -505,15 +505,16 @@ fn renders_every_tab(cx: &mut gpui_kit::TestAppContext) {
 #[gpui_kit::test]
 fn page_links_keep_the_panel_beside_them(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;
-    let (w, _rec) = parity::window(cx);
+    let (w, rec) = parity::window(cx);
     open(cx, &w, "T2");
-    // The terminal name (`termHref`): the Sessions page on that terminal (its "Back to T2" is tested in sessions.rs).
+    // The PR bar's "Terminal ›": the terminal itself, in Midna; the board stays put.
+    let before = w.update(cx, |m, _, _| m.page.clone()).unwrap();
     w.update(cx, |m, _, cx| super::go(m, &view::Go::Session("fake-s1".into()), cx)).unwrap();
     settle(cx);
+    assert_eq!(rec.last("sessions/fake-s1/focus"), Some(json!({})));
     w.update(cx, |m, _, _| {
         assert!(matches!(&m.panel, Some(Panel::Task { r, .. }) if r == "T2"));
-        assert_eq!(m.page, Page::Sessions);
-        assert_eq!(m.sessions.selected.as_deref(), Some("fake-s1"));
+        assert_eq!(m.page, before);
     })
     .unwrap();
     // A found issue (`#/?issue=B1`): the board with that issue's panel.
@@ -600,8 +601,8 @@ fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     });
     let g1 = || Page::Goal("G1".into());
     w.update(cx, |m, _, cx| m.go(g1(), cx)).unwrap();
-    // A goal or terminal link keeps the task open: one ⌘← comes back to the page it was opened on, the next closes it.
-    for link in [view::Go::Goal("G2".into()), view::Go::Session("fake-s1".into())] {
+    // A goal link keeps the task open: one ⌘← comes back to the page it was opened on, the next closes it.
+    for link in [view::Go::Goal("G2".into())] {
         open(cx, &w, "T1");
         w.update(cx, |m, _, cx| super::go(m, &link, cx)).unwrap();
         settle(cx);

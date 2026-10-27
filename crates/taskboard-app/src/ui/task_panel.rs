@@ -709,14 +709,8 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
         Go::Goal(r) => {
             m.go(Page::Goal(r.clone()), cx);
         }
-        Go::Session(id) => {
-            // `termHref`: the Sessions page with this terminal, and "Back to T12".
-            let tref = match &m.panel {
-                Some(Panel::Task { r, .. }) => r.clone(),
-                _ => String::new(),
-            };
-            crate::ui::sessions::open_from_task(m, id, &tref, cx);
-        }
+        // The terminal itself, in Midna: the board stays where it is.
+        Go::Session(id) => crate::ui::sessions::menu_focus(m, id, cx),
         Go::Issue(r) => {
             m.go(Page::Board, cx);
             m.open_issue(r.clone(), cx);
