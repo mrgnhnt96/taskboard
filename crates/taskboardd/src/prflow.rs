@@ -541,6 +541,11 @@ fn rebase_advice(policy: RebasePolicy) -> &'static str {
     }
 }
 
+/// How to resolve a rebase's conflicts (with its leading space): the base branch's version wins.
+pub const KEEP_BASE: &str = " Where the base branch changed the same code another way (another PR solved the same thing), keep \
+     the base's version and re-apply on top of it only what this PR adds that the base doesn't have. That's resolving \
+     the conflict, not a redesign: do it without asking, and run the tests covering it.";
+
 fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
@@ -562,12 +567,15 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
              do>\"; it tells them and finishes this visit.",
             if failed.is_empty() { "see the PR".to_string() } else { failed.join(", ") },
             num = t.i0("pr_num"),
-            rebase = rebase_advice(rebase_policy(app, t))
+            rebase = match rebase_policy(app, t) {
+                RebasePolicy::Never => rebase_advice(RebasePolicy::Never).to_string(),
+                policy => format!("{}{KEEP_BASE}", rebase_advice(policy)),
+            }
         ),
         "rebase" => format!(
             "It conflicts with its base branch {base}, so it can't merge. In this task's worktree, rebase onto {base} \
              ({tb} pr status {r} lists the commands), resolve the conflicts, run the tests covering the files you \
-             resolved (not the whole suite), and push with git push --force-with-lease. The checks run again.",
+             resolved (not the whole suite), and push with git push --force-with-lease. The checks run again.{KEEP_BASE}",
             base = rec["base"].as_str().filter(|b| !b.is_empty()).unwrap_or("the base branch")
         ),
         "comments" => format!(
