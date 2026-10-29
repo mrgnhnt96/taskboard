@@ -2461,6 +2461,19 @@ fn unanswered(e: CallError, went_quiet: &str) -> String {
     }
 }
 
+/// A `tb question` the board didn't confirm (#798). It holds every question it gets and asks the owner
+/// as written within about two minutes if the call never records it, so asking again only doubles it.
+fn question_unconfirmed(e: CallError, owner: &str) -> String {
+    match e {
+        CallError::TimedOut(e) => format!(
+            "the board went quiet for {TB_TIMEOUT}s before it confirmed the question ({e}). It still has it and asks {owner} \
+             as written within about 2 minutes unless it can answer it from the rules. Don't ask again yet: in 2 minutes run \
+             tb status. If it says Needs you, the question is with {owner}, so wait for the answer; if not, run tb question again."
+        ),
+        e => unanswered(e, ""),
+    }
+}
+
 fn out(line: &str) {
     out_to(&mut std::io::stdout(), &STDOUT_GONE, line);
 }
@@ -2629,6 +2642,11 @@ impl Ctx {
     /// printing each stage. Spooled (None) only when the board can't be reached: one that went quiet has
     /// the report and may still be working on it, so a replay could do it twice.
     fn report_progress(&self, event: &str, fields: Value, task: Option<&str>) -> Result<Option<Value>, String> {
+        self.report_progress_or(event, fields, task, |e| unanswered(e, &format!("went quiet for {TB_TIMEOUT}s")))
+    }
+
+    /// `report_progress`, saying what a refused or unfinished call means with `failed`.
+    fn report_progress_or(&self, event: &str, fields: Value, task: Option<&str>, failed: impl FnOnce(CallError) -> String) -> Result<Option<Value>, String> {
         let body = self.body(event, fields, task);
         match client::request_progress(&self.cfg, "POST", "/report", Some(&body), TB_TIMEOUT, |stage| out(&format!("· {stage}"))) {
             Ok(v) => Ok(Some(v)),
@@ -2636,7 +2654,7 @@ impl Ctx {
                 client::spool_write(&self.cfg, &body).map_err(|e| format!("the board isn't answering and the report couldn't be saved: {e}"))?;
                 Ok(None)
             }
-            Err(e) => Err(unanswered(e, &format!("went quiet for {TB_TIMEOUT}s"))),
+            Err(e) => Err(failed(e)),
         }
     }
 
@@ -5571,8 +5589,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let task = t.task.map(|x| task_ref(&x)).transpose()?;
             let mut alert = Some(text.clone());
             // The board may have claude screen it first (`[questions] screen`), which takes a while.
-            let r = c.report_progress("tb.question", json!({"text": text, "options": options}), task.as_deref());
             let owner = c.cfg.owner.clone();
+            let r = c.report_progress_or("tb.question", json!({"text": text, "options": options}), task.as_deref(), |e| question_unconfirmed(e, &owner));
             let res = match r {
                 Ok(None) => {
                     out(SAVED);
@@ -7776,6 +7794,15 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unconfirmed_question_says_what_to_do_and_never_that_it_may_go_through() {
+        let m = question_unconfirmed(CallError::TimedOut("no word".into()), "Morgan");
+        assert!(m.contains("asks Morgan as written within about 2 minutes") && m.contains("run tb status") && m.contains("Needs you"), "{m}");
+        assert!(m.contains("Don't ask again yet") && !m.contains("may still go through"), "{m}");
+        assert_eq!(question_unconfirmed(CallError::Refused("no task here".into()), "Morgan"), "no task here");
+        assert!(question_unconfirmed(CallError::Unreachable("down".into()), "Morgan").contains("isn't answering"));
+    }
 
     #[test]
     fn a_round_aimed_at_another_repository_is_refused() {

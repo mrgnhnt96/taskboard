@@ -46,6 +46,7 @@ mod lanes;
 mod lessons;
 mod limits;
 mod lines;
+mod lost_questions;
 mod live_fix;
 mod merge_carried;
 mod merge_checks_running;
