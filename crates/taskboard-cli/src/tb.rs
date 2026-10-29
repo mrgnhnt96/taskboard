@@ -1913,6 +1913,8 @@ enum ProjectCmd {
 enum PrCmd {
     /// Read every PR on the board now, instead of waiting for the next poll
     Check,
+    /// Each PR host account's rate limit: the board's calls in the last hour and minute by reader, and the host's own count
+    Limits,
     /// End the board's own hold on a PR host after a rate limit (the slow restart), on the owner's word
     Lift {
         /// Only this host (bitbucket, github); every host when left out
@@ -6873,6 +6875,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
+            PrCmd::Limits => {
+                let v = c.call("GET", "/prs/limits", None)?;
+                let lines = limits_lines(&v["rate_limits"]);
+                if lines.is_empty() {
+                    out("The board hasn't called a PR host yet.");
+                }
+                for line in lines {
+                    out(&line);
+                }
+                Ok(0)
+            }
             PrCmd::Lift { host } => {
                 let v = c.call("POST", "/prs/limits/lift", Some(json!({"host": host})))?;
                 let lifted: Vec<&str> = v["lifted"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
@@ -7458,10 +7471,13 @@ fn rate_lines(v: &Value) -> Vec<String> {
             Some(b) => format!(" · the board's calls in the last hour: {calls} of {b}"),
             None => format!(" · the board's calls in the last hour: {calls}"),
         };
+        if let Some(split) = a["readers_text"].as_str() {
+            line += &format!(" ({split})");
+        }
         if let Some(f) = a["stretch"].as_f64() {
             line += &format!(" · polling {f:.1}× slower to fit");
         }
-        for key in ["why", "slow_text", "share_text", "poll_text"] {
+        for key in ["why", "slow_text", "share_text", "poll_text", "request_count_text"] {
             if let Some(more) = a[key].as_str() {
                 line += &format!("\n  {more}");
             }
@@ -7469,6 +7485,22 @@ fn rate_lines(v: &Value) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+/// `tb pr limits`: each account's [`rate_lines`], with the last minute's calls by reader.
+fn limits_lines(v: &Value) -> Vec<String> {
+    let accounts: Vec<&Value> = v.as_array().into_iter().flatten().collect();
+    accounts
+        .iter()
+        .zip(rate_lines(v))
+        .map(|(a, line)| {
+            let n = a["calls_last_minute"].as_u64().unwrap_or(0);
+            match a["readers_minute_text"].as_str() {
+                Some(split) => format!("{line}\n  in the last minute: {n} ({split})"),
+                None => format!("{line}\n  in the last minute: {n}"),
+            }
+        })
+        .collect()
 }
 
 /// `tb pr check`'s rate-limit lines: only the accounts that are limited, slowing down, were limited
@@ -8019,6 +8051,7 @@ mod tests {
     fn tb_pr_check_reads_the_prs_and_says_what_changed() {
         assert!(matches!(Cli::try_parse_from(["tb", "pr", "check"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Check }));
         assert!(matches!(Cli::try_parse_from(["tb", "pr", "lift"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Lift { host: None } }));
+        assert!(matches!(Cli::try_parse_from(["tb", "pr", "limits"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Limits }));
         assert!(matches!(Cli::try_parse_from(["tb", "pr", "lift", "--host", "bitbucket"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Lift { host: Some(_) } }));
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 2})), "Checked the PRs: 2 tasks changed.");
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 1})), "Checked the PRs: 1 task changed.");
@@ -8261,6 +8294,25 @@ mod tests {
         assert!(lines[0].starts_with("Bitbucket isn't rate-limited · the board's calls in the last hour: 470\n  Bitbucket limited the account until 7:33am"), "{}", lines[0]);
         assert!(lines[0].ends_with(&format!("\n  {share}")), "{}", lines[0]);
         assert!(pr_check_rate_lines(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn tb_pr_limits_says_who_made_the_calls_and_the_host_s_own_count() {
+        let told = "Bitbucket's x-request-count said 2,189 at 11:13:35am";
+        let v = json!([
+            {"label": "Bitbucket", "text": null, "why": null, "calls_last_hour": 436, "max_per_hour": 900,
+             "readers_text": "poll 210, hint 120, master 12, reviewers 40, agent 54", "request_count_text": told,
+             "calls_last_minute": 9, "readers_minute_text": "poll 5, agent 4"},
+            {"label": "GitHub", "text": null, "why": null, "calls_last_hour": 0, "calls_last_minute": 0},
+        ]);
+        assert_eq!(
+            limits_lines(&v),
+            vec![
+                format!("Bitbucket isn't rate-limited · the board's calls in the last hour: 436 of 900 (poll 210, hint 120, master 12, reviewers 40, agent 54)\n  {told}\n  in the last minute: 9 (poll 5, agent 4)"),
+                "GitHub isn't rate-limited · the board's calls in the last hour: 0\n  in the last minute: 0".to_string(),
+            ]
+        );
+        assert!(limits_lines(&Value::Null).is_empty());
     }
 
     #[test]

@@ -2131,7 +2131,7 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
                 merge_flow(app, t.id(), fields!["read_at" => now_iso()])?;
                 rec
             }
-            None => match read(app, t) {
+            None => match if unknown { crate::prhost::limit::reader("full-read fallback", || read(app, t)) } else { read(app, t) } {
                 Ok(rec) => {
                     full += 1;
                     merge_flow(app, t.id(), vec![("stamp", stamp.map_or(Value::Null, Value::from)), ("full_at", json!(now_iso()))])?;

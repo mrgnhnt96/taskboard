@@ -75,6 +75,11 @@ fn headroom(r: &ureq::Response) -> Option<super::limit::Headroom> {
     Some(super::limit::Headroom { cap: cap.filter(|c| *c > 0.0).map(|c| c as u32), near: flagged == Some(true) || low, reset_at: num("X-RateLimit-Reset") })
 }
 
+/// Bitbucket's own count of the account's calls (`X-Request-Count`), on any answer.
+fn request_count(r: &ureq::Response) -> Option<u64> {
+    r.header("X-Request-Count").and_then(|v| v.trim().parse().ok())
+}
+
 impl Http for BasicHttp {
     fn limit_key(&self) -> Option<String> {
         Some(self.gate.key.clone())
@@ -97,6 +102,9 @@ impl BasicHttp {
         };
         match res {
             Ok(r) => {
+                if let Some(n) = request_count(&r) {
+                    self.gate.request_count(n);
+                }
                 let hit = limit_headers(&r, false, &format!("{svc} said the account has no calls left this hour"));
                 if let Some(h) = headroom(&r).filter(|_| hit.is_none()) {
                     self.gate.headroom(&h);
@@ -108,6 +116,9 @@ impl BasicHttp {
                 Ok((serde_json::from_str(&text).unwrap_or(Value::Null), hit))
             }
             Err(ureq::Error::Status(code, r)) => {
+                if let Some(n) = request_count(&r) {
+                    self.gate.request_count(n);
+                }
                 let hit = limit_headers(&r, code == 429, &format!("{svc} answered {code}"));
                 let v: Value = r.into_json().unwrap_or(Value::Null);
                 let why = v["error"]["message"].as_str().unwrap_or("").to_string();
@@ -789,6 +800,15 @@ pub(crate) mod tests {
         assert!(headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-NearLimit: true\r\n\r\n{}")).unwrap().near);
         assert!(headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-Remaining: 150\r\n\r\n{}")).unwrap().near);
         assert!(!headroom(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Limit: 1000\r\nX-RateLimit-Remaining: 250\r\n\r\n{}")).unwrap().near);
+    }
+
+    #[test]
+    fn the_request_count_header_is_read_from_any_answer() {
+        let r = |raw: &str| raw.parse::<ureq::Response>().unwrap();
+        assert_eq!(request_count(&r("HTTP/1.1 200 OK\r\nX-Request-Count: 2189\r\n\r\n{}")), Some(2189));
+        assert_eq!(request_count(&r("HTTP/1.1 429 Too Many Requests\r\nx-request-count: 3001\r\n\r\n")), Some(3001));
+        assert_eq!(request_count(&r("HTTP/1.1 200 OK\r\n\r\n{}")), None);
+        assert_eq!(request_count(&r("HTTP/1.1 200 OK\r\nX-Request-Count: lots\r\n\r\n{}")), None);
     }
 
     /// Every call: method, URL and body.

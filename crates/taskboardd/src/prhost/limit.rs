@@ -97,10 +97,22 @@
 //! # Showing it
 //!
 //! [`status`]: each account's host, its limit (`limited_until`, `why`), its slow restart (`slow_text`),
-//! the board's calls in the last hour and its budget, and the board's share of the calls in the hour
-//! before the last limit (`share_text`), and what the last PR poll cost (`poll_text`, from [`counting`]
-//! and [`Limits::note_poll`]), on `/state` (`rate_limits`), `GET /prs/feed` (`tb feed`) and
+//! the board's calls in the last hour and its budget, split by the reader that made them
+//! (`calls_by_reader`, `readers_text`), the board's share of the calls in the hour before the last
+//! limit (`share_text`), what the last PR poll cost (`poll_text`, from [`counting`] and
+//! [`Limits::note_poll`]), and the last `X-Request-Count` Bitbucket sent (`request_count_text`), on
+//! `/state` (`rate_limits`), `GET /prs/limits` (`tb pr limits`), `GET /prs/feed` (`tb feed`) and
 //! `POST /prs/refresh` (`tb pr check`).
+//!
+//! # Who made the calls
+//!
+//! Each call is counted against the reader that made it ([`reader`]: the timed PR poll, its full-read
+//! fallback when the host couldn't say what changed, reads after a review hint, the master watch, the
+//! review sweep, and `tb` commands); calls made outside one count as `other`. The `rate limit:` line
+//! a limit logs gives the split for the hour and the minute, with the last `X-Request-Count` Bitbucket
+//! sent: its own count of the account's calls, which takes in other tools on the same account. The
+//! board only shows that count; it doesn't pace on it. Once an hour the log gets a line with the
+//! hour's calls and their split ([`Limits::hourly`]).
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -233,6 +245,13 @@ struct Account {
     share: Option<(f64, usize)>,
     /// The account's calls an hour, when the host says (`X-RateLimit-Limit`).
     cap: Option<u32>,
+    /// The reader named for each call in `calls` that went out inside one ([`reader`]).
+    by_reader: VecDeque<(f64, String)>,
+    /// The last `X-Request-Count` the host sent, and when.
+    request_count: Option<(u64, f64)>,
+    /// When the hourly calls line was last logged ([`Limits::hourly`]).
+    #[serde(skip)]
+    logged_at: Option<f64>,
 }
 
 impl Account {
@@ -242,6 +261,9 @@ impl Account {
         }
         while self.writes.front().is_some_and(|t| *t <= now - HOUR) {
             self.writes.pop_front();
+        }
+        while self.by_reader.front().is_some_and(|(t, _)| *t <= now - HOUR) {
+            self.by_reader.pop_front();
         }
         while self.reads.front().is_some_and(|t| *t <= now - READ_WINDOW_SECS) {
             self.reads.pop_front();
@@ -273,11 +295,54 @@ impl Account {
         }
     }
 
-    /// "it made 107 calls on this account in the last hour, 12 in the last minute (8 writes)".
+    /// "it made 107 calls on this account in the last hour (poll 60, hint 40, agent 7), 12 in the last
+    /// minute (8 writes; poll 4, agent 8)".
     fn pace_text(&self, now: f64) -> String {
         let burst = self.calls.iter().filter(|t| **t > now - BURST_SECS).count();
         let writes = self.writes.iter().filter(|t| **t > now - BURST_SECS).count();
-        format!("it made {} calls on this account in the last hour, {burst} in the last minute ({})", self.calls.len(), plural(writes as i64, "write"))
+        let hour = self.readers_text(now - HOUR).map(|s| format!(" ({s})")).unwrap_or_default();
+        let minute = self.readers_text(now - BURST_SECS).map(|s| format!("; {s}")).unwrap_or_default();
+        format!("it made {} calls on this account in the last hour{hour}, {burst} in the last minute ({}{minute})", self.calls.len(), plural(writes as i64, "write"))
+    }
+
+    /// The calls since `since` by reader, in [`READERS`] order, the rest as `other`; empty with none.
+    fn by_reader(&self, since: f64) -> Vec<(String, usize)> {
+        let total = self.calls.iter().filter(|t| **t > since).count();
+        let mut n: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, r) in self.by_reader.iter().filter(|(t, _)| *t > since) {
+            *n.entry(r.as_str()).or_default() += 1;
+        }
+        let named: usize = n.values().sum();
+        let mut out: Vec<(String, usize)> = READERS.iter().filter_map(|r| n.remove(r).map(|c| (r.to_string(), c))).collect();
+        out.extend(n.into_iter().map(|(r, c)| (r.to_string(), c)));
+        if total > named {
+            out.push(("other".to_string(), total - named));
+        }
+        out
+    }
+
+    /// "poll 60, hint 40, agent 7": the calls since `since` by reader; None while none was made inside
+    /// a [`reader`].
+    fn readers_text(&self, since: f64) -> Option<String> {
+        let split = self.by_reader(since);
+        if split.iter().all(|(r, _)| r == "other") {
+            return None;
+        }
+        Some(split.iter().map(|(r, c)| format!("{r} {c}")).collect::<Vec<_>>().join(", "))
+    }
+
+    /// "Bitbucket's x-request-count said 2,189 at 11:13:35am".
+    fn request_count_text(&self) -> Option<String> {
+        let (n, at) = self.request_count?;
+        Some(format!("{}'s x-request-count said {} at {}", label(&self.host), grouped(n), clock_secs(at)))
+    }
+
+    /// "the board made 436 calls on this account in the last hour (poll 210, …); Bitbucket's
+    /// x-request-count said 2,189 at 11:13:35am".
+    fn hour_text(&self, now: f64) -> String {
+        let split = self.readers_text(now - HOUR).map(|s| format!(" ({s})")).unwrap_or_default();
+        let told = self.request_count_text().map(|t| format!("; {t}")).unwrap_or_default();
+        format!("the board made {} on this account in the last hour{split}{told}", plural(self.calls.len() as i64, "call"))
     }
 
     /// Past its limit and the slow restart after it.
@@ -338,6 +403,19 @@ thread_local! {
     static FRESH: Cell<Option<f64>> = const { Cell::new(None) };
     static COUNTED: RefCell<Option<HashMap<String, usize>>> = const { RefCell::new(None) };
     static LAST_WINS: RefCell<Option<String>> = const { RefCell::new(None) };
+    static READER: Cell<Option<&'static str>> = const { Cell::new(None) };
+}
+
+/// The readers [`reader`] names, in the order the split shows them.
+pub const READERS: [&str; 6] = ["poll", "full-read fallback", "hint", "master", "reviewers", "agent"];
+
+/// Runs `f` with the calls it makes counted against `name` (one of [`READERS`]) in the split of an
+/// account's calls (see "Who made the calls"); an inner one names its own calls.
+pub fn reader<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    let was = READER.with(|r| r.replace(Some(name)));
+    let out = f();
+    READER.with(|r| r.set(was));
+    out
 }
 
 /// Runs `f` and counts the calls it made that reached each host, by host id.
@@ -619,9 +697,43 @@ impl Limits {
         if write {
             a.writes.push_back(now);
         }
+        if let Some(r) = READER.with(|r| r.get()) {
+            a.by_reader.push_back((now, r.to_string()));
+        }
         drop(all);
         self.touch();
         Ok(())
+    }
+
+    /// The host's own count of the account's calls (`X-Request-Count`) on an answer to `key`: kept with
+    /// its time to show, never paced on.
+    pub fn request_count(&self, key: &str, host: &str, n: u64, now: f64) {
+        let mut all = self.accounts.lock();
+        let a = all.entry(key.to_string()).or_insert_with(|| Account { host: host.to_string(), ..Default::default() });
+        a.request_count = Some((n, now));
+        drop(all);
+        self.touch();
+    }
+
+    /// Once an hour per account that made calls (the first an hour after it was first seen), a log
+    /// line with the hour's calls, their split by reader and the host's last `X-Request-Count`.
+    fn hourly(&self, now: f64) {
+        let mut lines = vec![];
+        for a in self.accounts.lock().values_mut() {
+            let Some(at) = a.logged_at else {
+                a.logged_at = Some(now);
+                continue;
+            };
+            if now - at < HOUR {
+                continue;
+            }
+            a.logged_at = Some(now);
+            a.forget_old(now);
+            if !a.calls.is_empty() {
+                lines.push(format!("rate limit: hourly on {}: {}", label(&a.host), a.hour_text(now)));
+            }
+        }
+        self.log.lock().extend(lines);
     }
 
     /// The host says `key` is rate-limited: stop its calls until the host says, else back off, and
@@ -661,8 +773,9 @@ impl Limits {
             true => "it sent no Retry-After or X-RateLimit headers".to_string(),
             false => format!("it sent {}", hit.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ")),
         };
+        let told = a.request_count_text().map(|t| format!("; {t}")).unwrap_or_default();
         self.log.lock().push(format!(
-            "rate limit: {} answered \"{}\" ({headers}); the board backs off until {} ({}, {source}); {}{budget}",
+            "rate limit: {} answered \"{}\" ({headers}); the board backs off until {} ({}, {source}); {}{budget}{told}",
             label(host),
             one_line(&hit.why, 160),
             local_clock(Some(&iso(until))),
@@ -796,8 +909,13 @@ impl Limits {
             calls.sort_by(f64::total_cmp);
             let mut writes: Vec<f64> = a.writes.iter().chain(here.writes.iter()).copied().collect();
             writes.sort_by(f64::total_cmp);
+            let mut by_reader: Vec<(f64, String)> = a.by_reader.iter().chain(here.by_reader.iter()).cloned().collect();
+            by_reader.sort_by(|x, y| x.0.total_cmp(&y.0));
             a.calls = calls.into();
             a.writes = writes.into();
+            a.by_reader = by_reader.into();
+            a.request_count = [a.request_count, here.request_count].into_iter().flatten().max_by(|x, y| x.1.total_cmp(&y.1));
+            a.logged_at = here.logged_at;
             a.next_write = a.next_write.max(here.next_write);
             a.reads = std::mem::take(&mut here.reads);
             *here = a;
@@ -836,6 +954,14 @@ impl Limits {
                     "share_text": a.share_text(now),
                     "poll_text": polls.get(&a.host).map(Poll::text),
                     "calls_last_hour": a.calls.len(),
+                    "calls_by_reader": reader_map(a.by_reader(now - HOUR)),
+                    "calls_by_reader_last_minute": reader_map(a.by_reader(now - BURST_SECS)),
+                    "readers_text": a.readers_text(now - HOUR),
+                    "calls_last_minute": a.calls.iter().filter(|t| **t > now - BURST_SECS).count(),
+                    "readers_minute_text": a.readers_text(now - BURST_SECS),
+                    "request_count": a.request_count.map(|(n, _)| n),
+                    "request_count_at": a.request_count.map(|(_, at)| iso(at)),
+                    "request_count_text": a.request_count_text(),
                     "max_per_hour": self.budget(&a.host),
                     "reads_last_minute": a.reads.iter().filter(|t| **t <= now).count(),
                     "max_reads_per_minute": self.reads_per_minute(&a.host),
@@ -891,6 +1017,28 @@ impl Limits {
     fn take_log(&self) -> Vec<String> {
         std::mem::take(&mut *self.log.lock())
     }
+}
+
+fn reader_map(split: Vec<(String, usize)>) -> Value {
+    Value::Object(split.into_iter().map(|(r, c)| (r, json!(c))).collect())
+}
+
+/// "2,189".
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "11:13:35am", local time.
+fn clock_secs(t: f64) -> String {
+    local_dt(t).format("%-I:%M:%S%P").to_string()
 }
 
 /// Background reads stop here, keeping the rest of the minute's `cap` for priority reads.
@@ -1333,6 +1481,11 @@ impl Gate {
         }
     }
 
+    /// The host's own count of the account's calls (`X-Request-Count`) on any answer.
+    pub fn request_count(&self, n: u64) {
+        limits().request_count(&self.key, &self.host, n, now_ts());
+    }
+
     /// The host's headers on a call that went through ([`Limits::headroom`]).
     pub fn headroom(&self, h: &Headroom) {
         limits().headroom(&self.key, &self.host, h, now_ts());
@@ -1386,7 +1539,7 @@ pub fn restore(app: &App) {
     });
 }
 
-/// `/state`'s `rate_limits`, and `tb feed`'s.
+/// `/state`'s `rate_limits`, `GET /prs/limits`' (`tb pr limits`) and `tb feed`'s.
 pub fn status() -> Vec<Value> {
     limits().status(now_ts())
 }
@@ -1430,6 +1583,7 @@ pub fn check(app: &App) -> Result<()> {
     if l.due_save(now_ts()) {
         app.db.set_setting(SAVED_KEY, Some(&l.saved().to_string()))?;
     }
+    l.hourly(now_ts());
     for line in l.take_log() {
         app.info(line);
     }
@@ -1635,6 +1789,81 @@ mod tests {
         assert!(log[0].contains("Bitbucket answered \"Bitbucket answered 429\""), "{}", log[0]);
         assert!(log[0].contains("it made 3 calls on this account in the last hour"), "{}", log[0]);
         assert!(l.take_log().is_empty());
+    }
+
+    #[test]
+    fn a_backoff_splits_the_hour_s_and_the_minute_s_calls_by_reader() {
+        let l = Limits::default();
+        reader("poll", || l.admit("bb:1", "bitbucket", false, false, T0 - 600.0)).unwrap();
+        reader("poll", || l.admit("bb:1", "bitbucket", false, false, T0)).unwrap();
+        reader("poll", || reader("full-read fallback", || l.admit("bb:1", "bitbucket", false, false, T0 + 1.0))).unwrap();
+        reader("agent", || l.admit("bb:1", "bitbucket", true, false, T0 + 2.0)).unwrap();
+        l.admit("bb:1", "bitbucket", false, false, T0 + 3.0).unwrap();
+        l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), T0 + 5.0);
+        let log = l.take_log();
+        assert!(
+            log[0].contains("it made 5 calls on this account in the last hour (poll 2, full-read fallback 1, agent 1, other 1), 4 in the last minute (1 write; poll 1, full-read fallback 1, agent 1, other 1)"),
+            "{}",
+            log[0]
+        );
+        let st = &l.status(T0 + 5.0)[0];
+        assert_eq!(st["calls_by_reader"], json!({"poll": 2, "full-read fallback": 1, "agent": 1, "other": 1}));
+        assert_eq!(st["calls_by_reader_last_minute"]["poll"], 1);
+        assert_eq!(st["readers_text"], "poll 2, full-read fallback 1, agent 1, other 1");
+        assert_eq!((st["calls_last_minute"].as_u64(), st["readers_minute_text"].as_str()), (Some(4), Some("poll 1, full-read fallback 1, agent 1, other 1")));
+        assert_eq!(READER.with(|r| r.get()), None, "the reader ends with its calls");
+    }
+
+    #[test]
+    fn calls_outside_a_reader_show_no_split() {
+        let l = Limits::default();
+        l.admit("bb:1", "bitbucket", false, false, T0).unwrap();
+        l.hit("bb:1", "bitbucket", &hit("429"), T0 + 1.0);
+        let log = l.take_log();
+        assert!(log[0].contains("it made 1 calls on this account in the last hour, 1 in the last minute (0 writes) (budget 900)"), "{}", log[0]);
+        assert_eq!(l.status(T0 + 1.0)[0]["readers_text"], Value::Null);
+    }
+
+    #[test]
+    fn the_host_s_request_count_shows_in_the_backoff_and_the_status() {
+        let l = Limits::default();
+        l.request_count("bb:1", "bitbucket", 2100, T0 - 30.0);
+        l.request_count("bb:1", "bitbucket", 2189, T0);
+        let until = l.hit("bb:1", "bitbucket", &hit("429"), T0 + 1.0);
+        let said = format!("Bitbucket's x-request-count said 2,189 at {}", clock_secs(T0));
+        let log = l.take_log();
+        assert!(log[0].ends_with(&format!("; {said}")), "{}", log[0]);
+        let st = &l.status(T0 + 1.0)[0];
+        assert_eq!((st["request_count"].as_u64(), st["request_count_at"].as_str()), (Some(2189), Some(iso(T0).as_str())));
+        assert_eq!(st["request_count_text"], said.as_str());
+        assert_eq!(st["calls_last_hour"], 0, "the header isn't one of the board's calls");
+        assert_eq!(l.held_until("bb:1", T0 + 1.0), Some(until), "the header doesn't change the hold");
+    }
+
+    #[test]
+    fn the_hourly_line_gives_the_hour_s_calls_once_an_hour() {
+        let l = Limits::default();
+        reader("poll", || l.admit("bb:1", "bitbucket", false, false, T0)).unwrap();
+        l.hourly(T0);
+        assert!(l.take_log().is_empty(), "the first hour starts when the account is first seen");
+        reader("agent", || l.admit("bb:1", "bitbucket", false, false, T0 + 1800.0)).unwrap();
+        l.request_count("bb:1", "bitbucket", 2189, T0 + 1800.0);
+        l.hourly(T0 + HOUR - 1.0);
+        assert!(l.take_log().is_empty());
+        l.hourly(T0 + HOUR);
+        assert_eq!(
+            l.take_log(),
+            vec![format!("rate limit: hourly on Bitbucket: the board made 1 call on this account in the last hour (agent 1); Bitbucket's x-request-count said 2,189 at {}", clock_secs(T0 + 1800.0))]
+        );
+        l.hourly(T0 + HOUR + 60.0);
+        assert!(l.take_log().is_empty());
+        l.hourly(T0 + 3.0 * HOUR);
+        assert!(l.take_log().is_empty(), "an hour with no calls logs nothing");
+    }
+
+    #[test]
+    fn counts_are_grouped_by_thousands() {
+        assert_eq!([0, 999, 1000, 2189, 1_234_567].map(grouped), ["0", "999", "1,000", "2,189", "1,234,567"]);
     }
 
     fn budget(host: &str, b: u32) -> BTreeMap<String, HostConfig> {
@@ -1930,6 +2159,23 @@ mod tests {
         let later = Limits::default();
         later.restore(&saved, T0 + 2.0 * HOUR + 120.0);
         assert!(later.admit("bb:1", "bitbucket", false, false, T0 + 2.0 * HOUR + 120.0).is_ok(), "an old hold doesn't come back");
+    }
+
+    #[test]
+    fn the_split_and_the_request_count_survive_a_restart() {
+        let before = Limits::default();
+        reader("poll", || before.admit("bb:1", "bitbucket", false, false, T0)).unwrap();
+        before.request_count("bb:1", "bitbucket", 2189, T0);
+        let saved = before.saved();
+        let after = Limits::default();
+        reader("agent", || after.admit("bb:1", "bitbucket", false, false, T0 + 10.0)).unwrap();
+        after.restore(&saved, T0 + 20.0);
+        let st = &after.status(T0 + 20.0)[0];
+        assert_eq!(st["readers_text"], "poll 1, agent 1");
+        assert_eq!(st["request_count"], 2189);
+        after.request_count("bb:1", "bitbucket", 2200, T0 + 30.0);
+        after.restore(&saved, T0 + 40.0);
+        assert_eq!(after.status(T0 + 40.0)[0]["request_count"], 2200, "the later count wins");
     }
 
     #[test]

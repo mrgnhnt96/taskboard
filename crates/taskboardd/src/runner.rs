@@ -720,7 +720,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::feed::check(app)?;
     crate::prhost::limit::check(app)?;
     crate::prbuilds::tick(app)?;
-    crate::breaks::tick(app)?;
+    crate::prhost::limit::reader("master", || crate::breaks::tick(app))?;
     crate::relevance::tick(app)?;
     crate::tidy::tick(app)?;
     dispatch::start_answers(app)?;
@@ -736,9 +736,9 @@ pub fn prs(app: &App) -> Result<()> {
     // With a healthy PR feed, events refresh each PR as it changes (`feed.rs`); with stream relays the
     // poll runs, and the PRs a healthy one covers are only read to reconcile (`feed::pr_poll_skips`).
     if crate::feed::poll_due(app) {
-        prflow::poll(app)?;
+        crate::prhost::limit::reader("poll", || prflow::poll(app))?;
     }
-    prflow::late_reads(app)?;
+    crate::prhost::limit::reader("hint", || prflow::late_reads(app))?;
     prflow::waits_over(app)?;
     crate::prcmds::post_held(app)?;
     crate::prcmds::ask_held_rereviews(app)?;
@@ -762,7 +762,7 @@ pub fn reviews(app: &App) -> Result<()> {
     if !app.cfg.pr.watch {
         return Ok(());
     }
-    crate::asks::sweep(app)
+    crate::prhost::limit::reader("reviewers", || crate::asks::sweep(app))
 }
 
 pub fn run(app: Arc<App>) {
