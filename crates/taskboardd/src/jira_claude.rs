@@ -98,6 +98,9 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
             comments_read(app, &key),
             id = s("id")
         ),
+        "myself" => "Read the Atlassian account you're signed in as with atlassianUserInfo. Answer author (its display name), \
+                     author_account_id (its account id) and author_email (its email, when shown)."
+            .to_string(),
         other => format!("Do the Jira op {other} on {key}."),
     };
     format!("{}\n\n{ask}", intro(app))
@@ -143,6 +146,7 @@ pub fn default_tools(op: &str, input: &Value) -> Vec<String> {
         }
         "comment" => t.push("addOrEditJiraIssueComment"),
         "comments" => t.push("searchJiraIssuesUsingJql"),
+        "myself" => t.push("atlassianUserInfo"),
         "create" => t.extend(["searchJiraIssuesUsingJql", "createJiraIssue"]),
         _ => {}
     }
@@ -363,6 +367,7 @@ mod tests {
         );
         assert_eq!(names("comment", json!({})), ["getJiraIssue", "executeRead", "addOrEditJiraIssueComment"]);
         assert_eq!(names("comments", json!({})), ["getJiraIssue", "executeRead", "searchJiraIssuesUsingJql"]);
+        assert_eq!(names("myself", json!({})), ["getJiraIssue", "executeRead", "atlassianUserInfo"]);
         assert_eq!(names("create", json!({})), ["getJiraIssue", "executeRead", "searchJiraIssuesUsingJql", "createJiraIssue"]);
         for op in ["status", "transition", "comment", "comments", "comment_get", "create"] {
             let t = names(op, json!({"comment": "x"}));

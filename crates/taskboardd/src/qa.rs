@@ -17,11 +17,16 @@ use crate::{board, dispatch, fields, jira, ops, p, proc};
 const ON_KEY: &str = "qa_on";
 const SINCE_KEY: &str = "qa_since";
 const CHECKED_KEY: &str = "qa_checked_at";
+/// The Jira account the board is connected as (`me`), with the site it's on.
+const ME_KEY: &str = "qa_jira_me";
 /// Tickets of tasks finished within this long are watched.
 const WATCH_DAYS: f64 = 30.0;
 const RETRY_SECS: f64 = 5.0 * 60.0;
 const TRIES: i64 = 3;
 const VERDICTS: [&str; 3] = ["task", "flag", "none"];
+
+/// Who wrote each comment, past its name: the board checks it against its own account once it knows it.
+pub const ADDED: &[(&str, &str, &str)] = &[("qa_comments", "author_account_id", "TEXT"), ("qa_comments", "author_email", "TEXT")];
 
 /// QA comments are switched on and Jira is set up.
 pub fn on(app: &App) -> bool {
@@ -89,15 +94,62 @@ fn goal_of(app: &App, t: &Row) -> Result<Option<Row>> {
     Ok(board::find_goal(app, t.i("goal_id"))?.filter(|g| !g.b("archived")))
 }
 
-/// A Jira comment's author is the owner (the board posts as them too): never read.
-fn is_owner(app: &App, author: &Value) -> bool {
-    let j = &app.cfg.jira;
-    let id = author["accountId"].as_str().unwrap_or("");
-    let email = author["emailAddress"].as_str().unwrap_or("");
-    (!id.is_empty() && id == j.assignee_account_id) || (!email.is_empty() && email.eq_ignore_ascii_case(&j.email))
+/// The Jira account the board is connected as: the token's or the connector's, which the owner and
+/// the agents posting through it share. Asked of Jira once per site (when `ask`), then kept.
+fn me(app: &App, ask: bool) -> Option<Value> {
+    let site = app.cfg.jira.site.trim().to_lowercase();
+    let kept = app.db.get_setting(ME_KEY).ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok()).filter(|m| m["site"] == site.as_str());
+    if kept.is_some() || !ask {
+        return kept;
+    }
+    match jira::myself(app) {
+        Ok(mut m) if m["accountId"].as_str().is_some_and(|id| !id.is_empty()) => {
+            m["site"] = json!(site);
+            let _ = app.db.set_setting(ME_KEY, Some(&m.to_string()));
+            Some(m)
+        }
+        Ok(_) => None,
+        Err(e) => {
+            app.info(format!("qa: couldn't read which Jira account the board is connected as: {e}"));
+            None
+        }
+    }
 }
 
-/// `POST /jira/comment {key, comment_id, author?, text?}`, and each new comment `poll` finds.
+/// A Jira comment's author (`{displayName, accountId, emailAddress}`, or a display name alone) is the
+/// owner: the board's connected account (`me`) or `[jira]`'s own. Their comments are never read.
+fn is_owner(app: &App, author: &Value, me: Option<&Value>) -> bool {
+    let j = &app.cfg.jira;
+    let field = |v: &Value, k: &str| v[k].as_str().unwrap_or("").trim().to_string();
+    let (id, email) = (field(author, "accountId"), field(author, "emailAddress"));
+    let name = author.as_str().map(|n| n.trim().to_string()).unwrap_or_else(|| field(author, "displayName"));
+    let ids: Vec<String> = [j.assignee_account_id.trim().to_string()].into_iter().chain(me.map(|m| field(m, "accountId"))).filter(|i| !i.is_empty()).collect();
+    let emails: Vec<String> = [j.email.trim().to_string()].into_iter().chain(me.map(|m| field(m, "emailAddress"))).filter(|e| !e.is_empty()).collect();
+    if !id.is_empty() {
+        return ids.contains(&id);
+    }
+    if !email.is_empty() {
+        return emails.iter().any(|e| e.eq_ignore_ascii_case(&email));
+    }
+    // A forwarded comment may carry only its author's name.
+    !name.is_empty() && me.is_some_and(|m| field(m, "displayName").eq_ignore_ascii_case(&name))
+}
+
+/// The author a forwarded comment came with: `author` as a name or as Jira's user object, and
+/// `author_account_id` / `author_email` beside it.
+fn author_of(ev: &Value) -> Value {
+    let a = &ev["author"];
+    let mut out = if a.is_object() { a.clone() } else { json!({"displayName": a.as_str().unwrap_or("")}) };
+    for (from, to) in [("author_account_id", "accountId"), ("author_email", "emailAddress")] {
+        if let Some(v) = ev[from].as_str().filter(|v| !v.trim().is_empty()) {
+            out[to] = json!(v.trim());
+        }
+    }
+    out
+}
+
+/// `POST /jira/comment {key, comment_id, author?, author_account_id?, author_email?, text?}`, and each
+/// new comment `poll` finds. The owner's own comments are skipped, not kept.
 pub fn intake(app: &App, ev: &Value) -> Result<Value> {
     if !on(app) {
         return Ok(json!({"ignored": "QA comments are off"}));
@@ -110,6 +162,10 @@ pub fn intake(app: &App, ev: &Value) -> Result<Value> {
     if comment_id.is_empty() || !comment_id.chars().all(|c| c.is_ascii_digit()) {
         return err(400, "Give the Jira comment's id.");
     }
+    let author = author_of(ev);
+    if is_owner(app, &author, me(app, false).as_ref()) {
+        return Ok(json!({"ignored": "it's the owner's own comment"}));
+    }
     let made = app.db.tx(|| {
         if let Some(have) = app.db.q1("SELECT id FROM qa_comments WHERE comment_id = ?", p![comment_id])? {
             return Ok(Err(json!({"comment": rf("qa", have.id()), "new": false})));
@@ -119,7 +175,9 @@ pub fn intake(app: &App, ev: &Value) -> Result<Value> {
         let id = app.db.insert(
             "qa_comments",
             fields!["jira_key" => key, "comment_id" => comment_id, "source_task_id" => t.id(), "tries" => 0,
-                    "author" => one_line(&body_str(ev, "author"), 120), "text" => if text.is_empty() { None } else { Some(text) },
+                    "author" => one_line(author["displayName"].as_str().unwrap_or(""), 120),
+                    "author_account_id" => author["accountId"].as_str().filter(|v| !v.is_empty()),
+                    "author_email" => author["emailAddress"].as_str().filter(|v| !v.is_empty()), "text" => if text.is_empty() { None } else { Some(text) },
                     "created_at" => now_iso(), "updated_at" => now_iso()],
         )?;
         Ok(Ok(id))
@@ -161,14 +219,24 @@ fn read(app: &App, id: i64) -> Result<()> {
             Ok(d) => {
                 let text = clip(d["text"].as_str().unwrap_or(""), 3000);
                 let author = one_line(d["author"]["displayName"].as_str().unwrap_or(""), 120);
-                if is_owner(app, &d["author"]) {
-                    return app.db.tx(|| decide(app, &c, &json!({"verdict": "none", "mine": true})));
+                if is_owner(app, &d["author"], me(app, true).as_ref()) {
+                    return forget(app, &c);
                 }
-                app.db.x("UPDATE qa_comments SET text = ?, author = COALESCE(NULLIF(author, ''), ?) WHERE id = ?", p![text, author, id])?;
+                let (account, email) = (d["author"]["accountId"].as_str().filter(|v| !v.is_empty()), d["author"]["emailAddress"].as_str().filter(|v| !v.is_empty()));
+                app.db.x(
+                    "UPDATE qa_comments SET text = ?, author = COALESCE(NULLIF(author, ''), ?), author_account_id = COALESCE(?, author_account_id), \
+                     author_email = COALESCE(?, author_email) WHERE id = ?",
+                    p![text, author, account, email, id],
+                )?;
                 c = get(app, id)?;
             }
             Err(e) => return app.db.tx(|| failed(app, &c, &e)),
         }
+    }
+    // It may have come in before the board knew which account it's connected as.
+    let author = json!({"displayName": c.st("author"), "accountId": c.st("author_account_id"), "emailAddress": c.st("author_email")});
+    if is_owner(app, &author, me(app, true).as_ref()) {
+        return forget(app, &c);
     }
     let t = board::get_task(app, c.i0("source_task_id"))?;
     let g = goal_of(app, &t)?;
@@ -176,6 +244,13 @@ fn read(app: &App, id: i64) -> Result<()> {
         Ok(out) => app.db.tx(|| decide(app, &get(app, id)?, &out)),
         Err(e) => app.db.tx(|| failed(app, &get(app, id)?, &e)),
     }
+}
+
+/// The owner's own comment: dropped, so it never shows as one that needs nothing.
+fn forget(app: &App, c: &Row) -> Result<()> {
+    app.db.x("DELETE FROM qa_comments WHERE id = ? AND verdict IS NULL", p![c.id()])?;
+    app.info(format!("qa: comment {} on {} is the owner's own, skipped", c.st("comment_id"), c.st("jira_key")));
+    Ok(())
 }
 
 fn prompt_for(app: &App, c: &Row, t: &Row, g: Option<&Row>) -> String {
@@ -260,7 +335,7 @@ fn failed(app: &App, c: &Row, why: &str) -> Result<()> {
 
 /// Store Claude's answer and act on it.
 pub fn decide(app: &App, c: &Row, out: &Value) -> Result<()> {
-    let verdict = if out["mine"] == true { "none" } else { out["verdict"].as_str().unwrap_or("none") };
+    let verdict = out["verdict"].as_str().unwrap_or("none");
     app.db.x(
         "UPDATE qa_comments SET verdict = ?, pr = ?, title = ?, ask = ?, error = NULL, decided_at = ?, updated_at = ? WHERE id = ?",
         p![verdict, (out["pr"] == true) as i64, one_line(out["title"].as_str().unwrap_or(""), 120), clip(out["ask"].as_str().unwrap_or(""), 1000), now_iso(), now_iso(), c.id()],
@@ -411,7 +486,8 @@ pub fn resolve(app: &App, c: &Row, action: &str, who: &str, note: Option<&str>, 
     match action {
         "ignore" => {
             handled(app, c, who, None)?;
-            board::log_event(app, c.i0("source_task_id"), who, "jira", &format!("{}'s comment on {} was left as it is", author(c), c.st("jira_key")))?;
+            let why = note.map(|n| format!(": {}", one_line(n, 300))).unwrap_or_default();
+            board::log_event(app, c.i0("source_task_id"), who, "jira", &format!("{}'s comment on {} was ignored{why}", author(c), c.st("jira_key")))?;
             Ok(None)
         }
         "task" => {
@@ -493,10 +569,11 @@ pub fn poll(app: &App) -> std::result::Result<usize, String> {
         }
     }
     let since = parse_iso(&since).unwrap_or(0.0);
+    let me = if comments && !found.comments.is_empty() { me(app, true) } else { None };
     let mut new = 0;
     for cm in found.comments {
         let older = cm["created"].as_str().and_then(jira::comment_time).map(|t| t < since).unwrap_or(false);
-        if older || is_owner(app, &cm["author"]) {
+        if older || is_owner(app, &cm["author"], me.as_ref()) {
             continue;
         }
         let ev = json!({"key": cm["key"], "comment_id": cm["id"], "author": cm["author"]["displayName"], "text": cm["text"]});

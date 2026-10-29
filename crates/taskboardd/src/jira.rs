@@ -940,6 +940,17 @@ pub fn read_comment(app: &App, key: &str, id: &str) -> std::result::Result<Value
     Ok(json!({"author": d["author"], "text": adf_text(&d["body"])}))
 }
 
+/// QA: the account the board reads and writes Jira as (the token's, or the connector's), as
+/// {displayName, accountId, emailAddress}.
+pub fn myself(app: &App) -> std::result::Result<Value, String> {
+    if app.cfg.jira_on() && app.cfg.jira_via_claude() {
+        let d = crate::jira_claude::run(app, "myself", &json!({}))?;
+        return Ok(json!({"displayName": d["author"], "accountId": d["author_account_id"], "emailAddress": d["author_email"]}));
+    }
+    let d = api(app, "GET", "myself", None)?;
+    Ok(json!({"displayName": d["displayName"], "accountId": d["accountId"], "emailAddress": d["emailAddress"]}))
+}
+
 fn describe(op: &str, key: Option<&str>, status: Option<&str>, found: bool) -> String {
     let key = key.unwrap_or("the ticket");
     match op {
