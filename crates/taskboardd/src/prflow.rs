@@ -545,6 +545,7 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
     let r = rf("task", t.id());
     let pr = format!("PR #{} ({})", t.i0("pr_num"), t.st("pr_url"));
     let head = format!("[task-board:{r}] {pr} for “{}” needs you.", t.st("title"));
+    let ignore = checks_ignored(app, t, rec).map(|why| format!("{why}: ignore its checks, whatever they show; they count as passed. "));
     let failed: Vec<String> = rec["failed"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
     let body = match phase {
         "fix" => format!(
@@ -586,19 +587,31 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
             let left = merge_steps_left(app, t, rec);
             let v = crate::steps::vars_at(app, t, rec["head"].as_str());
             let each: Vec<String> = left.iter().map(|s| s.filled(&v)).map(|s| format!("- {} ({}): {}", s.name, s.what(), s.how(&tb))).collect();
+            let lead = match (is_approved(app, t, rec), ignore.is_some()) {
+                (true, false) => "It's approved and every check is green",
+                (false, false) => "Every check is green",
+                (true, true) => "It's approved",
+                (false, true) => "It's ready",
+            };
             format!(
-                "{}, but its merge waits on {} on its head ({}):\n{}\nOnce they've \
+                "{}{lead}, but its merge waits on {} on its head ({}):\n{}\nOnce they've \
                  passed, the board moves the PR on to its merge. Don't merge it in this visit.",
-                if is_approved(app, t, rec) { "It's approved and every check is green" } else { "Every check is green" },
+                ignore.as_deref().unwrap_or(""),
                 if left.len() == 1 { "this step" } else { "these steps" },
                 short(rec["head"].as_str().unwrap_or(""), 7),
                 each.join("\n")
             )
         }
         "merge" => format!(
-            "{} Merge it with {tb} pr merge {r}: it checks the PR once more, then merges it with the repository's \
+            "{}{} Merge it with {tb} pr merge {r}: it checks the PR once more, then merges it with the repository's \
              default strategy and deletes its branch.",
-            if is_approved(app, t, rec) { "It's approved and every check is green." } else { "Every check is green and nothing holds it." }
+            ignore.as_deref().unwrap_or(""),
+            match (is_approved(app, t, rec), ignore.is_some()) {
+                (true, false) => "It's approved and every check is green.",
+                (false, false) => "Every check is green and nothing holds it.",
+                (true, true) => "It's approved and nothing holds it.",
+                (false, true) => "Nothing holds it.",
+            }
         ),
         "ask" => format!(
             "{} has reviewed it. Ask for reviews with {tb} pr reviewers {r}: the board picks the reviewers (a main \
@@ -618,6 +631,17 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
         ),
     ]
     .join("\n")
+}
+
+/// Why its checks count as passed though nothing ran (this push's checks skipped, or PR builds
+/// stopped), so a merge visit is told to ignore them rather than that they're green.
+fn checks_ignored(app: &App, t: &Row, rec: &Value) -> Option<String> {
+    match checks_skipped(&flow(t), rec) {
+        Some(why) if !why.is_empty() => Some(format!("Its checks were skipped for this push ({why})")),
+        Some(_) => Some("Its checks were skipped for this push".into()),
+        None if crate::prbuilds::stopped(app) => Some("PR builds are stopped".into()),
+        None => None,
+    }
 }
 
 /// Its reviewers approved it, as against reaching the merge with its review skipped or off.
