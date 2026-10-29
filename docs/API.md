@@ -437,12 +437,13 @@ For a live or a gone terminal:
 ### `GET /accounts`
 
 Query: `fresh=1` asks each service again about its token (otherwise the last check is used). Returns
-`{"accounts": [account]}` for github, bitbucket and slack, in that order. Never a token.
+`{"accounts": [account]}` for github, bitbucket, azure and slack, in that order. Never a token.
 
 Every token is Taskboard's own, in the login Keychain (`taskboard-github`, `taskboard-bitbucket`,
-`taskboard-slack`). Nothing here changes the Mac's `gh` sign-in, `~/.gitconfig` or git's credential store.
+`taskboard-azure-devops`, `taskboard-slack`). Azure DevOps doesn't list a token's scopes: the board tries a
+build read and a test-run read on the organization's first project, and `scopes` are the ones that worked. Nothing here changes the Mac's `gh` sign-in, `~/.gitconfig` or git's credential store.
 ```
-account = {"id": "github"|"bitbucket"|"slack", "label": str, "connected": bool,
+account = {"id": "github"|"bitbucket"|"azure"|"slack", "label": str, "connected": bool,
            "user": str|null, "name": str|null, "detail": str|null,   // "@sam · sam@acme.com", "Acme · acme.slack.com"
            "scopes": [str], "checked_at": iso|null,
            "required": [str],      // the scopes Taskboard needs (accounts::required_scopes)
@@ -723,7 +724,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `conflicts: bool\|null` (the host says the PR conflicts with its base; null: it can't tell), `rebase_policy: "conflicts"\|"moved"\|"never"` (`pr.rebase`, or the project's `rebase`), `builds_note`, `rebase: [str]` (when the policy calls for a rebase: `conflicts` (the default) only when the PR conflicts with its base, `moved` when the base moved since this push too, `never` not at all; the commands to rebase onto it, test, pass each `per_head` step (the owner's review gate) on the new commit, push the branch to the remote and republish each such step the PR shows (`tb step publish "<step>"` when it has a `publish` script, else, for one with a `bar`, "publish <step>'s round for the pushed head where the PR shows it"), ending "Don't push only to rebase."), `failures: [{check, url, steps, tests, source, error?, tests_error? (why its tests couldn't be read when its steps could), base_fails, base_steps, base_tests, base_compared, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines (with the token from `tb ci-token set`, else `$pr.azure_token_env`) or the project's `failures_cmd`; the base branch's last 5 commits' runs of the same check are read too, and `base_steps` / `base_tests` are this PR's failed steps and tests that fail there too; `base_fails` when all of them do; `base_compared`: `steps` (compared one by one), `check` (only the check's name could be compared) or null (the base doesn't fail it)), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
+| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `conflicts: bool\|null` (the host says the PR conflicts with its base; null: it can't tell), `rebase_policy: "conflicts"\|"moved"\|"never"` (`pr.rebase`, or the project's `rebase`), `builds_note`, `rebase: [str]` (when the policy calls for a rebase: `conflicts` (the default) only when the PR conflicts with its base, `moved` when the base moved since this push too, `never` not at all; the commands to rebase onto it, test, pass each `per_head` step (the owner's review gate) on the new commit, push the branch to the remote and republish each such step the PR shows (`tb step publish "<step>"` when it has a `publish` script, else, for one with a `bar`, "publish <step>'s round for the pushed head where the PR shows it"), ending "Don't push only to rebase."), `failures: [{check, url, steps, tests, source, error?, tests_error? (why its tests couldn't be read when its steps could), base_fails, base_steps, base_tests, base_compared, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines (with the Azure DevOps account's token, else `$pr.azure_token_env`) or the project's `failures_cmd`; the base branch's last 5 commits' runs of the same check are read too, and `base_steps` / `base_tests` are this PR's failed steps and tests that fail there too; `base_fails` when all of them do; `base_compared`: `steps` (compared one by one), `check` (only the check's name could be compared) or null (the base doesn't fail it)), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
 | `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
 | `POST /tasks/:id/pr/body` | `{body}` | `tb pr body`: replaces the open PR's description on the host. 400 with each problem when `body` fails the `[pr_body]` check; 409 once the PR is merged or declined; 502 when the host can't be read or written. The board's own `## Code review` and `## Context` sections are kept from the PR's current description (the body's own sections by those names give way), and a footer the body ends with stays last. Logs "Updated PR #N's description". **Response:** `{task, num, url, changed}` (`changed: false` when the description already said that). |
@@ -903,9 +904,10 @@ nothing covers it does it get a new fix task, so a build queued after the fix me
 that finished without a PR, or whose PR was declined, hands its break to a covering task (logged on both) and raises no
 alert again.
 
-**CI token** (`tb ci-token`): `GET /ci-token` → `{set, source: "board"|"env"|null, env}` (never the token); `POST /ci-token {token}`
-keeps an Azure DevOps personal access token in the Keychain (`taskboard-azure-devops`), which the board reads Azure
-Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, the daemon's `$pr.azure_token_env` is used.
+**CI token** (`tb ci-token`): the Azure DevOps account's token (`taskboard-azure-devops`), which the board reads Azure
+Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"|null, env}` (never the token); `POST
+/ci-token {token}` keeps one (with the account connected, it's the account's new token, checked like one from Settings);
+`POST /ci-token/clear` forgets it and disconnects the account. Without one, the daemon's `$pr.azure_token_env` is used.
 
 ### Projects
 | Path | Body | Notes |
@@ -1002,7 +1004,7 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 | `POST /accounts/github/login` | `{}` | Starts `gh auth login --web --insecure-storage --scopes <required>` in a throwaway `GH_CONFIG_DIR` (gh's own sign-in is untouched); answers once gh has shown its one-time code (`login.code`). When it finishes, the token moves into `taskboard-github` and the folder is deleted. Poll `GET /accounts` until `login` is null. |
 | `POST /accounts/github/cancel` | `{}` | Stops a browser sign-in. |
 | `POST /accounts/github/import` | `{}` | Copies the token `gh auth token` prints into `taskboard-github` (read only; later gh changes don't follow). 400 when gh isn't signed in. |
-| `POST /accounts/:id` | `{token}` (bitbucket also `{email}`) | Checks the token with the service, then keeps it in the Keychain. 400 with the reason when it's refused. |
+| `POST /accounts/:id` | `{token}` (bitbucket also `{email}`, azure also `{organization}`: its name or a dev.azure.com link) | Checks the token with the service, then keeps it in the Keychain. 400 with the reason when it's refused. |
 | `POST /accounts/:id/check` | `{}` | Asks the service again whether the token works and what scopes it has. |
 | `POST /accounts/:id/disconnect` | `{}` | Forgets Taskboard's token. Nothing else on the Mac changes. |
 

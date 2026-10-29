@@ -1,5 +1,5 @@
-//! Accounts: GitHub, Bitbucket and Slack, so the board and its agents can check PRs, comment, push and
-//! assign reviewers.
+//! Accounts: GitHub, Bitbucket, Azure DevOps and Slack, so the board and its agents can check PRs,
+//! comment, push, read failed builds and assign reviewers.
 //!
 //! Taskboard keeps its own sign-in for each and never touches the machine's: not `gh`'s login, not
 //! `~/.gitconfig`, not git's credential store.
@@ -8,9 +8,14 @@
 //!   a browser sign-in that runs `gh auth login --web --insecure-storage` in a throwaway
 //!   `GH_CONFIG_DIR`, so gh's own login and Keychain item are left alone.
 //! - **Bitbucket** is an Atlassian API token with Bitbucket scopes (email + token).
+//! - **Azure DevOps** is a personal access token for an organization (organization + token), for the
+//!   failed steps and tests of Azure Pipelines checks (`prhost/ci.rs`). Azure doesn't say what a token
+//!   may do, so it's tried on the organization's first project: a build read and a test-run read
+//!   ([`azure_who`]).
 //! - **Slack** is an app's OAuth token (`xoxp-` or `xoxb-`), checked with `auth.test`.
 //!
-//! The tokens live in the login Keychain (`taskboard-github`, `taskboard-bitbucket`, `taskboard-slack`);
+//! The tokens live in the login Keychain (`taskboard-github`, `taskboard-bitbucket`,
+//! `taskboard-azure-devops`, `taskboard-slack`);
 //! `accounts.json` in the data folder keeps who each account is and its scopes, never a secret. The API
 //! never returns a secret: `tb token <provider>` reads it from the Keychain itself, and agents on a task
 //! `git push` with it through `tb git-credential` (see `tb hook SessionStart`).
@@ -56,16 +61,21 @@ pub const BITBUCKET_GIT_USER: &str = "x-bitbucket-api-token-auth";
 pub const GITHUB_GIT_USER: &str = "x-access-token";
 pub const BITBUCKET_TOKEN_URL: &str = "https://id.atlassian.com/manage-profile/security/api-tokens";
 pub const SLACK_APPS_URL: &str = "https://api.slack.com/apps";
+pub const AZURE_TOKEN_URL: &str = "https://learn.microsoft.com/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate";
+/// The scopes Azure DevOps names "Build (Read)" and "Test Management (Read)" when a token is made.
+pub const AZURE_BUILD: &str = "Build (read)";
+pub const AZURE_TEST: &str = "Test Management (read)";
 pub const GITHUB_DEVICE_URL: &str = "https://github.com/login/device";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Provider {
     Github,
     Bitbucket,
+    Azure,
     Slack,
 }
 
-pub const PROVIDERS: [Provider; 3] = [Provider::Github, Provider::Bitbucket, Provider::Slack];
+pub const PROVIDERS: [Provider; 4] = [Provider::Github, Provider::Bitbucket, Provider::Azure, Provider::Slack];
 
 impl Provider {
     pub fn parse(s: &str) -> Option<Provider> {
@@ -76,6 +86,7 @@ impl Provider {
         match self {
             Provider::Github => "github",
             Provider::Bitbucket => "bitbucket",
+            Provider::Azure => "azure",
             Provider::Slack => "slack",
         }
     }
@@ -84,6 +95,7 @@ impl Provider {
         match self {
             Provider::Github => "GitHub",
             Provider::Bitbucket => "Bitbucket",
+            Provider::Azure => "Azure DevOps",
             Provider::Slack => "Slack",
         }
     }
@@ -93,6 +105,8 @@ impl Provider {
         match self {
             Provider::Github => "taskboard-github",
             Provider::Bitbucket => "taskboard-bitbucket",
+            // the CI token's item (`tb ci-token`), so a token stored before the account existed still reads builds
+            Provider::Azure => CI_SERVICE,
             Provider::Slack => "taskboard-slack",
         }
     }
@@ -102,7 +116,7 @@ impl Provider {
         match self {
             Provider::Github => Some(("github.com", GITHUB_GIT_USER)),
             Provider::Bitbucket => Some(("bitbucket.org", BITBUCKET_GIT_USER)),
-            Provider::Slack => None,
+            Provider::Azure | Provider::Slack => None,
         }
     }
 }
@@ -113,6 +127,7 @@ pub fn required_scopes(p: Provider) -> &'static [&'static str] {
     match p {
         Provider::Github => &["repo", "read:org", "workflow"],
         Provider::Bitbucket => &["read:repository:bitbucket", "write:repository:bitbucket", "read:pullrequest:bitbucket", "write:pullrequest:bitbucket"],
+        Provider::Azure => &[AZURE_BUILD, AZURE_TEST],
         Provider::Slack => &[],
     }
 }
@@ -138,8 +153,13 @@ pub fn features(p: Provider) -> &'static [Feature] {
         Feature { id: "cancel", label: "cancel builds", scopes: &["write:pipeline:bitbucket"] },
         Feature { id: "name", label: "show your Bitbucket name", scopes: &["read:user:bitbucket"] },
     ];
+    const AZURE: &[Feature] = &[
+        Feature { id: "steps", label: "read failed build steps", scopes: &[AZURE_BUILD] },
+        Feature { id: "tests", label: "read failing tests", scopes: &[AZURE_TEST] },
+    ];
     match p {
         Provider::Bitbucket => BITBUCKET,
+        Provider::Azure => AZURE,
         Provider::Github | Provider::Slack => &[],
     }
 }
@@ -189,15 +209,18 @@ fn features_off(p: Provider, w: &Value) -> (Vec<String>, Vec<Value>, Option<Stri
         }
     }
     let note = (!off.is_empty()).then(|| {
-        let reads = !off.iter().any(|f| f["id"] == "watch");
         let asks: Vec<String> = asks.iter().map(|(add, labels)| format!("add {add} to {}", labels.join(" and "))).collect();
+        if p != Provider::Bitbucket {
+            return format!("A{}.", &asks.join(", ")[1..]);
+        }
+        let reads = !off.iter().any(|f| f["id"] == "watch");
         format!("{}; {}.", if reads { "Can read PRs" } else { "Can't read PRs" }, asks.join(", "))
     });
     (missing, off, note)
 }
 
 fn provider(id: &str) -> Result<Provider> {
-    Provider::parse(id).ok_or_else(|| ApiError::new(404, "There's no such account. Use github, bitbucket or slack."))
+    Provider::parse(id).ok_or_else(|| ApiError::new(404, "There's no such account. Use github, bitbucket, azure or slack."))
 }
 
 /// A token and who it belongs to: (email or user, secret).
@@ -209,8 +232,6 @@ pub struct Accounts {
     sandbox: bool,
     gh: Arc<Mutex<Gh>>,
     mem: Mutex<HashMap<Provider, Cred>>,
-    /// The sandbox's CI token (`tb ci-token`).
-    ci_mem: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -229,7 +250,7 @@ struct Login {
 
 impl Accounts {
     pub fn new(cfg: &Config) -> Accounts {
-        Accounts { sandbox: cfg.accounts_sandbox, gh: Arc::new(Mutex::new(Gh::default())), mem: Mutex::new(HashMap::new()), ci_mem: Mutex::new(None) }
+        Accounts { sandbox: cfg.accounts_sandbox, gh: Arc::new(Mutex::new(Gh::default())), mem: Mutex::new(HashMap::new()) }
     }
 
     fn get(&self, p: Provider) -> Option<Cred> {
@@ -361,7 +382,8 @@ pub fn attention(cfg: &Config) -> Value {
     json!(out)
 }
 
-/// `POST accounts/<id>`: connect with a token (`{"token"}`, Bitbucket also `{"email"}`).
+/// `POST accounts/<id>`: connect with a token (`{"token"}`, Bitbucket also `{"email"}`, Azure DevOps
+/// also `{"organization"}`: its name or its URL).
 pub fn connect(app: &App, id: &str, body: &Value) -> Result<Value> {
     let p = provider(id)?;
     let token = body_str(body, "token");
@@ -377,6 +399,7 @@ pub fn connect(app: &App, id: &str, body: &Value) -> Result<Value> {
             }
             email
         }
+        Provider::Azure => azure_org(&body_str(body, "organization")).ok_or_else(|| ApiError::new(400, "Enter your Azure DevOps organization: its name, or its dev.azure.com link."))?,
         Provider::Slack => {
             if !token.starts_with("xox") {
                 return err(400, "That isn't a Slack token. It starts with xoxp- (a user token) or xoxb- (a bot token).");
@@ -470,6 +493,17 @@ fn ask_service(p: Provider, cred: &Cred, bitbucket_api: &str, bitbucket_repos: &
             };
             bitbucket_who(bitbucket_api.trim_end_matches('/'), &cred.0, &bitbucket_repos(), &get)
         }
+        Provider::Azure => {
+            let auth = format!("Basic {}", b64(format!(":{}", cred.1).as_bytes()));
+            let get = |url: &str| match agent.get(url).set("Authorization", &auth).set("Accept", "application/json").call() {
+                // a token Azure doesn't take can answer 203 with its sign-in page
+                Ok(r) if r.status() == 203 => Err(401),
+                Ok(r) => Ok(r.into_json().unwrap_or(Value::Null)),
+                Err(ureq::Error::Status(code, _)) => Err(code),
+                Err(_) => Err(0),
+            };
+            azure_who(&cred.0, &get)
+        }
         Provider::Slack => match agent.post("https://slack.com/api/auth.test").set("Authorization", &format!("Bearer {}", cred.1)).call() {
             Ok(r) => {
                 let sc = scopes(&r);
@@ -529,6 +563,72 @@ fn bitbucket_who(api: &str, email: &str, repos: &[String], get: BitbucketGet) ->
     }
 }
 
+/// An Azure DevOps organization from its name or a link into it (`dev.azure.com/<org>/…` or
+/// `<org>.visualstudio.com`).
+pub fn azure_org(s: &str) -> Option<String> {
+    let s = s.trim().trim_start_matches("https://").trim_start_matches("http://");
+    let org = match s.strip_prefix("dev.azure.com/") {
+        Some(rest) => rest.split('/').next().unwrap_or(""),
+        None => match s.split('/').next().unwrap_or("").strip_suffix(".visualstudio.com") {
+            Some(sub) => sub,
+            None if !s.contains('/') => s,
+            None => "",
+        },
+    };
+    let ok = !org.is_empty() && org.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    ok.then(|| org.to_string())
+}
+
+/// An Azure DevOps GET's body, or the HTTP status (0: no answer).
+type AzureGet<'a> = &'a dyn Fn(&str) -> std::result::Result<Value, u16>;
+
+/// Who an Azure DevOps token is in `org`, and which of [`required_scopes`] it has: tried with a build
+/// read and a test-run read on the organization's first project (Azure answers 401 to a token without
+/// the scope). `scopes` are the ones that worked, `lacks` the ones refused; with no project to try,
+/// neither is judged.
+fn azure_who(org: &str, get: AzureGet) -> std::result::Result<Value, String> {
+    let base = format!("https://dev.azure.com/{org}");
+    let me = match get(&format!("{base}/_apis/connectionData")) {
+        Ok(v) => v["authenticatedUser"].clone(),
+        Err(401) => return Err(format!("Azure DevOps didn't accept that token for {org}. Make it in that organization (or for all of yours).")),
+        Err(404) => return Err(format!("Azure DevOps has no organization {org}.")),
+        Err(0) => return Err("Can't reach Azure DevOps.".into()),
+        Err(code) => return Err(format!("Azure DevOps answered {code}.")),
+    };
+    let name = me["providerDisplayName"].as_str().unwrap_or("").to_string();
+    if name.is_empty() {
+        return Err(format!("Azure DevOps didn't accept that token for {org}."));
+    }
+    let email = me["properties"]["Account"]["$value"].as_str().unwrap_or("").to_string();
+    let detail = [email.as_str(), &format!("dev.azure.com/{org}")].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+    let user = if email.is_empty() { name.clone() } else { email.clone() };
+    let (mut scopes, mut lacks) = (vec![], vec![]);
+    match get(&format!("{base}/_apis/projects?$top=1&api-version=7.1")) {
+        Ok(v) => {
+            if let Some(project) = v["value"][0]["name"].as_str() {
+                let project = project.replace(' ', "%20");
+                for (scope, path) in [(AZURE_BUILD, "build/builds"), (AZURE_TEST, "test/runs")] {
+                    match get(&format!("{base}/{project}/_apis/{path}?$top=1&api-version=7.1")) {
+                        Ok(_) => scopes.push(scope),
+                        Err(401 | 403) => lacks.push(scope),
+                        Err(0) => return Err("Can't reach Azure DevOps.".into()),
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+        // both scopes read the organization's projects
+        Err(401 | 403) => lacks = vec![AZURE_BUILD, AZURE_TEST],
+        Err(0) => return Err("Can't reach Azure DevOps.".into()),
+        Err(_) => {}
+    }
+    let mut w = who(&user, &name, &detail, scopes.iter().map(|s| s.to_string()).collect());
+    if !lacks.is_empty() {
+        w["lacks"] = json!(lacks);
+    }
+    Ok(w)
+}
+
 /// The Bitbucket repos the board is set to read (`[master.projects]` and `[pr.projects]`, from the
 /// project's `origin` when the config doesn't name one), at most three: each is a request.
 fn bitbucket_repos(app: &App) -> Vec<String> {
@@ -570,6 +670,7 @@ fn sandbox_who(p: Provider, token: &str) -> std::result::Result<Value, String> {
     Ok(match p {
         Provider::Github => who("sample-user", "sample-user", "@sample-user · github.com", scopes),
         Provider::Bitbucket => who("sample", "Sample User", "@sample", scopes),
+        Provider::Azure => who("sample@example.com", "Sample User", "sample@example.com · dev.azure.com/sample", scopes),
         Provider::Slack => who("sample", "sample", "Sample Team · sample.slack.com", vec!["chat:write".into()]),
     })
 }
@@ -807,15 +908,15 @@ pub fn gh_env(cfg: &Config) -> Vec<(String, String)> {
 
 // ------------------------------------------------------------------ the CI token (tb ci-token)
 
-/// The Keychain item holding the CI token: an Azure DevOps personal access token, for reading the failed
-/// steps and tests of an Azure Pipelines check (`prhost/ci.rs`).
+/// The Keychain item holding the CI token: the Azure DevOps account's personal access token, for reading
+/// the failed steps and tests of an Azure Pipelines check (`prhost/ci.rs`).
 const CI_SERVICE: &str = "taskboard-azure-devops";
 
-/// The CI token the board reads failed steps with: the one stored with `tb ci-token set`, else the
-/// daemon's `pr.azure_token_env` variable (a daemon started by launchd rarely has it). (where, token).
+/// The CI token the board reads failed steps with: the Azure DevOps account's (or one stored with `tb
+/// ci-token set`), else the daemon's `pr.azure_token_env` variable (a daemon started by launchd rarely
+/// has it). (where, token).
 pub fn ci_token(app: &App) -> Option<(&'static str, String)> {
-    let stored = if app.accounts.sandbox { app.accounts.ci_mem.lock().clone() } else { keychain_get(CI_SERVICE).map(|(_, s)| s) };
-    if let Some(t) = stored.filter(|t| !t.trim().is_empty()) {
+    if let Some((_, t)) = app.accounts.get(Provider::Azure).filter(|(_, t)| !t.trim().is_empty()) {
         return Some(("board", t));
     }
     std::env::var(&app.cfg.pr.azure_token_env).ok().filter(|t| !t.trim().is_empty()).map(|t| ("env", t))
@@ -827,7 +928,8 @@ pub fn ci_token_status(app: &App) -> Value {
     json!({"set": found.is_some(), "source": found.map(|(s, _)| s), "env": app.cfg.pr.azure_token_env})
 }
 
-/// `POST ci-token {token}`: keeps the CI token in the Keychain (`taskboard-azure-devops`).
+/// `POST ci-token {token}`: keeps the CI token in the Keychain (`taskboard-azure-devops`). With the Azure
+/// DevOps account connected, it's that account's new token, checked like one from Settings.
 pub fn set_ci_token(app: &App, body: &Value) -> Result<Value> {
     let token = body_str(body, "token").trim().to_string();
     if token.is_empty() {
@@ -836,10 +938,9 @@ pub fn set_ci_token(app: &App, body: &Value) -> Result<Value> {
     if token.chars().any(char::is_whitespace) {
         return err(400, "That isn't a token: it has spaces in it.");
     }
-    if app.accounts.sandbox {
-        *app.accounts.ci_mem.lock() = Some(token);
-    } else {
-        keychain_set(CI_SERVICE, "azure-devops", &token).map_err(|e| ApiError::new(400, e))?;
+    match board_credentials(app, Provider::Azure) {
+        Some((org, _)) => keep(app, Provider::Azure, org, token).map_err(|e| ApiError::new(400, e))?,
+        None => app.accounts.set(Provider::Azure, ("azure-devops".into(), token)).map_err(|e| ApiError::new(400, e))?,
     }
     app.info("accounts: CI token stored");
     Ok(ci_token_status(app))
@@ -847,11 +948,8 @@ pub fn set_ci_token(app: &App, body: &Value) -> Result<Value> {
 
 /// `POST ci-token/clear`: forgets the stored CI token (the env variable, if set, is used again).
 pub fn clear_ci_token(app: &App) -> Result<Value> {
-    if app.accounts.sandbox {
-        *app.accounts.ci_mem.lock() = None;
-    } else {
-        keychain_delete(CI_SERVICE);
-    }
+    app.accounts.remove(Provider::Azure);
+    save_who(&app.cfg, Provider::Azure, None);
     Ok(ci_token_status(app))
 }
 
@@ -925,6 +1023,74 @@ mod tests {
     }
 
     #[test]
+    fn the_azure_devops_account_is_the_ci_token_and_asks_for_test_management() {
+        let (app, _dir) = board();
+        assert!(connect(&app, "azure", &json!({"organization": "", "token": "x"})).is_err_and(|e| e.message.contains("organization")));
+        let v = connect(&app, "azure", &json!({"organization": "https://dev.azure.com/acme/Proj", "token": "narrow"})).unwrap();
+        let az = account(&v, "azure");
+        assert_eq!((az["connected"].clone(), az["reauth"].clone()), (json!(true), json!(true)));
+        assert_eq!(az["missing"], json!([AZURE_TEST]));
+        assert_eq!(app.accounts.get(Provider::Azure).map(|(org, _)| org).as_deref(), Some("acme"), "kept under its organization");
+        assert_eq!(ci_token(&app), Some(("board", "narrow".to_string())), "Azure Pipelines checks read with it");
+
+        let v = set_ci_token(&app, &json!({"token": "azpat-full"})).unwrap();
+        assert_eq!(v["source"], "board");
+        let v = status(&app, false).unwrap();
+        assert_eq!(account(&v, "azure")["reauth"], false, "tb ci-token set replaces the account's token, checked");
+        assert_eq!(app.accounts.get(Provider::Azure).map(|(org, _)| org).as_deref(), Some("acme"));
+
+        let v = disconnect(&app, "azure").unwrap();
+        assert_eq!(account(&v, "azure")["connected"], false);
+        assert_eq!(ci_token(&app).map(|(s, _)| s), std::env::var(&app.cfg.pr.azure_token_env).ok().filter(|t| !t.trim().is_empty()).map(|_| "env"));
+    }
+
+    #[test]
+    fn an_azure_organization_comes_from_its_name_or_a_link() {
+        assert_eq!(azure_org("acme").as_deref(), Some("acme"));
+        assert_eq!(azure_org(" https://dev.azure.com/acme/Proj/_build?x=1 ").as_deref(), Some("acme"));
+        assert_eq!(azure_org("dev.azure.com/acme").as_deref(), Some("acme"));
+        assert_eq!(azure_org("https://acme.visualstudio.com/Proj").as_deref(), Some("acme"));
+        assert_eq!(azure_org("https://example.com/acme"), None);
+        assert_eq!(azure_org("my org"), None);
+        assert_eq!(azure_org(""), None);
+    }
+
+    #[test]
+    fn an_azure_token_is_tried_for_builds_and_test_runs() {
+        let base = "https://dev.azure.com/acme";
+        let me = json!({"authenticatedUser": {"providerDisplayName": "Sam Lee", "properties": {"Account": {"$value": "sam@acme.com"}}}});
+        let projects = json!({"value": [{"name": "Mobile App"}]});
+        let fake = |answers: Vec<(String, std::result::Result<Value, u16>)>| move |url: &str| answers.iter().find(|(u, _)| u == url).map(|(_, a)| a.clone()).unwrap_or(Err(404));
+        let urls = |tests: std::result::Result<Value, u16>| {
+            vec![
+                (format!("{base}/_apis/connectionData"), Ok(me.clone())),
+                (format!("{base}/_apis/projects?$top=1&api-version=7.1"), Ok(projects.clone())),
+                (format!("{base}/Mobile%20App/_apis/build/builds?$top=1&api-version=7.1"), Ok(json!({"value": []}))),
+                (format!("{base}/Mobile%20App/_apis/test/runs?$top=1&api-version=7.1"), tests),
+            ]
+        };
+        let w = azure_who("acme", &fake(urls(Ok(json!({"value": []}))))).unwrap();
+        assert_eq!((w["user"].as_str(), w["name"].as_str(), w["detail"].as_str()), (Some("sam@acme.com"), Some("Sam Lee"), Some("sam@acme.com · dev.azure.com/acme")));
+        assert_eq!(w["scopes"], json!([AZURE_BUILD, AZURE_TEST]));
+        assert!(missing_scopes(Provider::Azure, &scopes_of(&w)).is_empty());
+
+        let w = azure_who("acme", &fake(urls(Err(401)))).unwrap();
+        assert_eq!((w["scopes"].clone(), w["lacks"].clone()), (json!([AZURE_BUILD]), json!([AZURE_TEST])), "Azure answers 401 to a scope the token lacks");
+        let (missing, _, note) = features_off(Provider::Azure, &w);
+        assert_eq!(missing, vec![AZURE_TEST]);
+        assert_eq!(note.unwrap(), "Add Test Management (read) to read failing tests.");
+
+        let w = azure_who("acme", &fake(vec![(format!("{base}/_apis/connectionData"), Ok(me.clone())), (format!("{base}/_apis/projects?$top=1&api-version=7.1"), Err(401))])).unwrap();
+        assert_eq!(w["lacks"], json!([AZURE_BUILD, AZURE_TEST]));
+        let w = azure_who("acme", &fake(vec![(format!("{base}/_apis/connectionData"), Ok(me.clone())), (format!("{base}/_apis/projects?$top=1&api-version=7.1"), Ok(json!({"value": []})))])).unwrap();
+        assert!(w["lacks"].is_null() && missing_scopes(Provider::Azure, &scopes_of(&w)).is_empty(), "with no project nothing is judged");
+
+        assert!(azure_who("acme", &fake(vec![(format!("{base}/_apis/connectionData"), Err(401))])).unwrap_err().contains("didn't accept"));
+        assert!(azure_who("acme", &fake(vec![])).unwrap_err().contains("no organization acme"));
+        assert!(azure_who("acme", &fake(vec![(format!("{base}/_apis/connectionData"), Ok(json!({})))])).unwrap_err().contains("didn't accept"));
+    }
+
+    #[test]
     fn reads_gh_device_prompt() {
         let text = "\n! First copy your one-time code: 1445-0A8C\nOpen this URL to continue in your web browser: https://github.com/login/device\n";
         assert_eq!(device_prompt(text), Some(("1445-0A8C".into(), "https://github.com/login/device".into())));
@@ -938,7 +1104,7 @@ mod tests {
     fn connects_and_disconnects_without_saving_secrets_on_disk() {
         let (app, dir) = board();
         let v = status(&app, false).unwrap();
-        assert_eq!(v["accounts"].as_array().unwrap().len(), 3);
+        assert_eq!(v["accounts"].as_array().unwrap().len(), 4);
         assert!(PROVIDERS.iter().all(|p| account(&v, p.id())["connected"] == false));
 
         let e = connect(&app, "bitbucket", &json!({"email": "a@b.co", "token": "bad"})).unwrap_err();
