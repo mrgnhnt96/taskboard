@@ -179,3 +179,19 @@ fn a_follow_up_that_cant_wake_yet_is_sent_once_it_can() {
     assert_eq!(b.visits(), 2);
     assert_eq!(follow(), 0, "and only once");
 }
+
+#[test]
+fn a_merge_visit_while_pr_builds_are_stopped_is_told_to_ignore_the_checks_not_that_they_are_green() {
+    let b = board();
+    let id = b.pr_task();
+    b.add_session("s1", "idle");
+    api::dispatch(&b.app, "POST", "/pr-builds", &Query::new(), &json!({"stopped": true})).unwrap();
+    let mut rec = approved();
+    rec["checks"] = json!([{"name": "ci", "state": "failed"}]);
+    b.step(id, &rec);
+    assert_eq!(b.t(id).s("pr_phase"), Some("merge"));
+    let job = b.app.db.q("SELECT * FROM jobs WHERE purpose = 'pr'", p![]).unwrap().remove(0);
+    let prompt = board::job_args(&job).st("prompt");
+    assert!(prompt.contains("PR builds are stopped: ignore its checks"), "{prompt}");
+    assert!(!prompt.contains("green"), "{prompt}");
+}
