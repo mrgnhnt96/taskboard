@@ -145,8 +145,13 @@ fn hook_payload(app: &App, query: &Query) -> Result<Value> {
 
 /// A read shares the settings and steps it loads across everything it builds (`reqcache`).
 /// A `tb pr …` command someone asked for makes its reads as the PR poll's: they still go while an
-/// account restarts slowly after a limit (`prhost::limit`).
+/// account restarts slowly after a limit (`prhost::limit`). The host calls a request makes count as
+/// the `agent` reader's in the account's split.
 pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
+    crate::prhost::limit::reader("agent", || scoped(app, method, path, query, body))
+}
+
+fn scoped(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
     if method == "GET" {
         return crate::reqcache::scope(|| route(app, method, path, query, body));
     }
@@ -557,6 +562,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         (_, ["master-breaks", rest @ ..]) => crate::breaks::old_route(app, method, rest, q(query, "limit", "20").parse().unwrap_or(20), body),
         ("GET", ["pr-builds"]) => Ok(crate::prbuilds::status(app)),
         ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),
+        ("GET", ["prs", "limits"]) => Ok(json!({"rate_limits": crate::prhost::limit::status()})),
         ("POST", ["prs", "limits", "lift"]) => crate::prhost::limit::lift(app, body),
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
