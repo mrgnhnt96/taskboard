@@ -197,6 +197,30 @@ fn note_write(app: &App, id: i64, th: &Thread, text: &str, resolved: bool) -> Re
     })
 }
 
+/// `tb pr body <file>`: the open PR's description replaced by one that passes the `--pr-body` checks,
+/// keeping the sections the board wrote (`propen::replaced_body`).
+pub fn set_body(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let text = body_str(body, "body");
+    let problems = crate::propen::body_problems(&app.cfg.pr_body, &text);
+    if !problems.is_empty() {
+        return err(400, format!("The PR description needs work:\n- {}\nFix the file and run tb pr body again.", problems.join("\n- ")));
+    }
+    let t = board::get_task(app, id)?;
+    let pr = pr_of(&t)?;
+    if let Some(phase) = t.s("pr_phase").filter(|p| matches!(*p, "merged" | "declined")) {
+        return err(409, format!("PR #{} is {phase}; its description can't change now.", pr.num));
+    }
+    let h = host(app, &pr)?;
+    let current = on_host(&pr, "reading the description of", || h.description(&pr)).map_err(|e| ApiError::new(502, format!("Couldn't read PR #{}'s description: {e}.", pr.num)))?;
+    let next = crate::propen::replaced_body(&text, &current);
+    let changed = next.trim_end() != current.trim_end();
+    if changed {
+        on_host(&pr, "updating the description of", || h.set_description(&pr, &next)).map_err(|e| ApiError::new(502, format!("Couldn't update PR #{}'s description: {e}.", pr.num)))?;
+        app.db.tx(|| board::log_event(app, id, &who_of(app, body), "status", &format!("Updated PR #{}'s description", pr.num)).map(|_| ()))?;
+    }
+    Ok(json!({"task": rf("task", id), "num": pr.num, "url": t.st("pr_url"), "changed": changed}))
+}
+
 /// `tb pr ack <thread>`: resolved without a reply (on the board only, where the host can't resolve it).
 pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
     let want = body_str(body, "thread");
