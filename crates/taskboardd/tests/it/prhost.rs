@@ -230,11 +230,14 @@ fn pr_thread_answers_from_the_copy_while_the_host_is_rate_limited() {
     let h = fake(&b, rec);
     poll(&b);
     age_copy(&b, id);
+    let polled = reads(&h);
+    *h.held.lock() = Some(now_ts() + 600.0);
     *h.read_error.lock() = Some("Bitbucket rate-limited until 3:40 PM".into());
     let v = b.post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "1"}));
     assert_eq!(v["thread"]["text"], "Thread 1");
-    assert_eq!(v["stale"], "Bitbucket rate-limited until 3:40 PM", "it says the copy may be stale");
+    assert!(v["stale"].is_null(), "the copy is the PR while the account is limited: {v}");
     assert_eq!(v["as_of"], b.flow(id)["checked_at"], "as of the copy's own read");
+    assert_eq!(reads(&h), polled, "an old copy doesn't send a read the limit would refuse");
     let e = b.try_post(&format!("/tasks/T{id}/pr/thread"), json!({"thread": "2"})).unwrap_err();
     assert!(e.contains("Couldn't read PR #9: Bitbucket rate-limited"), "{e}");
 }
@@ -315,7 +318,7 @@ fn addressed_refuses_while_threads_are_open_then_asks_the_reviewers_again() {
 }
 
 #[test]
-fn addressed_while_the_host_account_is_limited_ends_the_visit_until_it_lifts() {
+fn addressed_while_the_host_account_is_limited_finishes_from_the_board_s_copy() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
     let mut rec = green();
@@ -326,6 +329,31 @@ fn addressed_while_the_host_account_is_limited_ends_the_visit_until_it_lifts() {
     let h = fake(&b, rec);
     poll(&b);
     assert_eq!(b.phase(id), "comments");
+    limit(&h);
+    *h.read_error.lock() = Some("Bitbucket rate-limited until 3:40 PM".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"})).unwrap_err();
+    assert!(e.contains("still has 1 thread open: 1"), "the copy's threads still count: {e}");
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it", "resolve": true}));
+    let v = b.post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(v["sent"], "queued", "{v}");
+    assert_eq!(b.phase(id), "rereview");
+    assert!(b.flow(id).get("retry_at").is_none(), "the visit is over, not put off");
+    assert_eq!(b.flow(id)["held_replies"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn addressed_while_the_host_account_is_limited_and_no_copy_ends_the_visit_until_it_lifts() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("t1".into());
+    rec.reviewers = vec![reviewer("rev", "changes")];
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "comments");
+    b.app.db.x("UPDATE tasks SET pr_flow = json_remove(pr_flow, '$.rec') WHERE id = ?", vec![json!(id)]).unwrap();
     *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
     *h.read_error.lock() = Some("Bitbucket rate-limited until 3:40 PM".into());
     let e = b.try_post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"})).unwrap_err();
@@ -585,12 +613,58 @@ fn a_held_reply_the_host_then_refuses_for_another_reason_opens_the_thread_again(
     poll(&b);
     assert_eq!(b.phase(id), "review");
     *h.held.lock() = None;
-    *h.write_error.lock() = Some("thread is locked".into());
+    *h.write_error.lock() = Some("gh: Not Found (HTTP 404)".into());
     prcmds::post_held(&b.app).unwrap();
     assert!(b.flow(id)["held_replies"].as_array().unwrap().is_empty(), "dropped, not tried forever");
     assert!(logged(&b, id, "Couldn't post the held reply to"));
     poll(&b);
     assert_eq!(b.phase(id), "comments", "the thread is open again for the agent");
+}
+
+#[test]
+fn a_held_reply_the_host_refuses_for_a_passing_reason_waits_and_goes_later() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev"), thread("2", "rev")];
+    let h = fake(&b, rec);
+    poll(&b);
+    limit(&h);
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it"}));
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done"}));
+    *h.held.lock() = None;
+    for e in ["Bitbucket answered 503", "the account's Bitbucket write queue is full: 10 writes wait", "Can't reach Bitbucket"] {
+        *h.write_error.lock() = Some(e.into());
+        b.app.db.x("UPDATE tasks SET pr_flow = json_remove(pr_flow, '$.held_retry_at') WHERE id = ?", vec![json!(id)]).unwrap();
+        prcmds::post_held(&b.app).unwrap();
+        assert_eq!(b.flow(id)["held_replies"].as_array().unwrap().len(), 2, "kept after {e}");
+    }
+    assert!(logged(&b, id, "Couldn't post the held replies on PR #9 yet"));
+    lift(&h);
+    h.calls.lock().clear();
+    prcmds::post_held(&b.app).unwrap();
+    assert_eq!(h.calls(), Vec::<String>::new(), "it waits out the retry gap");
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.held_retry_at', '2000-01-01T00:00:00Z') WHERE id = ?", vec![json!(id)]).unwrap();
+    prcmds::post_held(&b.app).unwrap();
+    assert_eq!(h.calls(), vec!["reply 1 Renamed it", "reply 2 Done"]);
+    assert!(b.flow(id)["held_replies"].as_array().unwrap().is_empty());
+    assert!(b.flow(id)["held_error"].is_null());
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "neither thread opened again");
+}
+
+#[test]
+fn a_comments_visit_starts_while_the_host_account_is_limited() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.threads = vec![thread("1", "rev")];
+    let h = fake(&b, rec);
+    *h.held.lock() = Some(now_ts() + 600.0);
+    poll(&b);
+    assert_eq!(b.phase(id), "comments");
+    assert!(b.flow(id)["woke"].as_str().is_some_and(|w| w.starts_with("comments")), "{}", b.flow(id));
+    assert!(b.flow(id).get("retry_at").is_none(), "not put off until the limit lifts");
 }
 
 #[test]

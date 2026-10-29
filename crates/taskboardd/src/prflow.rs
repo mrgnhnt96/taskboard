@@ -30,7 +30,8 @@ use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, t
 pub const WAKE: &[&str] = &["fix", "rebase", "comments", "steps", "merge", "ask"];
 /// The visits that don't change code: they start fresh on `[models] pr_visit` (`fresh_visit`).
 const MECHANICAL: &[&str] = &["merge", "ask"];
-/// Steps whose visit works on the PR's host (asks, merges, replies), so it waits out a rate limit.
+/// Steps whose visit works on the PR's host (asks, merges, replies), so it waits out a rate limit
+/// (a comments visit only when it has no threads to work from).
 const ON_HOST: &[&str] = &["ask", "merge", "comments"];
 pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
@@ -1938,8 +1939,11 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         // The agent isn't brought back to ask for reviews while the PR feed holds asks.
         && (phase != "ask" || crate::asks::held(app, t)?.is_none());
     // A visit whose step works on the host waits while the account the PR's host signs in as is
-    // rate-limited: its first tb pr call would fail. Other hosts and accounts go on.
-    let limited = if would_wake && ON_HOST.contains(&phase.as_str()) { crate::prhost::PrRef::of(t).and_then(|pr| host_held(app, &pr)) } else { None };
+    // rate-limited: its first tb pr call would fail. Other hosts and accounts go on. A comments visit
+    // with the threads in hand goes anyway: tb pr reads them from the board's copy, and the board
+    // posts the replies once the limit is over.
+    let from_copy = phase == "comments" && rec["threads"].is_array();
+    let limited = if would_wake && ON_HOST.contains(&phase.as_str()) && !from_copy { crate::prhost::PrRef::of(t).and_then(|pr| host_held(app, &pr)) } else { None };
     if let Some(until) = limited {
         let at = iso(until);
         board::log_event(app, t.id(), board::BOARD, "status", &format!(
