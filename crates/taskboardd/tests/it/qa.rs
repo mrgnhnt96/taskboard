@@ -112,7 +112,7 @@ fn a_clear_direction_becomes_a_follow_up_task_and_more_comments_add_to_it() {
 fn a_question_flags_the_owner_until_they_say_what_to_do() {
     let b = board_with(true);
     b.post("/qa", json!({"on": true}));
-    let (g, _) = b.shipped();
+    let (g, src) = b.shipped();
     let pass = b.comment("300", "Passed on iOS.");
     b.decide(pass, json!({"verdict": "none", "title": "", "ask": ""}));
     let q = b.comment("301", "Should the old login stay for a release?");
@@ -126,8 +126,13 @@ fn a_question_flags_the_owner_until_they_say_what_to_do() {
     assert_eq!(tab[0]["waiting"], true);
     assert_eq!(b.get("/qa-comments?waiting=1")["comments"].as_array().unwrap().len(), 1);
 
-    let r = b.post(&format!("/qa-comments/Q{q}"), json!({"action": "ignore", "who": "Term s1"}));
+    let r = b.post(&format!("/qa-comments/Q{q}"), json!({"action": "ignore", "who": "Term s1", "note": "It goes next release."}));
     assert_eq!(r["waiting"], false);
+    let log = b.get(&format!("/tasks/T{src}/log"))["log"].clone();
+    assert!(
+        log.as_array().unwrap().iter().any(|e| e["text"] == "Sam QA's comment on PROJ-7 was ignored: It goes next release."),
+        "the note goes with it: {log}"
+    );
     assert!(dispatch::alerts(&b.app).is_empty());
     let (code, _) = b.post_err(&format!("/qa-comments/Q{q}"), json!({"action": "task"}));
     assert_eq!(code, 409, "it was handled already");
@@ -139,6 +144,33 @@ fn a_question_flags_the_owner_until_they_say_what_to_do() {
     assert!(t.st("detail").contains("says: Yes, log them at warn."));
     assert!(t.st("detail").contains("No PR: do it and report back"));
     assert_eq!(t.i("ships_pr"), Some(0), "a follow-up that needs no code ends without a PR");
+}
+
+#[test]
+fn the_owner_s_own_comments_are_skipped_not_kept() {
+    let b = board_with(true);
+    b.post("/qa", json!({"on": true}));
+    b.shipped();
+    // The account the board's Jira connector is signed in as: the owner's, which agents post through too.
+    let me = json!({"site": "acme.atlassian.net", "displayName": "Morgan Hunt", "accountId": "557058:me", "emailAddress": "m@x.io"});
+    b.app.db.set_setting("qa_jira_me", Some(&me.to_string())).unwrap();
+
+    let own = [
+        json!({"key": "PROJ-7", "comment_id": "500", "author": "Morgan Hunt", "text": "Shipped in 1.4."}),
+        json!({"key": "PROJ-7", "comment_id": "501", "author": "Claude", "author_account_id": "557058:me", "text": "Merged."}),
+        json!({"key": "PROJ-7", "comment_id": "502", "author": {"displayName": "M", "emailAddress": "M@X.io"}, "text": "Done."}),
+    ];
+    for ev in own {
+        let r = b.post("/jira/comment", ev.clone());
+        assert_eq!(r["ignored"], "it's the owner's own comment", "{ev}");
+    }
+    let r = b.post("/jira/comment", json!({"key": "PROJ-7", "comment_id": "503", "author": "Morgan Hunt", "author_account_id": "557058:sam", "text": "Logo overlaps."}));
+    assert_eq!(r["new"], true, "a tester who shares the owner's name is still read: {r}");
+    assert_eq!(b.get("/qa-comments")["comments"].as_array().unwrap().len(), 1, "the owner's never show as needing nothing");
+
+    b.app.db.set_setting("qa_jira_me", Some(&json!({"site": "other.atlassian.net", "displayName": "Morgan Hunt", "accountId": "557058:me"}).to_string())).unwrap();
+    let r = b.post("/jira/comment", json!({"key": "PROJ-7", "comment_id": "504", "author": "Morgan Hunt", "text": "Hi"}));
+    assert_eq!(r["new"], true, "another site's account isn't this board's: {r}");
 }
 
 #[test]

@@ -6250,7 +6250,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Err("say tb qa, tb qa waiting, tb qa Q3, tb qa task Q3 [--note TEXT], tb qa ignore Q3, or tb qa on|off|settings".into());
             };
             let mut b = json!({"action": what});
-            if let Some(n) = note {
+            if let Some(n) = &note {
                 b["note"] = json!(n);
             }
             if pr || no_pr {
@@ -6260,7 +6260,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if what == "task" {
                 out(&format!("{} is now {}.", v["ref"].as_str().unwrap_or(""), v["started"].as_str().or(v["task"].as_str()).unwrap_or("a task")));
             } else {
-                out(&format!("{} is left as it is.", v["ref"].as_str().unwrap_or("")));
+                let why = note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(|n| format!(": {}", n.trim_end_matches('.'))).unwrap_or_default();
+                out(&format!("{} ignored{why}.", v["ref"].as_str().unwrap_or("")));
             }
             Ok(0)
         }
