@@ -1366,8 +1366,10 @@ messages anyone.
 **Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. Each review sweep the
 board reads every comment (whole: a marker in a footer counts) on the repo's `bot_scan_prs` (20) most recently updated
 PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10, counted from the last read
-that worked: a failed read is tried again on the next sweep; a repo a healthy stream relay covers is read only every
-`[feed] reconcile_secs`, a failed read included, and its comment and review events note the runs as they come), and records each comment of theirs that carries `mark`
+that worked: a failed read is tried again on the next sweep; a repo a healthy stream relay covers is read once to
+catch up when the relay connects or comes back from being stuck, then only every `bot_reconcile_secs` (0, never, by
+default), a failed read waiting `bot_scan_mins`, and its comment and review events note the runs as they come; while
+the relay is stuck or silent the `bot_scan_mins` timer is back), and records each comment of theirs that carries `mark`
 (case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`. A comment within
 `bot_run_gap_mins` of another comment of a run is part of it (they chain gap to gap, so a slow run that keeps
 commenting stays one run, and a comment between two runs joins them); a run is at its earliest comment's time,

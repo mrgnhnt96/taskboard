@@ -6,10 +6,12 @@
 //! `bot_run_gap_mins` of another comment of a run is the same run (gap to gap), which starts at its
 //! earliest comment, whatever order the host lists them in.
 //!
-//! A repo a healthy stream relay covers (`feed::pr_poll_rests`) isn't read on that timer: the relay's
-//! comment and review events note the runs as they come ([`note_event`]), and the repo is only read to
-//! catch up every `[feed] reconcile_secs` (an hour; never at 0), a failed read included, so a limited
-//! account isn't asked again every sweep.
+//! A repo a healthy stream relay covers (`feed::relay_back_at`) isn't read on that timer: the relay's
+//! comment and review events note the runs as they come ([`note_event`]), and the repo is read once to
+//! catch up when the relay connects or comes back from being stuck, then only every `[reviewers]
+//! bot_reconcile_secs` (never at 0, the default). A read of a covered repo that fails waits
+//! `bot_scan_mins` before it's tried again, so a limited account isn't asked every sweep. While the
+//! relay is stuck or silent the repo is read on the `bot_scan_mins` timer again.
 //!
 //! Once a run has been seen, the bot is timed: its next run is the last one plus the interval, rolled
 //! forward by the interval until it's in the future; the picker asks that person only when the next run
@@ -25,6 +27,8 @@ use crate::{fields, p};
 
 /// When each repo's comments were last read for bot runs: `{"<host>:<repo>": iso}`.
 const SCANS_SETTING: &str = "bot_scans";
+/// When a covered repo's read last failed, cleared by a good read: `{"<host>:<repo>": iso}`.
+const FAILS_SETTING: &str = "bot_scan_fails";
 
 /// The last run seen, as Unix seconds.
 pub fn last_run(app: &App, r: &Row) -> Result<Option<f64>> {
@@ -91,28 +95,40 @@ fn repos(app: &App, project: &str) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// Whether this repo's comments are due to be read again: `bot_scan_mins` since the last good read, or
-/// for a repo a relay covers, `reconcile_secs` since the last try.
-fn scan_due(app: &App, key: &str, covered: bool) -> Result<bool> {
-    let every = if covered {
-        let r = app.cfg.feed.reconcile_secs;
-        if r <= 0.0 {
-            return Ok(false);
-        }
-        r.max(app.cfg.reviewers.bot_scan_mins * 60.0)
-    } else {
-        app.cfg.reviewers.bot_scan_mins * 60.0
-    };
-    let scans = jloads_obj(app.db.get_setting(SCANS_SETTING)?.as_deref());
-    let last = scans.get(key).and_then(|v| v.as_str()).and_then(parse_iso);
-    Ok(!last.is_some_and(|l| now_ts() - l < every))
+/// When this repo was noted in `setting` (`{"<host>:<repo>": iso}`).
+fn stamp(app: &App, setting: &str, key: &str) -> Result<Option<f64>> {
+    Ok(jloads_obj(app.db.get_setting(setting)?.as_deref()).get(key).and_then(|v| v.as_str()).and_then(parse_iso))
 }
 
-/// Notes a good read of this repo's comments, at `at` (when it started).
-fn scanned(app: &App, key: &str, at: &str) -> Result<()> {
-    let mut scans = jloads_obj(app.db.get_setting(SCANS_SETTING)?.as_deref());
-    scans.insert(key.to_string(), json!(at));
-    app.db.set_setting(SCANS_SETTING, Some(&jdumps(&Value::Object(scans))))
+/// Notes this repo in `setting` at `at`, or takes it off.
+fn set_stamp(app: &App, setting: &str, key: &str, at: Option<&str>) -> Result<()> {
+    let mut stamps = jloads_obj(app.db.get_setting(setting)?.as_deref());
+    match at {
+        Some(at) => {
+            stamps.insert(key.to_string(), json!(at));
+        }
+        None if stamps.remove(key).is_none() => return Ok(()),
+        None => {}
+    }
+    app.db.set_setting(setting, Some(&jdumps(&Value::Object(stamps))))
+}
+
+/// Whether this repo's comments are due to be read again. Not covered by a relay: `bot_scan_mins` since
+/// the last good read. Covered (`back`: when its relay last connected or came back): once to catch up
+/// if the last good read was before that, then every `bot_reconcile_secs` (never at 0); a failed read
+/// waits `bot_scan_mins` either way.
+fn scan_due(app: &App, key: &str, back: Option<f64>) -> Result<bool> {
+    let (now, mins) = (now_ts(), app.cfg.reviewers.bot_scan_mins * 60.0);
+    let last = stamp(app, SCANS_SETTING, key)?;
+    let Some(back) = back else { return Ok(!last.is_some_and(|l| now - l < mins)) };
+    if stamp(app, FAILS_SETTING, key)?.is_some_and(|f| now - f < mins) {
+        return Ok(false);
+    }
+    let every = app.cfg.reviewers.bot_reconcile_secs;
+    Ok(match last {
+        Some(l) if l >= back => every > 0.0 && now - l >= every.max(mins),
+        _ => true,
+    })
 }
 
 /// Notes the bot runs shown by marked comments on the repos' recent PRs. Reads the hosts outside any
@@ -129,8 +145,8 @@ pub fn note_runs(app: &App) -> Result<i64> {
         let mine: Vec<&Row> = bots.iter().filter(|r| r.st("project") == project).collect();
         for (host, repo) in repos(app, &project)? {
             let key = format!("{host}:{repo}");
-            let covered = crate::feed::pr_poll_rests(app, &host, &repo);
-            if !scan_due(app, &key, covered)? {
+            let back = crate::feed::relay_back_at(app, &host, &repo);
+            if !scan_due(app, &key, back)? {
                 continue;
             }
             let started = now_iso();
@@ -138,13 +154,14 @@ pub fn note_runs(app: &App) -> Result<i64> {
                 Ok(c) => c,
                 Err(e) => {
                     app.info(format!("reviewers: couldn't read {repo}'s comments for bot runs: {e}"));
-                    if covered {
-                        scanned(app, &key, &started)?;
+                    if back.is_some() {
+                        set_stamp(app, FAILS_SETTING, &key, Some(&started))?;
                     }
                     continue;
                 }
             };
-            scanned(app, &key, &started)?;
+            set_stamp(app, SCANS_SETTING, &key, Some(&started))?;
+            set_stamp(app, FAILS_SETTING, &key, None)?;
             // Oldest first, so each run starts at its earliest comment (Bitbucket lists the newest first).
             comments.sort_by(|a, b| parse_iso(&a.at).unwrap_or(0.0).total_cmp(&parse_iso(&b.at).unwrap_or(0.0)));
             noted += app.db.tx(|| {

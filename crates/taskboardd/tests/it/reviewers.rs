@@ -1427,7 +1427,7 @@ fn a_bot_run_starts_at_its_earliest_comment_and_a_failed_read_is_tried_again() {
 
 #[test]
 fn a_repo_a_relay_covers_gets_bot_runs_from_its_events_and_is_only_read_to_catch_up() {
-    // #727
+    // #727, #813
     let b = board_with(|c| {
         c.stream.sources.insert("prs".into(), taskboardd::stream::SourceConfig { mode: "stream".into(), ..Default::default() });
     });
@@ -1435,20 +1435,28 @@ fn a_repo_a_relay_covers_gets_bot_runs_from_its_events_and_is_only_read_to_catch
     b.add("Ana", json!({"user": "{ana}"}));
     b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
     let h = fake(&b, green());
+    let ago = |s: f64| taskboardd::util::iso(taskboardd::util::now_ts() - s);
     let stream = |e: Value| b.post("/stream/events", json!({"v": 1, "events": [e]}));
-    stream(json!({"id": "h1", "kind": "heartbeat", "source": "fi", "at": taskboardd::util::now_iso(), "sources": ["prs"],
-                  "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}));
+    let heartbeat = |id: &str, connected: f64| {
+        stream(json!({"id": id, "kind": "heartbeat", "source": "fi", "at": taskboardd::util::now_iso(), "sources": ["prs"],
+                      "connected_at": ago(connected), "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}))
+    };
+    let read_last = |s: f64| b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": ago(s)}).to_string())).unwrap();
     let reads = || h.calls().iter().filter(|c| c.starts_with("comments")).count();
     let runs = || b.app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs", vec![]).unwrap();
+    heartbeat("h1", 7200.0);
 
     taskboardd::botrun::note_runs(&b.app).unwrap();
     assert_eq!(reads(), 1, "the first catch-up read");
     taskboardd::botrun::note_runs(&b.app).unwrap();
-    b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": taskboardd::util::iso(taskboardd::util::now_ts() - 11.0 * 60.0)}).to_string())).unwrap();
+    read_last(11.0 * 60.0);
     taskboardd::botrun::note_runs(&b.app).unwrap();
     assert_eq!(reads(), 1, "not again at bot_scan_mins while the relay covers the repo");
+    read_last(3601.0);
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 1, "nor hourly: bot_reconcile_secs is 0");
 
-    stream(json!({"id": "c1", "kind": "comment", "source": "fi", "at": taskboardd::util::iso(taskboardd::util::now_ts() - 60.0),
+    stream(json!({"id": "c1", "kind": "comment", "source": "fi", "at": ago(60.0),
                   "pr": {"provider": "bitbucket", "repo": "acme/webapp", "num": 31}, "comment_id": "c1", "author": "{ana}",
                   "body": "2 findings.\n\n🤖 AI Review"}));
     assert_eq!(runs(), 1, "the relay's comment event is the run");
@@ -1456,9 +1464,66 @@ fn a_repo_a_relay_covers_gets_bot_runs_from_its_events_and_is_only_read_to_catch
                   "pr": {"provider": "bitbucket", "repo": "acme/webapp", "num": 31}, "comment_id": "c2", "author": "{bo}", "body": "AI review please"}));
     assert_eq!(runs(), 1, "someone else's comment isn't a run");
 
-    b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": taskboardd::util::iso(taskboardd::util::now_ts() - 3601.0)}).to_string())).unwrap();
+    // The relay connects again: one read to catch up.
+    heartbeat("h2", 10.0);
     taskboardd::botrun::note_runs(&b.app).unwrap();
-    assert_eq!(reads(), 2, "read to catch up after reconcile_secs");
+    assert_eq!(reads(), 2, "read to catch up after the relay reconnected");
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 2);
+
+    // Stuck: the bot_scan_mins timer again.
+    let mut st: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
+    st["relays"]["fi"]["last_heartbeat_at"] = json!(ago(200.0));
+    b.app.db.set_setting("pr_feed", Some(&st.to_string())).unwrap();
+    assert!(!taskboardd::feed::pr_poll_rests(&b.app, "bitbucket", "acme/webapp"), "fi is stuck");
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 2, "read less than bot_scan_mins ago");
+    read_last(11.0 * 60.0);
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 3, "bot_scan_mins on, while the relay is stuck");
+
+    // Back from stuck: one read to catch up, then the relay's events again.
+    read_last(60.0);
+    heartbeat("h3", 7200.0);
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 4, "read to catch up after the relay came back");
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 4);
+}
+
+#[test]
+fn a_covered_repo_has_its_own_reconcile_and_a_failed_catch_up_waits_bot_scan_mins() {
+    let b = board_with(|c| {
+        c.stream.sources.insert("prs".into(), taskboardd::stream::SourceConfig { mode: "stream".into(), ..Default::default() });
+        c.reviewers.bot_reconcile_secs = 3600.0;
+    });
+    b.pr_task(BB);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
+    let ago = |s: f64| taskboardd::util::iso(taskboardd::util::now_ts() - s);
+    b.post("/stream/events", json!({"v": 1, "events": [{"id": "h1", "kind": "heartbeat", "source": "fi", "at": taskboardd::util::now_iso(),
+        "sources": ["prs"], "connected_at": ago(7200.0), "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}]}));
+    let stamp = |k: &str| b.app.db.get_setting(k).unwrap().unwrap_or_default().contains("acme/webapp");
+
+    // Bitbucket isn't connected: the catch-up read fails, and waits bot_scan_mins.
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert!(stamp("bot_scan_fails") && !stamp("bot_scans"), "a failed catch-up isn't a read");
+    let h = fake(&b, green());
+    let reads = || h.calls().iter().filter(|c| c.starts_with("comments")).count();
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 0, "not tried again on the next sweep");
+    b.app.db.set_setting("bot_scan_fails", Some(&json!({"bitbucket:acme/webapp": ago(11.0 * 60.0)}).to_string())).unwrap();
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 1, "tried again after bot_scan_mins");
+    assert!(!stamp("bot_scan_fails"), "a good read clears the failure");
+
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": ago(1800.0)}).to_string())).unwrap();
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 1, "half an hour on: not yet");
+    b.app.db.set_setting("bot_scans", Some(&json!({"bitbucket:acme/webapp": ago(3601.0)}).to_string())).unwrap();
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert_eq!(reads(), 2, "bot_reconcile_secs on");
 }
 
 #[test]

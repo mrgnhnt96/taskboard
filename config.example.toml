@@ -467,6 +467,7 @@ cache_mins = 10.0
 bot_window_hours = 12.0               # marked comments this recent count
 bot_scan_prs = 20                     # the repo's most recently updated PRs read for bot runs (anyone's)
 bot_scan_mins = 10.0                  # how often they're read
+bot_reconcile_secs = 0.0              # a repo a healthy stream relay covers is read once when the relay connects or comes back, then this often (0: never)
 bot_run_gap_mins = 30.0               # marked comments this close to the one before are one run
 bot_due_mins = 45.0
 # Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the

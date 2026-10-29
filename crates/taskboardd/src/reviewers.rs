@@ -153,6 +153,9 @@ pub struct ReviewersConfig {
     /// How many of the repo's most recently updated PRs are read for bot runs, and how often, in minutes.
     pub bot_scan_prs: usize,
     pub bot_scan_mins: f64,
+    /// A repo a healthy stream relay covers is read for bot runs once when the relay connects or comes
+    /// back, then only this often, in seconds (0: never; the relay's comment events are the runs).
+    pub bot_reconcile_secs: f64,
     /// Marked comments this close together are one run, in minutes.
     pub bot_run_gap_mins: f64,
     /// A timed bot's owner is asked only when it runs within this many minutes.
@@ -205,6 +208,7 @@ impl Default for ReviewersConfig {
             bot_window_hours: 12.0,
             bot_scan_prs: 20,
             bot_scan_mins: 10.0,
+            bot_reconcile_secs: 0.0,
             bot_run_gap_mins: 30.0,
             bot_due_mins: 45.0,
             swap: false,

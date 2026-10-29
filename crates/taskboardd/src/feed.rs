@@ -435,22 +435,27 @@ pub fn pr_poll_rests(app: &App, host: &str, repo: &str) -> bool {
     !src.poll_while_healthy && relays_of(&state(app, &src)).iter().any(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
 }
 
+/// When the healthy, active stream relays that cover this provider and repo now ([`pr_poll_rests`]) last
+/// connected or came back from being stuck, the latest of them; None when none covers it.
+pub fn relay_back_at(app: &App, host: &str, repo: &str) -> Option<f64> {
+    let src = prs(app);
+    if src.poll_while_healthy {
+        return None;
+    }
+    relays_of(&state(app, &src))
+        .iter()
+        .filter(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
+        .map(|(_, r)| [ts(r, "connected_at"), ts(r, "back_at")].into_iter().flatten().fold(f64::MIN, f64::max))
+        .reduce(f64::max)
+}
+
 /// Whether the timed PR poll skips this PR this round: a healthy, active stream relay covers it
 /// ([`pr_poll_rests`]) and its host was read (`read_at`) since that relay last came back or connected,
 /// less than `reconcile_secs` ago. The relay's events read the PR (board mode) or are its state
 /// (stream mode); the slow reconcile catches what they missed. A relay that goes stuck or silent stops
 /// covering, so its PRs are polled again from the next round.
 pub fn pr_poll_skips(app: &App, t: &Row) -> bool {
-    let src = prs(app);
-    if src.poll_while_healthy {
-        return false;
-    }
-    let (host, repo) = (t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or(""));
-    let back = relays_of(&state(app, &src))
-        .iter()
-        .filter(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
-        .map(|(_, r)| [ts(r, "connected_at"), ts(r, "back_at")].into_iter().flatten().fold(f64::MIN, f64::max))
-        .reduce(f64::max);
+    let back = relay_back_at(app, t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or(""));
     let (Some(back), Some(read)) = (back, ts(&jloads_obj(t.s("pr_flow")), "read_at")) else { return false };
     let every = app.cfg.feed.reconcile_secs;
     read >= back && (every <= 0.0 || now_ts() - read < every)
