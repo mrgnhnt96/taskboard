@@ -17,6 +17,7 @@ mod beta5_prflow;
 mod breaks;
 mod chain;
 mod code_review;
+mod comment_guard_pr;
 mod compact_resume;
 mod cross_project_waits;
 mod days;

@@ -9,8 +9,10 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::config::{CommentsConfig, Config};
+use crate::util::RowExt;
 
 const GIT_SECS: f64 = 10.0;
+const FETCH_SECS: f64 = 60.0;
 const SHOWN: usize = 3;
 
 /// How a language writes comments and strings.
@@ -438,18 +440,71 @@ pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&st
         None if crate::projects::task_ships_pr(app, t)? => crate::runner::task_cwd(app, t)?,
         None => None,
     };
-    Ok(dir.and_then(|d| branch_refusal(&app.cfg, &d, what)))
+    let rec = crate::util::jloads_obj(t.s("pr_flow")).get("rec").cloned().filter(|r| !pr_side(r, "base").is_empty() && !pr_side(r, "branch").is_empty());
+    let Some(rec) = rec else { return Ok(dir.and_then(|d| branch_refusal(&app.cfg, &d, what))) };
+    let repo = crate::projects::project_path(app, t.s("project"))?.or_else(|| t.s("repo_path").map(|s| s.to_string()));
+    let dirs: Vec<String> = dir.into_iter().chain(repo).collect();
+    Ok(refusal(&app.cfg, pr_adds(&app.cfg.comments, &dirs, &rec), "this PR", what))
 }
 
 struct Git(Option<std::path::PathBuf>);
 
 impl Git {
     fn run(&self, dir: &str, args: &[&str]) -> Option<String> {
+        self.run_for(dir, args, GIT_SECS)
+    }
+
+    fn run_for(&self, dir: &str, args: &[&str], secs: f64) -> Option<String> {
         let bin = self.0.as_ref()?;
         let mut all: Vec<String> = vec!["-C".into(), dir.into()];
         all.extend(args.iter().map(|a| a.to_string()));
-        crate::proc::run(bin, &all, None, GIT_SECS).ok().filter(|o| o.code == Some(0)).map(|o| o.stdout)
+        crate::proc::run(bin, &all, None, secs).ok().filter(|o| o.code == Some(0)).map(|o| o.stdout)
     }
+
+    /// The first of `names` that is a commit in `dir`.
+    fn commit(&self, dir: &str, names: &[String]) -> Option<String> {
+        names.iter().filter(|n| !n.is_empty()).find_map(|n| {
+            self.run(dir, &["rev-parse", "--verify", "--quiet", &format!("{n}^{{commit}}")]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        })
+    }
+}
+
+fn pr_side(rec: &Value, key: &str) -> String {
+    rec[key].as_str().unwrap_or("").trim().to_string()
+}
+
+/// The comments the PR in `rec` (`pr_flow.rec`) adds: `merge-base(base, head)..head`, the diff the PR
+/// shows, read in the first of `dirs` that has its commits. A checkout on the PR's branch counts its
+/// uncommitted work too.
+pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value) -> Vec<Found> {
+    if !c.guard {
+        return vec![];
+    }
+    let git = Git(crate::proc::which("git"));
+    let diff = dirs.iter().filter(|d| Path::new(d.as_str()).is_dir()).find_map(|d| pr_diff(&git, d, rec));
+    diff_adds(c, &diff.unwrap_or_default())
+}
+
+fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
+    let (base, branch) = (pr_side(rec, "base"), pr_side(rec, "branch"));
+    let here = git.run(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).is_some_and(|b| b.trim() == branch);
+    let head_of = |names: &[String]| if here { Some("HEAD".to_string()) } else { git.commit(dir, names) };
+    let host = || Some((git.commit(dir, &[pr_side(rec, "base_head")])?, head_of(&[pr_side(rec, "head")])?));
+    let refs = || Some((git.commit(dir, &[format!("origin/{base}"), base.clone()])?, head_of(&[format!("origin/{branch}"), branch.clone()])?));
+    let (b, h) = host()
+        .or_else(|| {
+            for r in [&base, &branch] {
+                git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", r.as_str()], FETCH_SECS);
+            }
+            host()
+        })
+        .or_else(refs)?;
+    let fork = git.run(dir, &["merge-base", &b, &h])?.trim().to_string();
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", fork.as_str()];
+    if !here {
+        args.push(&h);
+    }
+    git.run(dir, &args)
 }
 
 /// Where the branch at `dir` forked from its default branch.
@@ -535,13 +590,16 @@ pub fn branch_adds(c: &CommentsConfig, dir: &str) -> Vec<Found> {
 
 /// Why `what` ("opening the PR", "finishing") can't go ahead: the branch adds comments.
 pub fn branch_refusal(cfg: &Config, dir: &str, what: &str) -> Option<String> {
-    let found = branch_adds(&cfg.comments, dir);
+    refusal(cfg, branch_adds(&cfg.comments, dir), "this branch", what)
+}
+
+fn refusal(cfg: &Config, found: Vec<Found>, whose: &str, what: &str) -> Option<String> {
     if found.is_empty() {
         return None;
     }
     let owner = cfg.owner.clone();
     Some(format!(
-        "Task board: not {what} yet: this branch adds {} ({}), and {owner} wants no comments in code. Take them out, commit, and try again. \
+        "Task board: not {what} yet: {whose} adds {} ({}), and {owner} wants no comments in code. Take them out, commit, and try again. \
          Pragmas the tools read are fine.",
         if found.len() == 1 { "a code comment".to_string() } else { format!("{} code comments", found.len()) },
         shown(&found)
