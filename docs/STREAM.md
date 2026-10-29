@@ -230,7 +230,8 @@ PRs` then with a `polls` line per repo, and `tb stream --json` prints `GET /stre
 When the host can't say what changed (`PrHost::stamps` fails), the timed poll reads the PRs no relay covers in full
 and leaves the covered ones for a later round, so a nearly spent budget isn't tipped over by reads the relay makes
 unneeded. A comment or review event (with a `body`) from a reviewer with a review bot, carrying their marker, is
-noted as a bot run (`botrun.rs`), and a repo a relay covers is read for bot runs only every `reconcile_secs`.
+noted as a bot run (`botrun.rs`), and a repo a relay covers is read for bot runs only once to catch up when the relay
+connects or comes back, then every `[reviewers] bot_reconcile_secs` (never by default).
 
 Without stream relays (only the older endpoints below), health and the poll work as before.
 
