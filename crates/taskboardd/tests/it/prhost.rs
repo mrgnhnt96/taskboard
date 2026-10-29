@@ -1711,3 +1711,23 @@ fn when_the_host_cant_say_what_changed_a_limited_account_waits_and_the_rest_are_
     assert_eq!(reads(&h), 11, "still unknown: every PR stays due, so the reads go round a few a poll");
     assert!(read_now(ids[0]) && read_now(ids[1]), "the two left behind go first");
 }
+
+#[test]
+fn a_tb_api_read_of_a_pr_the_board_follows_is_kept_until_the_board_s_read_of_it_changes() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    *h.stamp.lock() = Some("s1".into());
+    let id = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/9");
+    poll(&b);
+    let api = "https://api.bitbucket.org/2.0/repositories/acme/webapp/pullrequests/9/comments?pagelen=100";
+    let (secs, mark) = prhost::rest::keep_for(&b.app, taskboardd::accounts::Provider::Bitbucket, api);
+    assert_eq!(secs, 600.0);
+    let mark = mark.expect("the board follows this PR");
+    let mut rec = b.flow(id)["rec"].clone();
+    rec["title"] = json!("Ship it, again");
+    prflow::merge_flow(&b.app, id, vec![("rec", rec)]).unwrap();
+    let (_, moved) = prhost::rest::keep_for(&b.app, taskboardd::accounts::Provider::Bitbucket, api);
+    assert_ne!(moved, Some(mark), "the board's read changed, so the kept answer goes");
+    let other = "https://api.bitbucket.org/2.0/repositories/acme/webapp/pullrequests/10/comments";
+    assert_eq!(prhost::rest::keep_for(&b.app, taskboardd::accounts::Provider::Bitbucket, other), (60.0, None), "a PR the board doesn't follow");
+}

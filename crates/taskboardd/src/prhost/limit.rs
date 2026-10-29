@@ -503,6 +503,17 @@ pub struct Limits {
     /// Last-wins writes waiting for their slot, by account, key and the answer's type
     /// ([`Limits::queue_last`]).
     queued: Mutex<HashMap<(String, String, TypeId), Queued>>,
+    /// `tb api` answers kept for the same read again, by account and URL ([`Limits::api_kept`]).
+    api: Mutex<HashMap<(String, String), KeptApi>>,
+}
+
+/// A `tb api` answer kept until `until`, or until its PR's `mark` changes.
+#[derive(Debug, Clone)]
+struct KeptApi {
+    at: f64,
+    until: f64,
+    mark: Option<String>,
+    v: Value,
 }
 
 /// What one PR poll cost on a host.
@@ -1148,7 +1159,7 @@ impl Join {
 
 /// The PR a host URL is about: its path up to `pullrequests/<n>`, lowercased; None for a read of no
 /// one PR.
-fn pr_scope(url: &str) -> Option<String> {
+pub fn pr_scope(url: &str) -> Option<String> {
     const MARK: &str = "/pullrequests/";
     let path = url.split(['?', '#']).next()?.to_ascii_lowercase();
     let at = path.find(MARK)? + MARK.len();
@@ -1201,7 +1212,23 @@ impl Limits {
     /// write to a PR drops that PR's reads and those of no one PR; any other write drops them all.
     pub fn wrote(&self, key: &str, url: &str) {
         let scope = pr_scope(url);
-        self.shared.lock().retain(|(k, u), _| k != key || scope.as_ref().is_some_and(|s| pr_scope(u).is_some_and(|r| &r != s)));
+        let stays = |k: &String, u: &String| k != key || scope.as_ref().is_some_and(|s| pr_scope(u).is_some_and(|r| &r != s));
+        self.shared.lock().retain(|(k, u), _| stays(k, u));
+        self.api.lock().retain(|(k, u), _| stays(k, u));
+    }
+
+    /// A `tb api` answer to `url` on `key` kept by [`Limits::keep_api`], with when it came: while
+    /// its time lasts and its PR's `mark` (what the board last read of that PR) is the same. A write
+    /// drops it as it does a shared read ([`Limits::wrote`]).
+    pub fn api_kept(&self, key: &str, url: &str, mark: Option<&str>, now: f64) -> Option<(Value, f64)> {
+        let mut api = self.api.lock();
+        api.retain(|_, k| now < k.until);
+        api.get(&(key.to_string(), url.to_string())).filter(|k| k.mark.as_deref() == mark).map(|k| (k.v.clone(), k.at))
+    }
+
+    /// Keeps a `tb api` answer for `secs`, or until its PR's `mark` changes.
+    pub fn keep_api(&self, key: &str, url: &str, v: Value, secs: f64, mark: Option<String>, now: f64) {
+        self.api.lock().insert((key.to_string(), url.to_string()), KeptApi { at: now, until: now + secs, mark, v });
     }
 }
 
@@ -2325,6 +2352,22 @@ mod tests {
 
     fn calls(l: &Limits, key: &str) -> usize {
         l.accounts.lock().get(key).map_or(0, |a| a.calls.len())
+    }
+
+    #[test]
+    fn a_tb_api_answer_is_kept_for_its_time_and_mark_and_a_write_to_its_pr_drops_it() {
+        let l = Limits::default();
+        let v = json!({"status": 200, "body": "[]"});
+        l.keep_api("bb:1", PR1, v.clone(), 600.0, Some("m1".into()), T0);
+        l.keep_api("bb:1", PR2, v.clone(), 600.0, None, T0);
+        assert_eq!(l.api_kept("bb:1", PR1, Some("m1"), T0 + 30.0), Some((v.clone(), T0)));
+        assert_eq!(l.api_kept("bb:1", PR1, Some("m2"), T0 + 30.0), None, "the board read the PR since, and it changed");
+        assert_eq!(l.api_kept("bb:2", PR1, Some("m1"), T0 + 30.0), None, "another account");
+        assert_eq!(l.api_kept("bb:1", PR2, None, T0 + 600.0), None, "its time is up");
+        l.keep_api("bb:1", PR2, v.clone(), 600.0, None, T0);
+        l.wrote("bb:1", &format!("{PR1}/comments"));
+        assert_eq!(l.api_kept("bb:1", PR1, Some("m1"), T0 + 30.0), None, "a write to the PR");
+        assert!(l.api_kept("bb:1", PR2, None, T0 + 30.0).is_some(), "another PR's stays");
     }
 
     #[test]

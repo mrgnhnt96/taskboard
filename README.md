@@ -77,8 +77,9 @@ the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/REA
   `pr.agents_merge` is on).
 - **Accounts**: Settings (⌘,) ▸ Accounts signs in to GitHub (through `gh`: a browser code or a token), Bitbucket (an
   Atlassian API token with Bitbucket scopes) and Slack (an app token). Tokens are checked, then kept in the Keychain,
-  and `git push` over HTTPS is set up for both hosts. Agents use `gh`, `tb api bitbucket|slack <path>` and
-  `tb token <provider>` to comment, push and assign reviewers.
+  and `git push` over HTTPS is set up for both hosts. Agents work their PRs with `tb pr …`, which reads
+  the board's copy of the PR; anything else goes through `tb api bitbucket|slack <path>`, which the daemon makes
+  within the account's rate limits and keeps the reads of for the same read again.
 - **Jira** (optional): REST API with your token. Tickets for tasks and backlog issues, epics for goals, and
   status moves as work starts, reaches review and merges.
 - **Days** (⌘6): any day's timeline (each project's tasks, commits, PRs, questions and how many terminals ran),

@@ -667,6 +667,9 @@ enum Cmd {
         /// A JSON body
         #[arg(short, long)]
         data: Option<String>,
+        /// Ask the host again instead of taking an answer the board kept from a moment ago
+        #[arg(long)]
+        fresh: bool,
     },
     /// The owner's hooks: commands run at each step of a task's flow (hooks.json)
     Hooks {
@@ -7095,7 +7098,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(if user { &who } else { &secret });
             Ok(0)
         }
-        Cmd::Api { provider, path, method, data } => api_call(&c.cfg, &provider, &path, method, data),
+        Cmd::Api { provider, path, method, data, fresh } => api_call(&c.cfg, &provider, &path, method, data, fresh),
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
         Cmd::GitCredential { op } => Ok(crate::gitcred::run(&op)),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
@@ -7389,8 +7392,11 @@ const API_QUIET_SECS: f64 = 60.0;
 
 /// `tb api`: one authenticated request, made by the board so it counts against the account's limits
 /// with the board's own calls (`taskboardd::prhost::rest`); prints the answer's body.
-fn api_call(cfg: &Config, provider: &str, path: &str, method: Option<String>, data: Option<String>) -> Result<i32, String> {
-    let body = json!({"provider": provider, "path": path, "method": method, "data": data});
+fn api_call(cfg: &Config, provider: &str, path: &str, method: Option<String>, data: Option<String>, fresh: bool) -> Result<i32, String> {
+    if let Some(hint) = pr_hint(method.as_deref().unwrap_or(if data.is_some() { "POST" } else { "GET" }), path, data.as_deref()) {
+        eprintln!("tb: {hint}");
+    }
+    let body = json!({"provider": provider, "path": path, "method": method, "data": data, "fresh": fresh});
     let v = client::request_progress(cfg, "POST", "/api-call", Some(&body), API_QUIET_SECS, |stage| eprintln!("· {stage}")).map_err(|e| match e {
         client::CallError::Refused(e) => e,
         client::CallError::Unreachable(e) => format!("the board isn't answering, and tb api goes through it: {e}"),
@@ -7400,8 +7406,25 @@ fn api_call(cfg: &Config, provider: &str, path: &str, method: Option<String>, da
     if !(200..300).contains(&code) {
         eprintln!("tb: {provider} answered {code}");
     }
+    if let Some(secs) = v["kept_secs"].as_f64() {
+        eprintln!("tb: the board's answer from {}s ago; --fresh asks {provider} again", secs as i64);
+    }
     out(v["body"].as_str().unwrap_or(""));
     Ok(if (200..300).contains(&code) { 0 } else { 1 })
+}
+
+/// The `tb pr` command that does what a `tb api` call to a PR does, from the board's cached read of
+/// it and within its rate limits.
+fn pr_hint(method: &str, path: &str, data: Option<&str>) -> Option<&'static str> {
+    let path = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let pr = regex::Regex::new(r"/(?:pullrequests|pulls|issues)/\d+(/[a-z_]+)?$").unwrap();
+    let tail = pr.captures(path)?.get(1).map(|m| m.as_str()).unwrap_or("");
+    match (method.to_uppercase().as_str(), tail) {
+        ("GET", "" | "/comments" | "/activity" | "/statuses" | "/reviews" | "/tasks") => Some("tb pr status (and tb pr thread <id>) reads this PR from the board's cache without a call to the host"),
+        ("POST", "/comments") if data.is_some_and(|d| d.contains("\"parent\"") || d.contains("in_reply_to")) => Some("tb pr reply answers a review thread and tells the board"),
+        ("POST" | "DELETE", "/approve" | "/request-changes" | "/requested_reviewers" | "/merge") | ("PUT", "/merge") => Some("tb pr reviewers / tb pr merge do this through the board, which checks first"),
+        _ => None,
+    }
 }
 
 /// "The PR feed is healthy · last event 3:04 PM" for `tb feed`.
@@ -8920,6 +8943,18 @@ mod tests {
         let own = json!({"name": "rig", "tags": ["bench"], "purpose": "measure", "reserved": true, "held_by": null});
         assert_eq!(goal_device_line(&own), "rig · for measure · reserved · bench · free");
         assert_eq!(device_line(&json!({"name": "rig", "tags": [], "reserved_for": "G3"})), "rig · free · reserved for G3");
+    }
+
+    #[test]
+    fn tb_api_points_at_the_tb_pr_command_for_a_pr_call() {
+        let bb = "repositories/acme/web/pullrequests/9";
+        assert!(pr_hint("GET", &format!("{bb}/comments?pagelen=100"), None).unwrap().contains("tb pr status"));
+        assert!(pr_hint("GET", bb, None).unwrap().contains("tb pr status"));
+        assert!(pr_hint("POST", &format!("{bb}/comments"), Some(r#"{"content":{"raw":"x"},"parent":{"id":3}}"#)).unwrap().contains("tb pr reply"));
+        assert_eq!(pr_hint("POST", &format!("{bb}/comments"), Some(r#"{"content":{"raw":"x"}}"#)), None, "a new comment has no tb pr command");
+        assert!(pr_hint("POST", &format!("{bb}/merge"), Some("{}")).unwrap().contains("tb pr merge"));
+        assert_eq!(pr_hint("GET", &format!("{bb}/diff"), None), None);
+        assert_eq!(pr_hint("GET", "repositories/acme/web/src/main/README.md", None), None);
     }
 
     /// `cut_release` against a fake board: the bodies it posted, and the scripts it ran.
