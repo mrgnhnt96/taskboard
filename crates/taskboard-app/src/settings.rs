@@ -104,8 +104,8 @@ const CARDS: [(&str, &str, u32, &str); 3] = [
 /// What a row's agent line shows, per account.
 fn agent_cli(id: &str) -> &'static str {
     match id {
-        "github" => "gh pr view 12 --comments   # or: tb api github repos/OWNER/REPO/pulls/12/requested_reviewers -d '{\"reviewers\":[\"sam\"]}'",
-        "bitbucket" => "tb api bitbucket repositories/WORKSPACE/REPO/pullrequests/12/comments -d '{\"content\":{\"raw\":\"Looks good\"}}'",
+        "github" => "tb pr status   # anything else: gh, or tb api github repos/OWNER/REPO/…",
+        "bitbucket" => "tb pr status   # anything else: tb api bitbucket repositories/WORKSPACE/REPO/…",
         _ => "tb api slack chat.postMessage -d '{\"channel\":\"#dev\",\"text\":\"PR is ready\"}'",
     }
 }

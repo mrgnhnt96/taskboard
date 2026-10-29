@@ -23,12 +23,25 @@ A PR that was already open before the task (someone else's, or one the task was 
 
 ## Accounts
 
-The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Accounts; `tb accounts` shows which are. On GitHub use `gh` (it's signed in there). On Bitbucket and Slack call their REST API through `tb api`, which adds the token:
+The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Accounts; `tb accounts` shows which are. Every call on an account counts against the host's hourly rate limit, shared with the board's own calls and the owner's other tools, so go through the board.
 
-- Comment: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n>/comments -d '{"content":{"raw":"…"}}'`
+**Your PR: use `tb pr`.** It reads from the board's copy of the PR, which the board keeps up to date, so it usually costs no call at all:
+
+- What's going on (stage, checks, review, open threads with their ids): `tb pr status`
+- One thread in full: `tb pr thread <id>`
+- Answer a thread: `tb pr reply <id> "…"`; resolve one that asks for nothing: `tb pr ack <id>`
+- Reviewers and merging: `tb pr reviewers`, `tb pr merge` (`tb pr close` only on the owner's word)
+- Waiting for a review or checks: `tb pr wait` (the board brings you back), never a loop of reads
+
+**Anything else on Bitbucket or Slack: `tb api`.** It adds the token and goes through the board, which paces it, counts it and keeps its reads: asking for the same thing again soon gets the board's answer (a PR's reads until the board sees the PR change, a commit's files and diff for an hour, the rest for a minute; `--fresh` asks the host again). It says so when `tb pr` covers the call.
+
+- A new top-level PR comment: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n>/comments -d '{"content":{"raw":"…"}}'`
+- A file at a commit: `tb api bitbucket repositories/<workspace>/<repo>/src/<commit>/<path>`
 - Slack: `tb api slack chat.postMessage -d '{"channel":"#dev","text":"…"}'`
 
-`git push` over HTTPS uses Taskboard's account for that host while you're on a task (`tb git-credential`, set up when the session starts); elsewhere git uses the Mac's own sign-in. `tb token <github|bitbucket|slack>` prints a token for a script; never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
+On GitHub, `gh` is signed in; prefer `tb pr` there too.
+
+`git push` over HTTPS uses Taskboard's account for that host while you're on a task (`tb git-credential`, set up when the session starts); elsewhere git uses the Mac's own sign-in. `tb token <github|bitbucket|slack>` prints a token for a script outside the board; don't use it for calls `tb api` can make (they skip the board's rate limits), and never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
 
 ## Reviewers
 
