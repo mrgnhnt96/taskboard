@@ -33,6 +33,10 @@ pub fn start_task(
     cwd: Option<String>,
 ) -> Result<i64> {
     human::refuse_terminal(app, t)?;
+    // One start at a time: a second while the first opens its terminal would open another (#797).
+    if starting(app, t.id())? {
+        return err(409, "It's already starting in Midna.");
+    }
     if mode == "attach" && crate::jira_desk::is_desk(app, session_id)? {
         return err(409, "Tasks can't go to the Jira desk.");
     }
@@ -102,6 +106,14 @@ pub fn start_task(
     board::update_task(app, t.id(), f)?;
     app.info(format!("runner: {} start job {} ({mode})", rf("task", t.id()), rf("job", jid)));
     Ok(jid)
+}
+
+/// Whether a start job for task `id` is still waiting or opening its terminal.
+pub fn starting(app: &App, id: i64) -> Result<bool> {
+    Ok(app.db.count(
+        "SELECT COUNT(*) FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'start' AND state IN ('pending','running')",
+        p![id],
+    )? > 0)
 }
 
 /// A task's `model` from a body: `small`, `large` or a model name; null, empty or `default` clears it.
@@ -379,11 +391,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         if board::live_start_job(app, &t)?.is_some() {
             continue;
         }
-        if app.db.count(
-            "SELECT COUNT(*) FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'start' AND state IN ('pending','running')",
-            p![t.id()],
-        )? > 0
-        {
+        if starting(app, t.id())? {
             continue;
         }
         if let Some(g) = &g {
@@ -428,6 +436,10 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             }
         }
         let r = app.db.tx(|| {
+            // Another start (the owner's Start, say) may have begun while its worktree was made.
+            if starting(app, tid)? {
+                return Ok(false);
+            }
             let t = board::get_task(app, tid)?;
             if waitsfor::parked(&t).is_some() {
                 start_parked(app, &t)?;

@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{board, midna, p};
+use taskboardd::{board, midna, p, runner, waitsfor};
 
 struct Board {
     app: Arc<App>,
@@ -75,4 +75,23 @@ fn the_owners_start_runs_a_stacked_child_ahead_of_its_parent() {
     let parent = b.task("Add the endpoint", json!({}));
     let child = b.task("Use the endpoint", json!({"stack_on": format!("T{parent}")}));
     b.started(child);
+}
+
+#[test]
+fn a_parked_task_the_owner_starts_as_its_wait_ends_opens_one_terminal() {
+    // #797: the owner's Start and the board's own resume when the wait ended each opened a terminal.
+    let b = board();
+    let first = b.task("Schema", json!({}));
+    let id = b.task("Add logout", json!({"waits_for": format!("T{first}")}));
+    let t = board::get_task(&b.app, id).unwrap();
+    waitsfor::park(&b.app, &t, &json!([first]).to_string(), "Term", "Needs the schema").unwrap();
+    board::update_task(&b.app, first, vec![("status", json!("done"))]).unwrap();
+    // The board's resume read the task before the owner's Start made its start job.
+    let stale = board::get_task(&b.app, id).unwrap();
+    b.started(id);
+    let e = runner::start_task(&b.app, &stale, "new", None, None, None, None).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
+    runner::start_queued(&b.app).unwrap();
+    let starts = b.app.db.count("SELECT COUNT(*) FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'start'", p![id]).unwrap();
+    assert_eq!(starts, 1);
 }
