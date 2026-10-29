@@ -2122,6 +2122,18 @@ fn close_done_terminals(app: &App, body: &Value, query: &Query) -> Result<Value>
             .filter_map(|j| board::job_args(j).s("session").map(|s| s.to_string()))
             .collect();
         let mut n = 0;
+        if body["review"].as_bool() == Some(true) {
+            for (s, t) in prflow::idle_review_tabs(app)? {
+                let sid = s.st("id");
+                if pending.contains(&sid) || !project_match(t.s("project"), &project) || !task_goal_match(app, &t, &goal)? {
+                    continue;
+                }
+                board::create_job(app, "close", json!({"session": sid, "force": false}), Some(t.id()), "close", None)?;
+                pending.push(sid);
+                n += 1;
+            }
+            return Ok(json!({"ok": true, "jobs": n}));
+        }
         for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND session_id IS NOT NULL", p![])? {
             if !project_match(t.s("project"), &project) || !task_goal_match(app, &t, &goal)? {
                 continue;
@@ -3219,6 +3231,20 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {
     let t = board::get_task(app, id)?;
+    if t.i("pr_num").is_some() && t.s("status") != Some("done") {
+        // The board only brings a handed-in task back for its PR, and only closes a handed-in task's
+        // terminal: settling the visit here would leave this one open with nothing to come back to.
+        return err(
+            409,
+            format!(
+                "{} isn't handed in yet, so the board wouldn't bring this conversation back for PR #{} and would leave this terminal open. \
+                 Hand it in with tb submit \"<summary>\" --pr {}: the board then watches the PR and closes this terminal.",
+                rf("task", id),
+                t.i0("pr_num"),
+                t.st("pr_url")
+            ),
+        );
+    }
     if t.i("pr_num").is_some() {
         if let Some(why) = crate::comments::task_refusal(app, &t, None, "handing the PR back for review")? {
             return err(409, why);

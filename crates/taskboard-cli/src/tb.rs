@@ -243,11 +243,14 @@ enum Cmd {
         #[arg(long)]
         task: Option<String>,
     },
-    /// Close the terminals of finished tasks (on the owner's word): tb close --done
+    /// Close the terminals of finished tasks (on the owner's word): tb close --done, or --review for idle In review ones
     Close {
         /// The terminals of done tasks; terminals still working are left open
-        #[arg(long, required = true)]
+        #[arg(long, required_unless_present = "review", conflicts_with = "review")]
         done: bool,
+        /// Idle terminals of In review tasks that wait on nobody, whoever opened them
+        #[arg(long)]
+        review: bool,
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
@@ -4521,6 +4524,14 @@ fn close_done_line(n: i64) -> String {
     }
 }
 
+fn close_review_line(n: i64) -> String {
+    match n {
+        0 => "No In review task has an idle terminal to close.".into(),
+        1 => "Closing 1 idle In review terminal.".into(),
+        n => format!("Closing {n} idle In review terminals."),
+    }
+}
+
 /// A query value, percent-encoded.
 pub(crate) fn qv(s: &str) -> String {
     let mut out = String::new();
@@ -5803,10 +5814,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Releases { project } => releases_cmd(c, project),
         Cmd::Release { action } => release_cmd(c, action),
         Cmd::Areas { action } => areas_cmd(c, action),
-        Cmd::Close { done: _, project, goal } => {
+        Cmd::Close { done: _, review, project, goal } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
-            let v = c.call("POST", "/done/close-terminals", Some(json!({"project": project, "goal": goal})))?;
-            out(&close_done_line(v["jobs"].as_i64().unwrap_or(0)));
+            let v = c.call("POST", "/done/close-terminals", Some(json!({"project": project, "goal": goal, "review": review})))?;
+            let n = v["jobs"].as_i64().unwrap_or(0);
+            out(&if review { close_review_line(n) } else { close_done_line(n) });
             Ok(0)
         }
         Cmd::Locks => {
@@ -8008,9 +8020,13 @@ mod tests {
 
     #[test]
     fn tb_close_done_and_backlog_note_parse() {
-        let Cmd::Close { done, project, goal } = Cli::try_parse_from(["tb", "close", "--done", "--goal", "G2"]).unwrap().cmd else { panic!("not tb close") };
-        assert_eq!((done, project, goal.as_deref()), (true, None, Some("G2")));
-        assert!(Cli::try_parse_from(["tb", "close"]).is_err(), "tb close needs --done");
+        let Cmd::Close { done, review, project, goal } = Cli::try_parse_from(["tb", "close", "--done", "--goal", "G2"]).unwrap().cmd else { panic!("not tb close") };
+        assert_eq!((done, review, project, goal.as_deref()), (true, false, None, Some("G2")));
+        let Cmd::Close { done, review, .. } = Cli::try_parse_from(["tb", "close", "--review"]).unwrap().cmd else { panic!("not tb close") };
+        assert_eq!((done, review), (false, true));
+        assert!(Cli::try_parse_from(["tb", "close"]).is_err(), "tb close needs --done or --review");
+        assert!(Cli::try_parse_from(["tb", "close", "--done", "--review"]).is_err(), "one or the other");
+        assert_eq!(close_review_line(1), "Closing 1 idle In review terminal.");
         assert_eq!(close_done_line(2), "Closing 2 finished tasks' terminals.");
         assert_eq!(close_done_line(0), "No finished task has a terminal to close.");
         let Cmd::Backlog { action: BacklogCmd::Note { issue, text } } = Cli::try_parse_from(["tb", "backlog", "note", "B2", "seen again on the tablet build"]).unwrap().cmd else {
