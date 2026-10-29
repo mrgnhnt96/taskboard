@@ -86,6 +86,7 @@ mod setup_gaps;
 mod sleep;
 mod slot_close;
 mod spans;
+mod stack_defaults;
 mod start_asks;
 mod start_item;
 mod startword;

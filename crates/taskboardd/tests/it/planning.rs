@@ -48,7 +48,15 @@ fn with_no_file_planners_get_the_built_in_rules() {
 
 #[test]
 fn the_built_in_rules_say_when_to_stack_and_how_to_merge_it() {
-    for bit in ["needs that task's unmerged code", "Tail merge a stack (the default)", "safe to ship alone", "Head merge a stack", "only make sense together", "--stack-merge"] {
+    for bit in ["needs that task's unmerged code", "Tail merge a stack (--stack-merge tail)", "safe to ship alone", "Head merge a stack", "only make sense together", "--stack-merge"] {
+        assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
+    }
+}
+
+#[test]
+fn the_built_in_rules_plan_stacks_for_ci_cost() {
+    for bit in ["every PR to main runs the full checks", "Small, related tasks share one stack", "with --stack-merge head", "Fan out, don't chain",
+                "fold it into a related stack", "Push once per review round", "only when it conflicts or right before it merges", "tb planning names it"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
     }
 }

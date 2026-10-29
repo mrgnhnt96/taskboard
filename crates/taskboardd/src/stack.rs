@@ -56,6 +56,82 @@ pub fn set_merge(app: &App, t: &Row, value: &Value, who: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// The stack merge a task gets when it's stacked without one: its project's default
+/// (`tb project set --stack-merge-default`), stored like `clean_merge`.
+pub fn default_merge(app: &App, t: &Row) -> Option<&'static str> {
+    (crate::projects::stack_merge_default(app, &t.st("project")) == "head").then_some("head")
+}
+
+/// Plan-check warnings on a goal's open tasks: a stacked task merging the other way from the default its
+/// project set, tail stacks in a project that set none (each child is moved to the main branch and runs
+/// the full checks there), and an area whose tasks would each open their own PR to the main branch.
+pub fn plan_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
+    let tasks: Vec<Row> = board::goal_tasks(app, g.id())?.into_iter().filter(|t| t.s("status") != Some("done")).collect();
+    let mut out = vec![];
+    let mut odd: std::collections::BTreeMap<&'static str, Vec<String>> = Default::default();
+    let mut tails: Vec<String> = vec![];
+    for t in tasks.iter().filter(|t| parent_id(t).is_some()) {
+        match crate::projects::stack_merge_set(app, &t.st("project")) {
+            Some(default) if mode(t) != default => odd.entry(default).or_default().push(rf("task", t.id())),
+            None if !head(t) => tails.push(rf("task", t.id())),
+            _ => {}
+        }
+    }
+    if !tails.is_empty() {
+        let (verb, each) = if tails.len() == 1 { ("tail-merges its stack", "it runs") } else { ("tail-merge their stacks", "each runs") };
+        out.push(format!(
+            "{} {verb}: once a parent's PR merges, the board points the child's PR at the main branch and {each} the full checks there. \
+             Head-merge them (--stack-merge head) unless they must reach main first, and say why in the detail.",
+            tails.join(", ")
+        ));
+    }
+    for (default, refs) in odd {
+        let other = if default == "head" { "tail" } else { "head" };
+        let verb = if refs.len() == 1 { "merges its stack" } else { "merge their stacks" };
+        out.push(format!(
+            "{} {other}-{verb}, but the project {default}-merges stacks by default: say why in the detail, or tb task set {} --stack-merge {default}.",
+            refs.join(", "),
+            refs[0]
+        ));
+    }
+    out.extend(main_prs_warnings(app, &tasks)?);
+    Ok(out)
+}
+
+/// How many of a goal's PRs to the main branch in one area make the plan check suggest a stack.
+const MAIN_PRS_PER_AREA: usize = 4;
+
+/// Each PR into the main branch runs the project's full checks: an area with many of them in one goal
+/// is cheaper as one head-merge stack. A task's area is its own, else the one its planned files fall in.
+fn main_prs_warnings(app: &App, tasks: &[Row]) -> Result<Vec<String>> {
+    let mut by_area: std::collections::BTreeMap<(String, String), Vec<String>> = Default::default();
+    let mut areas: std::collections::HashMap<String, crate::areas::Areas> = Default::default();
+    for t in tasks {
+        if head(t) || t.s("kind") == Some("design") || !crate::projects::task_ships_pr(app, t)? {
+            continue;
+        }
+        let project = t.st("project");
+        if !areas.contains_key(&project) {
+            areas.insert(project.clone(), crate::areas::of_project(app, &project)?);
+        }
+        let files = str_list(board::task_context(t).get("plan_files"));
+        let Some(area) = t.s("area").filter(|a| !a.is_empty()).map(|a| a.to_string()).or_else(|| crate::areas::area_for(&areas[&project], &files)) else {
+            continue;
+        };
+        by_area.entry((project, area)).or_default().push(rf("task", t.id()));
+    }
+    Ok(by_area
+        .into_iter()
+        .filter(|(_, refs)| refs.len() >= MAIN_PRS_PER_AREA)
+        .map(|((_, area), refs)| {
+            format!(
+                "{} each open a PR to the main branch in {area}, and each runs the full checks: stack the related ones on one head with --stack-merge head.",
+                refs.join(", ")
+            )
+        })
+        .collect())
+}
+
 pub fn parent(app: &App, t: &Row) -> Result<Option<Row>> {
     match parent_id(t) {
         Some(n) => board::find_task(app, Some(n)),
@@ -156,11 +232,16 @@ pub fn set(app: &App, t: &Row, value: &Value, who: &str) -> Result<bool> {
     if n == parent_id(t) {
         return Ok(false);
     }
+    let fresh = parent_id(t).is_none();
     match n {
+        Some(_) if fresh => board::update_task(app, t.id(), fields!["pr_after" => n, "stack_merge" => default_merge(app, t)])?,
         Some(_) => board::update_task(app, t.id(), fields!["pr_after" => n])?,
         None => board::update_task(app, t.id(), fields!["pr_after" => n, "stack_merge" => Value::Null])?,
     };
     let text = match n {
+        Some(n) if fresh && default_merge(app, t).is_some() => {
+            format!("Stacks on {}: its PR builds on that task's PR and head-merges into it, the project's default", rf("task", n))
+        }
         Some(n) => format!("Stacks on {}: its PR builds on that task's PR", rf("task", n)),
         None => "Stacks on no other task".into(),
     };
@@ -349,7 +430,13 @@ pub fn retarget(app: &App) -> Result<i64> {
                         t.id(),
                         fields!["retargeted" => base.clone(), "retarget_error" => null, "retarget_tries" => null, "retarget_at" => null],
                     )?;
-                    board::log_event(app, t.id(), board::BOARD, "status", &format!("{pr}'s PR merged, so PR #{} now goes into {base}", t.i0("pr_num")))?;
+                    board::log_event(
+                        app,
+                        t.id(),
+                        board::BOARD,
+                        "status",
+                        &format!("{pr}'s PR merged, so PR #{} now goes into {base} and runs its full checks there", t.i0("pr_num")),
+                    )?;
                     crate::dispatch::clear_alert_key(app, &key)?;
                 }
                 Err(e) => {
@@ -380,4 +467,63 @@ pub fn retarget(app: &App) -> Result<i64> {
         }
     }
     Ok(moved)
+}
+
+/// The alert key for a stacked PR whose host base isn't its stack parent's branch.
+fn base_key(task_id: i64) -> String {
+    format!("stackbase:{}", rf("task", task_id))
+}
+
+/// Where a stacked task's PR should go while its parent is open, when its host base says otherwise:
+/// (the base on the host, the parent's branch). None once the parent merged or the board moved the PR.
+fn base_mismatch(app: &App, t: &Row) -> Result<Option<(String, String, Row)>> {
+    let Some(p) = parent(app, t)? else { return Ok(None) };
+    if merged(&p) || !board::pr_still_open(t) {
+        return Ok(None);
+    }
+    let f = jloads_obj(t.s("pr_flow"));
+    if f.get("retargeted").and_then(|v| v.as_str()).is_some_and(|s| !s.starts_with("failed")) {
+        return Ok(None);
+    }
+    let Some(base) = f.get("rec").and_then(|r| r["base"].as_str()).filter(|b| !b.is_empty()).map(|b| b.to_string()) else { return Ok(None) };
+    let Some(want) = branch(&p) else { return Ok(None) };
+    Ok((base != want).then_some((base, want, p)))
+}
+
+/// Open stacked PRs that go somewhere other than their stack parent's branch on the host: the board
+/// would wait on, retarget or merge them as if they were stacked. Each is logged and raised once per base.
+pub fn base_mismatches(app: &App) -> Result<i64> {
+    let rows = app.db.q(
+        "SELECT * FROM tasks WHERE pr_after IS NOT NULL AND pr_num IS NOT NULL \
+         AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
+        p![],
+    )?;
+    let mut found = 0;
+    for t in rows {
+        let Some((base, want, p)) = base_mismatch(app, &t)? else { continue };
+        if jloads_obj(t.s("pr_flow")).s("stack_base_warned") == Some(base.as_str()) {
+            continue;
+        }
+        let r = rf("task", t.id());
+        let line = format!(
+            "{r} stacks on {} (branch {want}), but its PR #{} goes into {base} on the host. Point the PR at {want}, \
+             or unstack it with tb task set {r} --stack-on none.",
+            rf("task", p.id()),
+            t.i0("pr_num")
+        );
+        app.db.tx(|| {
+            prflow::merge_flow(app, t.id(), fields!["stack_base_warned" => base.clone()])?;
+            board::log_event(app, t.id(), board::BOARD, "status", &line)?;
+            crate::dispatch::add_alert_keyed(app, &line, Some(t.id()), t.i("goal_id"), &base_key(t.id()))
+        })?;
+        found += 1;
+    }
+    Ok(found)
+}
+
+/// A stack-base alert is up until the PR goes into its parent's branch, the parent merges, the PR
+/// closes, or the task is unstacked or gone.
+pub fn base_resolved(app: &App, a: &Value) -> Result<bool> {
+    let Some(t) = board::find_task(app, a["task_id"].as_i64())? else { return Ok(true) };
+    Ok(base_mismatch(app, &t)?.is_none())
 }

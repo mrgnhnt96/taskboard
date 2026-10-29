@@ -189,7 +189,9 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     }
     if body_has(body, "stack_on") {
         let t = board::get_task(app, tid)?;
-        board::update_task(app, tid, fields!["pr_after" => crate::stack::clean(app, &body["stack_on"], Some(&t))?])?;
+        let parent = crate::stack::clean(app, &body["stack_on"], Some(&t))?;
+        let merge = parent.and_then(|_| crate::stack::default_merge(app, &t));
+        board::update_task(app, tid, fields!["pr_after" => parent, "stack_merge" => merge])?;
     }
     if body_has(body, "stack_merge") {
         let t = board::get_task(app, tid)?;

@@ -32,10 +32,18 @@ pub const BUILT_IN: &str = "\
 - Each task is small enough for one terminal.
 - Aim for PRs that are easy to review and have a small impact, not for as many PRs as possible.
 - List the tasks in the order they should run; a task that needs an earlier one's code goes after it.
-- Stack a task on another only when it needs that task's unmerged code; otherwise it branches from main.
-- Tail merge a stack (the default) when each PR builds, breaks nothing and is safe to ship alone: main gets reviewed pieces one at a time.
-- Head merge a stack when the pieces only make sense together (a migration and the code that needs it, a feature that's half there until the last PR) or main would be in a state you wouldn't ship between them: each PR merges into the one below it, review stays small, and main gets it all in one merge.
-- Set the mode with --stack-merge and say it in the tasks' detail.";
+- A separate task is a separate review, not a separate PR to main: every PR to main runs the full checks, and so does every push to it.
+- Small, related tasks share one stack: the smallest of them is the head, in the first wave, and each other one stacks on it (--stack-on) with --stack-merge head, so only the head's PR goes to main. Related means the same screen family, the same subsystem or the same kind of fix, even when the tasks don't need each other's code.
+- Fan out, don't chain: stack each sibling on the head, not on the sibling before it, so the siblings still run side by side.
+- A change too small to be worth a full check run (a one-line pin, a doc-only edit) isn't its own PR to main: fold it into a related stack.
+- The size rule is for the whole stack: when one person can't read the head's combined diff, start a second stack.
+- Head merge a stack when its pieces belong together or only make sense together (a migration and the code that needs it, a feature that's half there until the last PR): each PR merges into the one below it, review stays small, and main gets it all in one merge.
+- Tail merge a stack (--stack-merge tail) only for a piece that must reach main before the rest, say because another goal waits on it: once its parent merges, each child is retargeted to main and runs the full checks there, so each must build, break nothing and be safe to ship alone.
+- Otherwise stack a task on another only when it needs that task's unmerged code; else it branches from main.
+- Set the mode with --stack-merge, unless it's the project's default (tb planning names it), and say it in the tasks' detail.
+- PRs into a branch other than main often run no checks, so each stacked task runs the tests its change affects locally before it opens its PR. A PR into main is pushed only once its tests pass locally.
+- Push once per review round: commit each fix locally, then push them together. Rebase a branch with an open PR only when it conflicts or right before it merges; a rebase is a push.
+- Queue a manual check run only on the owner's word, and at most one before-and-after pair per experiment.";
 
 /// Where each task works while its wave mates run (`worklane.rs`): sent with whatever rules are in force,
 /// since an owner's planning file says how to slice work, not how the board places it.
@@ -110,8 +118,9 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
                "small_effort": m.resolve_effort(Some("small"), None), "large_effort": m.resolve_effort(Some("large"), None),
                "default_effort": m.resolve_effort(None, None)})
     });
+    let stack_merge = project.as_deref().map(|n| json!({"default": crate::projects::stack_merge_default(app, n), "set": crate::projects::stack_merge_set(app, n).is_some()}));
     Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
-              "lessons": crate::lessons::lines(&lessons), "models": models, "lanes": LANE_RULES}))
+              "lessons": crate::lessons::lines(&lessons), "models": models, "lanes": LANE_RULES, "stack_merge": stack_merge}))
 }
 
 /// The rules in force for a project's goals (its own file, else the board's, else the built-in ones)
@@ -125,10 +134,21 @@ pub fn block(app: &App, project: Option<&str>, about: &str) -> String {
         _ => "How to slice the work:",
     };
     let mut out = format!("{heading}\n{}", p.text);
+    if let Some(line) = project.and_then(|n| stack_merge_line(app, n)) {
+        out += &format!("\n{line}");
+    }
     if let Ok(Some(l)) = crate::lessons::planning_block(app, project, about, &p.text) {
         out += &format!("\n\n{l}");
     }
     out
+}
+
+/// The project's own stack-merge default, for a planner: what --stack-on does without --stack-merge.
+/// Nothing while the project hasn't set one.
+fn stack_merge_line(app: &App, project: &str) -> Option<String> {
+    let mode = crate::projects::stack_merge_set(app, project)?;
+    let other = if mode == "head" { "tail" } else { "head" };
+    Some(format!("- {project} {mode}-merges its stacks by default: --stack-on without --stack-merge is --stack-merge {mode}, and a task that {other}-merges says why in its detail."))
 }
 
 /// The heading accepted planning lessons go under in a planning file.

@@ -257,7 +257,7 @@ pub fn checked(v: &Value, models: bool) -> std::result::Result<Value, String> {
             }
         }
         let stack_on = earlier(&t["stack_on"]);
-        let merge = (stack_on.is_some() && t["stack_merge"] == "head").then_some("head");
+        let merge = stack_on.map(|_| if t["stack_merge"] == "head" { "head" } else { "tail" });
         let model = t["model"].as_str().filter(|m| models && ["small", "large"].contains(m));
         tasks.push(json!({"title": title, "detail": clip(t["detail"].as_str().unwrap_or("").trim(), DETAIL_MAX),
                           "after": after, "stack_on": stack_on, "stack_merge": merge, "model": model}));

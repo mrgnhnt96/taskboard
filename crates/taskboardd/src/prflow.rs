@@ -2056,6 +2056,7 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
         crate::prhost::limit::limits().note_poll(&host, tasks.len(), full, calls.get(&host).copied().unwrap_or(0), now_ts());
     }
     crate::stack::retarget(app)?;
+    crate::stack::base_mismatches(app)?;
     crate::propen::add_evidence(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {

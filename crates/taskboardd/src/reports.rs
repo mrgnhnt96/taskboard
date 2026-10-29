@@ -2736,7 +2736,8 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
         }
     }
     if !created.is_empty() {
-        for w in crate::worklane::plan_warnings(r.app, &board::get_goal(r.app, g.id())?)? {
+        let g = board::get_goal(r.app, g.id())?;
+        for w in crate::worklane::plan_warnings(r.app, &g)?.into_iter().chain(crate::stack::plan_warnings(r.app, &g)?) {
             if !warnings.contains(&w) {
                 warnings.push(w);
             }
