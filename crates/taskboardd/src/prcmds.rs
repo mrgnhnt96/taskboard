@@ -9,7 +9,9 @@
 //! write on that copy. When they do read, callers asking at once share the one read ([`shared_read`]).
 //! A reply or resolve the host refuses while the PR's account is rate-limited is kept and posted by
 //! the board once the limit is over ([`post_held`]), so the agent doesn't wait for it. So is the ask
-//! `addressed` makes for another review ([`ask_held_rereviews`]).
+//! `addressed` makes for another review ([`ask_held_rereviews`]). Meanwhile the board's copy of the
+//! PR stands for it: `tb pr thread`, `tb pr status` and `addressed` work from it without saying it
+//! may be stale ([`fresh_or_held`]).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -58,6 +60,22 @@ fn fresh(app: &App, id: i64) -> Result<(Row, Value)> {
     }
 }
 
+/// [`fresh`], but while the PR's host account is rate-limited the board's last copy of the PR answers
+/// when the read fails; true when it did.
+fn fresh_or_held(app: &App, id: i64) -> Result<(Row, Value, bool)> {
+    let e = match fresh(app, id) {
+        Ok((t, rec)) => return Ok((t, rec, false)),
+        Err(e) => e,
+    };
+    let t = board::get_task(app, id)?;
+    let pr = pr_of(&t)?;
+    let held = flow(&t).get("rec").filter(|r| r["threads"].is_array()).cloned();
+    match held.filter(|_| prflow::host_held(app, &pr).is_some()) {
+        Some(rec) => Ok((t, rec, true)),
+        None => Err(e),
+    }
+}
+
 /// The last read of each task's PR made here, and how many have ended: a caller that asked while one
 /// ran takes its answer instead of reading again.
 #[derive(Default)]
@@ -82,21 +100,22 @@ fn shared_read(app: &App, id: i64, pr: &PrRef) -> Result<std::result::Result<Val
 }
 
 /// The record to find thread `want` in, and why it may be stale: the board's copy while it's younger
-/// than `max_age` seconds and has the thread, else a read of the host. When that read fails, the
-/// board's copy still answers if it has the thread, marked stale with why.
+/// than `max_age` seconds and has the thread, or at any age while the PR's host account is
+/// rate-limited, else a read of the host. When that read fails, the board's copy still answers if it
+/// has the thread, marked stale with why unless the limit is why.
 fn held_or_read(app: &App, id: i64, want: &str, max_age: f64) -> Result<(Row, Value, Option<String>)> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
     let f = flow(&t);
     let held = f.get("rec").filter(|r| r["threads"].is_array()).cloned();
     let young = wall_age_secs(f.s("checked_at")).is_some_and(|a| a < max_age);
-    if let Some(rec) = held.as_ref().filter(|r| young && find_thread(r, pr.num, want).is_ok()) {
+    if let Some(rec) = held.as_ref().filter(|r| (young || prflow::host_held(app, &pr).is_some()) && find_thread(r, pr.num, want).is_ok()) {
         return Ok((t, rec.clone(), None));
     }
     match shared_read(app, id, &pr)? {
         Ok(rec) => Ok((board::get_task(app, id)?, rec, None)),
         Err(e) => match held.filter(|r| find_thread(r, pr.num, want).is_ok()) {
-            Some(rec) => Ok((t, rec, Some(e))),
+            Some(rec) => Ok((t, rec, prflow::host_held(app, &pr).is_none().then_some(e))),
             None => err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
         },
     }
@@ -294,13 +313,32 @@ fn unack_locally(app: &App, id: i64, th: &Thread) -> Result<()> {
     prflow::merge_flow(app, id, fields!["threads_acked" => Value::Object(acks)]).map(|_| ())
 }
 
+/// How long the held replies of a PR wait after the host refused one for a passing reason before the
+/// sweep tries them again.
+const HELD_RETRY_SECS: f64 = 300.0;
+
+/// Whether the host's refusal `e` stands: it answered a 4xx other than a timeout or a rate limit.
+/// Anything else (a full write queue, a 5xx, no answer) passes, and the write is worth trying again.
+fn refused_for_good(e: &str) -> bool {
+    ["answered ", "HTTP "].iter().any(|k| {
+        e.match_indices(k).any(|(i, _)| {
+            let c = &e.as_bytes()[i + k.len()..];
+            c.len() >= 3 && c[0] == b'4' && c[1..3].iter().all(u8::is_ascii_digit) && !matches!(&c[..3], b"408" | b"429")
+        })
+    })
+}
+
 /// The PR sweep: posts each PR's held replies and resolves, oldest first, once its host takes them.
 /// One the host still refuses for the limit waits with those after it (a reply that went through
-/// waits as its resolve alone); one it refuses for another reason is dropped, said on the task's log,
-/// and its thread counts as open again.
+/// waits as its resolve alone); so does one it refuses for a passing reason, tried again after
+/// [`HELD_RETRY_SECS`] (said once on the task's log). One it refuses for good ([`refused_for_good`])
+/// is dropped, said on the task's log, and its thread counts as open again.
 pub fn post_held(app: &App) -> Result<()> {
     for t in app.db.q("SELECT * FROM tasks WHERE pr_num IS NOT NULL AND json_extract(pr_flow, '$.held_replies[0]') IS NOT NULL", p![])? {
         let (id, Some(pr)) = (t.id(), PrRef::of(&t)) else { continue };
+        if flow(&t).s("held_retry_at").and_then(parse_iso).is_some_and(|at| at > now_ts()) {
+            continue;
+        }
         let Ok(h) = prhost::host_for(app, &pr.host) else { continue };
         let mut held = held_replies(&t);
         while let Some(mut r) = held.first().cloned() {
@@ -313,7 +351,7 @@ pub fn post_held(app: &App) -> Result<()> {
                     held.remove(0);
                 }
                 app.db.tx(|| {
-                    prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+                    prflow::merge_flow(app, id, fields!["held_replies" => json!(held), "held_retry_at" => null, "held_error" => null])?;
                     board::log_event(app, id, board::BOARD, "status", &format!("Posted the held reply to {name} on PR #{}: {}", pr.num, one_line(&text, 200))).map(|_| ())
                 })?;
                 note_write(app, id, &r.thread, &text, false)?;
@@ -324,17 +362,30 @@ pub fn post_held(app: &App) -> Result<()> {
                 Ok(resolved) => {
                     held.remove(0);
                     app.db.tx(|| {
-                        prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+                        prflow::merge_flow(app, id, fields!["held_replies" => json!(held), "held_retry_at" => null, "held_error" => null])?;
                         board::log_event(app, id, board::BOARD, "status", &format!("Resolved {name} on PR #{}, held over the rate limit", pr.num)).map(|_| ())
                     })?;
                     note_write(app, id, &r.thread, "", resolved)?;
                 }
                 Err(_) if prflow::host_held(app, &pr).is_some() => break,
+                Err(e) if !refused_for_good(&e) => {
+                    let e = one_line(&e, 200);
+                    let first = flow(&board::get_task(app, id)?).s("held_error") != Some(e.as_str());
+                    app.db.tx(|| {
+                        prflow::merge_flow(app, id, fields!["held_retry_at" => iso(now_ts() + HELD_RETRY_SECS), "held_error" => e.clone()])?;
+                        if first {
+                            let text = format!("Couldn't post the held replies on PR #{} yet; the board tries again every {} minutes: {e}", pr.num, (HELD_RETRY_SECS / 60.0) as i64);
+                            board::log_event(app, id, board::BOARD, "status", &text)?;
+                        }
+                        Ok(())
+                    })?;
+                    break;
+                }
                 Err(e) => {
                     held.remove(0);
                     let what = if r.text.is_empty() { "resolve" } else { "reply to" };
                     app.db.tx(|| {
-                        prflow::merge_flow(app, id, fields!["held_replies" => json!(held)])?;
+                        prflow::merge_flow(app, id, fields!["held_replies" => json!(held), "held_retry_at" => null, "held_error" => null])?;
                         unack_locally(app, id, &r.thread)?;
                         board::log_event(app, id, board::BOARD, "status", &format!("Couldn't post the held {what} {name} on PR #{}, so it's open again: {}", pr.num, one_line(&e, 200))).map(|_| ())
                     })?;
@@ -413,7 +464,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
         return err(409, why);
     }
     let pr = pr_of(&board::get_task(app, id)?)?;
-    let (t, rec) = fresh(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "comments", e))?;
+    let (t, rec, from_copy) = fresh_or_held(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "comments", e))?;
     let f = flow(&t);
     let open = prflow::open_threads(&f, &rec);
     if !open.is_empty() {
@@ -476,7 +527,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     crate::reports::give_back_slot(app, id);
     let out = json!({"asked": asked, "sent": sent, "site": site, "until": until});
     // Reading the PR again would only fail while the account is held: step it on the copy just read.
-    if held.is_none() {
+    if held.is_none() && !from_copy {
         return after(app, id, out);
     }
     app.db.tx(|| prflow::step(app, &board::get_task(app, id)?, &rec).map(|_| ()))?;
@@ -1044,7 +1095,8 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         Ok(r) => r.clone(),
         Err(_) => f.get("rec").cloned().unwrap_or(Value::Null),
     };
-    let mut live = json!({"read_error": read.as_ref().err()});
+    // While the account is rate-limited the board's copy is the PR as far as the agent goes.
+    let mut live = json!({"read_error": read.as_ref().err().filter(|_| prflow::host_held(app, &pr).is_none())});
     if !rec.is_object() {
         return Ok(live);
     }
