@@ -796,8 +796,8 @@ addressed`) when the reviewer also wrote on the PR: started or spoke on a thread
 Every call to GitHub (`gh`) and Bitbucket goes through `prhost::limit`, one gate per account, shared by every reader
 (the PR poll, master breaks, CI reads, review sweeps, `tb pr …`). When the host says the account is limited (a 429,
 GitHub's "API rate limit exceeded" or secondary limit, `X-RateLimit-Remaining: 0`), every call on it waits until
-`Retry-After` / `X-RateLimit-Reset` (GitHub's from `gh api rate_limit`), else 5 minutes, doubling up to an hour while
-it keeps coming back; a call meanwhile fails at once with "Bitbucket rate-limited until 3:40pm". Each backoff logs
+`Retry-After` / `X-RateLimit-Reset` (GitHub's from `gh api rate_limit`), else a flat 10 minutes, however often it
+comes back; a call meanwhile fails at once with "Bitbucket rate-limited until 3:40pm". Each backoff logs
 one line with the board's own calls on the account in the last hour. The `rate-limit:<host>` alert goes up once a
 limit has lasted 30 minutes inside the work hours, and clears when it ends. `[hosts.<host>] max_per_hour` caps the
 board's calls on the account in any hour (unset: Bitbucket 900, GitHub 4,500; 0: no cap): the PR poll and the review
@@ -815,7 +815,7 @@ a line per account.
 
 | Path | Body | Notes |
 |---|---|---|
-| `POST /prs/limits/lift` | `{host?}` | `tb pr lift [--host <host>]`, on the owner's word: ends the board's own hold on the host's accounts (every host when left out), the slow restart and the limit both, and starts the next backoff over at 5 minutes. **Response:** `{lifted: [<a line per account>], rate_limits}`. |
+| `POST /prs/limits/lift` | `{host?}` | `tb pr lift [--host <host>]`, on the owner's word: ends the board's own hold on the host's accounts (every host when left out), the slow restart and the limit both. **Response:** `{lifted: [<a line per account>], rate_limits}`. |
 
 ### PR builds (`tb pr-builds`)
 A board-wide switch for when CI time is scarce, set only on the owner's word (`prbuilds.rs` documents it).
