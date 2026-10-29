@@ -92,6 +92,40 @@ impl Http for BasicHttp {
 }
 
 impl BasicHttp {
+    /// One `tb api` call (`super::rest`) through the account's gate: `{"status", "body"}` with the body
+    /// as the host sent it, whatever the status, except a rate limit, which the gate backs off on. A
+    /// read isn't shared with the board's own (their answers differ); a write still drops the reads it
+    /// may change.
+    pub fn raw(&self, method: &str, url: &str, body: Option<&str>) -> HostResult<Value> {
+        let go = || {
+            let req = self.agent.request(method, url).set("Authorization", &self.auth).set("Accept", "application/json");
+            let res = match body {
+                Some(b) => req.set("Content-Type", "application/json; charset=utf-8").send_string(b),
+                None => req.call(),
+            };
+            let (code, r) = match res {
+                Ok(r) => (r.status(), r),
+                Err(ureq::Error::Status(code, r)) => (code, r),
+                Err(_) => return Err((format!("Can't reach {}", self.service), None)),
+            };
+            if let Some(n) = request_count(&r) {
+                self.gate.request_count(n);
+            }
+            let hit = limit_headers(&r, code == 429, &format!("{} answered {code}", self.service));
+            if let Some(h) = headroom(&r).filter(|_| hit.is_none()) {
+                self.gate.headroom(&h);
+            }
+            if code == 429 {
+                return Err((format!("{} answered 429", self.service), hit));
+            }
+            Ok((json!({"status": code, "body": r.into_string().unwrap_or_default()}), hit))
+        };
+        match method {
+            "GET" => self.gate.call(false, go),
+            _ => self.gate.request(method, url, go),
+        }
+    }
+
     /// One call to the host, as the gate takes it: the answer, and the rate limit its headers report.
     fn send(&self, method: &str, url: &str, body: Option<&Value>) -> std::result::Result<(Value, Option<super::limit::Hit>), (String, Option<super::limit::Hit>)> {
         let svc = self.service;

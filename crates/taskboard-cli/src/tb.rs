@@ -7384,48 +7384,24 @@ fn hooks_cmd(c: &Ctx, action: HooksCmd) -> Result<i32, String> {
     }
 }
 
-/// `tb api`: one authenticated request; prints the answer's body.
-fn api_call(cfg: &Config, provider: &str, path: &str, method: Option<String>, data: Option<String>) -> Result<i32, String> {
-    let p = Provider::parse(provider).ok_or("unknown account")?;
-    let (who, secret) = accounts::credentials(cfg, p).ok_or_else(|| format!("{} isn't connected. Ask {} to connect it in Taskboard ▸ Settings.", p.label(), cfg.owner))?;
-    let base = match p {
-        Provider::Github => "https://api.github.com/",
-        Provider::Bitbucket => "https://api.bitbucket.org/2.0/",
-        Provider::Slack => "https://slack.com/api/",
-    };
-    let url = if path.starts_with("https://") { path.to_string() } else { format!("{base}{}", path.trim_start_matches('/')) };
-    if !url.starts_with(base) {
-        return Err(format!("{} requests go to {base}", p.label()));
-    }
-    let method = method.map(|m| m.to_uppercase()).unwrap_or_else(|| if data.is_some() { "POST".into() } else { "GET".into() });
-    let auth = match p {
-        Provider::Bitbucket => format!("Basic {}", basic(&who, &secret)),
-        _ => format!("Bearer {secret}"),
-    };
-    let req = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build().request(&method, &url).set("Authorization", &auth).set("Accept", "application/json");
-    let resp = match data {
-        Some(d) => {
-            serde_json::from_str::<Value>(&d).map_err(|e| format!("--data isn't JSON: {e}"))?;
-            req.set("Content-Type", "application/json; charset=utf-8").send_string(&d)
-        }
-        None => req.call(),
-    };
-    match resp {
-        Ok(r) => {
-            out(&r.into_string().unwrap_or_default());
-            Ok(0)
-        }
-        Err(ureq::Error::Status(code, r)) => {
-            eprintln!("tb: {} answered {code}", p.label());
-            out(&r.into_string().unwrap_or_default());
-            Ok(1)
-        }
-        Err(e) => Err(format!("couldn't reach {}: {e}", p.label())),
-    }
-}
+/// How long `tb api` lets the board go quiet: a host call may take its own 30 seconds.
+const API_QUIET_SECS: f64 = 60.0;
 
-fn basic(user: &str, secret: &str) -> String {
-    taskboardd::jira::base64_lite::encode(format!("{user}:{secret}").as_bytes())
+/// `tb api`: one authenticated request, made by the board so it counts against the account's limits
+/// with the board's own calls (`taskboardd::prhost::rest`); prints the answer's body.
+fn api_call(cfg: &Config, provider: &str, path: &str, method: Option<String>, data: Option<String>) -> Result<i32, String> {
+    let body = json!({"provider": provider, "path": path, "method": method, "data": data});
+    let v = client::request_progress(cfg, "POST", "/api-call", Some(&body), API_QUIET_SECS, |stage| eprintln!("· {stage}")).map_err(|e| match e {
+        client::CallError::Refused(e) => e,
+        client::CallError::Unreachable(e) => format!("the board isn't answering, and tb api goes through it: {e}"),
+        client::CallError::TimedOut(e) => format!("the board went quiet for {API_QUIET_SECS}s: {e}"),
+    })?;
+    let code = v["status"].as_u64().unwrap_or(0);
+    if !(200..300).contains(&code) {
+        eprintln!("tb: {provider} answered {code}");
+    }
+    out(v["body"].as_str().unwrap_or(""));
+    Ok(if (200..300).contains(&code) { 0 } else { 1 })
 }
 
 /// "The PR feed is healthy · last event 3:04 PM" for `tb feed`.
@@ -8944,12 +8920,6 @@ mod tests {
         let own = json!({"name": "rig", "tags": ["bench"], "purpose": "measure", "reserved": true, "held_by": null});
         assert_eq!(goal_device_line(&own), "rig · for measure · reserved · bench · free");
         assert_eq!(device_line(&json!({"name": "rig", "tags": [], "reserved_for": "G3"})), "rig · free · reserved for G3");
-    }
-
-    #[test]
-    fn basic_auth() {
-        assert_eq!(basic("a@b.co", "tok"), "YUBiLmNvOnRvaw==");
-        assert_eq!(basic("ab", "c"), "YWI6Yw==");
     }
 
     /// `cut_release` against a fake board: the bodies it posted, and the scripts it ran.

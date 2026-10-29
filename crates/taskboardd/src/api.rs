@@ -166,6 +166,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
     let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
     let r = match (method, segs.as_slice()) {
         ("GET", ["state"]) => get_state(app, query).map(|v| stamp::answer(v, query.get("since").map(String::as_str))),
+        ("POST", ["api-call"]) => crate::prhost::rest::call(app, body),
         ("GET", ["accounts"]) => accounts::status(app, q(query, "fresh", "") == "1"),
         ("GET", ["ci-token"]) => Ok(accounts::ci_token_status(app)),
         ("POST", ["ci-token", "clear"]) => accounts::clear_ci_token(app),
