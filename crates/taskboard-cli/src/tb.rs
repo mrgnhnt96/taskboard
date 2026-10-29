@@ -344,9 +344,9 @@ enum Cmd {
         #[command(subcommand)]
         action: GoalCmd,
     },
-    /// QA testers' Jira comments on board tickets: list, waiting, show Q3, or on the owner's word task Q3 / ignore Q3
+    /// QA testers' Jira comments on board tickets: list, waiting, show Q3, settings, or on the owner's word task Q3 / ignore Q3 / on / off
     Qa {
-        /// list (default), waiting, Q3, task or ignore
+        /// list (default), waiting, Q3, task, ignore, on, off or settings
         what: Option<String>,
         /// Q3 (with task or ignore)
         r#ref: Option<String>,
@@ -2381,6 +2381,15 @@ fn pr_check_line(v: &Value) -> String {
         line += &format!("\n{hint}");
     }
     line
+}
+
+/// `tb qa on|off|settings`: whether QA comments are read, from `GET`/`POST /qa`.
+fn qa_settings_line(v: &Value) -> String {
+    if v["on"] != true {
+        return if v["jira"] == true { "QA comments are off.".into() } else { "QA comments are off. They need Jira: set up [jira] in the board's config first.".into() };
+    }
+    let checked = v["checked_at"].as_str().unwrap_or("not yet");
+    format!("QA comments are on: {} read, {} waiting on the owner. Last checked Jira: {checked}.", v["comments"].as_i64().unwrap_or(0), v["waiting"].as_i64().unwrap_or(0))
 }
 
 /// `tb qa [list|waiting] [--goal G2]`'s read of `GET /qa-comments`.
@@ -6164,6 +6173,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         },
         Cmd::Qa { what, r#ref, note, pr, no_pr, limit, goal } => {
             let what = what.unwrap_or_default();
+            if matches!(what.as_str(), "on" | "off" | "settings") {
+                let v = if what == "settings" { c.call("GET", "/qa", None)? } else { c.call("POST", "/qa", Some(json!({"on": what == "on"})))? };
+                out(&qa_settings_line(&v));
+                return Ok(0);
+            }
             let line = |c: &Value| {
                 let state = if c["waiting"] == true {
                     "waiting on the owner".to_string()
@@ -6190,7 +6204,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if what.is_empty() || what == "list" || what == "waiting" {
                 let v = c.call("GET", &qa_list_url(limit, what == "waiting", goal.as_deref()), None)?;
                 if v["on"] == false {
-                    out("QA comments are off. The owner switches them on in Taskboard's Settings ▸ QA.");
+                    out("QA comments are off. On the owner's word, tb qa on switches them on.");
                 }
                 let rows = v["comments"].as_array().cloned().unwrap_or_default();
                 if rows.is_empty() {
@@ -6217,7 +6231,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             }
             let Some(r) = r#ref.filter(|_| what == "task" || what == "ignore") else {
-                return Err("say tb qa, tb qa waiting, tb qa Q3, tb qa task Q3 [--note TEXT] or tb qa ignore Q3".into());
+                return Err("say tb qa, tb qa waiting, tb qa Q3, tb qa task Q3 [--note TEXT], tb qa ignore Q3, or tb qa on|off|settings".into());
             };
             let mut b = json!({"action": what});
             if let Some(n) = note {
@@ -8132,6 +8146,12 @@ mod tests {
         assert_eq!(qa_list_url(20, true, Some("G2")), "/qa-comments?limit=20&waiting=1&goal=G2");
         assert_eq!(qa_list_url(20, false, Some("G2")), "/qa-comments?limit=20&goal=G2");
         assert_eq!(qa_list_url(20, false, None), "/qa-comments?limit=20");
+        assert_eq!(qa_settings_line(&json!({"on": false, "jira": true})), "QA comments are off.");
+        assert!(qa_settings_line(&json!({"on": false, "jira": false})).contains("need Jira"));
+        assert_eq!(
+            qa_settings_line(&json!({"on": true, "jira": true, "comments": 4, "waiting": 1, "checked_at": null})),
+            "QA comments are on: 4 read, 1 waiting on the owner. Last checked Jira: not yet."
+        );
     }
 
     #[test]
