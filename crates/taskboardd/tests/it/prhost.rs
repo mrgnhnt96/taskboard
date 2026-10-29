@@ -1666,6 +1666,25 @@ fn a_pr_whose_full_read_keeps_failing_doesnt_hold_its_turn() {
 }
 
 #[test]
+fn when_the_host_cant_say_what_changed_the_timed_poll_leaves_prs_read_lately() {
+    // A stamp call that kept failing read a few PRs in full every poll, and spent the account's hour.
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    *h.stamp.lock() = Some("s1".into());
+    let ids: Vec<i64> = (1..=3).map(|n| b.pr_task(&format!("https://bitbucket.org/acme/webapp/pull-requests/{n}"))).collect();
+    poll(&b);
+    assert_eq!(reads(&h), 3);
+    prflow::merge_flow(&b.app, ids[2], vec![("full_at", json!(iso(now_ts() - 1200.0)))]).unwrap();
+    *h.stamps_error.lock() = Some("Bitbucket answered 500".into());
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(reads(&h), 4, "only the PR last read over a quarter hour ago");
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(reads(&h), 4, "and not again on the next poll");
+    poll(&b);
+    assert_eq!(reads(&h), 7, "a refresh someone asked for still reads them all");
+}
+
+#[test]
 fn when_the_host_cant_say_what_changed_a_limited_account_waits_and_the_rest_are_spread() {
     // #743: the read-everything fallback ran while the account was limited, and went out once it lifted.
     let b = board_with(|_| {});

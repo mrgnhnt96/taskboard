@@ -407,7 +407,7 @@ thread_local! {
 }
 
 /// The readers [`reader`] names, in the order the split shows them.
-pub const READERS: [&str; 6] = ["poll", "full-read fallback", "hint", "master", "reviewers", "agent"];
+pub const READERS: [&str; 7] = ["poll", "full-read fallback", "hint", "master", "reviewers", "agent", "tb api"];
 
 /// Runs `f` with the calls it makes counted against `name` (one of [`READERS`]) in the split of an
 /// account's calls (see "Who made the calls"); an inner one names its own calls.

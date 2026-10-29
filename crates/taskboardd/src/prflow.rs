@@ -2100,6 +2100,11 @@ const FULL_READ_EVERY: f64 = 3600.0;
 /// gets the account rate-limited again (#743).
 const CATCH_UP_READS: usize = 3;
 
+/// While the host can't say what changed, the timed poll leaves a PR read in full more recently than
+/// this for a later poll rather than reading it again: otherwise a stamp call that keeps failing reads
+/// a few PRs in full every poll, each several calls, and that alone spends the account's hour.
+const UNKNOWN_READ_EVERY: f64 = 900.0;
+
 /// Polls one host's PRs: what changed on all of them in one batch ([`PrHost::stamps`]), then a full
 /// read of each one that changed, and steps them all. How many stepped to a new stage, and how many
 /// were read in full. A PR only due its hourly full read waits its turn ([`CATCH_UP_READS`]). When the
@@ -2119,7 +2124,8 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
         .map(|(t, stamp)| {
             let rests = || skip_covered && crate::feed::pr_poll_rests(app, host, t.s("pr_repo").unwrap_or(""));
             let held = || crate::prhost::PrRef::of(t).is_some_and(|pr| host_held(app, &pr).is_some());
-            if unknown && (rests() || held()) { Need::Wait } else { need(t, stamp.as_deref(), unknown) }
+            let read_lately = || skip_covered && full_age(t).is_some_and(|age| age < UNKNOWN_READ_EVERY);
+            if unknown && (rests() || held() || read_lately()) { Need::Wait } else { need(t, stamp.as_deref(), unknown) }
         })
         .collect();
     let mut due: Vec<(f64, i64)> = tasks
@@ -2188,8 +2194,8 @@ enum Need {
     Due(Value),
     /// Its stamp moved, the host has none for it, or it was never read: read it in full now.
     Changed,
-    /// The host couldn't say what changed, and its account is rate-limited or a healthy relay covers
-    /// it on the timed poll: left for a later poll.
+    /// The host couldn't say what changed, and its account is rate-limited, or on the timed poll a
+    /// healthy relay covers it or it was read in full under [`UNKNOWN_READ_EVERY`] ago: left for a later poll.
     Wait,
 }
 
@@ -2203,10 +2209,15 @@ fn need(t: &Row, stamp: Option<&str>, unknown: bool) -> Need {
     if f.get("stamp").and_then(|s| s.as_str()) != Some(stamp) {
         return Need::Changed;
     }
-    match f.get("full_at").and_then(|a| a.as_str()).and_then(parse_iso) {
-        Some(at) if now_ts() - at < FULL_READ_EVERY => Need::Fresh(rec),
+    match full_age(t) {
+        Some(age) if age < FULL_READ_EVERY => Need::Fresh(rec),
         _ => Need::Due(rec),
     }
+}
+
+/// How long ago the PR's last full read was.
+fn full_age(t: &Row) -> Option<f64> {
+    flow(t).get("full_at").and_then(|a| a.as_str()).and_then(parse_iso).map(|at| now_ts() - at)
 }
 
 /// Each task's PR stamp, in order (None for one the host had none for); None when the host couldn't say.
