@@ -556,11 +556,14 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         out.push(format!("it conflicts with its base branch {}: rebase onto it and push first", rec["base"].as_str().unwrap_or("main")));
     }
     // A failure holds the merge unless the owner's hook skipped it; `tb pr skip-checks` doesn't cover one.
+    // While PR builds are stopped (`prbuilds.rs`) checks count as passed, as the stage counts them: a build
+    // the stop cancelled reads as failed on the host.
+    let builds_stopped = crate::prbuilds::stopped(app);
     let failing = prflow::failing(&f, rec);
-    if !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
+    if !builds_stopped && !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
         out.push(format!("checks failed: {}", failing.join(", ")));
     }
-    if prflow::checks_skipped(&f, rec).is_none() {
+    if !builds_stopped && prflow::checks_skipped(&f, rec).is_none() {
         let checks = rec["checks"].as_array().cloned().unwrap_or_default();
         let running = running_checks(t, rec);
         if !running.is_empty() {
@@ -1110,6 +1113,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         .collect();
     let builds_note = match prflow::checks_skipped(&f, &rec) {
         Some(why) => Some(format!("Checks skipped for this push: {why}")),
+        None if crate::prbuilds::stopped(app) => Some("PR builds are stopped: its checks count as passed".into()),
         None => {
             let stopped: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter(|c| c["state"] == "stopped").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
             (!stopped.is_empty()).then(|| format!("Builds stopped: {}", stopped.join(", ")))

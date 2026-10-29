@@ -13,10 +13,14 @@
 //! - a cancel runs the CI's command from `[pr_builds.cancel]` (by provider: `github`, `bitbucket`,
 //!   `azure`, or any name an event gives), else the PR host's own (`gh run cancel`, Pipelines'
 //!   `stopPipeline`); a failed one is tried again after each of `retry_secs` (0, 10, 30, 60 and 120
-//!   seconds by default), then raises an alert;
+//!   seconds by default), then raises an alert. A host cancel while the host has the account
+//!   rate-limited waits for the limit to end, without counting a try. Every try is logged in server.log;
+//! - a poll's running checks are cancelled build by build when they name one (an Azure link's
+//!   `buildId`, `TB_BUILD_ID`), else once per push;
 //! - after a cancel the same push is swept again after each of `follow_up_secs` (10, 30, 60 and 120
 //!   seconds by default), for builds queued just after it;
-//! - the PRs' checks count as passed ("Builds stopped"), so their PRs move on to review.
+//! - the PRs' checks count as passed ("Builds stopped"): a cancelled build reads as failed on the
+//!   host, and neither it nor a running one holds the stage or `tb pr merge`.
 //!
 //! The status bar shows a "PR builds stopped" pill. `stop` and `resume` take down the give-up alerts;
 //! `resume` drops the cancels still waiting.
@@ -33,8 +37,8 @@
 //! first cancel, then each follow-up); `pr_build_recent` the last cancels, one per build stopped (with
 //! its pipeline's name, `build`), newest first; `pr_builds_owner_prs` the owner's open PRs off the
 //! board, `{read_at, prs: [{host, repo, num, branch, url, from: "host"|"feed"}]}`. A task's
-//! `pr_flow.builds_cancelled` maps a head to when its builds were cancelled, and `pr_flow.hooked` the
-//! build hooks already asked.
+//! `pr_flow.builds_cancelled` maps a head (and `head:build` for one build) to when its builds were
+//! cancelled, and `pr_flow.hooked` the build hooks already asked.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -177,10 +181,25 @@ fn enqueue(app: &App, item: Value) -> Result<bool> {
     Ok(true)
 }
 
+/// The build a cancel is for: its `build_id`, else the one its Azure link names. Empty: the whole push.
+fn build_id(item: &Value) -> String {
+    match &item["build_id"] {
+        Value::String(s) if !s.trim().is_empty() => s.trim().to_string(),
+        Value::Number(n) => n.to_string(),
+        _ => prhost::ci::azure_build(item["build_url"].as_str().unwrap_or("")).map(|(_, id)| id).unwrap_or_default(),
+    }
+}
+
+/// A board task's push, or one build of it: the key its cancel is queued and marked cancelled under.
+fn push_key(head: &str, build: &str) -> String {
+    if build.is_empty() { head.to_string() } else { format!("{head}:{build}") }
+}
+
 fn pr_item(app: &App, t: &Row, head: &str, provider: &str, body: &Value) -> Value {
-    json!({"key": format!("T{}:{head}", t.id()), "task_id": t.id(), "repo": t.v("pr_repo"), "host": t.v("pr_host"), "num": t.v("pr_num"),
+    let build = build_id(body);
+    json!({"key": format!("T{}:{}", t.id(), push_key(head, &build)), "task_id": t.id(), "repo": t.v("pr_repo"), "host": t.v("pr_host"), "num": t.v("pr_num"),
            "url": t.v("pr_url"), "head": head, "branch": body.get("branch").cloned().unwrap_or(Value::Null), "provider": provider,
-           "build_url": body.get("build_url").cloned().unwrap_or(Value::Null), "build_id": body.get("build_id").cloned().unwrap_or(Value::Null),
+           "build_url": body.get("build_url").cloned().unwrap_or(Value::Null), "build_id": if build.is_empty() { Value::Null } else { json!(build) },
            "pipeline": pipeline_of(body), "tries": 0, "round": 0, "next_at": iso(now_ts() + app.cfg.pr_builds.retry_secs.first().copied().unwrap_or(0.0))})
 }
 
@@ -449,8 +468,8 @@ pub fn on_push_build(app: &App, body: &Value) -> Result<Value> {
     Ok(out)
 }
 
-/// After a poll: a watched PR with checks running while PR builds are stopped gets its builds cancelled
-/// (once per push).
+/// After a poll: a watched PR with checks running while PR builds are stopped gets its builds cancelled,
+/// one cancel per running build that names its build (#799), else one for the push.
 pub fn sweep(app: &App) -> Result<()> {
     if !stopped(app) {
         return Ok(());
@@ -463,14 +482,23 @@ pub fn sweep(app: &App) -> Result<()> {
         let f = flow(&t);
         let Some(rec) = f.get("rec").filter(|r| r.is_object()) else { continue };
         let head = rec["head"].as_str().unwrap_or("");
-        if head.is_empty() || rec["running"].as_i64().unwrap_or(0) == 0 || f.get("builds_cancelled").and_then(|m| m.get(head)).is_some() {
+        if head.is_empty() || rec["running"].as_i64().unwrap_or(0) == 0 {
             continue;
         }
-        let running = rec["checks"].as_array().and_then(|a| a.iter().find(|c| c["state"] == "running"));
-        let running_url = running.and_then(|c| c["url"].as_str()).unwrap_or("");
-        let provider = provider_of(running_url).map(|p| p.to_string()).unwrap_or_else(|| t.st("pr_host"));
-        let check = running.map(|c| c["name"].clone()).unwrap_or(Value::Null);
-        enqueue(app, pr_item(app, &t, head, &provider, &json!({"build_url": running_url, "pipeline": check})))?;
+        let done = |key: &str| f.get("builds_cancelled").and_then(|m| m.get(key)).is_some();
+        let mut running: Vec<Value> = rec["checks"].as_array().map(|a| a.iter().filter(|c| c["state"] == "running").cloned().collect()).unwrap_or_default();
+        if running.is_empty() {
+            running.push(json!({}));
+        }
+        for c in running {
+            let url = c["url"].as_str().unwrap_or("");
+            let body = json!({"build_url": url, "pipeline": c["name"]});
+            if done(&push_key(head, &build_id(&body))) {
+                continue;
+            }
+            let provider = provider_of(url).map(|p| p.to_string()).unwrap_or_else(|| t.st("pr_host"));
+            enqueue(app, pr_item(app, &t, head, &provider, &body))?;
+        }
     }
     Ok(())
 }
@@ -485,12 +513,13 @@ pub fn tick(app: &App) -> Result<()> {
         }
         let r = attempt(app, &item);
         let mut q = queue(app);
+        let round = item["round"].as_i64().unwrap_or(0) as usize;
+        let what_of = || format!("{} at {}{}", described(&item), short_head(&item), build_named(&item));
         let Some(pos) = q.iter().position(|x| x["key"] == item["key"]) else { continue };
         match r {
             Ok((what, builds)) => {
                 q.remove(pos);
                 // Swept again on the follow-up schedule, from the first cancel, for builds queued after it.
-                let round = item["round"].as_i64().unwrap_or(0) as usize;
                 let first_at = if round == 0 { now_ts() } else { item["first_at"].as_f64().unwrap_or_else(now_ts) };
                 if let Some(wait) = app.cfg.pr_builds.follow_up_secs.get(round) {
                     let mut next = item.clone();
@@ -510,24 +539,39 @@ pub fn tick(app: &App) -> Result<()> {
                     Some(b) => !b.is_empty(),
                     None => round == 0,
                 };
+                if stopped_some || round == 0 {
+                    app.info(format!("pr-builds: cancelled the builds of {}{}: {what}", what_of(), if round > 0 { " again" } else { "" }));
+                }
                 if stopped_some {
                     cancelled(app, &item, &what, round, builds.as_deref().unwrap_or(&[]))?;
                 } else if round == 0 {
                     mark_cancelled(app, &item)?;
                 }
             }
-            Err((why, retry)) => {
+            Err((why, again)) => {
                 let tries = item["tries"].as_i64().unwrap_or(0) as usize + 1;
                 let waits = &app.cfg.pr_builds.retry_secs;
-                if retry && tries < waits.len() {
-                    q[pos]["tries"] = json!(tries);
-                    q[pos]["error"] = json!(why);
-                    q[pos]["next_at"] = json!(iso(now_ts() + waits[tries]));
-                    save_queue(app, &q)?;
-                } else {
-                    q.remove(pos);
-                    save_queue(app, &q)?;
-                    gave_up(app, &item, tries, &why)?;
+                match again {
+                    // Not a try: the host takes no calls until the limit ends.
+                    Again::Held(until) => {
+                        q[pos]["error"] = json!(why);
+                        q[pos]["next_at"] = json!(iso(until.max(now_ts())));
+                        save_queue(app, &q)?;
+                        app.info(format!("pr-builds: couldn't cancel the builds of {} yet, trying again at {}: {why}", what_of(), local_clock(Some(&iso(until)))));
+                    }
+                    Again::Retry if tries < waits.len() => {
+                        q[pos]["tries"] = json!(tries);
+                        q[pos]["error"] = json!(why);
+                        q[pos]["next_at"] = json!(iso(now_ts() + waits[tries]));
+                        save_queue(app, &q)?;
+                        app.info(format!("pr-builds: couldn't cancel the builds of {} (try {tries} of {}), trying again in {} seconds: {why}", what_of(), waits.len(), waits[tries]));
+                    }
+                    _ => {
+                        q.remove(pos);
+                        save_queue(app, &q)?;
+                        app.info(format!("pr-builds: gave up cancelling the builds of {} after {}: {why}", what_of(), plural(tries as i64, "try")));
+                        gave_up(app, &item, tries, &why)?;
+                    }
                 }
             }
         }
@@ -538,8 +582,17 @@ pub fn tick(app: &App) -> Result<()> {
 /// What a cancel did, and the builds it stopped when it knows them.
 type Done = (String, Option<Vec<String>>);
 
+/// Whether a failed cancel is tried again.
+enum Again {
+    Never,
+    /// After the next of `retry_secs`.
+    Retry,
+    /// Once the host's rate limit ends (a time), without counting a try.
+    Held(f64),
+}
+
 /// Cancels one queued item's builds: what it did, or why not and whether trying again could help.
-fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)> {
+fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, Again)> {
     let s = |k: &str| item[k].as_str().unwrap_or("").to_string();
     let provider = s("provider");
     if let Some(cmd) = app.cfg.pr_builds.cancel.get(&provider).map(|c| c.trim()).filter(|c| !c.is_empty()) {
@@ -551,7 +604,7 @@ fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)>
             ("TB_HEAD", s("head")),
             ("TB_BRANCH", s("branch")),
             ("TB_BUILD_URL", s("build_url")),
-            ("TB_BUILD_ID", item["build_id"].as_str().map(|x| x.to_string()).or_else(|| item["build_id"].as_i64().map(|n| n.to_string())).unwrap_or_default()),
+            ("TB_BUILD_ID", build_id(item)),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -564,10 +617,13 @@ fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)>
         let o = crate::proc::run_with(Path::new("/bin/sh"), &["-c".into(), cmd.to_string()], None, timeout, &env, None);
         let stopped = std::fs::read_to_string(&report).ok().map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>());
         let _ = std::fs::remove_file(&report);
-        let o = o.map_err(|_| (format!("the {provider} cancel command didn't finish in {timeout} seconds"), true))?;
+        let o = o.map_err(|_| (format!("the {provider} cancel command didn't finish in {timeout} seconds"), Again::Retry))?;
         if o.code != Some(0) {
             let why = o.stderr.lines().chain(o.stdout.lines()).find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
-            return Err((format!("the {provider} cancel command exited {}{}", o.code.unwrap_or(-1), if why.is_empty() { String::new() } else { format!(": {why}") }), true));
+            // A command's guard on an empty build exits without a word: say which the board had no value for.
+            let empty: Vec<&str> = env.iter().filter(|(k, v)| matches!(k.as_str(), "TB_BUILD_URL" | "TB_BUILD_ID") && v.is_empty()).map(|(k, _)| k.as_str()).collect();
+            let empty = if empty.is_empty() { String::new() } else { format!(" ({} {} empty)", empty.join(" and "), if empty.len() == 1 { "was" } else { "were" }) };
+            return Err((format!("the {provider} cancel command exited {}{empty}{}", o.code.unwrap_or(-1), if why.is_empty() { String::new() } else { format!(": {why}") }), Again::Retry));
         }
         return Ok(match stopped {
             Some(b) => (format!("the {provider} cancel command stopped {}", plural(b.len() as i64, "build")), Some(b)),
@@ -577,20 +633,43 @@ fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)>
     let host = s("host");
     if !prhost::watched(Some(&host)) || !(provider == host || provider.is_empty()) {
         let name = if provider.is_empty() { "this CI".to_string() } else { provider.clone() };
-        return Err((format!("there's no cancel command for {name} in [pr_builds.cancel]"), false));
+        return Err((format!("there's no cancel command for {name} in [pr_builds.cancel]"), Again::Never));
     }
-    let h = prhost::host_for(app, &host).map_err(|e| (e, true))?;
+    let h = prhost::host_for(app, &host).map_err(|e| (e, Again::Retry))?;
+    let held = |e: String| match h.held_until() {
+        Some(until) => (e, Again::Held(until)),
+        None => (e, Again::Retry),
+    };
+    if let Some(until) = h.held_until() {
+        return Err((format!("{} has the account rate-limited until {}", prhost::limit::label(&host), local_clock(Some(&iso(until)))), Again::Held(until)));
+    }
     let pr = PrRef { host: host.clone(), repo: s("repo"), num: item["num"].as_i64().unwrap_or(0), url: s("url") };
     match h.cancel_builds(&pr, &s("head")) {
         // The host's own cancel says what it stopped: none stopped nothing, as on the Python board.
         Ok(Cancelled::Stopped(b)) => Ok((format!("stopped {}", plural(b.len() as i64, "build")), Some(b))),
-        Ok(Cancelled::Unsupported(why)) => Err((why, false)),
-        Err(e) => Err((e, true)),
+        Ok(Cancelled::Unsupported(why)) => Err((why, Again::Never)),
+        Err(e) => Err(held(e)),
     }
 }
 
 fn short_head(item: &Value) -> String {
     item["head"].as_str().unwrap_or("").chars().take(8).collect()
+}
+
+/// The PR a cancel is for, as server.log and the give-up alert name it.
+fn described(item: &Value) -> String {
+    let num = item["num"].as_i64().unwrap_or(0);
+    match item["task_id"].as_i64() {
+        Some(t) => format!("{} PR #{num}", rf("task", t)),
+        None if num > 0 => format!("{} PR #{num}", item["repo"].as_str().unwrap_or("")),
+        None => format!("{} {}", item["repo"].as_str().unwrap_or(""), item["branch"].as_str().unwrap_or("")),
+    }
+}
+
+/// ", build 123" for a cancel of one build.
+fn build_named(item: &Value) -> String {
+    let b = build_id(item);
+    if b.is_empty() { String::new() } else { format!(", build {b}") }
 }
 
 /// Keeps a cancel (or a give-up, `ok: false`) in the recent list `tb pr-builds` shows: one entry per
@@ -617,25 +696,27 @@ fn remember(app: &App, item: &Value, what: &str, ok: bool, builds: &[String]) ->
 fn cancelled(app: &App, item: &Value, what: &str, round: usize, builds: &[String]) -> Result<()> {
     remember(app, item, what, true, builds)?;
     let again = if round > 0 { " again" } else { "" };
-    let Some(tid) = item["task_id"].as_i64() else {
-        let pr = item["num"].as_i64().filter(|n| *n > 0).map(|n| format!(" PR #{n}")).unwrap_or_default();
-        app.info(format!("pr-builds: cancelled the builds of {}{pr} {}{again}: {what}", item["repo"].as_str().unwrap_or(""), short_head(item)));
-        return Ok(());
-    };
+    let Some(tid) = item["task_id"].as_i64() else { return Ok(()) };
     if round == 0 {
         mark_cancelled(app, item)?;
     }
     let t = board::get_task(app, tid)?;
-    board::log_event(app, tid, board::BOARD, "status", &format!("PR builds are stopped: cancelled the builds of PR #{} at {}{again} ({what})", t.i0("pr_num"), short_head(item)))?;
+    board::log_event(app, tid, board::BOARD, "status", &format!("PR builds are stopped: cancelled the builds of PR #{} at {}{}{again} ({what})", t.i0("pr_num"), short_head(item), build_named(item)))?;
     Ok(())
 }
 
-/// Notes a board task's push as cancelled (`pr_flow.builds_cancelled`), so a poll doesn't cancel it again.
+/// Notes a board task's push, and the build when it's one, as cancelled (`pr_flow.builds_cancelled`), so a
+/// poll doesn't cancel it again.
 fn mark_cancelled(app: &App, item: &Value) -> Result<()> {
     let Some(tid) = item["task_id"].as_i64() else { return Ok(()) };
     let t = board::get_task(app, tid)?;
     let mut done = flow(&t).get("builds_cancelled").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-    done.insert(item["head"].as_str().unwrap_or("").to_string(), json!(now_iso()));
+    let head = item["head"].as_str().unwrap_or("");
+    done.insert(head.to_string(), json!(now_iso()));
+    let build = build_id(item);
+    if !build.is_empty() {
+        done.insert(push_key(head, &build), json!(now_iso()));
+    }
     prflow::merge_flow(app, tid, vec![("builds_cancelled", Value::Object(done))])?;
     Ok(())
 }
@@ -650,7 +731,7 @@ fn gave_up(app: &App, item: &Value, tries: usize, why: &str) -> Result<()> {
     };
     let text = format!(
         "PR builds are stopped, but the board couldn't cancel the builds of {what} at {} after {}: {why}. Cancel them in the CI.",
-        short_head(item),
+        format!("{}{}", short_head(item), build_named(item)),
         if tries == 1 { "1 try".to_string() } else { format!("{tries} tries") }
     );
     remember(app, item, why, false, &[])?;
