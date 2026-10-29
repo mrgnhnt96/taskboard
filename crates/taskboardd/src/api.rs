@@ -314,6 +314,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reply"]) => crate::prcmds::reply(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "ack"]) => crate::prcmds::ack(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "body"]) => crate::prcmds::set_body(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "thread"]) => crate::prcmds::thread(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "addressed"]) => crate::prcmds::addressed(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merge"]) => crate::prcmds::merge(app, tid(id)?, body),

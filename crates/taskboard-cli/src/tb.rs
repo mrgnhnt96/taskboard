@@ -1924,6 +1924,12 @@ enum PrCmd {
         /// The file (- for stdin)
         file: String,
     },
+    /// Replace the open PR's description: [T<n>] <file> (- for stdin), checked as tb pr body-check does; the board's own sections stay
+    Body {
+        /// [task] file
+        #[arg(num_args = 1..=2, required = true)]
+        args: Vec<String>,
+    },
     /// Count checks that were stopped or never ran as passed (e.g. a hook cancelled the builds); not failures (use not-ours)
     SkipChecks {
         task: Option<String>,
@@ -6930,6 +6936,23 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("The description needs work:\n- {}", problems.join("\n- ")));
                 Ok(1)
             }
+            PrCmd::Body { args } => {
+                let (task, rest) = task_and(args, 1);
+                let text = read_body(&rest[0])?;
+                let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &text);
+                if !problems.is_empty() {
+                    out(&format!("The description needs work:\n- {}", problems.join("\n- ")));
+                    return Ok(1);
+                }
+                let t = c.pr_task(task)?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/body"), Some(json!({"body": text})))?;
+                let num = v["num"].as_i64().unwrap_or_default();
+                match v["changed"].as_bool() {
+                    Some(true) => out(&format!("Updated PR #{num}'s description; the board's own sections stay.")),
+                    _ => out(&format!("PR #{num}'s description already says that.")),
+                }
+                Ok(0)
+            }
             PrCmd::Merged { task } => {
                 let t = c.pr_task(task)?;
                 c.call_progress("POST", &format!("/tasks/{t}/pr/merged"), Some(json!({})))?;
@@ -8473,6 +8496,13 @@ mod tests {
         assert_eq!(tidy_hours("2d"), Ok(48.0));
         assert!(tidy_hours("30m").is_err());
         assert!(tidy_hours("soon").is_err());
+    }
+
+    #[test]
+    fn parses_pr_body() {
+        assert!(Cli::try_parse_from(["tb", "pr", "body", "body.md"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr", "body", "T4", "-"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr", "body"]).is_err());
     }
 
     #[test]
