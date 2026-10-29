@@ -1721,7 +1721,7 @@ fn a_tb_api_read_of_a_pr_the_board_follows_is_kept_until_the_board_s_read_of_it_
     poll(&b);
     let api = "https://api.bitbucket.org/2.0/repositories/acme/webapp/pullrequests/9/comments?pagelen=100";
     let (secs, mark) = prhost::rest::keep_for(&b.app, taskboardd::accounts::Provider::Bitbucket, api);
-    assert_eq!(secs, 600.0);
+    assert_eq!(secs, 7200.0, "checks often run longer than 10 minutes");
     let mark = mark.expect("the board follows this PR");
     let mut rec = b.flow(id)["rec"].clone();
     rec["title"] = json!("Ship it, again");
