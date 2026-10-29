@@ -74,7 +74,7 @@ pub fn call(app: &App, body: &Value) -> Result<Value> {
 /// A commit's own files, diff and details never change: kept this long.
 const COMMIT_KEEP_SECS: f64 = 3600.0;
 /// A read of a PR the board follows: kept until the board's read of that PR changes, at most this long.
-const PR_KEEP_SECS: f64 = 600.0;
+const PR_KEEP_SECS: f64 = 7200.0;
 /// Any other read: kept this long, so asking again at once doesn't reach the host.
 const KEEP_SECS: f64 = 60.0;
 
