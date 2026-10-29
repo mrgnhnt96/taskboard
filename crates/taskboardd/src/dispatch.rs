@@ -599,6 +599,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().map(|k| k.starts_with("retarget:")).unwrap_or(false) {
         return crate::stack::retarget_resolved(app, a);
     }
+    if a["key"].as_str().map(|k| k.starts_with("stackbase:")).unwrap_or(false) {
+        return crate::stack::base_resolved(app, a);
+    }
     if a["key"].as_str().map(|k| k.starts_with("jira:")).unwrap_or(false) {
         return crate::jira_status::alert_resolved(app, a);
     }

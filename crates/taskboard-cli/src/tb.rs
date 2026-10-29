@@ -1881,6 +1881,9 @@ enum ProjectCmd {
         /// Other projects whose tasks this project's tasks may wait for (tb wait-for), comma-separated; one way only (none: only its own)
         #[arg(long = "waits-on")]
         waits_on: Option<String>,
+        /// How its stacked tasks merge when tb task new|set --stack-on gives no --stack-merge (default: tail)
+        #[arg(long = "stack-merge-default", value_parser = ["head", "tail", "default"])]
+        stack_merge_default: Option<String>,
         /// Releases (tb release cut) for this project (default: config.toml's [releases] on)
         #[arg(long, value_parser = ["on", "off", "default"])]
         releases: Option<String>,
@@ -2960,6 +2963,9 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     };
     let path = v["path"].as_str().map(|p| format!(" ({p})")).unwrap_or_default();
     out(&format!("Slice goals into tasks by {whose}{path}:\n{}", v["text"].as_str().unwrap_or("").trim()));
+    if let Some(m) = stack_merge_line(&v) {
+        out(&format!("\n{m}"));
+    }
     if let Some(m) = models_line(&v["models"]) {
         out(&format!("\n{m}"));
     }
@@ -2971,6 +2977,14 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
         out(&format!("\nWhat earlier goals taught about planning here:\n{}", lessons.join("\n")));
     }
     Ok(0)
+}
+
+/// "Stacks in api head-merge (tb project set api --stack-merge-default): --stack-on without --stack-merge is
+/// --stack-merge head." Nothing outside a project.
+fn stack_merge_line(v: &Value) -> Option<String> {
+    let (project, mode) = (v["project"].as_str()?, v["stack_merge"]["default"].as_str()?);
+    let whose = if v["stack_merge"]["set"] == true { "tb project set" } else { "the board's default; tb project set" };
+    Some(format!("Stacks in {project} {mode}-merge ({whose} {project} --stack-merge-default head|tail): --stack-on without --stack-merge is --stack-merge {mode}."))
 }
 
 /// "Models: small runs sonnet at medium effort, large runs opus at high; a task without one runs opus at
@@ -7117,6 +7131,7 @@ fn project_line(p: &Value) -> String {
     };
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
+    let stacks = p["stack_merge_set"].as_str().map(|m| format!(" · stacks {m}-merge")).unwrap_or_default();
     let review = match (p["code_review"].as_str(), p["code_review_set"].as_str()) {
         (Some(cmd), _) => format!(" · code review {cmd}"),
         (None, Some(_)) => " · no code review".to_string(),
@@ -7131,7 +7146,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().filter_map(|w| w.as_str()).map(|w| format!("\n  Worktree no task claims (left for you): {w}")).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{review}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
+        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{review}{waits_on}{stacks}{approvals}{expected}{switches}{gaps}{stray}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -7196,7 +7211,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, releases, release_tags, release_script, code_review } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, stack_merge_default, releases, release_tags, release_script, code_review } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             for (key, flag, v) in [
                 ("min_slots", "--min-slots", min_slots),
@@ -7215,6 +7230,9 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
+            }
+            if let Some(m) = stack_merge_default {
+                body.insert("stack_merge_default".into(), if m == "default" { Value::Null } else { json!(m) });
             }
             if let Some(m) = max_terminals {
                 let v = if m.trim().eq_ignore_ascii_case("default") {
@@ -7833,6 +7851,26 @@ mod tests {
         assert!(why.contains("web's repository") && why.contains("T9's steps") && why.contains("tb step aim --clear"), "{why}");
         assert_eq!(outside_repo(&other.to_string_lossy(), &json!({"vars": {}})), None, "no repository to compare");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tb_project_set_takes_a_stack_merge_default_and_tb_planning_names_it() {
+        let set = |m: &str| match Cli::try_parse_from(["tb", "project", "set", "web", "--stack-merge-default", m]).map(|c| c.cmd) {
+            Ok(Cmd::Project { action: ProjectCmd::Set { stack_merge_default, .. } }) => stack_merge_default,
+            _ => None,
+        };
+        assert_eq!((set("head"), set("tail"), set("default")), (Some("head".into()), Some("tail".into()), Some("default".into())));
+        assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--stack-merge-default", "sideways"]).is_err());
+
+        let line = |set: bool, mode: &str| stack_merge_line(&json!({"project": "web", "stack_merge": {"default": mode, "set": set}}));
+        assert_eq!(
+            line(true, "head").as_deref(),
+            Some("Stacks in web head-merge (tb project set web --stack-merge-default head|tail): --stack-on without --stack-merge is --stack-merge head.")
+        );
+        assert!(line(false, "tail").unwrap().contains("(the board's default; tb project set web"));
+        assert_eq!(stack_merge_line(&json!({"project": null, "stack_merge": null})), None);
+        assert!(project_line(&json!({"name": "web", "stack_merge_set": "head", "pr_rules": {}})).contains(" · stacks head-merge"));
+        assert!(!project_line(&json!({"name": "web", "stack_merge_set": null, "pr_rules": {}})).contains("stacks"));
     }
 
     #[test]

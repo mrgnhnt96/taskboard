@@ -24,6 +24,8 @@ const OWNER_REVIEW_SETTING: &str = "pr_owner_review";
 const MAX_TERMINALS_SETTING: &str = "project_max_terminals";
 /// `tb project set --waits-on`: name → the other projects its tasks may wait for (`tb wait-for`), one way only.
 const WAITS_ON_SETTING: &str = "project_waits_on";
+/// `tb project set --stack-merge-default`: name → how its stacked tasks merge (head or tail) when they don't say.
+const STACK_MERGE_SETTING: &str = "project_stack_merge_default";
 
 /// Whether agents merge PRs on a project that doesn't say: the board's word (`tb project agents-merge`),
 /// else config.toml's `pr.agents_merge`.
@@ -313,6 +315,45 @@ pub fn set_max_terminals(app: &App, name: &str, body: &Value) -> Result<bool> {
     Ok(true)
 }
 
+/// What `tb project set --stack-merge-default` put on a project (head or tail), if anything.
+pub fn stack_merge_set(app: &App, name: &str) -> Option<&'static str> {
+    let all = jloads_obj(crate::reqcache::setting(app, STACK_MERGE_SETTING).ok().flatten().as_deref());
+    match all.get(name).and_then(|v| v.as_str()) {
+        Some("head") => Some("head"),
+        Some("tail") => Some("tail"),
+        _ => None,
+    }
+}
+
+/// How a project's stacked tasks merge when they don't say: its own default, else tail.
+pub fn stack_merge_default(app: &App, name: &str) -> &'static str {
+    stack_merge_set(app, name).unwrap_or("tail")
+}
+
+/// Sets a project's stack-merge default from a body's `stack_merge_default` (head or tail; null or
+/// "default": none set, so tail). False when the body doesn't name it.
+pub fn set_stack_merge_default(app: &App, name: &str, body: &Value) -> Result<bool> {
+    let Some(v) = body.get("stack_merge_default") else { return Ok(false) };
+    let mode = match v {
+        Value::Null => None,
+        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "head" => Some("head"),
+            "tail" => Some("tail"),
+            "default" | "none" | "" => None,
+            _ => return err(400, "stack_merge_default is head, tail or default."),
+        },
+        _ => return err(400, "stack_merge_default is head, tail or default."),
+    };
+    let mut all = jloads_obj(crate::reqcache::setting(app, STACK_MERGE_SETTING)?.as_deref());
+    match mode {
+        Some(m) => all.insert(name.into(), json!(m)),
+        None => all.remove(name),
+    };
+    crate::reqcache::forget_setting(STACK_MERGE_SETTING);
+    app.db.set_setting(STACK_MERGE_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
 fn waits_on_overrides(app: &App) -> Result<Row> {
     Ok(jloads_obj(crate::reqcache::setting(app, WAITS_ON_SETTING)?.as_deref()))
 }
@@ -435,6 +476,8 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("ships_prs".into(), json!(ships_prs(app, name)?));
     o.insert("max_terminals".into(), json!(max_terminals(app, Some(name))));
     o.insert("max_terminals_set".into(), json!(max_terminals_set(app, name)?));
+    o.insert("stack_merge_default".into(), json!(stack_merge_default(app, name)));
+    o.insert("stack_merge_set".into(), json!(stack_merge_set(app, name)));
     o.insert("worktrees".into(), crate::slots::describe(app, name)?);
     o.insert("releases".into(), json!(crate::releases::on(app, name)));
     o.insert("releases_set".into(), json!(crate::releases::setting(app, name)?));
