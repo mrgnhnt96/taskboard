@@ -461,6 +461,21 @@ pub fn pr_poll_skips(app: &App, t: &Row) -> bool {
     read >= back && (every <= 0.0 || now_ts() - read < every)
 }
 
+/// While builds streams and a healthy, active builds relay covers this repo now: the latest time one
+/// that covers it connected or came back. The master watch's timer rests on it and reads the branch
+/// again only to reconcile ([`crate::breaks::tick`]).
+pub fn branch_covered_since(app: &App, host: &str, repo: &str) -> Option<f64> {
+    if !crate::stream::streams(app, "builds") {
+        return None;
+    }
+    let src = source(app, "builds");
+    relays_of(&state(app, &src))
+        .iter()
+        .filter(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
+        .map(|(_, r)| [ts(r, "connected_at"), ts(r, "back_at")].into_iter().flatten().fold(f64::MIN, f64::max))
+        .reduce(f64::max)
+}
+
 /// Whether the PR poll runs this round: always without the feed, else while it's unhealthy (or with
 /// `poll_while_healthy`). With stream relays it always runs, and skips the PRs they cover until their
 /// reconcile is due ([`pr_poll_skips`]).
@@ -651,7 +666,8 @@ pub fn note_relay(app: &App, relay: &str, kind: &str, ev: &Value, sources: &[&st
             r.insert("since".into(), json!(now));
         }
         if kind == "heartbeat" {
-            // Back after it was stuck: the PRs it covers are read once more (`pr_poll_skips`).
+            // Back after it was stuck: the PRs and watched branches it covers are read once more
+            // (`pr_poll_skips`, `branch_covered_since`).
             if src.stuck_secs > 0.0 && ts(&r, "last_heartbeat_at").is_some_and(|t| now_ts() - t > src.stuck_secs) {
                 r.insert("back_at".into(), json!(now));
             }

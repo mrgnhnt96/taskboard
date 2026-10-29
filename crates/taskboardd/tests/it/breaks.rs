@@ -11,6 +11,7 @@ use taskboardd::app::App;
 use taskboardd::breaks::{self, BranchRead, Commit, FakeBranch, MasterProject};
 use taskboardd::config::Config;
 use taskboardd::prhost::Check;
+use taskboardd::stream::SourceConfig;
 use taskboardd::util::{iso, now_ts, RowExt};
 use taskboardd::{board, dispatch, p};
 
@@ -454,6 +455,121 @@ fn a_v1_build_on_the_watched_branch_reaches_the_break_watch() {
     let r = stream_build(&b, "e4", "acme/webapp", "master", "c2", "passed");
     assert_eq!(r["result"]["master"]["break"], Value::Null, "{r}");
     assert!(b.get("/master")["open"].as_array().unwrap().is_empty(), "a passed build closes it");
+}
+
+// --- the timer rests while a relay covers the repo (#812) ---
+
+fn ago(secs: f64) -> String {
+    iso(now_ts() - secs)
+}
+
+/// builds streams; the watched branch is main.
+fn streaming() -> (Board, tempfile::TempDir) {
+    board_with(|c, _| {
+        c.master.projects.get_mut("webapp").unwrap().branch = Some("main".into());
+        c.stream.sources.insert("builds".into(), SourceConfig { mode: "stream".into(), ..Default::default() });
+    })
+}
+
+impl Board {
+    /// builds' relay, which heard last `heartbeat_ago` seconds ago and connected `connected_ago` ago.
+    fn relay(&self, repo: &str, heartbeat_ago: f64, connected_ago: f64) {
+        let r = json!({"since": ago(9000.0), "last_heartbeat_at": ago(heartbeat_ago), "connected_at": ago(connected_ago),
+                       "covers": [{"provider": "github", "repo": repo}]});
+        let st = json!({"since": ago(9000.0), "last_heartbeat_at": ago(heartbeat_ago), "relays": {"gh": r}});
+        self.app.db.set_setting("stream_feed_builds", Some(&st.to_string())).unwrap();
+    }
+    /// The watched branch was last read `secs` ago.
+    fn read_ago(&self, secs: f64) {
+        let mut w: Value = serde_json::from_str(&self.app.db.get_setting("master_watch").unwrap().unwrap()).unwrap();
+        w["webapp"]["checked_at"] = json!(ago(secs));
+        self.app.db.set_setting("master_watch", Some(&w.to_string())).unwrap();
+    }
+    fn reads(&self) -> usize {
+        self.ci.branches.lock().len()
+    }
+    fn timer(&self) -> Value {
+        self.get("/stream")["sources"].as_array().unwrap().iter().find(|s| s["source"] == "builds").unwrap()["master"][0].clone()
+    }
+}
+
+#[test]
+fn the_timer_rests_while_a_healthy_relay_covers_the_repo_and_reads_to_reconcile() {
+    let (b, _d) = streaming();
+    *b.ci.read.lock() = BranchRead { head: "c1".into(), checks: vec![], commits: vec![commit("c1", "bob@acme.dev")], queued_at: None };
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 1, "never read: read now");
+    assert_eq!(b.timer()["state"], "polling", "no relay covers it");
+
+    b.relay("acme/webapp", 5.0, 600.0);
+    b.read_ago(400.0);
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 1, "past every_mins, but the relay covers it");
+    let t = b.timer();
+    assert_eq!((t["state"].as_str(), t["branch"].as_str(), t["repo"].as_str()), (Some("resting"), Some("main"), Some("acme/webapp")), "{t}");
+    assert!(t["next_at"].is_string(), "the reconcile read: {t}");
+
+    b.read_ago(3700.0);
+    assert_eq!(b.timer()["state"], "reconcile", "reconcile_secs went by");
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 2);
+    assert_eq!(b.timer()["state"], "resting");
+
+    b.relay("acme/webapp", 5.0, 1.0);
+    b.read_ago(30.0);
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 3, "the relay connected again after the last read: read once");
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 3);
+
+    b.relay("acme/webapp", 9999.0, 9999.0);
+    b.read_ago(400.0);
+    assert_eq!(b.timer()["state"], "polling", "a stuck relay covers nothing");
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 4, "every_mins runs again");
+}
+
+#[test]
+fn the_timer_polls_when_the_relay_covers_another_repo_or_builds_isn_t_streamed() {
+    let (b, _d) = streaming();
+    *b.ci.read.lock() = BranchRead { head: "c1".into(), checks: vec![], commits: vec![commit("c1", "bob@acme.dev")], queued_at: None };
+    breaks::tick(&b.app).unwrap();
+    b.relay("acme/api", 5.0, 600.0);
+    b.read_ago(400.0);
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 2, "the relay doesn't cover acme/webapp");
+
+    let (b, _d) = board_with(|c, _| c.master.projects.get_mut("webapp").unwrap().branch = Some("main".into()));
+    *b.ci.read.lock() = BranchRead { head: "c1".into(), checks: vec![], commits: vec![commit("c1", "bob@acme.dev")], queued_at: None };
+    breaks::tick(&b.app).unwrap();
+    b.relay("acme/webapp", 5.0, 600.0);
+    b.read_ago(400.0);
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(b.reads(), 2, "builds in board mode: its events are hints, so the timer runs");
+}
+
+#[test]
+fn a_push_to_the_watched_branch_reads_it_once() {
+    let (b, _d) = streaming();
+    *b.ci.read.lock() = BranchRead {
+        head: "c2".into(),
+        checks: vec![Check { name: "build".into(), state: "failed".into(), url: None, at: None }],
+        commits: vec![commit("c2", "bob@acme.dev"), commit("c1", "bob@acme.dev")],
+        queued_at: None,
+    };
+    let push = |id: &str, repo: &str, branch: &str| {
+        let ev = json!({"id": id, "kind": "push", "at": "2026-10-12T15:04:00Z", "source": "relay", "repo": repo, "branch": branch, "before": "c1", "after": "c2"});
+        b.post("/stream/events", json!({"v": 1, "events": [ev]}))["results"][0].clone()
+    };
+    let r = push("p1", "acme/webapp", "feature/x");
+    assert_eq!((r["status"].as_str(), r["result"].get("master")), (Some("accepted"), None), "{r}");
+    let r = push("p2", "acme/api", "main");
+    assert_eq!(r["result"].get("master"), None, "{r}");
+    assert_eq!(b.reads(), 0);
+
+    let r = push("p3", "acme/webapp", "main");
+    assert_eq!(b.reads(), 1, "{r}");
+    assert_eq!((r["result"]["master"]["checked"].as_bool(), r["result"]["master"]["break"]["ref"].as_str()), (Some(true), Some("M1")), "{r}");
 }
 
 #[test]

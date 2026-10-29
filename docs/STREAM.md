@@ -136,7 +136,7 @@ name). Left out, the relay covers every PR. Each heartbeat replaces what the las
 | `jira.comment` | qa | QA comments, as `POST /jira/comment` does |
 | `jira.issue` | jira | the task, goal epic and backlog issue with that key, see below |
 | `review`, `comment` | prs | a hint, like an incomplete pr event: a PR on the board is read from its host and stepped (in either mode), and the result names its task; any other PR only counts for the source's health |
-| `push` | builds | the owner's PR builds, as `POST /pr-builds/event` does: a push to the branch of a PR on the board or of one of the owner's open PRs opened by hand, or a push by the owner, is a started build on `after`; other pushes are kept only |
+| `push` | builds | the owner's PR builds, as `POST /pr-builds/event` does: a push to the branch of a PR on the board or of one of the owner's open PRs opened by hand, or a push by the owner, is a started build on `after`; a push to the branch of a project under `[master.projects]` also has the master-break watch read that branch once (its new head is `after`), and its `result` is `{builds, master}`; other pushes are kept only |
 
 ### Ticket statuses
 
@@ -215,6 +215,10 @@ for a source, the source's health is its relays':
   comes back from being stuck. Other PRs are polled as before, and so are a relay's PRs again from the round after
   it goes stuck or silent. A relay that never sent a heartbeat covers nothing, so the poll keeps reading its PRs.
   `POST /prs/refresh` still reads every PR;
+- likewise the master-break watch's `[master] every_mins` timer rests for a `[master.projects]` branch while builds
+  is in stream mode and a healthy, active builds relay covers its repo: the relay's pushes and builds read the
+  branch then. It still reads the branch to reconcile, every `reconcile_secs` and once after the relay connects or
+  comes back, and its timer runs again from the tick after the relay goes stuck or silent;
 - while a board-mode source has a healthy, active relay that covers it, its events still make host reads (and
   builds and qa still poll). `GET /stream`, `GET /prs/feed` and `GET /state` give the source a `relay_hint` saying
   so, with the `tb stream mode <source> stream` that would stop that, and `tb stream`, `tb feed` and
@@ -226,6 +230,11 @@ and `polled` lists the open PRs it still reads, by repo (`[{host, repo, prs, why
 healthy relay covers the repo) or `reconcile` (one does, and the PR's reconcile is due). `tb stream` prints each
 relay under its source (health, idle state, last event and heartbeat, covers), the source line says `polling some
 PRs` then with a `polls` line per repo, and `tb stream --json` prints `GET /stream` as it is.
+
+builds in `GET /stream` also has `master`, one entry per `[master.projects]` branch
+(`[{project, host, repo, branch, state, next_at, checked_at}]`): `state` is `polling` (read every `every_mins`),
+`resting` (a relay covers it; `next_at` is its reconcile read, null with `reconcile_secs` 0) or `reconcile` (its
+reconcile read is due). `tb stream` prints a `master` line for each under builds, after its `polls` lines.
 
 When the host can't say what changed (`PrHost::stamps` fails), the timed poll reads the PRs no relay covers in full
 and leaves the covered ones for a later round, so a nearly spent budget isn't tipped over by reads the relay makes

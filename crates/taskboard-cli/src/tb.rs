@@ -7547,6 +7547,9 @@ fn stream_lines(v: &Value) -> String {
                 p["why"].as_str().unwrap_or("")
             ));
         }
+        for m in s["master"].as_array().into_iter().flatten() {
+            lines.push(master_line(m));
+        }
         let relays = s["relays"].as_array().cloned().unwrap_or_default();
         let width = relays.iter().filter_map(|r| r["relay"].as_str()).map(|n| n.chars().count()).max().unwrap_or(0).max(6);
         for r in &relays {
@@ -7557,6 +7560,23 @@ fn stream_lines(v: &Value) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// One watched default branch's timer: polling, resting on a relay, or a reconcile read due.
+fn master_line(m: &Value) -> String {
+    let clock = |k: &str| m[k].as_str().map(|t| taskboardd::util::local_clock(Some(t)));
+    let state = match (m["state"].as_str().unwrap_or("polling"), clock("next_at")) {
+        ("polling", Some(t)) => format!("polling, next read {t}"),
+        ("resting", Some(t)) => format!("resting on the relay, reconcile {t}"),
+        ("resting", None) => "resting on the relay".to_string(),
+        ("reconcile", _) => "reconcile read due".to_string(),
+        (other, _) => other.to_string(),
+    };
+    let mut line = format!("  master {} {} · {state}", m["project"].as_str().unwrap_or("?"), m["branch"].as_str().unwrap_or("?"));
+    if let Some(t) = clock("checked_at") {
+        line += &format!(" · last read {t}");
+    }
+    line
 }
 
 /// One relay's health, idle state, last event and heartbeat, and what it covers.
@@ -8246,6 +8266,30 @@ mod tests {
         let at = lines[1].split("last heartbeat ").nth(1).unwrap().split(' ').next().unwrap().to_lowercase();
         assert!(at.ends_with("am") || at.ends_with("pm"), "12-hour time: {at}");
         assert_eq!(lines[3], "  all    stuck: prs's relay all hasn't sent a heartbeat for 4 minutes · covers every PR");
+    }
+
+    #[test]
+    fn tb_stream_shows_the_master_watch_timer_next_to_the_poll() {
+        let v = json!({"sources": [{
+            "source": "builds", "mode": "stream", "watched": true, "problem": null, "polling": false,
+            "polled": [{"host": "github", "repo": "acme/api", "prs": 1, "why": "no relay covers it"}],
+            "master": [
+                {"project": "api", "branch": "main", "state": "resting", "next_at": "2026-10-12T23:41:00Z", "checked_at": "2026-10-12T22:41:00Z"},
+                {"project": "web", "branch": "master", "state": "resting", "next_at": null, "checked_at": null},
+                {"project": "ops", "branch": "main", "state": "polling", "next_at": "2026-10-12T22:46:00Z", "checked_at": null},
+                {"project": "lib", "branch": "main", "state": "reconcile", "next_at": "2026-10-12T22:41:00Z", "checked_at": "2026-10-12T21:41:00Z"}
+            ],
+            "relays": []
+        }]});
+        let text = stream_lines(&v);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[1].starts_with("  polls  github acme/api"), "{}", lines[1]);
+        assert!(lines[2].starts_with("  master api main · resting on the relay, reconcile ") && lines[2].contains(" · last read "), "{}", lines[2]);
+        let at = lines[2].split("reconcile ").nth(1).unwrap().split(' ').next().unwrap().to_lowercase();
+        assert!(at.ends_with("am") || at.ends_with("pm"), "12-hour time: {at}");
+        assert_eq!(lines[3], "  master web master · resting on the relay");
+        assert!(lines[4].starts_with("  master ops main · polling, next read ") && !lines[4].contains("last read"), "{}", lines[4]);
+        assert!(lines[5].starts_with("  master lib main · reconcile read due · last read "), "{}", lines[5]);
     }
 
     #[test]

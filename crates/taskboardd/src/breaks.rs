@@ -7,7 +7,11 @@
 //! - **Intake.** Every `[master] every_mins` (5) the board reads each project in `[master.projects]`:
 //!   the branch's head commit, its checks and its last `commits` commits ([`BranchCi`]: GitHub
 //!   through `gh api`, Bitbucket through REST 2.0). A posted build (`POST /master-builds`, a stream
-//!   `build`) reads the branch at once and counts too, whichever commit it built. Builds are kept per
+//!   `build`) reads the branch at once and counts too, whichever commit it built; a stream `push` to
+//!   the branch reads it once too. While builds streams and a healthy, active builds relay covers the
+//!   repo, the timer rests: the branch is read again only to reconcile, once after the relay connects
+//!   or comes back and every `[feed] reconcile_secs`, and on the timer again as soon as the relay goes
+//!   stuck or silent. `tb stream` shows each branch's timer (polling, resting, reconcile). Builds are kept per
 //!   pipeline (a check's name, a posted build's `pipeline`): a red one stays until that same pipeline
 //!   passes at or after its commit, so another pipeline's green, or a head still running, doesn't
 //!   clear it; a red older than its pipeline's last green is stale. A head whose checks all passed
@@ -77,8 +81,9 @@
 //! | `queued_at` | when the failing build on `last_head` was queued (NULL when the host doesn't say); `seen_at` when the board first saw `last_head` red |
 //! | `opened_at`, `closed_at`, `checked_at` | ISO times |
 //!
-//! The setting `master_watch` keeps, per project, `{checked_at, green_head, branch?, error?, build?,
-//! pipelines}`, `pipelines` being `{<name>: {red?: {sha, url, build_id?, queued_at, check?}, green?: sha,
+//! The setting `master_watch` keeps, per project, `{checked_at, green_head, host?, repo?, branch?, error?,
+//! build?, push?, pipelines}` (`host` and `repo`: the last read's; `push`: the last stream push,
+//! `{sha, at}`), `pipelines` being `{<name>: {red?: {sha, url, build_id?, queued_at, check?}, green?: sha,
 //! posted?}}` (`check`: the red came from a head check; `posted`: the pipeline came from a posted build).
 //! A check that isn't red, was never posted and isn't on the head is dropped.
 
@@ -477,16 +482,12 @@ pub fn get(app: &App, id: i64) -> Result<Row> {
     }
 }
 
-/// Runs on every runner tick: reads each watched branch that's due.
+/// Runs on every runner tick: reads each watched branch that's due ([`timer`]).
 pub fn tick(app: &App) -> Result<()> {
-    let every = app.cfg.master.every_mins * 60.0;
     for (name, p) in app.cfg.master.projects.clone() {
-        let w = watch_state(app);
-        let last = w.get(&name).and_then(|v| v["checked_at"].as_str()).and_then(parse_iso);
-        if last.is_some_and(|l| now_ts() - l < every) {
-            continue;
+        if timer(app, &name, &p).due {
+            check_project(app, &name, &p)?;
         }
-        check_project(app, &name, &p)?;
     }
     for b in app.db.q("SELECT * FROM breaks WHERE state = 'open' AND verdict = 'ours' ORDER BY id", p![])? {
         let made = app.db.tx(|| escalate(app, &b))?;
@@ -494,6 +495,63 @@ pub fn tick(app: &App) -> Result<()> {
         app.db.tx(|| follow(app, &get(app, b.id())?, false))?;
     }
     Ok(())
+}
+
+/// Where a watched branch's timer stands.
+struct Timer {
+    /// `polling` (read every `every_mins`), `resting` (a relay covers it) or `reconcile` (a relay
+    /// covers it and its reconcile read is due).
+    state: &'static str,
+    due: bool,
+    /// When the next timed read is due; None while resting with `reconcile_secs` at 0.
+    next_at: Option<f64>,
+}
+
+/// The watched project's host and repo without asking git: set in its config, else the last read's.
+fn known_target(app: &App, name: &str, p: &MasterProject) -> Option<(String, String)> {
+    let w = watch_state(app);
+    let last = |k: &str| w.get(name).and_then(|v| v[k].as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+    let host = p.host.clone().filter(|h| !h.is_empty()).or_else(|| last("host"))?;
+    let repo = p.repo.clone().filter(|r| !r.is_empty()).or_else(|| last("repo"))?;
+    Some((host, repo))
+}
+
+/// The `every_mins` timer, which rests while builds streams and a healthy, active builds relay covers
+/// the project's repo: its pushes and builds read the branch then. A reconcile read still comes once
+/// after the relay connects or comes back, and every `[feed] reconcile_secs` (never at 0); a relay
+/// that goes stuck or silent stops covering, so the timer runs again from the next tick.
+fn timer(app: &App, name: &str, p: &MasterProject) -> Timer {
+    let now = now_ts();
+    let last = watch_state(app).get(name).and_then(|v| v["checked_at"].as_str()).and_then(parse_iso);
+    let covered = known_target(app, name, p).and_then(|(host, repo)| crate::feed::branch_covered_since(app, &host, &repo));
+    let Some(back) = covered else {
+        let next = last.map_or(now, |l| l + app.cfg.master.every_mins * 60.0);
+        return Timer { state: "polling", due: next <= now, next_at: Some(next) };
+    };
+    let every = app.cfg.feed.reconcile_secs;
+    let next = match last {
+        Some(l) if l >= back => (every > 0.0).then_some(l + every),
+        _ => Some(now),
+    };
+    let due = next.is_some_and(|n| n <= now);
+    Timer { state: if due { "reconcile" } else { "resting" }, due, next_at: next }
+}
+
+/// Each watched branch's timer, as `GET /stream` shows it under builds (`master`):
+/// `[{project, host, repo, branch, state, next_at, checked_at}]`.
+pub fn timers(app: &App) -> Vec<Value> {
+    let w = watch_state(app);
+    app.cfg
+        .master
+        .projects
+        .iter()
+        .map(|(name, p)| {
+            let t = timer(app, name, p);
+            let (host, repo) = known_target(app, name, p).unzip();
+            json!({"project": name, "host": host, "repo": repo, "branch": known_branch(app, name, p), "state": t.state,
+                   "next_at": t.next_at.map(iso), "checked_at": w.get(name).and_then(|v| v.get("checked_at")).cloned()})
+        })
+        .collect()
 }
 
 /// Reads one project's branch now and opens, updates or closes its break.
@@ -638,7 +696,7 @@ fn check_with(app: &App, name: &str, p: &MasterProject, posted: Option<&Value>) 
             return note_watch(app, name, fields!["checked_at" => now_iso(), "error" => e]);
         }
     };
-    note_watch(app, name, fields!["checked_at" => now_iso(), "error" => null])?;
+    note_watch(app, name, fields!["checked_at" => now_iso(), "error" => null, "host" => host.clone(), "repo" => repo.clone()])?;
     let open = open_break(app, name)?;
     let mut pipes = Pipelines {
         ci: ci.as_ref(),
@@ -871,18 +929,33 @@ pub fn posted(app: &App, body: &Value) -> Result<Value> {
 /// `build_id` is the event's, else the last number in its `url`; the watch works out the last green
 /// head itself. None when no project in `[master.projects]` watches that branch.
 pub fn stream_build(app: &App, ev: &Value) -> Result<Option<Value>> {
-    let (repo, branch) = (body_str(ev, "repo"), body_str(ev, "branch"));
-    if repo.is_empty() || branch.is_empty() {
-        return Ok(None);
-    }
-    let watched = app.cfg.master.projects.iter().find(|(name, p)| {
-        let Ok((host, theirs)) = target(app, name, p) else { return false };
-        theirs.eq_ignore_ascii_case(&repo) && ci_for(app, &host).ok().and_then(|ci| branch_for(app, name, p, ci.as_ref(), &theirs).ok()).is_some_and(|b| b == branch)
-    });
-    let Some((name, p)) = watched.map(|(k, p)| (k.clone(), p.clone())) else { return Ok(None) };
+    let Some((name, p)) = watched_branch(app, ev) else { return Ok(None) };
     let build_id = ev.get("build_id").filter(|v| !v.is_null() && v.as_str() != Some("")).cloned().or_else(|| id_in_url(&body_str(ev, "url")).map(|n| json!(n)));
     let body = json!({"pipeline": ev["pipeline"], "build_id": build_id, "url": ev["url"], "sha": ev["head"], "state": ev["state"], "ts": ev["at"]});
     record_build(app, &name, &p, &body).map(Some)
+}
+
+/// A stream `push` event (protocol v1) to a watched project's branch: its new head (`after`) is kept
+/// as the project's last push (`push`) and the branch is read once now, as a stream `build` reads it.
+/// None when no project in `[master.projects]` watches that branch.
+pub fn stream_push(app: &App, ev: &Value) -> Result<Option<Value>> {
+    let Some((name, p)) = watched_branch(app, ev) else { return Ok(None) };
+    note_watch(app, &name, fields!["push" => json!({"sha": ev["after"], "at": now_iso()})])?;
+    check_project(app, &name, &p)?;
+    checked(app, &name).map(Some)
+}
+
+/// The watched project whose repo and branch a stream event's `repo` and `branch` are.
+fn watched_branch(app: &App, ev: &Value) -> Option<(String, MasterProject)> {
+    let (repo, branch) = (body_str(ev, "repo"), body_str(ev, "branch"));
+    if repo.is_empty() || branch.is_empty() {
+        return None;
+    }
+    let watched = app.cfg.master.projects.iter().find(|(name, p)| {
+        let Some((host, theirs)) = known_target(app, name, p).or_else(|| target(app, name, p).ok()) else { return false };
+        theirs.eq_ignore_ascii_case(&repo) && ci_for(app, &host).ok().and_then(|ci| branch_for(app, name, p, ci.as_ref(), &theirs).ok()).is_some_and(|b| b == branch)
+    });
+    watched.map(|(k, p)| (k.clone(), p.clone()))
 }
 
 /// The last all-digit segment of a build link's path (`.../pipelines/results/38`, `.../actions/runs/41`).
@@ -903,7 +976,12 @@ fn record_build(app: &App, name: &str, p: &MasterProject, body: &Value) -> Resul
     build.insert("at".into(), json!(now_iso()));
     note_watch(app, &name, fields!["build" => Value::Object(build)])?;
     check_with(app, &name, p, Some(body))?;
-    let open = match open_break(app, &name)? {
+    checked(app, &name)
+}
+
+/// What a read the event caused answers: the project and its open break, if any.
+fn checked(app: &App, name: &str) -> Result<Value> {
+    let open = match open_break(app, name)? {
         Some(b) => dict(app, &b)?,
         None => Value::Null,
     };
