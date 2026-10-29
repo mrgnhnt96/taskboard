@@ -897,6 +897,35 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     Ok(out)
 }
 
+/// Idle terminals of In review tasks that wait on nobody, for the owner's sweep (`tb close --review`):
+/// whoever opened them and whatever the task's auto-close says, but never one its visit still needs.
+pub fn idle_review_tabs(app: &App) -> Result<Vec<(Row, Row)>> {
+    let rows = app.db.q(
+        "SELECT DISTINCT s.*, t.id AS pr_task FROM sessions s \
+         JOIN (SELECT task_id, session_id FROM task_terminals \
+               UNION SELECT task_id, json_extract(target, '$.session') FROM jobs WHERE kind = 'agent' AND task_id IS NOT NULL \
+               UNION SELECT id, session_id FROM tasks WHERE session_id IS NOT NULL) tt \
+           ON tt.session_id = s.id \
+         JOIN tasks t ON t.id = tt.task_id WHERE s.status IS NOT 'gone' AND t.status = 'done' AND t.pr_num IS NOT NULL \
+         ORDER BY s.id",
+        p![],
+    )?;
+    let mut out = vec![];
+    for s in rows {
+        let t = board::get_task(app, s.i0("pr_task"))?;
+        if FINISHED.contains(&t.s("pr_phase").unwrap_or("")) || board::close_rule(Some(&s)) != Some("close") || crate::lines::busy(app, &s.st("id"))? {
+            continue;
+        }
+        let f = flow(&t);
+        let still_needed = f.s("session") == s.s("id") && (f.contains_key("woke") || live_job(app, &t)?.is_some());
+        if still_needed || unprompted_tab(app, &t)?.is_some_and(|u| u.s("id") == s.s("id")) {
+            continue;
+        }
+        out.push((s, t));
+    }
+    Ok(out)
+}
+
 /// A finished PR whose visit left work in the task's slot that never reached it: uncommitted
 /// changes, or commits past the PR's last head that no remote has. Commits them to a branch cut from
 /// the task's own, queues a follow-up task to take that branch to a PR of its own, and gives the slot

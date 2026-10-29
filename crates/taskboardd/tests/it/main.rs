@@ -38,6 +38,7 @@ mod idea_plan;
 mod idea_talk;
 mod ideas;
 mod idle_polls;
+mod idle_review_terminals;
 mod import;
 mod jira;
 mod keep_awake;
