@@ -1019,7 +1019,7 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 
 ## QA comments (optional)
 
-Off until Settings ▸ QA switches it on; needs Jira. Every `[jira] qa_poll_mins` (0: 5 minutes over REST, 30 through
+Off until Settings ▸ QA or `tb qa on` switches it on; needs Jira. Every `[jira] qa_poll_mins` (0: 5 minutes over REST, 30 through
 Claude) the board makes one search, `key in (<its tickets>) AND updated >= -<N>m`, and reads the new comments of the
 tickets it finds; with `via = "claude"` that whole check is one `claude -p`, told the current UTC time. `qa_comment`:
 ```
@@ -1033,8 +1033,8 @@ tickets it finds; with `via = "claude"` that whole check is one `claude -p`, tol
 
 | Request | Body | What |
 |---|---|---|
-| `GET /qa` | | `{on, jira, since, checked_at, comments, waiting}` for Settings ▸ QA. |
-| `POST /qa` | `{on: bool}` | Switch it on (409 without Jira) or off. On reads only comments from then on; off clears its alerts. |
+| `GET /qa` | | `{on, jira, since, checked_at, comments, waiting}` for Settings ▸ QA (`tb qa settings`). |
+| `POST /qa` | `{on: bool}` | Switch it on (409 without Jira) or off (`tb qa on\|off`). On reads only comments from then on; off clears its alerts. |
 | `POST /jira/comment` | `{key, comment_id, author?, text?}` | A comment from a forwarder. Ignored while off or when the ticket isn't on the board. |
 | `GET /qa-comments` | `?limit&waiting=1&goal=G2` | `{on, comments: [qa_comment]}`, newest first. `goal`: only the comments on that goal's tickets that needed something (the goal page's QA tab), waiting ones first; with `waiting=1`, only its flagged ones nobody has handled. 404 for a goal that isn't there. `tb qa [list\|waiting] [--goal G2]`. |
 | `GET /qa-comments/:id` | | One `qa_comment`. |
