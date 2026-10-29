@@ -7,7 +7,9 @@
 //! Each event is checked on its own and answered on its own: `accepted`, `duplicate` (its `id` came
 //! before) or `rejected` with why. An accepted event is kept in `stream_events` (its whole payload, so
 //! later work can apply it) and routed: pr and build to the PR feed ([`feed::intake_from`]), review and
-//! comment as hints to read their PR again when it's on the board, heartbeat
+//! comment as hints to read their PR again when it's on the board, a build or push on a watched
+//! default branch to the master watch as well ([`crate::breaks::stream_build`],
+//! [`crate::breaks::stream_push`]), heartbeat
 //! to each source it names, jira.issue to the ticket's task, epic or issue ([`crate::jira_status::apply`]),
 //! jira.comment to QA comments ([`qa::intake`]); every kind counts for its
 //! source's health. An event whose route refuses it is rejected and not kept, so the relay can send it
@@ -387,7 +389,11 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
         }
         "push" => {
             feed::note_event_for(app, "builds", kind, ev, None)?;
-            Ok(json!({"builds": crate::prbuilds::on_push_build(app, &as_push_build(ev))?}))
+            let builds = crate::prbuilds::on_push_build(app, &as_push_build(ev))?;
+            Ok(match crate::breaks::stream_push(app, ev)? {
+                Some(watch) => json!({"builds": builds, "master": watch}),
+                None => json!({"builds": builds}),
+            })
         }
         "heartbeat" => {
             let sources = heartbeat_sources(ev);
@@ -514,6 +520,9 @@ pub fn overview(app: &App) -> Value {
             h["source"] = json!(name);
             h["mode"] = json!(m);
             h["mode_from"] = json!(from);
+            if *name == "builds" {
+                h["master"] = json!(crate::breaks::timers(app));
+            }
             h
         })
         .collect();
