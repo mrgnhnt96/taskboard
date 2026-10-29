@@ -821,7 +821,7 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
                 prflow::note_merge_conflict(app, &t, &rec, board::BOARD)?;
                 prflow::step(app, &board::get_task(app, id)?, &rec).map(|_| ())
             })?;
-            return err(409, format!("PR #{} can't merge: it conflicts with its base branch {}. Rebase onto it, resolve the conflicts, push with git push --force-with-lease, then run tb pr wait.", pr.num, rec["base"].as_str().unwrap_or("main")));
+            return err(409, format!("PR #{} can't merge: it conflicts with its base branch {}. Rebase onto it, resolve the conflicts, push with git push --force-with-lease, then run tb pr wait.{}", pr.num, rec["base"].as_str().unwrap_or("main"), prflow::KEEP_BASE));
         }
         return Err(prflow::wait_out_limit(app, id, &pr, body, "merge", ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num))));
     }

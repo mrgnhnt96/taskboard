@@ -247,18 +247,24 @@ impl BitbucketHost {
     }
 
     /// Whether the PR merges cleanly into its base, as a bool: Bitbucket has no such flag, but its diffstat
-    /// marks each conflicting file. Null when the diffstat can't be read whole.
-    fn mergeable(&self, pr: &PrRef) -> Value {
+    /// marks each conflicting file. Null when the diffstat can't be read whole. A rate limit fails the read
+    /// instead: an unknown doesn't hold a merge, so a PR read while limited went on to merge as if it
+    /// had no conflicts.
+    fn mergeable(&self, pr: &PrRef) -> HostResult<Value> {
         let mut next = Some(format!("{}/diffstat?pagelen=100&fields=next,values.status", self.pr_url(pr)));
         for _ in 0..DIFFSTAT_PAGES {
             let Some(u) = next.take() else { break };
-            let Ok(v) = self.get(&u) else { return Value::Null };
+            let v = match self.get(&u) {
+                Ok(v) => v,
+                Err(e) if self.held_until().is_some() => return Err(e),
+                Err(_) => return Ok(Value::Null),
+            };
             if v["values"].as_array().is_some_and(|a| a.iter().any(|d| conflicted(&d["status"]))) {
-                return Value::Bool(false);
+                return Ok(Value::Bool(false));
             }
             next = v["next"].as_str().map(|s| s.to_string());
         }
-        if next.is_some() { Value::Null } else { Value::Bool(true) }
+        Ok(if next.is_some() { Value::Null } else { Value::Bool(true) })
     }
 
     /// Sets the PR's reviewers to exactly these, last-wins: a newer list replaces this one while it waits.
@@ -377,7 +383,7 @@ impl PrHost for BitbucketHost {
         let statuses = if head.is_empty() { vec![] } else { self.statuses(&pr.repo, head)? };
         let mut r = summarize(&p, &comments, tasks.as_deref().unwrap_or(&[]), &statuses);
         r.tasks_error = tasks.err();
-        r.mergeable = self.mergeable(pr);
+        r.mergeable = self.mergeable(pr)?;
         r.viewer = self.viewer();
         r.leave_out_viewer();
         Ok(r)
@@ -1095,6 +1101,36 @@ pub(crate) mod tests {
         );
         assert_eq!(mergeable(vec![("/diffstat", page("modified", Some("https://api/repositories/ws/repo/pullrequests/7/diffstat")))]), Value::Null, "too many pages to read whole");
         assert_eq!(mergeable(vec![("/diffstat", json!({"error": "Bitbucket answered 500"}))]), Value::Null, "an unreadable diffstat");
+    }
+
+    /// A FakeHttp on its own account, which a diffstat call rate-limits.
+    struct LimitedOnDiffstat(FakeHttp);
+
+    impl Http for LimitedOnDiffstat {
+        fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
+            if url.contains("/diffstat") {
+                let hit = crate::prhost::limit::Hit { retry_after: Some(600.0), why: "Bitbucket answered 429".into(), ..Default::default() };
+                crate::prhost::limit::limits().hit("bb:diffstat-limited", "bitbucket", &hit, crate::util::now_ts());
+                return Err("Bitbucket answered 429".into());
+            }
+            self.0.call(method, url, body)
+        }
+        fn limit_key(&self) -> Option<String> {
+            Some("bb:diffstat-limited".into())
+        }
+    }
+
+    #[test]
+    fn a_rate_limited_diffstat_fails_the_read_not_the_conflict_check() {
+        // Read as unknown, the PR's conflicts held nothing, and its merge wake said nothing held it.
+        let answers = vec![
+            ("GET https://api/repositories/ws/repo/pullrequests/7/comments", json!({"values": []})),
+            ("GET https://api/repositories/ws/repo/pullrequests/7/tasks", json!({"values": []})),
+            ("GET https://api/repositories/ws/repo/commit/abc123/statuses", json!({"values": []})),
+            ("GET https://api/repositories/ws/repo/pullrequests/7", pr_json()),
+        ];
+        let h = BitbucketHost::new(Box::new(LimitedOnDiffstat(FakeHttp { answers, calls: Arc::new(Mutex::new(vec![])) })), "https://api/");
+        assert_eq!(h.read(&pr()).err().as_deref(), Some("Bitbucket answered 429"));
     }
 
     /// Each call, as "METHOD url", with the last-wins key it was marked with (`limit::last_wins`).

@@ -21,6 +21,8 @@ A PR that was already open before the task (someone else's, or one the task was 
 
 **Pushes**: every push to a PR into main runs its full checks. Push a PR into main only once its tests pass locally, and push once per review round (commit each fix, then push them together). Rebase a branch with an open PR only when it conflicts or right before it merges: a rebase is a push.
 
+**Conflicts**: the base branch's version always wins. Where it changed the same code another way (another PR solved the same thing), keep the base's version and re-apply on top of it only what your PR adds that the base doesn't have. That's resolving the conflict, not a redesign: do it without asking, run the tests covering it, and push with `--force-with-lease`.
+
 ## Accounts
 
 The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Accounts; `tb accounts` shows which are. Every call on an account counts against the host's hourly rate limit, shared with the board's own calls and the owner's other tools, so go through the board.
