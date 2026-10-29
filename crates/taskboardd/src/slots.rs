@@ -30,6 +30,9 @@ static SIZES: parking_lot::Mutex<BTreeMap<String, Size>> = parking_lot::Mutex::n
 static LIVE: parking_lot::Mutex<BTreeMap<String, (Link, bool)>> = parking_lot::Mutex::new(BTreeMap::new());
 /// When a done task last claimed a slot for PR work, in its context (`visit_due`).
 const PR_CLAIM: &str = "worktree_pr_claim";
+/// When a done task last asked for a slot for PR work while the pool was full, in its context: it's
+/// listed as waiting until it takes one.
+const PR_WAIT: &str = "worktree_pr_wait";
 /// How long a PR claim keeps its slot while no visit comes of it.
 const PR_CLAIM_SECS: f64 = 900.0;
 /// How long a measured size stands before it's measured again.
@@ -242,12 +245,40 @@ pub(crate) fn holder(app: &App, s: &Row) -> Result<Option<Row>> {
     let Some(t) = board::find_task(app, s.i("task_id"))? else { return Ok(None) };
     if t.s("status") == Some("done")
         && !crate::worktrees::terminal_open(app, &t)?
-        && !crate::prflow::visit_live(app, &t)?
+        && !visit_open(app, &t)?
         && !visit_due(app, &t)?
     {
         return Ok(None);
     }
     Ok(Some(t))
+}
+
+/// Whether a done task's PR visit is still on: its reopen hasn't run yet, or the terminal it opened (or
+/// that picked the visit up) is still there and hasn't taken another task. An agent waiting between
+/// turns, or a tab that hasn't reported in yet, is still in the visit: the slot its handoff names stays
+/// its own until the visit ends (`tb pr wait`, `addressed`, `merge` give it back) or its terminal goes.
+fn visit_open(app: &App, t: &Row) -> Result<bool> {
+    if crate::prflow::live_job(app, t)?.is_some() {
+        return Ok(true);
+    }
+    let last = app.db.q1(
+        "SELECT state, updated_at, json_extract(target, '$.session') AS sid FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'pr' \
+         ORDER BY id DESC LIMIT 1",
+        p![t.id()],
+    )?;
+    let opened = last.filter(|j| j.s("state") == Some("done"));
+    let flow = crate::prflow::flow(t);
+    let tabs = [flow.s("session"), opened.as_ref().and_then(|j| j.s("sid"))];
+    for sid in tabs.into_iter().flatten().filter(|s| !s.is_empty()) {
+        let open = match board::get_session(app, Some(sid))? {
+            Some(s) => s.s("status") != Some("gone"),
+            None => opened.as_ref().is_some_and(|j| j.s("sid") == Some(sid) && age_secs(j.s("updated_at")).is_some_and(|a| a < PR_CLAIM_SECS)),
+        };
+        if open && board::task_for_session(app, Some(sid))?.is_none() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether a done task claimed its slot for PR work whose visit hasn't been made yet. The visit's job
@@ -577,7 +608,13 @@ pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(repo) = slot_repo(&before) else { return Ok(None) };
     let start = ctx.s("worktree_base").unwrap_or("HEAD").to_string();
     let branch = ctx.s("worktree_branch").or_else(|| ctx.get("where").and_then(|w| w.get("branch")).and_then(|b| b.as_str())).map(|b| b.to_string());
-    claim_on(app, t, repo, &start, branch.as_deref()).map(Some)
+    let claimed = claim_on(app, t, repo, &start, branch.as_deref());
+    if claimed.as_ref().is_err_and(|e| e.message == WAIT) && t.s("status") == Some("done") {
+        let mut ctx = board::task_context(&board::get_task(app, t.id())?);
+        ctx.insert(PR_WAIT.into(), json!(now_iso()));
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    claimed.map(Some)
 }
 
 /// Whether `reclaim` would claim `t` a slot afresh, which checks the slot out with git. A caller
@@ -710,6 +747,16 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
             }
         }
     }
+    let asked = format!("$.{PR_WAIT}");
+    for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND json_extract(context, ?) IS NOT NULL ORDER BY id", p![asked])? {
+        let ctx = board::task_context(&t);
+        if ctx.s(PR_WAIT).is_none_or(|a| age_secs(Some(a)).is_none_or(|s| s >= PR_CLAIM_SECS)) || held(app, &t)?.is_some() {
+            continue;
+        }
+        if let Some(repo) = slot_before(&t, &ctx).as_deref().and_then(slot_repo) {
+            waiting.push((repo.to_string(), rf("task", t.id())));
+        }
+    }
     let shown: Vec<&Row> = all.iter().filter(|s| project.is_none() || s.s("project") == project).collect();
     let sizes = sizes(&shown.iter().map(|s| s.st("path")).collect::<Vec<_>>());
     let mut out = vec![];
@@ -806,6 +853,7 @@ fn take(app: &App, t: &Row, id: i64, path: &str, text: &str, start: &str) -> Res
         } else {
             ctx.remove(PR_CLAIM);
         }
+        ctx.remove(PR_WAIT);
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         w.insert("worktree".into(), json!(path));
         ctx.insert("where".into(), Value::Object(w));
@@ -887,6 +935,80 @@ mod tests {
         app.db.insert("jobs", crate::fields!["kind" => "agent", "purpose" => "pr", "state" => "done", "task_id" => a.id(), "target" => ended, "created_at" => now_iso()]).unwrap();
         let s = slot_at(&app, &slot).unwrap().unwrap();
         assert!(holder(&app, &s).unwrap().is_none(), "the visit ended");
+    }
+
+    /// A repo with slot-1 held by a done task `A` whose PR visit opened in the terminal `v1`.
+    fn visiting(dir: &Path, max_slots: i64) -> (std::sync::Arc<App>, String, String, Row) {
+        let mut cfg = Config::for_tests(dir);
+        cfg.worktrees.max_slots = max_slots;
+        let app = App::for_tests(cfg);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |args: &[&str]| assert_eq!(git(&repo, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let slot = slot_path(&repo, 1);
+        run(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+        let ctx = json!({"worktree_slot": slot, "worktree_base": "HEAD"}).to_string();
+        let a = app.db.insert("tasks", crate::fields!["title" => "A", "status" => "done", "context" => ctx, "pr_flow" => json!({"session": "v1"}).to_string()]).unwrap();
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone(), "task_id" => a]).unwrap();
+        let opened = json!({"session": "v1"}).to_string();
+        app.db.insert("jobs", crate::fields!["kind" => "agent", "purpose" => "pr", "state" => "done", "task_id" => a, "target" => opened, "created_at" => now_iso(), "updated_at" => now_iso()]).unwrap();
+        let a = board::get_task(&app, a).unwrap();
+        (app, repo, slot, a)
+    }
+
+    #[test]
+    fn a_pr_visit_keeps_its_slot_while_its_agent_waits_between_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, repo, slot, a) = visiting(dir.path(), 10);
+        board::upsert_session(&app, "v1", vec![("status", json!("idle"))]).unwrap();
+        let held = |app: &App| holder(app, &slot_at(app, &slot).unwrap().unwrap()).unwrap().map(|t| t.id());
+        assert_eq!(held(&app), Some(a.id()), "an idle visit terminal still holds the slot");
+        let b = board::get_task(&app, app.db.insert("tasks", crate::fields!["title" => "B", "status" => "queued"]).unwrap()).unwrap();
+        assert_ne!(claim_on(&app, &b, &repo, "HEAD", None).unwrap(), slot, "B is passed over to another slot");
+        assert_eq!(held(&app), Some(a.id()));
+        app.db.insert("tasks", crate::fields!["title" => "C", "status" => "working", "session_id" => "v1"]).unwrap();
+        assert_eq!(held(&app), None, "the terminal moved on to another task");
+    }
+
+    #[test]
+    fn a_pr_visit_keeps_its_slot_until_its_terminal_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _, slot, a) = visiting(dir.path(), 10);
+        let held = |app: &App| holder(app, &slot_at(app, &slot).unwrap().unwrap()).unwrap().map(|t| t.id());
+        assert_eq!(held(&app), Some(a.id()), "a tab that hasn't reported in yet holds the slot");
+        board::upsert_session(&app, "v1", vec![("status", json!("working"))]).unwrap();
+        assert_eq!(held(&app), Some(a.id()));
+        board::upsert_session(&app, "v1", vec![("status", json!("gone"))]).unwrap();
+        assert_eq!(held(&app), None, "the visit's terminal closed");
+    }
+
+    #[test]
+    fn a_tab_that_never_reported_in_lets_the_slot_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _, slot, _) = visiting(dir.path(), 10);
+        app.db.x("UPDATE jobs SET updated_at = '2000-01-01T00:00:00Z'", p![]).unwrap();
+        app.db.x("UPDATE tasks SET pr_flow = '{}'", p![]).unwrap();
+        assert!(holder(&app, &slot_at(&app, &slot).unwrap().unwrap()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_pr_claim_on_a_full_pool_waits_for_a_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _, slot, a) = visiting(dir.path(), 1);
+        let ctx = json!({"worktree_slot": slot, "worktree_base": "HEAD"}).to_string();
+        let b = app.db.insert("tasks", crate::fields!["title" => "B", "status" => "done", "context" => ctx]).unwrap();
+        let b = board::get_task(&app, b).unwrap();
+        board::upsert_session(&app, "v1", vec![("status", json!("idle"))]).unwrap();
+        assert_eq!(reclaim(&app, &b).unwrap_err().message, WAIT);
+        let waiting = |app: &App| overview(app, None).unwrap()["slots"][0]["waiting"].clone();
+        assert_eq!(waiting(&app), json!([rf("task", b.id())]), "B is listed as waiting");
+        app.db.x("UPDATE worktree_slots SET task_id = NULL WHERE task_id = ?", p![a.id()]).unwrap();
+        assert_eq!(reclaim(&app, &b).unwrap().as_deref(), Some(slot.as_str()));
+        assert_eq!(waiting(&app), json!([]));
+        assert!(board::task_context(&board::get_task(&app, b.id()).unwrap()).s(PR_WAIT).is_none());
     }
 
     #[test]
