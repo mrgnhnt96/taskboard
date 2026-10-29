@@ -258,11 +258,13 @@ pub fn pr_card(app: &App, t: &Row) -> Value {
     }
     let flow = jloads_obj(t.s("pr_flow"));
     let rec = flow.get("rec").cloned();
+    // While PR builds are stopped (`prbuilds.rs`) checks count as passed, as the stage and the merge count them.
+    let builds_stopped = crate::prbuilds::stopped(app);
     let checks = rec.as_ref().map(|r| {
         // Failures cleared with `tb pr not-ours` don't count against the PR (the panel's box says why).
-        if !prflow::failing(&flow, r).is_empty() {
+        if !builds_stopped && !prflow::failing(&flow, r).is_empty() {
             "fail"
-        } else if r["running"].as_i64().unwrap_or(0) > 0 {
+        } else if !builds_stopped && r["running"].as_i64().unwrap_or(0) > 0 {
             "pending"
         } else if r["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
             "none"

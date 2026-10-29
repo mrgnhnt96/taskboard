@@ -555,3 +555,105 @@ fn a_v1_build_or_push_is_the_owner_s_by_me_names_aliases_or_mine() {
     let bad = b.post("/stream/events", json!({"v": 1, "events": [{"id": "bad", "kind": "build", "at": "2026-10-12T15:00:00Z", "source": "relay", "repo": "acme/webapp", "head": "x", "state": "started", "mine": "yes"}]}));
     assert_eq!(bad["results"][0]["why"], "mine is true or false.");
 }
+
+fn azure_running() -> Record {
+    let check = |name: &str, id: i64| Check {
+        name: name.into(),
+        state: "running".into(),
+        url: Some(format!("https://dev.azure.com/acme/webapp/_build/results?buildId={id}")),
+        at: None,
+    };
+    Record { checks: vec![check("ci", 101), check("e2e", 102)], ..running() }
+}
+
+/// #799: each running check that links its Azure build gets the cancel command with that build's
+/// `TB_BUILD_ID`, once per build.
+#[test]
+fn a_stop_cancels_each_running_azure_build_by_its_build_id() {
+    let b = board_with(|c, dir| {
+        c.pr_builds.cancel.insert("azure".into(), format!("[ -n \"$TB_BUILD_ID\" ] && echo \"$TB_BUILD_ID\" >> '{}'", dir.join("cancels.log").display()));
+    });
+    let id = b.pr_task(GH);
+    prhost::install(&b.app, FakeHost::new("github", azure_running()));
+    prflow::refresh(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": true}));
+    assert_eq!(b.queue().len(), 2, "one cancel per running build: {:?}", b.queue());
+
+    prbuilds::tick(&b.app).unwrap();
+    let mut ran: Vec<String> = std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap().lines().map(String::from).collect();
+    ran.sort();
+    assert_eq!(ran, vec!["101", "102"]);
+    let done = &b.flow(id)["builds_cancelled"];
+    assert!(done["h1:101"].is_string() && done["h1:102"].is_string(), "{done}");
+    taskboardd::runner::prs(&b.app).unwrap();
+    assert_eq!(b.queue().iter().filter(|x| x["round"] == 0).count(), 0, "a cancelled build isn't queued again");
+}
+
+/// #799: a cancel command that exits on an empty build says which value the board didn't have.
+#[test]
+fn a_failed_cancel_command_names_the_empty_build_values() {
+    let b = board_with(|c, _| {
+        c.pr_builds.cancel.insert("azure".into(), "[ -n \"$TB_BUILD_ID\" ]".into());
+    });
+    b.pr_task(GH);
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h7", "provider": "azure"}));
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(b.queue()[0]["error"], "the azure cancel command exited 1 (TB_BUILD_URL and TB_BUILD_ID were empty)");
+}
+
+/// #799: a host that has the account rate-limited holds the cancel until the limit ends, without spending a try.
+#[test]
+fn a_rate_limited_host_s_cancel_waits_for_the_limit_without_giving_up() {
+    let b = board_with(|_, _| {});
+    b.pr_task(GH);
+    let h = FakeHost::new("github", running());
+    prhost::install(&b.app, h.clone());
+    prflow::refresh(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": true}));
+    let until = taskboardd::util::now_ts() + 600.0;
+    *h.held.lock() = Some(until);
+    for _ in 0..8 {
+        b.due_now();
+        prbuilds::tick(&b.app).unwrap();
+    }
+    let q = b.queue();
+    assert_eq!(q.len(), 1, "still queued: {q:?}");
+    assert_eq!(q[0]["tries"].as_i64().unwrap_or(0), 0);
+    assert!(q[0]["error"].as_str().unwrap().contains("rate-limited"), "{}", q[0]["error"]);
+    assert!(!h.calls().iter().any(|c| c.starts_with("cancel")), "no call while held: {:?}", h.calls());
+
+    *h.held.lock() = None;
+    b.due_now();
+    prbuilds::tick(&b.app).unwrap();
+    assert!(h.calls().contains(&"cancel h1".to_string()), "{:?}", h.calls());
+}
+
+/// #803: a build the stop cancelled reads as failed on the host; the merge gate and the PR's checks
+/// count it passed, as the stage does.
+#[test]
+fn a_failed_check_holds_neither_the_merge_nor_the_card_while_builds_are_stopped() {
+    let b = board_with(|_, _| {});
+    let id = b.pr_task(GH);
+    let failed = Record {
+        checks: vec![
+            Check { name: "build".into(), state: "failed".into(), url: None, at: None },
+            Check { name: "e2e".into(), state: "running".into(), url: None, at: None },
+        ],
+        ..running()
+    };
+    prhost::install(&b.app, FakeHost::new("github", failed));
+    prflow::refresh(&b.app).unwrap();
+    let gate = |b: &Board| {
+        let t = b.task(id);
+        let rec = b.flow(id)["rec"].clone();
+        taskboardd::prcmds::merge_blockers(&b.app, &t, &rec, true).unwrap()
+    };
+    assert!(gate(&b).iter().any(|x| x.starts_with("checks failed")), "{:?}", gate(&b));
+    assert_eq!(board::pr_card(&b.app, &b.task(id))["checks"], "fail");
+
+    b.post("/pr-builds", json!({"stopped": true}));
+    let held = gate(&b);
+    assert!(!held.iter().any(|x| x.starts_with("checks")), "{held:?}");
+    assert_eq!(board::pr_card(&b.app, &b.task(id))["checks"], "pass");
+}
