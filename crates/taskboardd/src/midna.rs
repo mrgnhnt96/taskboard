@@ -913,7 +913,7 @@ fn pr_merged(t: &Row) -> bool {
 }
 
 /// Whether the task's PR visit stopped to ask Morgan something.
-fn pr_asked(t: &Row) -> bool {
+pub(crate) fn pr_asked(t: &Row) -> bool {
     jloads_obj(t.s("pr_flow")).get("stopped").is_some_and(|s| s["asked"] == true)
 }
 

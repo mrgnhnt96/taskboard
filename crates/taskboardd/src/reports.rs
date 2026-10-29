@@ -43,6 +43,8 @@ pub struct Report<'a> {
     /// The head of the task's branch, committed but with no PR yet, when the owner's own turn left it so.
     pub unshipped: Option<String>,
     pub screened: Option<Value>,
+    /// The task a `tb question` was held on while it was screened, and the hold's id (`hold_question`).
+    pub asking: Option<(i64, String)>,
     /// Background commands still running in the transcript, read before the transaction.
     pub background: transcript::Background,
     /// The files the turn edited, read before the transaction for a stop on a terminal with no task.
@@ -81,6 +83,7 @@ impl<'a> Report<'a> {
             stalled: false,
             unshipped: None,
             screened: None,
+            asking: None,
             background: transcript::Background::default(),
             turn_files: vec![],
             turn_at: None,
@@ -1694,6 +1697,77 @@ fn answered(r: &Report, t: &Row, text: &str, screened: &Value) -> Result<Value> 
     Ok(with(ok(Some(t), None), json!({"answer": ans, "source": src})))
 }
 
+/// What a `tb question` from this terminal is about: the PR it's visiting (true), else its own open task.
+fn asked_about(r: &Report) -> Result<Option<(Row, bool)>> {
+    let t = r.task()?;
+    if let Some(v) = prflow::visited_by(r.app, r.sid().unwrap_or(""))? {
+        if t.as_ref().map(|t| t.id() == v.id()).unwrap_or(true) {
+            return Ok(Some((v, true)));
+        }
+    }
+    Ok(t.filter(|t| t.s("status") != Some("done")).map(|t| (t, false)))
+}
+
+/// Notes a `tb question` on its task before it's screened. Screening runs outside the transaction and can
+/// outlive the call (#798): if the question never gets recorded, `lost_questions` puts it to the owner as
+/// written, so the task still shows it's blocked.
+fn hold_question(r: &Report) -> Result<Option<(i64, String)>> {
+    let text = one_line(&r.b("text"), 2000);
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let Some((t, visit)) = asked_about(r)? else { return Ok(None) };
+    let id = format!("{:016x}", rand::random::<u64>());
+    let mut ctx = board::task_context(&t);
+    ctx.insert(
+        "asking".into(),
+        json!({"id": id, "text": text, "options": r.body.get("options"), "session": r.sid(), "name": r.name(), "visit": visit, "at": now_iso()}),
+    );
+    board::save_context(r.app, t.id(), &ctx, false)?;
+    Ok(Some((t.id(), id)))
+}
+
+/// Takes back the hold `hold_question` made. False when it's gone: `lost_questions` already asked it.
+fn take_asking(app: &App, task: i64, id: &str) -> Result<bool> {
+    let mut ctx = board::task_context(&board::get_task(app, task)?);
+    match ctx.get("asking").map(|a| a["id"] == id) {
+        None => Ok(false),
+        // A newer question took its place; that one is still on its way.
+        Some(false) => Ok(true),
+        Some(true) => {
+            ctx.remove("asking");
+            board::save_context(app, task, &ctx, false)?;
+            Ok(true)
+        }
+    }
+}
+
+/// Puts a question to the owner: on the PR the terminal is visiting, else on the task, which then waits on
+/// them. `wrote` is what the agent wrote when the screener reworded it.
+#[allow(clippy::too_many_arguments)]
+fn raise_question(app: &App, t: &Row, visit: bool, who: &str, asked: &str, wrote: Option<&str>, options: Option<&Value>, at: Option<&str>) -> Result<()> {
+    if visit {
+        if !prflow::stopped(app, t, who, asked, true, wrote)? {
+            // The board's side of the visit is over (#609), but the agent is still on the PR: its
+            // question reaches the owner the same way.
+            prflow::note_stop(app, t, who, asked, true, wrote)?;
+        }
+        return Ok(());
+    }
+    let mut ctx = board::task_context(t);
+    if ctx.remove("step_waiting").is_some() {
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    let ask = crate::ask::from_options(asked, options);
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => asked, "ask" => ask, "answered_at" => null, "lost" => 0])?;
+    let mut line = format!("Asked: {asked}");
+    if let Some(w) = wrote {
+        line += &format!(" (The agent wrote: “{w}”)");
+    }
+    board::log_event_full(app, t.id(), who, "question", &line, None, at)?;
+    Ok(())
+}
+
 fn on_question(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
@@ -1701,22 +1775,24 @@ fn on_question(r: &mut Report) -> Result<Value> {
     if text.is_empty() {
         return err(400, "A question needs some text.");
     }
+    if let Some((id, hold)) = r.asking.clone() {
+        if !take_asking(app, id, &hold)? {
+            // The call ran so long the board asked it as written already.
+            return Ok(ok(Some(&board::get_task(app, id)?), None));
+        }
+    }
     let t = r.task()?;
     let visiting = prflow::visited_by(app, r.sid().unwrap_or(""))?;
     let screened = r.screened.clone().unwrap_or(json!({}));
     let is_answered = screened["verdict"] == "answered";
+    let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
+    let wrote = if asked != text { Some(text.as_str()) } else { None };
     if let Some(v) = &visiting {
         if t.as_ref().map(|t| t.id() == v.id()).unwrap_or(true) {
             if is_answered {
                 return answered(r, v, &text, &screened);
             }
-            let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
-            let wrote = if screened["question"].is_string() { Some(text.as_str()) } else { None };
-            if !prflow::stopped(app, v, &r.name(), &asked, true, wrote)? {
-                // The board's side of the visit is over (#609), but the agent is still on the PR: its
-                // question reaches the owner the same way.
-                prflow::note_stop(app, v, &r.name(), &asked, true, wrote)?;
-            }
+            raise_question(app, v, true, &r.name(), &asked, wrote, None, None)?;
             r.set_session_status("needs")?;
             return Ok(with(ok(Some(v), None), rewrite(&screened)));
         }
@@ -1734,19 +1810,41 @@ fn on_question(r: &mut Report) -> Result<Value> {
             format!("{} is done, so the board can't flag a question on it. Ask {} in the terminal instead.", rf("task", t.id()), app.cfg.owner),
         );
     }
-    let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
-    let mut ctx = board::task_context(&t);
-    if ctx.remove("step_waiting").is_some() {
-        board::save_context(app, t.id(), &ctx, false)?;
-    }
-    let ask = crate::ask::from_options(&asked, r.body.get("options"));
-    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => asked, "ask" => ask, "answered_at" => null, "lost" => 0])?;
-    let mut line = format!("Asked: {asked}");
-    if asked != text {
-        line += &format!(" (The agent wrote: “{text}”)");
-    }
-    r.log(t.id(), "question", &line, None)?;
+    raise_question(app, &t, false, &r.name(), &asked, wrote, r.body.get("options"), Some(&r.at))?;
     Ok(with(ok(Some(&t), None), rewrite(&screened)))
+}
+
+/// How long past the screener's own timeout a held question waits for its call before the board asks it.
+const LOST_QUESTION_GRACE_SECS: f64 = 45.0;
+
+/// Asks, as written, the questions whose `tb question` call never got as far as recording them: the
+/// screener hung or the call failed. Without this the task looks idle while its agent waits on an answer.
+pub fn lost_questions(app: &App) -> Result<()> {
+    let wait = app.cfg.questions.timeout_secs as f64 + LOST_QUESTION_GRACE_SECS;
+    for t in app.db.q("SELECT * FROM tasks WHERE context LIKE '%\"asking\"%'", p![])? {
+        let mut ctx = board::task_context(&t);
+        let Some(a) = ctx.get("asking").cloned() else { continue };
+        if age_secs(a["at"].as_str()).is_some_and(|age| age < wait) {
+            continue;
+        }
+        ctx.remove("asking");
+        board::save_context(app, t.id(), &ctx, false)?;
+        let t = board::get_task(app, t.id())?;
+        let sid = a["session"].as_str().unwrap_or("");
+        let visit = a["visit"] == true;
+        let still_on = if visit { prflow::flow(&t).s("session") == Some(sid) } else { t.s("status") != Some("done") };
+        if !still_on {
+            continue;
+        }
+        let text = a["text"].as_str().unwrap_or("");
+        let who = a["name"].as_str().unwrap_or(board::BOARD);
+        app.info(format!("{}: asked a question its call lost while screening it", rf("task", t.id())));
+        raise_question(app, &t, visit, who, text, None, a.get("options").filter(|o| !o.is_null()), None)?;
+        if !sid.is_empty() {
+            app.db.x("UPDATE sessions SET status = 'needs' WHERE id = ? AND status != 'gone'", p![sid])?;
+        }
+    }
+    Ok(())
 }
 
 /// `tb withdraw`: the agent takes back a question that got its answer another way (the owner said it in the
@@ -2952,8 +3050,13 @@ fn on_delivered(r: &mut Report) -> Result<Value> {
 
 fn on_status(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
-    let Some(t) = r.task()? else { return Ok(ok(None, Some("No task on this terminal.".into()))) };
-    let label = if t.b("failed") {
+    // A PR visit runs on a finished task, which isn't the terminal's own (#798).
+    let visit = prflow::visited_by(r.app, r.sid().unwrap_or(""))?;
+    let Some(t) = r.task()?.or_else(|| visit.clone()) else { return Ok(ok(None, Some("No task on this terminal.".into()))) };
+    let asked_on_visit = visit.is_some_and(|v| v.id() == t.id() && midna::pr_asked(&v));
+    let label = if asked_on_visit {
+        "Needs you".to_string()
+    } else if t.b("failed") {
         "Failed".to_string()
     } else {
         match t.s("status") {
@@ -3216,6 +3319,7 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         r.exit_detail = r.sid.clone().and_then(|sid| crate::midna::exit_detail(app, &sid));
     }
     if r.event == "tb.question" && !spooled {
+        r.asking = app.db.tx(|| hold_question(&r))?;
         let t = r.task().ok().flatten();
         r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
     }

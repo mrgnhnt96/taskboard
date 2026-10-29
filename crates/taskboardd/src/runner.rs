@@ -695,6 +695,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     jira::run_pending(app)?;
     crate::qa::tick(app)?;
     app.db.tx(|| crate::lines::tick(app))?;
+    app.db.tx(|| crate::reports::lost_questions(app))?;
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
     app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;
