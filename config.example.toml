@@ -164,8 +164,8 @@ settle_secs = 300.0                  # after it comes back or connects, asks, nu
 reconcile_secs = 3600.0              # a PR a healthy stream relay covers is polled only this often, and once after the relay connects or comes back (0: never)
 
 # A PR host's rate limit: on a 429, `X-RateLimit-Remaining: 0` or GitHub's secondary limit, every
-# call on that account waits until the host's Retry-After / reset (else 5 minutes, doubling up to an
-# hour), `tb feed` and /state say "Bitbucket rate-limited until 3:40pm", and the `rate-limit:<host>`
+# call on that account waits until the host's Retry-After / reset (else a flat 10 minutes, every
+# time), `tb feed` and /state say "Bitbucket rate-limited until 3:40pm", and the `rate-limit:<host>`
 # alert goes up when it lasts 30 minutes inside the work hours. max_per_hour caps the board's own
 # calls on the account in any hour: the PR poll and the review sweep ([intervals] prs, reviews)
 # stretch to fit it, reads stop a tenth short of it (kept for writes) and writes stop at it.

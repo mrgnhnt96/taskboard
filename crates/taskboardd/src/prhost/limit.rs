@@ -7,9 +7,8 @@
 //!
 //! When the host says the account is limited (a 429; GitHub's "API rate limit exceeded" or secondary
 //! limit; `X-RateLimit-Remaining: 0`), every call on that account stops until the host's
-//! `Retry-After` / `X-RateLimit-Reset`, else for 5 minutes. Each limit that comes back doubles the
-//! backoff, up to an hour (never shorter than the host's time); only an hour with no limit starts it
-//! over at 5 minutes, since calls getting through between limits is what keeps the account limited.
+//! `Retry-After` / `X-RateLimit-Reset`, else for a flat 10 minutes, however often the limit comes back:
+//! the host's limit rolls by the hour, so waiting longer only wastes the calls that would get through.
 //! A call made meanwhile fails at once with "Bitbucket rate-limited until 3:40pm" instead of reaching
 //! the host; when the host gave no time, it says the time is the board's own backoff. Each backoff logs a line with the board's own calls in the last hour, so it's clear
 //! whether the board used the limit up. [`check`] (every runner tick) raises the `rate-limit:<host>`
@@ -18,7 +17,7 @@
 //!
 //! # Slowing down
 //!
-//! After a backoff, the account restarts slowly for as long as it backed off: only writes and the
+//! After a backoff, the account restarts slowly for 10 minutes: only writes and the
 //! reads marked [`priority`] (the PR poll's reads of the board's open PRs, whose stage can change, and
 //! the reads of a `tb pr …` command someone asked for) go; every other read (the review sweep, master
 //! breaks, CI reads, …) waits, and [`stretch`] doubles the PR poll's interval. A read held meanwhile
@@ -170,11 +169,12 @@ pub const BACKGROUND_WAIT_SECS: f64 = 5.0;
 /// How long a read's answer is kept for the same read on the account.
 pub const KEEP_SECS: f64 = 30.0;
 
-/// A limit with no `Retry-After` / reset: 5 minutes, doubling while it keeps coming back.
-const FIRST_BACKOFF_SECS: f64 = 300.0;
-const MAX_BACKOFF_SECS: f64 = 3600.0;
+/// A limit with no `Retry-After` / reset: a flat 10 minutes, every time.
+const BACKOFF_SECS: f64 = 600.0;
+/// The slow restart after a backoff.
+const SLOW_SECS: f64 = 600.0;
 const HOUR: f64 = 3600.0;
-/// This long past a limit with no other limit starts the backoff over at 5 minutes.
+/// This long past a limit with no other limit ends the run of limits the alert counts.
 const QUIET_SECS: f64 = HOUR;
 /// Near the limit with no reset time from the host: slow down for this long.
 const NEAR_SECS: f64 = 300.0;
@@ -222,8 +222,6 @@ struct Account {
     host_time: bool,
     /// When this run of limits started (kept until a quiet hour).
     since: Option<f64>,
-    /// Limits with less than [`QUIET_SECS`] between them: what doubles the backoff.
-    strikes: u32,
     why: String,
     #[serde(skip)]
     alerted: bool,
@@ -639,27 +637,23 @@ impl Limits {
         };
         let standing = a.until.filter(|u| *u > now);
         if standing.is_none() && a.until.is_none_or(|u| now - u >= QUIET_SECS) {
-            a.strikes = 0;
             a.since = None;
         }
-        let doubled = now + (FIRST_BACKOFF_SECS * 2f64.powi(a.strikes.min(8) as i32)).min(MAX_BACKOFF_SECS);
         // A limit already standing doesn't back off again for the calls that were already out; only
-        // a later time from the host moves it. A limit that came back waits at least the doubled time.
+        // a later time from the host moves it.
         let until = match (standing, told) {
             (Some(u), t) => u.max(t.unwrap_or(u)),
-            (None, Some(t)) if a.strikes == 0 => t,
-            (None, Some(t)) => t.max(doubled),
-            (None, None) => doubled,
+            (None, Some(t)) => t,
+            (None, None) => now + BACKOFF_SECS,
         };
         if standing.is_none() {
-            a.strikes += 1;
             a.share = Some((now, a.calls.len()));
         }
         a.host_time = told == Some(until) || (standing == Some(until) && a.host_time);
         a.until = Some(until);
         a.since.get_or_insert(now);
         a.why = hit.why.clone();
-        a.slow_until = Some(until + (until - now).max(FIRST_BACKOFF_SECS));
+        a.slow_until = Some(until + SLOW_SECS);
         a.slow_why = format!("{}'s limit on the account ended at {}; the board is easing back in", label(host), local_clock(Some(&iso(until))));
         let budget = self.budget(host).map(|b| format!(" (budget {b})")).unwrap_or_default();
         let source = if a.host_time { "the host's time" } else { "the board's backoff" };
@@ -689,8 +683,8 @@ impl Limits {
     }
 
     /// `tb pr lift`: ends the board's own hold on `host`'s accounts (every host when None): the slow
-    /// restart after a limit, and a limit the host set, since the owner says it's over. The next limit
-    /// backs off from 5 minutes again. Answers a line per account it lifted.
+    /// restart after a limit, and a limit the host set, since the owner says it's over. Answers a line
+    /// per account it lifted.
     pub fn lift(&self, host: Option<&str>, now: f64) -> Vec<String> {
         let mut out = vec![];
         for a in self.accounts.lock().values_mut().filter(|a| host.is_none_or(|h| h == a.host)) {
@@ -701,7 +695,6 @@ impl Limits {
             self.spans.lock().push(Span::Cut { host: a.host.clone(), kind: None, at: now });
             a.until = a.until.filter(|u| *u <= now);
             a.slow_until = None;
-            a.strikes = 0;
             a.since = None;
         }
         if !out.is_empty() {
@@ -1516,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_time_it_backs_off_five_minutes_doubling_to_an_hour() {
+    fn without_a_time_it_backs_off_ten_minutes_every_time() {
         let l = Limits::default();
         let mut t = T0;
         let mut waits = vec![];
@@ -1525,11 +1518,11 @@ mod tests {
             waits.push(((u - t) / 60.0).round() as i64);
             t = u + 1.0;
         }
-        assert_eq!(waits, vec![5, 10, 20, 40, 60, 60]);
+        assert_eq!(waits, vec![10; 6]);
     }
 
     #[test]
-    fn calls_getting_through_between_limits_don_t_start_the_doubling_over() {
+    fn a_limit_that_keeps_coming_back_between_calls_still_waits_ten_minutes() {
         let l = Limits::default();
         let mut t = T0;
         let mut waits = vec![];
@@ -1540,23 +1533,20 @@ mod tests {
             l.admit("bb:1", "bitbucket", false, true, u + 1.0).unwrap();
             t = u + 1200.0;
         }
-        assert_eq!(waits, vec![5, 10, 20]);
-        let until = l.hit("bb:1", "bitbucket", &hit("429"), t);
-        let quiet = until + HOUR;
-        assert_eq!(l.hit("bb:1", "bitbucket", &hit("429"), quiet) - quiet, 300.0, "an hour with no limit starts it over");
+        assert_eq!(waits, vec![10, 10, 10]);
     }
 
     #[test]
-    fn a_limit_that_comes_back_waits_at_least_the_doubled_time_whatever_the_host_says() {
+    fn a_limit_that_comes_back_keeps_the_host_s_time() {
         let l = Limits::default();
         let u = l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(60.0), ..hit("429") }, T0);
         assert_eq!(u, T0 + 60.0, "the host's time, the first time");
         let t = u + 120.0;
-        assert_eq!(l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(60.0), ..hit("429") }, t), t + 600.0);
+        assert_eq!(l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(60.0), ..hit("429") }, t), t + 60.0, "and again when it comes back");
     }
 
     #[test]
-    fn after_a_backoff_only_the_pr_poll_s_reads_and_writes_go_for_as_long() {
+    fn after_a_backoff_only_the_pr_poll_s_reads_and_writes_go_for_ten_minutes() {
         let l = Limits::default();
         let until = l.hit("bb:1", "bitbucket", &hit("Bitbucket answered 429"), T0);
         let t = until + 1.0;
@@ -1570,8 +1560,9 @@ mod tests {
         assert!(st[0]["slow_text"].as_str().unwrap().contains("easing back in"), "{}", st[0]);
         assert!(st[0]["text"].is_null());
         assert!(l.lifted(t).is_empty(), "the alert stays through the slow restart");
-        let done = until + 301.0;
-        assert!(l.admit("bb:1", "bitbucket", false, false, done).is_ok(), "every read goes after as long as it backed off");
+        assert!(l.admit("bb:1", "bitbucket", false, false, until + 599.0).is_err(), "still easing back in");
+        let done = until + 601.0;
+        assert!(l.admit("bb:1", "bitbucket", false, false, done).is_ok(), "every read goes 10 minutes after the limit");
         assert_eq!(l.stretch(done), 1.0);
         assert_eq!(l.lifted(done), vec!["bitbucket".to_string()]);
     }
@@ -1626,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn calls_already_out_don_t_double_a_standing_limit() {
+    fn calls_already_out_don_t_move_a_standing_limit() {
         let l = Limits::default();
         let first = l.hit("gh:1", "github", &hit("x"), T0);
         assert_eq!(l.hit("gh:1", "github", &hit("x"), T0 + 1.0), first);
@@ -1893,15 +1884,15 @@ mod tests {
     #[test]
     fn a_limit_opens_a_limited_stretch_and_the_slow_one_after_it() {
         let l = Limits::default();
-        let until = l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(600.0), ..hit("429") }, T0);
+        let until = l.hit("bb:1", "bitbucket", &Hit { retry_after: Some(1800.0), ..hit("429") }, T0);
         let spans = l.take_spans();
         assert_eq!(spans[0], Span::Cut { host: "bitbucket".into(), kind: Some("slow"), at: T0 }, "a limit ends the slow stretch it came in");
         assert!(matches!(&spans[1], Span::Open { kind: "limited", from, to, .. } if *from == T0 && *to == until), "{spans:?}");
-        assert!(matches!(&spans[2], Span::Open { kind: "slow", from, to, .. } if *from == until && *to == until + 600.0), "{spans:?}");
+        assert!(matches!(&spans[2], Span::Open { kind: "slow", from, to, .. } if *from == until && *to == until + 600.0), "10 minutes after a long limit too: {spans:?}");
     }
 
     #[test]
-    fn lift_ends_the_board_s_hold_and_starts_the_backoff_over() {
+    fn lift_ends_the_board_s_hold() {
         let l = Limits::default();
         let mut t = T0;
         for _ in 0..3 {
@@ -1916,7 +1907,7 @@ mod tests {
         assert!(l.admit("bb:1", "bitbucket", false, false, t).is_ok());
         assert!(l.admit("gh:1", "github", false, false, t).is_err(), "only the host named");
         assert_eq!(l.take_spans(), vec![Span::Cut { host: "bitbucket".into(), kind: None, at: t }]);
-        assert_eq!(l.hit("bb:1", "bitbucket", &hit("429"), t + 10.0) - (t + 10.0), 300.0, "the next limit backs off from 5 minutes");
+        assert_eq!(l.hit("bb:1", "bitbucket", &hit("429"), t + 10.0) - (t + 10.0), 600.0, "the next limit backs off 10 minutes");
         assert!(l.lift(Some("bitbucket"), T0 + 10.0 * HOUR).is_empty(), "nothing held, nothing lifted");
     }
 
@@ -1935,7 +1926,7 @@ mod tests {
         assert_eq!(after.held_until("bb:1", T0 + 60.0), Some(until));
         assert_eq!(after.status(T0 + 60.0)[0]["calls_last_hour"], 40, "the hour's calls came back; the one older than an hour aged out");
         let next = after.hit("bb:1", "bitbucket", &hit("429"), until + 1.0);
-        assert_eq!(next - (until + 1.0), 2.0 * FIRST_BACKOFF_SECS, "the backoff step came back too");
+        assert_eq!(next - (until + 1.0), BACKOFF_SECS, "a limit after the restart backs off 10 minutes");
         let later = Limits::default();
         later.restore(&saved, T0 + 2.0 * HOUR + 120.0);
         assert!(later.admit("bb:1", "bitbucket", false, false, T0 + 2.0 * HOUR + 120.0).is_ok(), "an old hold doesn't come back");
