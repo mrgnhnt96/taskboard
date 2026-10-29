@@ -3,7 +3,7 @@
 //! [`provider_for`] picks one per check: the project's own `failures_cmd` when it has one
 //! (`[pr.projects.<name>]`), else by the check's link: GitHub Actions (`gh run view --json jobs`),
 //! Bitbucket Pipelines (the run's steps and their test reports), or Azure Pipelines (the build's
-//! timeline and failed test results, with the CI token stored with `tb ci-token set`, else the env var
+//! timeline and failed test results, with the Azure DevOps account's token (Settings ▸ Accounts), else the env var
 //! `pr.azure_token_env`). A check none of them can read gets no detail; `tb pr status` says so.
 
 use std::path::Path;
@@ -75,7 +75,7 @@ pub fn provider_for(app: &App, project: &PrProject, check: &Check) -> HostResult
         Some(Kind::Azure) => {
             let (_, token) = crate::accounts::ci_token(app)
                 // An agent can't use a token from the owner's shell (the daemon, started by launchd, doesn't see it).
-                .ok_or_else(|| "no Azure DevOps token: the owner stores one with tb ci-token set".to_string())?;
+                .ok_or_else(|| "no Azure DevOps token: the owner connects Azure DevOps in Taskboard ▸ Settings ▸ Accounts".to_string())?;
             Some(Box::new(AzurePipelines { http: Box::new(BasicHttp::for_service("Azure DevOps", "", &token)) }))
         }
     })
@@ -164,11 +164,11 @@ impl AzurePipelines {
     }
 }
 
-/// An Azure DevOps refusal, saying what was being read; a 401 or 403 also names the scope the CI token
-/// needs for it, as Azure answers 401 to a token without that scope.
+/// An Azure DevOps refusal, saying what was being read; a 401 or 403 also names the scope the Azure
+/// DevOps token needs for it, as Azure answers 401 to a token without that scope.
 fn azure_error(e: String, what: &str, scope: &str) -> String {
     if e.contains("answered 401") || e.contains("answered 403") {
-        return format!("{e} reading {what}: the CI token needs {scope} (tb ci-token set stores a new one)");
+        return format!("{e} reading {what}: the Azure DevOps token needs {scope} (a new one goes in Taskboard ▸ Settings ▸ Accounts)");
     }
     format!("{e} reading {what}")
 }

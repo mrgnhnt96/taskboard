@@ -1823,9 +1823,9 @@ enum AlertCmd {
 enum CiTokenCmd {
     /// Whether the board has one, and where it's from
     Show,
-    /// Store an Azure DevOps personal access token (Build and Test management, read); read from stdin when left out
+    /// Store an Azure DevOps personal access token (Build and Test management, read); read from stdin when left out. Settings ▸ Accounts ▸ Azure DevOps does the same and shows what it can read
     Set { token: Option<String> },
-    /// Forget the stored token (the env variable is used again, if set)
+    /// Forget the stored token and disconnect Azure DevOps (the env variable is used again, if set)
     Clear,
 }
 
@@ -7071,7 +7071,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&match v["source"].as_str() {
                 Some("board") => "CI token: stored on the board (Keychain).".to_string(),
                 Some(_) => format!("CI token: from ${} in the daemon's environment.", v["env"].as_str().unwrap_or("")),
-                None => format!("No CI token: store one with tb ci-token set (or set ${} for the daemon).", v["env"].as_str().unwrap_or("")),
+                None => format!("No CI token: connect Azure DevOps in Taskboard ▸ Settings ▸ Accounts, or store one with tb ci-token set (or set ${} for the daemon).", v["env"].as_str().unwrap_or("")),
             });
             Ok(0)
         }

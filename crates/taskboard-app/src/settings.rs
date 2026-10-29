@@ -5,8 +5,8 @@
 //! Worktrees shows each project's slot pool (`GET /slots`), read-only: its settings, each slot with
 //! the task holding it, its size and last use, and the tasks waiting for one.
 //!
-//! Accounts: GitHub, Bitbucket and Slack, so the board and its agents can
-//! check PRs, comment, push and assign reviewers. The daemon owns them (`taskboardd::accounts`): each
+//! Accounts: GitHub, Bitbucket, Azure DevOps and Slack, so the board and its agents can
+//! check PRs, comment, push, read failed builds and assign reviewers. The daemon owns them (`taskboardd::accounts`): each
 //! is Taskboard's own token, checked with the service and kept in the Keychain, never the Mac's `gh`
 //! or git sign-in. GitHub's comes from a browser code, a pasted token or a copy of gh's. Tokens go to
 //! the daemon once and never come back to the window. An account missing scopes Taskboard needs shows
@@ -95,9 +95,10 @@ impl Sec {
 }
 
 /// Each account's card: id, a short mark and its color, and what it's used for.
-const CARDS: [(&str, &str, u32, &str); 3] = [
+const CARDS: [(&str, &str, u32, &str); 4] = [
     ("github", "GH", 0x24292f, "PR checks and reviews, comments, reviewers and git push"),
     ("bitbucket", "BB", 0x2684ff, "Pull requests, comments, reviewers and git push over HTTPS"),
+    ("azure", "AZ", 0x0078d4, "Failed Azure Pipelines steps and tests on PR checks"),
     ("slack", "S", 0x4a154b, "Posting and reading messages for the board and its agents"),
 ];
 
@@ -106,6 +107,7 @@ fn agent_cli(id: &str) -> &'static str {
     match id {
         "github" => "tb pr status   # anything else: gh, or tb api github repos/OWNER/REPO/…",
         "bitbucket" => "tb pr status   # anything else: tb api bitbucket repositories/WORKSPACE/REPO/…",
+        "azure" => "tb pr status   # anything else: tb api azure PROJECT/_apis/build/builds/ID?api-version=7.1",
         _ => "tb api slack chat.postMessage -d '{\"channel\":\"#dev\",\"text\":\"PR is ready\"}'",
     }
 }
@@ -134,9 +136,13 @@ pub struct SettingsWindow {
     gh_form: bool,
     /// Bitbucket's token form is open while connected (to replace a token missing scopes).
     bb_form: bool,
+    /// Azure DevOps's token form is open while connected (to replace a token missing scopes).
+    az_form: bool,
     gh_token: Input,
     bb_email: Input,
     bb_token: Input,
+    az_org: Input,
+    az_token: Input,
     slack_token: Input,
     /// The sign-in code already copied (so a poll doesn't copy it again).
     opened_code: Option<String>,
@@ -179,9 +185,12 @@ impl SettingsWindow {
             copied: None,
             gh_form: false,
             bb_form: false,
+            az_form: false,
             gh_token: Input::secret(cx, "ghp_… or github_pat_…"),
             bb_email: Input::new(cx, "you@company.com", false),
             bb_token: Input::secret(cx, "ATATT…"),
+            az_org: Input::new(cx, "your-org or dev.azure.com/your-org", false),
+            az_token: Input::secret(cx, "Personal access token"),
             slack_token: Input::secret(cx, "xoxp-… or xoxb-…"),
             opened_code: None,
             browser_opened: false,
@@ -449,17 +458,20 @@ impl SettingsWindow {
         let body = match id {
             "github" => json!({"token": self.gh_token.text(cx)}),
             "bitbucket" => json!({"email": self.bb_email.text(cx), "token": self.bb_token.text(cx)}),
+            "azure" => json!({"organization": self.az_org.text(cx), "token": self.az_token.text(cx)}),
             _ => json!({"token": self.slack_token.text(cx)}),
         };
         self.post(id, format!("accounts/{id}"), body, cx, move |s, cx| {
             let field = match id {
                 "github" => &s.gh_token,
                 "bitbucket" => &s.bb_token,
+                "azure" => &s.az_token,
                 _ => &s.slack_token,
             };
             field.clear(cx);
             s.gh_form = false;
             s.bb_form = false;
+            s.az_form = false;
             let a = s.account(id);
             s.notes.insert(id, (format!("Connected as {}.", a["detail"].as_str().or(a["user"].as_str()).unwrap_or("you")), false));
         });
@@ -687,6 +699,7 @@ impl SettingsWindow {
             let rows: Vec<AnyElement> = match id {
                 "github" => self.github_rows(t, &a, window, cx),
                 "bitbucket" => self.bitbucket_rows(t, &a, window, cx),
+                "azure" => self.azure_rows(t, &a, window, cx),
                 _ => self.slack_rows(t, &a, window, cx),
             };
             let mut card = kit::card(t).overflow_hidden();
@@ -835,6 +848,32 @@ impl SettingsWindow {
             rows.push(link_row(t, "bb-create", "Create an API token", taskboardd::accounts::BITBUCKET_TOKEN_URL, cx));
         }
         rows.extend(error_row(t, "bitbucket", a));
+        rows
+    }
+
+    fn azure_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows = vec![];
+        let connected = a["connected"] == true;
+        if connected {
+            rows.push(self.signed_in_row(t, "azure", a, "Personal access token in the Keychain (taskboard-azure-devops)", "Disconnect", cx));
+            if a["reauth"] == true && !self.az_form {
+                let btn = kit::btn_primary(t, "az-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
+                    s.az_form = true;
+                    window.focus(&s.az_token.focus, cx);
+                    cx.notify();
+                }));
+                rows.push(reauth_row(t, "azure", a, "Edit the token in Azure DevOps (or make a new one) to add them, and connect it.", btn.into_any_element()));
+            } else if let Some(note) = a["note"].as_str() {
+                rows.push(off_row(t, "azure", a, note));
+            }
+        }
+        if !connected || self.az_form {
+            let org = self.az_org.render(t, "az-org", window).w(px(260.)).on_key_down(self.field_keys("azure", &self.az_org, cx));
+            rows.push(line(t, "az-org-row", !connected, false, "Organization", "The organization your pipelines run in.", None).child(org).into_any_element());
+            rows.push(self.token_row(t, "azure", "Personal access token", "A token with Build (Read) and Test Management (Read).", &self.az_token, window, cx, false));
+            rows.push(link_row(t, "az-create", "How to make a personal access token", taskboardd::accounts::AZURE_TOKEN_URL, cx));
+        }
+        rows.extend(error_row(t, "azure", a));
         rows
     }
 
@@ -1519,7 +1558,7 @@ mod tests {
         let (w, rec) = window(cx);
         w.update(cx, |s, _, cx| {
             assert!(s.loaded);
-            assert_eq!(s.accounts.len(), 3);
+            assert_eq!(s.accounts.len(), 4);
             s.bb_email.set_text("sam@acme.com", cx);
             s.bb_token.set_text("ATATT-x", cx);
             s.connect("bitbucket", cx);
@@ -1611,6 +1650,31 @@ mod tests {
         })
         .unwrap();
         assert_eq!(rec.get("state", &[]).unwrap()["accounts"], json!([]));
+    }
+
+    #[gpui_kit::test]
+    fn an_azure_token_without_test_management_asks_for_a_new_one(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, _, cx| {
+            s.az_org.set_text("dev.azure.com/acme", cx);
+            s.az_token.set_text("narrow", cx);
+            s.connect("azure", cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.last("accounts/azure"), Some(json!({"organization": "dev.azure.com/acme", "token": "narrow"})));
+        w.update(cx, |s, _, cx| {
+            let az = s.account("azure");
+            assert_eq!((az["connected"].clone(), az["reauth"].clone()), (json!(true), json!(true)));
+            assert_eq!(az["missing"], json!([taskboardd::accounts::AZURE_TEST]));
+            assert!(super::needs_owner(&az), "the sidebar counts it");
+            assert_eq!(s.az_token.text(cx), "");
+            s.az_token.set_text("azpat-full", cx);
+            s.connect("azure", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, _| assert_eq!(s.account("azure")["reauth"], false)).unwrap();
     }
 
     #[gpui_kit::test]
