@@ -822,6 +822,78 @@ fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &s
     true
 }
 
+/// `git switch` or `git checkout` and its verb.
+static BRANCH_MOVE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(switch|checkout)\b").unwrap());
+
+/// A `git switch`, or a `git checkout` of a branch, in `cmd`: its verb and the folder it runs in. None
+/// for a checkout that restores files (it names `--`, or its first argument is a path there), and for
+/// any other command.
+fn branch_move(cmd: &str, cwd: &str) -> Option<(String, PathBuf)> {
+    let masked = unquoted(cmd);
+    let c = BRANCH_MOVE_RE.captures(&masked)?;
+    let (m, verb) = (c.get(0)?, c[1].to_string());
+    let dir = runs_in(cmd, Some(m), cwd);
+    if verb == "checkout" {
+        let rest = &masked[m.end()..];
+        let args = words_of(cmd, &rest[..rest.find([';', '&', '|']).unwrap_or(rest.len())], m.end());
+        let makes = args.iter().any(|a| matches!(*a, "-b" | "-B" | "--orphan"));
+        let first = args.iter().find(|a| !a.starts_with('-'));
+        if !makes && (args.contains(&"--") || first.is_some_and(|a| dir.join(a).exists())) {
+            return None;
+        }
+    }
+    Some((verb, dir))
+}
+
+/// `PreToolUse`: refuses a `git switch`, or a `git checkout` of a branch, in a project's main checkout
+/// while another terminal works there, on a task or not: the branch would move under it, and its next
+/// commit would land on a branch it never chose. A worktree slot has one terminal; no board: carry on.
+fn shared_branch_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
+    if payload["tool_name"] != "Bash" {
+        return false;
+    }
+    let cmd = payload["tool_input"]["command"].as_str().unwrap_or("");
+    let Some((verb, dir)) = branch_move(cmd, cwd) else { return false };
+    let Some((_, top)) = repo_of(&dir) else { return false };
+    // A linked worktree's `.git` is a file; only the main checkout's is a folder.
+    if !top.join(".git").is_dir() {
+        return false;
+    }
+    let path = format!("/slots/sharing?path={}&session={}", crate::tb::qv(&top.to_string_lossy()), crate::tb::qv(session));
+    let Ok(v) = board_call(cfg, "GET", &path, None, hook_timeout()) else { return false };
+    let names: Vec<String> = v["sharing"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| match o["task"].as_str() {
+            Some(t) => format!("{} ({t})", o["name"].as_str().unwrap_or("a terminal")),
+            None => o["name"].as_str().unwrap_or("a terminal").to_string(),
+        })
+        .collect();
+    if names.is_empty() {
+        return false;
+    }
+    let own = steps(cfg, session, "").and_then(|(v, _)| v["task"].as_str().map(str::to_string));
+    deny(&branch_refusal(own.as_deref(), &verb, &top, &names, &tb_path()));
+    true
+}
+
+/// The refusal for a branch move in a main checkout that other terminals (`names`) work in.
+fn branch_refusal(own: Option<&str>, verb: &str, top: &Path, names: &[String], tb: &str) -> String {
+    let (who, more) = (own.unwrap_or("This terminal"), if names.len() == 1 { "works" } else { "work" });
+    let claim = match own {
+        Some(_) => format!("{tb} slot claim --bring <files>"),
+        None => format!("{tb} task new \"<title>\" --detail \"…\" --here --lane slot --bring <files>"),
+    };
+    format!(
+        "{who} can't git {verb} in {}: {} {more} in this checkout too, and a git {verb} moves the branch under them. Leave its branch \
+         alone. Work on a branch of your own in a worktree slot: {claim} gives you one, moves your uncommitted edits in those files \
+         there and prints its path; cd there and make the branch with git switch -c <branch>.",
+        top.display(),
+        names.join(", ")
+    )
+}
+
 /// `git worktree add` and the rest of its command, up to the next `;`, `&` or `|`.
 static WORKTREE_ADD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+worktree\s+add\b([^;&|]*)").unwrap());
 
@@ -1046,7 +1118,7 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
     if default_branch_refused(payload, &cfg, here) {
         return true;
     }
-    if elsewhere_refused(payload, session, &cfg, here) || stray_worktree_refused(payload, session, &cfg, here) || shared_checkout_refused(payload, session, &cfg, here) {
+    if elsewhere_refused(payload, session, &cfg, here) || stray_worktree_refused(payload, session, &cfg, here) || shared_branch_refused(payload, session, &cfg, here) || shared_checkout_refused(payload, session, &cfg, here) {
         return true;
     }
     let opening = opens_pr(tool, &payload["tool_input"]);
@@ -1953,6 +2025,36 @@ mod tests {
         git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
         assert_eq!(what("git push origin fix:main"), None);
         assert_eq!(what("git push origin trunk").as_deref(), Some("push to trunk"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn branch_moves_are_told_from_file_restores() {
+        let root = std::env::temp_dir().join(format!("tb-branch-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "").unwrap();
+        let dir = root.to_string_lossy().to_string();
+        let moves = |cmd: &str| branch_move(cmd, &dir).map(|(verb, _)| verb);
+        assert_eq!(moves("git switch fix").as_deref(), Some("switch"));
+        assert_eq!(moves("git switch -c fix").as_deref(), Some("switch"), "a new branch moves the checkout too");
+        assert_eq!(moves("git fetch && git checkout main").as_deref(), Some("checkout"));
+        assert_eq!(moves("git checkout -b fix").as_deref(), Some("checkout"));
+        assert_eq!(moves("git checkout -- src/a.rs"), None);
+        assert_eq!(moves("git checkout main -- src/a.rs"), None);
+        assert_eq!(moves("git checkout src/a.rs"), None, "a path there is a restore");
+        assert_eq!(moves("git checkout ."), None);
+        assert_eq!(moves("git status && git log"), None);
+        assert_eq!(moves("tb question \"git switch fix?\""), None, "words in an argument aren't the command");
+        let (_, at) = branch_move(&format!("cd / && git -C {dir} switch fix"), "/").unwrap();
+        assert_eq!(at, root);
+
+        let shown = branch_refusal(None, "switch", Path::new("/r"), &["Morgan's tab".into()], "tb");
+        assert!(shown.starts_with("This terminal can't git switch in /r: Morgan's tab works in this checkout too"), "{shown}");
+        assert!(shown.contains("tb task new \"<title>\" --detail \"…\" --here --lane slot --bring <files>"), "{shown}");
+        let shown = branch_refusal(Some("T4"), "checkout", Path::new("/r"), &["A (T1)".into(), "B".into()], "tb");
+        assert!(shown.starts_with("T4 can't git checkout in /r: A (T1), B work in"), "{shown}");
+        assert!(shown.contains("tb slot claim --bring <files>"), "{shown}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

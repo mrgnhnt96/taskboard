@@ -696,7 +696,9 @@ pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
     let owner = &app.cfg.owner;
     let line = format!(
         "Task board: no task on this terminal. To take one, run {tb} take {n}, or ask {owner}. \
-         If you change code for {owner} here, put it on the board as you start: {tb} task new \"<title>\" --detail \"…\" --here."
+         If you change code for {owner} here, put it on the board as you start, before the first edit, in a worktree slot of its own: \
+         {tb} task new \"<title>\" --detail \"…\" --here --lane slot, then cd to the path it prints. Only a small change stays in this \
+         checkout (--lane shared). Other terminals work here too: never git switch or check out another branch in it."
     );
     // A task whose terminal closed mid-work comes first, so follow-up work here attaches to it.
     let lost = match project {

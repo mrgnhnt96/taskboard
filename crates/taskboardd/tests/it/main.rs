@@ -83,6 +83,7 @@ mod review;
 mod review_fixes;
 mod reviewers;
 mod setup_gaps;
+mod shared_branch;
 mod sleep;
 mod slot_close;
 mod spans;
