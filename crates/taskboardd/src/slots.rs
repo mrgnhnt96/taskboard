@@ -312,6 +312,32 @@ pub fn at(app: &App, path: &str) -> Result<Value> {
     Ok(json!({"slot": format!("slot-{}", s.i("n").unwrap_or(0)), "path": s.st("path"), "held_by": held.map(|t| rf("task", t.id()))}))
 }
 
+/// `GET /slots/sharing?path=&session=`: the other terminals working in the checkout at `path` (its top
+/// folder) now, for the hook that keeps its branch put under them. A terminal counts while it's working
+/// or waiting on the owner: by its task's checkout when it has one, else by its folder, in the checkout
+/// and not in a worktree nested in it.
+pub fn sharing(app: &App, path: &str, session: &str) -> Result<Value> {
+    let top = crate::worktrees::real(path);
+    let mut out = vec![];
+    for s in app.db.q("SELECT * FROM sessions WHERE status IN ('working', 'needs') AND id != ? ORDER BY id", p![session])? {
+        let t = board::task_for_session(app, s.s("id"))?;
+        let place = match &t {
+            Some(t) => crate::steps::worktree_of(t),
+            None => s.s("cwd").or(s.s("project_path")).unwrap_or("").to_string(),
+        };
+        if top.is_empty() || place.is_empty() || crate::worktrees::root_of(Some(&place)).is_some() {
+            continue;
+        }
+        let place = crate::worktrees::real(&place);
+        if place != top && !place.starts_with(&format!("{top}/")) {
+            continue;
+        }
+        let name = s.s("name").filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("Terminal {}", s.st("id").chars().take(8).collect::<String>()));
+        out.push(json!({"session": s.st("id"), "name": name, "task": t.map(|t| rf("task", t.id()))}));
+    }
+    Ok(json!({"sharing": out}))
+}
+
 /// Does `t` hold the slot `path` is in?
 pub fn holds(app: &App, t: &Row, path: &str) -> Result<bool> {
     Ok(slot_at(app, path)?.is_some_and(|s| s.i("task_id") == Some(t.id())))

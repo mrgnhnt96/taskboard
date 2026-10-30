@@ -535,7 +535,7 @@ fn asked_at(t: &Row, k: &str) -> Option<String> {
 }
 
 /// The checkout a task's rounds look at: the aim's worktree, else the task's own checkout, else its repo.
-fn worktree_of(t: &Row) -> String {
+pub(crate) fn worktree_of(t: &Row) -> String {
     let some = |x: Option<&str>| x.map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string());
     some(saved_aim(t)["worktree"].as_str()).or_else(|| own_checkout(t).0).or_else(|| asked_at(t, "worktree")).unwrap_or_else(|| t.st("repo_path"))
 }

@@ -182,6 +182,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["slots"]) => crate::slots::overview(app, query.get("project").map(|s| s.as_str())),
         ("GET", ["slots", "at"]) => crate::slots::at(app, q(query, "path", "")),
+        ("GET", ["slots", "sharing"]) => crate::slots::sharing(app, q(query, "path", ""), q(query, "session", "")),
         ("POST", ["slots", "discard"]) => crate::slot_tidy::discard(app, body["path"].as_str().unwrap_or("")),
         ("GET", ["start-misses"]) => start_misses(app, q(query, "limit", "20").parse().unwrap_or(20)),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
