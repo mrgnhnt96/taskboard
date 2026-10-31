@@ -1,17 +1,18 @@
 # task-board Claude Code plugin
 
-Hooks that report each Claude Code session's activity to the local task board, plus the
-`task-board` skill that teaches agents the `tb` command. The hooks do nothing outside a Midna
-terminal.
+The `task-board` skill that teaches agents the `tb` command, and the `/start` command. The hooks that
+report each Claude Code session's activity to the local task board aren't part of the plugin:
+Taskboard.app writes them into `~/.claude/settings.json` (see below). They do nothing outside a
+Midna terminal.
 
 ```
 plugin/
   .claude-plugin/marketplace.json     marketplace "taskboard"
   task-board/
     .claude-plugin/plugin.json
-    hooks/hooks.json                  each hook runs `bin/tb hook <Event>`, except Bash's wait-hint
     bin/tb                            shim that runs the Rust tb binary
     bin/wait-hint                     stops sleep-poll loops; steers long builds to the background
+    commands/                         /start
     skills/task-board/                SKILL.md, questions.md, planning.md, pr.md
 ```
 
@@ -24,7 +25,20 @@ Install Taskboard.app first (see the repo README); it links `~/.local/bin/tb`. W
 ```
 
 With Taskboard.app, click **Install hooks** in its status bar instead: it installs this plugin from the copy
-inside the app. Without the app, add the marketplace and install the plugin:
+inside the app and adds the hooks to Claude Code's `settings.json`. Each hook entry runs the app's own `tb`
+at its fixed path, guarded so a missing app is skipped:
+
+```sh
+[ -x '/Applications/Taskboard.app/Contents/MacOS/tb' ] && exec '/Applications/Taskboard.app/Contents/MacOS/tb' hook Stop || true
+```
+
+so an update reaches them without a reinstall; the status bar only asks again when the entries the new
+version writes differ. The app leaves the rest of `settings.json` alone, keeps the original as
+`settings.json.before-taskboard` the first time it changes it, and never rewrites a file that doesn't parse.
+`taskboard-app --uninstall` takes its entries out again. The events, matchers and timeouts are in
+`crates/taskboard-app/src/hooks.rs`.
+
+Without the app, add the marketplace and install the plugin (for the skill and `/start`):
 
 ```sh
 claude plugin marketplace add <path-of-this-repo>/plugin
@@ -36,7 +50,7 @@ Restart Claude Code (or run `/reload-plugins`) so the hooks and skill load.
 ## The version
 
 Claude Code runs an installed plugin from its cache (`~/.claude/plugins/cache/taskboard/task-board/<version>`),
-keyed by the `version` in `task-board/.claude-plugin/plugin.json`: a changed hook or skill doesn't reach anyone
+keyed by the `version` in `task-board/.claude-plugin/plugin.json`: a changed skill or command doesn't reach anyone
 until that version changes. It's the release's version: `scripts/release.sh` writes it through
 `scripts/set-version.sh`, and the release workflow's `--check` fails when it's out of step. To try a plugin change
 before a release, change the version too (any new string; e.g. `0.1.0-beta.14-dev.1`), then `/plugin` → update, or

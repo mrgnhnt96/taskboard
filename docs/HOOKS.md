@@ -266,7 +266,8 @@ prompt = "Sign off the screens this task changes."
   leaves it open to the Stop's, and a call that ran with no window at all (its start lost) counts from the
   prompt's stamp. The board goes by these windows once the session's hooks
   have sent a `ToolEnd` (reset when a new Claude process starts), or when the turn's calls were opened by a
-  hooks.json that registers `ToolEnd` (the hook reads its plugin folder's `hooks/hooks.json`): a terminal still on
+  set of hooks that registers `ToolEnd` (the hook reads an older plugin folder's `hooks/hooks.json`, else Claude
+  Code's `settings.json`): a terminal still on
   hooks loaded before the plugin stamped each call keeps to the prompt's stamp, narrowed to the turn's folders
   unless it ran a subagent.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,

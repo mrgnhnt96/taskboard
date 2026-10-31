@@ -1192,17 +1192,25 @@ fn tool_call_id(payload: &Value) -> String {
     taskboardd::transcript::call_key(payload["tool_name"].as_str().unwrap_or(""), &payload["tool_input"])
 }
 
-/// Whether the hooks.json Claude loaded for this plugin sends `ToolEnd`, so each window this hook
-/// opens is closed: the plugin's folder is its installed version's, the one Claude read.
-fn hooks_send_tool_end(root: Option<&std::path::Path>) -> bool {
-    let Some(text) = root.and_then(|r| std::fs::read_to_string(r.join("hooks").join("hooks.json")).ok()) else { return false };
+/// Whether the hooks Claude loaded send `ToolEnd`, so each window this hook opens is closed: an older
+/// plugin's own hooks.json when this hook runs from one (its folder is the installed version's, the
+/// one Claude read), else the entries in Claude Code's `settings.json`.
+fn hooks_send_tool_end(root: Option<&std::path::Path>, settings: &std::path::Path) -> bool {
+    let file = root.map(|r| r.join("hooks").join("hooks.json")).filter(|f| f.is_file()).unwrap_or_else(|| settings.to_path_buf());
+    let Some(text) = std::fs::read_to_string(file).ok() else { return false };
     let Ok(v) = serde_json::from_str::<Value>(&text) else { return false };
     v["hooks"]["PostToolUse"]
         .as_array()
         .into_iter()
         .flatten()
         .flat_map(|m| m["hooks"].as_array().into_iter().flatten())
-        .any(|h| h["args"].as_array().is_some_and(|a| a.iter().any(|x| x == "ToolEnd")) || h["command"].as_str().is_some_and(|c| c.contains("ToolEnd")))
+        .any(|h| h["args"].as_array().is_some_and(|a| a.iter().any(|x| x == "ToolEnd")) || h["command"].as_str().is_some_and(|c| c.contains(" hook ToolEnd")))
+}
+
+/// Claude Code's `settings.json` (in `CLAUDE_CONFIG_DIR`, else `~/.claude`).
+fn claude_settings() -> std::path::PathBuf {
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| taskboardd::util::expand_home("~/.claude"));
+    dir.join("settings.json")
 }
 
 /// The report that opens (`hook.tool_start`) or closes (`hook.tool_end`) a tool call's window on the
@@ -1218,7 +1226,7 @@ fn tool_window_body(payload: &Value, session: &str, event: &str) -> Option<Value
     body["tool_use_id"] = json!(tool_call_id(payload));
     body["background"] = json!(payload["tool_input"]["run_in_background"] == true);
     if event == "hook.tool_start" {
-        body["ends"] = json!(hooks_send_tool_end(plugin_root().as_deref()));
+        body["ends"] = json!(hooks_send_tool_end(plugin_root().as_deref(), &claude_settings()));
     }
     body["tree"] = client::tree_stamp(&cwd, GIT_TIMEOUT);
     Some(body)
@@ -2417,15 +2425,21 @@ mod tests {
 
     #[test]
     fn knows_whether_the_loaded_hooks_send_tool_end() {
-        let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/task-board");
-        assert!(hooks_send_tool_end(Some(&plugin)), "this plugin's hooks.json");
-        let old = std::env::temp_dir().join(format!("tb-old-hooks-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tb-old-hooks-{}", std::process::id()));
+        let (old, settings) = (dir.join("old"), dir.join("settings.json"));
         std::fs::create_dir_all(old.join("hooks")).unwrap();
         let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "tb", "args": ["hook", "PreToolUse"]}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "tb", "args": ["hook", "PostToolUse"]}]}]}});
         std::fs::write(old.join("hooks").join("hooks.json"), hooks.to_string()).unwrap();
-        assert!(!hooks_send_tool_end(Some(&old)), "a hooks.json from before ToolEnd");
-        let _ = std::fs::remove_dir_all(&old);
-        assert!(!hooks_send_tool_end(None), "no plugin folder");
+        let tb = "/Applications/Taskboard.app/Contents/MacOS/tb";
+        let ours = json!({"model": "opus", "hooks": {"PostToolUse": [{"matcher": "Bash|Agent|Task", "hooks": [{"type": "command", "command": format!("[ -x '{tb}' ] && exec '{tb}' hook ToolEnd || true"), "timeout": 5}]}]}});
+        std::fs::write(&settings, ours.to_string()).unwrap();
+        assert!(!hooks_send_tool_end(Some(&old), &settings), "an older plugin's hooks.json from before ToolEnd");
+        assert!(hooks_send_tool_end(None, &settings), "the hooks in settings.json");
+        assert!(hooks_send_tool_end(Some(&dir.join("new")), &settings), "a plugin without hooks of its own");
+        std::fs::write(&settings, json!({"model": "opus"}).to_string()).unwrap();
+        assert!(!hooks_send_tool_end(None, &settings), "no hooks installed");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!hooks_send_tool_end(None, &dir.join("settings.json")), "no settings.json");
     }
 
     #[test]

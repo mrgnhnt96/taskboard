@@ -877,7 +877,7 @@ impl MainWindow {
 
     /// Re-read Claude Code's config for the hooks' state (it can change outside the app).
     fn check_hooks(&mut self, cx: &mut Context<Self>) {
-        let Some((want, _)) = crate::hooks::target() else { return };
+        let Some(want) = crate::hooks::target() else { return };
         if self.hooks_busy {
             return;
         }
@@ -895,7 +895,7 @@ impl MainWindow {
 
     /// The status bar's "Install hooks" / "Reinstall hooks".
     pub fn install_hooks(&mut self, cx: &mut Context<Self>) {
-        let Some((want, true)) = crate::hooks::target() else { return };
+        let Some(want) = crate::hooks::target().filter(|t| t.can_install) else { return };
         if self.hooks_busy {
             return;
         }
@@ -2106,7 +2106,7 @@ pub(crate) fn update_pill(t: &Theme) -> Option<AnyElement> {
 /// "Install hooks", "● Hooks" or an amber "Reinstall hooks", as in Midna's status bar.
 pub(crate) fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     use crate::hooks::Hooks;
-    let can_install = crate::hooks::target().is_some_and(|(_, can)| can);
+    let can_install = crate::hooks::target().is_some_and(|t| t.can_install);
     let text = t.text;
     let base = div().id("hooks").flex().items_center().gap(px(5.)).text_size(px(12.5)).whitespace_nowrap().text_color(t.muted);
     let clickable = |d: Stateful<Div>| -> Stateful<Div> {
@@ -2125,9 +2125,9 @@ pub(crate) fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>
             Hooks::Current => base
                 .child(kit::dot(t.up, 7.))
                 .child("Hooks")
-                .tooltip(kit::tip("The task-board plugin is installed in Claude Code, so sessions in Midna terminals report to the board.")),
+                .tooltip(kit::tip("The board's hooks are in Claude Code's settings, so sessions in Midna terminals report to the board.")),
             Hooks::NotInstalled => clickable(base.text_color(t.accent).child("Install hooks")).tooltip(kit::tip(format!(
-                "Install the task-board plugin in Claude Code so sessions in Midna terminals report to the board.{by_app}"
+                "Install the board's hooks and plugin in Claude Code so sessions in Midna terminals report to the board.{by_app}"
             ))),
             Hooks::NeedsReinstall(why) => clickable(base.text_color(t.warn_fg).child(kit::dot(t.warn, 7.)).child("Reinstall hooks"))
                 .tooltip(kit::tip(format!("The hooks are out of date, so sessions may not report to the board.\n{why}{by_app}"))),
