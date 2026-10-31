@@ -12,10 +12,11 @@ points its Download button at the newest release with a DMG, betas included.
 ```
 
 `release.sh` checks the version is newer than the last one (`scripts/newest-version.py`), writes
-it into `Cargo.toml`/`Cargo.lock` (`scripts/set-version.sh`), commits, tags `vX.Y.Z` and pushes.
+it into `Cargo.toml`/`Cargo.lock` (`scripts/set-version.sh`), sets the Claude Code plugin's version
+from a hash of its files (`scripts/plugin-version.sh`), commits, tags `vX.Y.Z` and pushes.
 The tag runs `.github/workflows/release.yml` on a `macos-15` runner, which:
 
-1. checks the files' version matches the tag
+1. checks the files' version matches the tag, and the plugin's matches its files
 2. imports the Developer ID certificate into a throwaway keychain
 3. `packaging/build-app.sh` (Developer ID signed, hardened runtime)
 4. `packaging/notarize.sh` (App Store Connect API key), staples

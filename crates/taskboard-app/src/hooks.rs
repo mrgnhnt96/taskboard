@@ -13,9 +13,12 @@
 //! - **not installed**: neither the hooks nor `task-board@taskboard` are in Claude Code's config;
 //! - **needs reinstall**: the hooks are missing, differ from what this app writes or run another
 //!   `tb`; or the plugin is switched off, loaded from another folder (a repo checkout, an app that's
-//!   gone), still carries hooks of its own (they'd fire twice), or a different version from the one
-//!   this app ships;
-//! - **current**: the hooks are this app's, and the plugin is on, loaded from this app, at its version.
+//!   gone), or still carries hooks of its own (they'd fire twice);
+//! - **current**: the hooks are this app's, and the plugin is on and loaded from this app.
+//!
+//! The plugin's version isn't checked either: Claude Code serves it from the bundle, so an update
+//! brings its new skill and command with it. Its `plugin.json` version is a hash of what it carries
+//! (`scripts/plugin-version.sh`), so it moves only when they change.
 //!
 //! Installing (or reinstalling) points the marketplace at this app and installs the plugin with the
 //! `claude` CLI, which keeps Claude Code's own files consistent, then writes the hook entries.
@@ -25,8 +28,6 @@ use std::process::Command;
 
 pub const PLUGIN: &str = "task-board@taskboard";
 const MARKETPLACE: &str = "taskboard";
-/// The plugin's manifest inside the marketplace folder.
-const MANIFEST: &str = "task-board/.claude-plugin/plugin.json";
 /// The plugin's PreToolUse script for Bash, inside the marketplace folder.
 const WAIT_HINT: &str = "task-board/bin/wait-hint";
 
@@ -330,7 +331,7 @@ pub fn check(claude: &Path, t: &Target) -> Hooks {
     }
 }
 
-/// The plugin's state: installed, on, loaded from `want`, without hooks of its own, at its version.
+/// The plugin's state: installed, on, loaded from `want`, without hooks of its own.
 fn plugin_check(settings: &Value, known: &Value, installed: &Value, want: &Path) -> Hooks {
     let enabled = settings["enabledPlugins"][PLUGIN].as_bool();
     let entries = installed["plugins"][PLUGIN].as_array().cloned().unwrap_or_default();
@@ -354,24 +355,10 @@ fn plugin_check(settings: &Value, known: &Value, installed: &Value, want: &Path)
             if entries.iter().filter_map(|e| e["installPath"].as_str()).any(|p| Path::new(p).join("hooks/hooks.json").is_file()) {
                 return Hooks::NeedsReinstall("Claude Code's copy of the plugin still has hooks of its own, so each would run twice.".into());
             }
-            version_check(&entries, want)
+            Hooks::Current
         }
         Some(p) if !p.is_dir() => Hooks::NeedsReinstall(format!("Claude Code loads it from {}, which is gone.", p.display())),
         Some(p) => Hooks::NeedsReinstall(format!("Claude Code loads it from {}, not from this app.", p.display())),
-    }
-}
-
-/// Current when Claude Code's cached copy is the version this app ships. A shipped manifest that's
-/// missing or has no version gives nothing to compare, so that counts as current.
-fn version_check(entries: &[Value], want: &Path) -> Hooks {
-    let Ok(manifest) = read_json(&want.join(MANIFEST)) else { return Hooks::Current };
-    let Some(ships) = manifest["version"].as_str() else { return Hooks::Current };
-    if entries.iter().any(|e| e["version"].as_str() == Some(ships)) {
-        return Hooks::Current;
-    }
-    match entries.iter().find_map(|e| e["version"].as_str()) {
-        Some(runs) => Hooks::NeedsReinstall(format!("Claude Code runs version {runs}; this app ships {ships}.")),
-        None => Hooks::NeedsReinstall(format!("Claude Code doesn't say which version it runs; this app ships {ships}.")),
     }
 }
 
@@ -646,15 +633,12 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn reinstall_when_the_cached_version_is_old() {
+    fn a_new_plugin_version_stays_current() {
         let (_t, claude, target) = setup("version");
         installed(&claude, true, &target.plugin, Some(&target));
         std::fs::create_dir_all(target.plugin.join("task-board/.claude-plugin")).unwrap();
-        write(target.plugin.join(MANIFEST), json!({"name": "task-board", "version": "1.0.0"}));
+        write(target.plugin.join("task-board/.claude-plugin/plugin.json"), json!({"name": "task-board", "version": "1.0.0-h0123456789ab"}));
         assert_eq!(check(&claude, &target), Hooks::Current);
-
-        write(target.plugin.join(MANIFEST), json!({"name": "task-board", "version": "0.1.0-beta.16"}));
-        assert_eq!(check(&claude, &target), Hooks::NeedsReinstall("Claude Code runs version 1.0.0; this app ships 0.1.0-beta.16.".into()));
     }
 
     /// Runs the real `claude` CLI on a throwaway config (`CLAUDE_CONFIG_DIR`, which `claude`

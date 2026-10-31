@@ -1,7 +1,7 @@
 {
   "name": "task-board",
   "displayName": "Task board",
-  "version": "0.1.0-beta.74",
+  "version": "1.0.0-h8b1478addc71",
   "description": "Adds the tb command for reporting progress, findings, questions and results to the local task board, and /start for starting its tasks.",
   "author": { "name": "taskboard" },
   "keywords": ["task-board", "midna", "hooks"]

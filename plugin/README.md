@@ -49,12 +49,15 @@ Restart Claude Code (or run `/reload-plugins`) so the hooks and skill load.
 
 ## The version
 
-Claude Code runs an installed plugin from its cache (`~/.claude/plugins/cache/taskboard/task-board/<version>`),
-keyed by the `version` in `task-board/.claude-plugin/plugin.json`: a changed skill or command doesn't reach anyone
-until that version changes. It's the release's version: `scripts/release.sh` writes it through
-`scripts/set-version.sh`, and the release workflow's `--check` fails when it's out of step. To try a plugin change
-before a release, change the version too (any new string; e.g. `0.1.0-beta.14-dev.1`), then `/plugin` → update, or
-reinstall.
+The `version` in `task-board/.claude-plugin/plugin.json` is a hash of the plugin's tracked files (all but
+`plugin.json`), as `1.0.0-h<12 hex>`, not the app's version: it changes only when the skill, the `/start` command or
+the `bin/` scripts do. `scripts/release.sh` writes it through `scripts/plugin-version.sh`, and the release workflow's
+`--check` fails when it's out of step; run `./scripts/plugin-version.sh` after a plugin change to write it yourself.
+
+Claude Code serves the plugin from the app bundle, so an update brings a changed skill or command with it, and the
+app doesn't ask for a reinstall over the version. A Claude Code that copies plugins into its cache
+(`~/.claude/plugins/cache/taskboard/task-board/<version>`) keys that copy by the version, so the hash gives a new copy
+exactly when the contents change.
 
 ## How `bin/tb` finds the binary
 
