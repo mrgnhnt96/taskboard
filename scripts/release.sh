@@ -11,10 +11,9 @@
 #
 # A beta is published as a prerelease, which the website skips.
 #
-# set-version.sh also writes the version into the Claude Code plugin's
-# plugin.json, so a plugin change (hooks, skill) reaches installed copies with
-# the release: Claude Code keeps running its cached copy until that version
-# changes (plugin/README.md, "The version").
+# plugin-version.sh sets the Claude Code plugin's version from a hash of its
+# files, so it changes only in a release that changes the skill or /start
+# (plugin/README.md, "The version").
 #
 # tb release cut runs this with TB_RELEASE set and records the release on the
 # board when it succeeds, so run that instead. --force runs it without the
@@ -93,6 +92,7 @@ if [ -n "$latest" ] && [ "$(./scripts/newest-version.py "${latest#v}" "$version"
 fi
 
 ./scripts/set-version.sh "$version"
+./scripts/plugin-version.sh
 git add Cargo.toml Cargo.lock plugin/task-board/.claude-plugin/plugin.json
 # A replaced release usually has its version commit already.
 git diff --cached --quiet || TB_RELEASE_COMMIT=1 git commit -m "chore: release $tag"

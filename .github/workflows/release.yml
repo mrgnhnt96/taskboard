@@ -32,6 +32,10 @@ jobs:
       - name: Check version matches tag
         run: ./scripts/set-version.sh --check "${GITHUB_REF_NAME#v}"
 
+      # And the plugin's version from its files.
+      - name: Check plugin version matches its files
+        run: ./scripts/plugin-version.sh --check
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
