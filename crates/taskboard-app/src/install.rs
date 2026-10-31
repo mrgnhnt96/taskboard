@@ -11,8 +11,9 @@
 //! While another program holds the board's port (a rollback to the old board), neither happens: the
 //! banner says why, so a relaunch doesn't undo the rollback.
 //!
-//! `taskboard-app --uninstall` unregisters the agent, removes the link and withdraws the board's alert
-//! notifications (used by `scripts/dev-app.sh --uninstall`).
+//! `taskboard-app --uninstall` unregisters the agent, removes the link, takes the hooks that run this
+//! bundle's `tb` out of Claude Code's settings and withdraws the board's alert notifications (used by
+//! `scripts/dev-app.sh --uninstall`).
 //!
 //! Everything here blocks; `start` runs it on its own thread and publishes the result in
 //! [`status`] for the banner.
@@ -284,6 +285,10 @@ pub fn headless(args: &[String]) -> Option<i32> {
             let link = tb_link();
             if std::fs::read_link(&link).is_ok_and(|t| t.starts_with(&bundle)) {
                 let _ = std::fs::remove_file(&link);
+            }
+            if let Err(e) = crate::hooks::uninstall(&crate::hooks::claude_dir(), &bundle) {
+                crate::log::info(format!("taking the hooks out of Claude Code's settings failed: {e}"));
+                code = 1;
             }
             withdraw_alerts();
             Some(code)
