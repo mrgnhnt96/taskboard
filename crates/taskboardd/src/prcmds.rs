@@ -607,11 +607,11 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         out.push(format!("it conflicts with its base branch {}: rebase onto it and push first", rec["base"].as_str().unwrap_or("main")));
     }
     // A failure holds the merge unless the owner's hook skipped it; `tb pr skip-checks` doesn't cover one.
-    // While PR builds are stopped (`prbuilds.rs`) checks count as passed, as the stage counts them: a build
-    // the stop cancelled reads as failed on the host.
+    // A build the board stopped isn't a failure (`prflow::failing`): it reads as failed on the host. While
+    // PR builds are stopped (`prbuilds.rs`) checks count as passed, as the stage counts them.
     let builds_stopped = crate::prbuilds::stopped(app);
-    let failing = prflow::failing(&f, rec);
-    if !builds_stopped && !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
+    let failing = prflow::failing(app, &f, rec);
+    if !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
         out.push(format!("checks failed: {}", failing.join(", ")));
     }
     if !builds_stopped && prflow::checks_skipped(&f, rec).is_none() {
@@ -827,9 +827,12 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         if !running.is_empty() {
             app.db.tx(|| prflow::note_checks_running(app, &t, rec["head"].as_str().unwrap_or(""), &running, board::BOARD))?;
         }
-        return err(409, format!("PR #{} can't merge yet: {}.", pr.num, blockers.join("; ")));
+        let why = blockers.join("; ");
+        prflow::note_merge_refused(app, id, &rec, &why)?;
+        return err(409, format!("PR #{} can't merge yet: {why}.", pr.num));
     }
     if let Some(carried) = carried_prs(app, &t, &pr)? {
+        prflow::note_merge_refused(app, id, &rec, &carried)?;
         return err(409, format!("PR #{} can't merge yet: {carried}.", pr.num));
     }
     progress::stage("Nothing blocks the merge");
@@ -849,6 +852,7 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
             })?;
             return err(409, format!("PR #{} can't merge: it conflicts with its base branch {}. Rebase onto it, resolve the conflicts, push with git push --force-with-lease, then run tb pr wait.{}", pr.num, rec["base"].as_str().unwrap_or("main"), prflow::KEEP_BASE));
         }
+        prflow::note_merge_refused(app, id, &rec, &format!("{site} wouldn't merge it: {e}"))?;
         return Err(prflow::wait_out_limit(app, id, &pr, body, "merge", ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num))));
     }
     progress::stage(&format!("Merged PR #{} on {site}", pr.num));
@@ -1084,7 +1088,7 @@ pub fn needs_owner(app: &App, id: i64, body: &Value) -> Result<Value> {
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;
     let head = rec["head"].as_str().unwrap_or("").to_string();
-    let failed = prflow::failing(&flow(&t), &rec);
+    let failed = prflow::failing(app, &flow(&t), &rec);
     if failed.is_empty() || head.is_empty() {
         return err(409, format!("Nothing fails on PR #{}'s current push, so there's nothing for the owner to fix.", pr.num));
     }
@@ -1132,14 +1136,18 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         return Ok(live);
     }
     let cleared = names_of(&prflow::not_ours(&f, &rec)["checks"]);
-    let failed = names_of(&rec["failed"]);
+    // Builds the board stopped read as failed on the host but count as passed, as the merge counts them:
+    // they aren't listed as failures (`builds_note` says why).
+    let stopped = prflow::board_stopped(app, &f, &rec);
+    let is_stopped = |name: &str| stopped.iter().any(|s| s.eq_ignore_ascii_case(name));
+    let failed: Vec<String> = names_of(&rec["failed"]).into_iter().filter(|c| !is_stopped(c)).collect();
     let base_failing: std::result::Result<Vec<prhost::Check>, String> = match (read.is_ok(), failed.is_empty(), rec["base"].as_str()) {
         (true, false, Some(base)) if !base.is_empty() => host(app, &pr).map_err(|e| e.message).and_then(|h| on_host(&pr, &format!("reading {base}'s checks for"), || h.base_failed_checks(&pr, base, BASE_COMMITS))),
         _ => Ok(vec![]),
     };
     let rules = crate::projects::pr_rules(app, t.s("project"));
     let mut failures = vec![];
-    for c in rec["checks"].as_array().cloned().unwrap_or_default().into_iter().filter(|c| c["state"] == "failed") {
+    for c in rec["checks"].as_array().cloned().unwrap_or_default().into_iter().filter(|c| c["state"] == "failed" && !is_stopped(c["name"].as_str().unwrap_or(""))) {
         let Ok(check) = serde_json::from_value::<prhost::Check>(c.clone()) else { continue };
         let on_base: Vec<prhost::Check> = base_failing.as_ref().map(|b| b.iter().filter(|x| x.name.eq_ignore_ascii_case(&check.name)).cloned().collect()).unwrap_or_default();
         let mut row = json!({"check": check.name, "url": check.url, "cleared": cleared.iter().any(|x| x.eq_ignore_ascii_case(&check.name))});
@@ -1195,11 +1203,12 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         })
         .collect();
     let builds_note = match prflow::checks_skipped(&f, &rec) {
+        Some(why) if !stopped.is_empty() && !crate::prbuilds::stopped(app) => Some(format!("Checks skipped for this push: {why}. Builds the board stopped count as passed: {}", stopped.join(", "))),
         Some(why) => Some(format!("Checks skipped for this push: {why}")),
         None if crate::prbuilds::stopped(app) => Some("PR builds are stopped: its checks count as passed".into()),
         None => {
-            let stopped: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter(|c| c["state"] == "stopped").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
-            (!stopped.is_empty()).then(|| format!("Builds stopped: {}", stopped.join(", ")))
+            let on_host: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter(|c| c["state"] == "stopped").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
+            (!on_host.is_empty()).then(|| format!("Builds stopped: {}", on_host.join(", ")))
         }
     };
     let policy = prflow::rebase_policy(app, &t);
