@@ -188,6 +188,55 @@ fn a_failed_post_holds_the_ticket_alerts_and_retries_without_posting_twice() {
 }
 
 #[test]
+fn a_comment_that_went_on_before_a_denied_edit_isnt_posted_again_and_isnt_retried() {
+    // #839: the comment went on, an edit was refused, and every retry posted the comment again.
+    let b = board_with(|_| {});
+    let t = b.ticketed();
+    b.post(&format!("/tasks/T{t}"), json!({"merged_note": "1. What changed: login"}));
+    b.merge(t);
+    b.answer(json!({"ok": false, "commented": true, "error": "The comment was added, but this session has no permission to edit the labels"}));
+    b.run_jira();
+    let job = &b.note_jobs()[0];
+    assert_eq!(job.st("state"), "failed");
+    assert_eq!(serde_json::from_str::<Value>(&job.st("result")).unwrap()["lasting"], true, "{job:?}");
+    assert_eq!(b.task(t).st("merged_note_posted"), "both", "both comments are on the ticket");
+    assert_eq!(b.claude_calls().matches("1. What changed: login").count(), 1);
+    let alert = b.alert_for(t).expect("an alert");
+    assert!(alert.contains("won't help") && alert.contains(&format!("task set T{t} --merged-note")), "{alert}");
+
+    b.app.db.x("UPDATE jobs SET updated_at = '2020-01-01T00:00:00Z' WHERE kind = 'jira'", vec![]).unwrap();
+    b.run_jira();
+    assert_eq!(b.note_jobs().len(), 1, "no retry for a refused permission");
+    assert_eq!(b.claude_calls().matches("1. What changed: login").count(), 1);
+
+    b.answer(json!({"ok": true, "status": "Ready for QA"}));
+    std::fs::remove_file(b.dir.path().join("all-args.txt")).ok();
+    b.post(&format!("/tasks/T{t}"), json!({"merged_note": "1. What changed: login"}));
+    assert_eq!(b.note_jobs().len(), 2, "setting the note again tries again");
+    b.run_jira();
+    let calls = b.claude_calls();
+    assert!(!calls.contains("1. What changed: login") && !calls.contains("PR #9 was merged"), "{calls}");
+    assert_eq!(b.task(t).st("jira_status"), "Ready for QA");
+    assert!(b.alert_for(t).is_none());
+}
+
+#[test]
+fn a_failure_a_retry_can_fix_is_still_retried() {
+    let b = board_with(|_| {});
+    let t = b.ticketed();
+    b.post(&format!("/tasks/T{t}"), json!({"merged_note": "1. What changed: login"}));
+    b.merge(t);
+    b.answer(json!({"ok": false, "error": "Jira is down"}));
+    b.run_jira();
+    assert_eq!(serde_json::from_str::<Value>(&b.note_jobs()[0].st("result")).unwrap()["lasting"], false);
+    assert_eq!(b.task(t).st("merged_note_posted"), "", "nothing went on");
+    assert!(b.alert_for(t).unwrap().contains("tries again in 10 minutes"));
+    b.app.db.x("UPDATE jobs SET updated_at = '2020-01-01T00:00:00Z' WHERE kind = 'jira'", vec![]).unwrap();
+    b.run_jira();
+    assert_eq!(b.note_jobs().len(), 2);
+}
+
+#[test]
 fn a_merge_without_a_note_holds_the_ticket_until_one_is_written() {
     let b = board_with(|_| {});
     let t = b.ticketed();

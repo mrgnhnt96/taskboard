@@ -240,6 +240,8 @@ fn credentials(app: &App) -> Option<(String, String)> {
 struct JiraError {
     message: String,
     auth: bool,
+    commented: bool,
+    denied: bool,
 }
 
 fn call(app: &App, creds: &(String, String), method: &str, path: &str, body: Option<Value>) -> std::result::Result<Value, JiraError> {
@@ -270,9 +272,9 @@ fn call(app: &App, creds: &(String, String), method: &str, path: &str, body: Opt
                 })
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| clip(text.trim(), 200));
-            Err(JiraError { message: format!("Jira said {code}: {msg}"), auth: code == 401 || code == 403 })
+            Err(JiraError { auth: code == 401 || code == 403, ..JiraError::new(format!("Jira said {code}: {msg}")) })
         }
-        Err(e) => Err(JiraError { message: format!("couldn't reach Jira: {e}"), auth: false }),
+        Err(e) => Err(JiraError::new(format!("couldn't reach Jira: {e}"))),
     }
 }
 
@@ -328,12 +330,33 @@ pub(crate) enum Conn {
 
 impl JiraError {
     fn new(message: impl Into<String>) -> JiraError {
-        JiraError { message: message.into(), auth: false }
+        JiraError { message: message.into(), auth: false, commented: false, denied: false }
+    }
+
+    /// Trying again won't help until the owner fixes something: a refused sign-in or permission.
+    fn lasting(&self) -> bool {
+        self.auth || self.denied
+    }
+
+    fn result(&self) -> Value {
+        json!({"lasting": self.lasting()})
     }
 }
 
 fn claude(app: &App, op: &str, input: Value) -> std::result::Result<Value, JiraError> {
-    crate::jira_claude::run(app, op, &input).map_err(JiraError::new)
+    crate::jira_claude::attempt(app, op, &input)
+        .map_err(|f| JiraError { commented: f.commented, denied: f.denied, ..JiraError::new(f.message) })
+}
+
+/// A comment through Claude. One that's on the ticket counts as done, whatever else went wrong.
+fn claude_comment(app: &App, key: &str, text: &str) -> std::result::Result<(), JiraError> {
+    match claude(app, "comment", json!({"key": key, "comment": text})) {
+        Err(e) if e.commented => {
+            app.info(format!("jira: the comment is on {key}, but Claude said: {}", e.message));
+            Ok(())
+        }
+        r => r.map(|_| ()),
+    }
 }
 
 fn status_of(app: &App, c: &Conn, key: &str) -> std::result::Result<String, JiraError> {
@@ -349,7 +372,7 @@ fn status_of(app: &App, c: &Conn, key: &str) -> std::result::Result<String, Jira
 fn add_comment(app: &App, c: &Conn, key: &str, text: &str) -> std::result::Result<(), JiraError> {
     match c {
         Conn::Rest(cr) => call(app, cr, "POST", &format!("issue/{key}/comment"), Some(json!({"body": adf(text)}))).map(|_| ()),
-        Conn::Claude => claude(app, "comment", json!({"key": key, "comment": text})).map(|_| ()),
+        Conn::Claude => claude_comment(app, key, text),
     }
 }
 
@@ -757,7 +780,7 @@ fn merged_note(app: &App, c: &Conn, key: &str, a: &Row, task: Option<i64>) -> st
 fn add_markdown_comment(app: &App, c: &Conn, key: &str, text: &str) -> std::result::Result<(), JiraError> {
     match c {
         Conn::Rest(cr) => call(app, cr, "POST", &format!("issue/{key}/comment"), Some(json!({"body": crate::adf::from_markdown(text)}))).map(|_| ()),
-        Conn::Claude => claude(app, "comment", json!({"key": key, "comment": text})).map(|_| ()),
+        Conn::Claude => claude_comment(app, key, text),
     }
 }
 
@@ -810,7 +833,7 @@ pub fn run_pending(app: &App) -> Result<()> {
                     s.jira_token_off = true;
                     s.jira_creds = None;
                 }
-                app.db.tx(|| finish(app, j.id(), false, None, None, Some(&e.message)).map(|_| ()))?;
+                app.db.tx(|| finish_with(app, j.id(), false, None, None, Some(&e.message), &e.result()).map(|_| ()))?;
                 if e.auth {
                     break;
                 }
@@ -837,7 +860,7 @@ fn run_through_claude(app: &App, jobs: &[Row]) -> Result<()> {
     app.queue_ai(Box::new(move |a: &App| {
         let r = match run_one(a, &j, &Conn::Claude) {
             Ok((key, status, extra)) => a.db.tx(|| finish_with(a, j.id(), true, key.as_deref(), status.as_deref(), None, &extra).map(|_| ())),
-            Err(e) => a.db.tx(|| finish(a, j.id(), false, None, None, Some(&e.message)).map(|_| ())),
+            Err(e) => a.db.tx(|| finish_with(a, j.id(), false, None, None, Some(&e.message), &e.result()).map(|_| ())),
         };
         if let Err(e) = r {
             a.info(format!("jira {}: recording its result failed: {e}", rf("job", j.id())));
@@ -984,7 +1007,8 @@ pub fn finish(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: Optio
 
 /// A Jira job's result. `extra` carries what a new ticket's job learned: `found` (it was already
 /// there), `product` (the one picked for it, which a goal with none takes) and, on a found ticket,
-/// `added` (what it was given of the job's routing fields: a list, or a comma-separated string).
+/// `added` (what it was given of the job's routing fields: a list, or a comma-separated string); on a
+/// failed job, `lasting` (trying again won't help).
 pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: Option<&str>, message: Option<&str>, extra: &Value) -> Result<Option<Row>> {
     let Some(job) = app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![job_id])? else { return Ok(None) };
     if matches!(job.s("state"), Some("done") | Some("failed") | Some("expired")) && !ok {
@@ -1002,7 +1026,8 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
     };
     let added = if found { added } else { vec![] };
     let said = |line: String| if added.is_empty() { line } else { format!("{line}, and gave it {}", added.join("; ")) };
-    let result = json!({"ok": ok, "key": key, "status": status, "message": message, "found": found, "product": extra["product"], "added": added});
+    let lasting = !ok && extra["lasting"] == true;
+    let result = json!({"ok": ok, "key": key, "status": status, "message": message, "found": found, "product": extra["product"], "added": added, "lasting": lasting});
     app.db.x(
         "UPDATE jobs SET state = ?, result = ?, updated_at = ? WHERE id = ?",
         p![if ok { "done" } else { "failed" }, jdumps(&result), now_iso(), job_id],
@@ -1046,7 +1071,7 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
                 board::log_event(app, t.id(), board::BOARD, "jira", &format!("Couldn't {}: {why}", op_line(&op)))?;
             }
             if op == "merged_note" {
-                crate::merged_note::finished(app, &board::get_task(app, t.id())?, ok, why)?;
+                crate::merged_note::finished(app, &board::get_task(app, t.id())?, ok, why, lasting)?;
             }
         }
     }
