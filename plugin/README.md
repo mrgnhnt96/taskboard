@@ -83,8 +83,10 @@ breaks Claude Code. Any other command prints a one-line error and exits 1.
 ## Status line (usage limits)
 
 `tb statusline` reads the status-line JSON Claude Code sends, saves it (with the current rate
-limits) for the board, and prints a short status line (model · folder · 5-hour usage). With it,
-the board can stop starting new agents when the 5-hour usage runs out. Point Claude Code's
+limits) for the board, and prints a short status line (model · folder · usage: the 5-hour window,
+or the weekly one when Claude doesn't report a 5-hour window). With it, the board can stop
+starting new agents when the usage runs out, or once today's share of the week is used (`tb usage
+daily --base even`; `tb usage` shows today's numbers). Point Claude Code's
 `statusLine` at it in `~/.claude/settings.json`:
 
 ```json

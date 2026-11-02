@@ -137,7 +137,29 @@ fn window(raw: Option<&Value>, now: f64) -> Option<Value> {
     }))
 }
 
+/// The weekly window's last known percentage used and its reset, while that reset is still to come.
+pub fn weekly(app: &App) -> Option<(f64, f64)> {
+    let (l, _) = remembered(app)?;
+    let w = l.get("seven_day")?;
+    let resets = w["resets_at"].as_f64().filter(|r| *r > now_ts())?;
+    Some((w["used_percentage"].as_f64()?, resets))
+}
+
+/// The windows' meters, and the daily limit's block (`daily`) while it's on.
 pub fn state(app: &App) -> Value {
+    let daily = crate::usage_daily::state(app);
+    let on = daily["on"].as_bool().unwrap_or(false);
+    let mut v = meters(app);
+    if v.is_null() && on {
+        v = json!({"windows": []});
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.insert("daily".into(), daily);
+    }
+    v
+}
+
+fn meters(app: &App) -> Value {
     let Some((l, seen)) = remembered(app) else { return Value::Null };
     let now = now_ts();
     let windows: Vec<Value> = WINDOWS
@@ -162,7 +184,7 @@ const SLOT_SECS: f64 = 600.0;
 
 /// Keeps each window's reading in `usage_samples` when it changed or the last is old.
 pub fn record(app: &App) -> Result<()> {
-    let st = state(app);
+    let st = meters(app);
     let now = now_ts();
     for w in st["windows"].as_array().into_iter().flatten() {
         let (Some(key), Some(pct)) = (w["key"].as_str(), w["pct"].as_f64()) else { continue };
@@ -172,7 +194,7 @@ pub fn record(app: &App) -> Result<()> {
             app.db.insert("usage_samples", vec![("at", json!(iso(now))), ("window", json!(key)), ("pct", json!(pct)), ("resets_at", w["resets_at"].clone())])?;
         }
     }
-    Ok(())
+    crate::usage_daily::tick(app)
 }
 
 /// The day from `from` (its start) per window, in the Days page's 10-minute slots (`slots`). A

@@ -118,6 +118,7 @@ pub mod steps;
 pub mod transcript;
 pub mod triage;
 pub mod usage;
+pub mod usage_daily;
 pub mod util;
 pub mod waitsfor;
 pub mod waves;

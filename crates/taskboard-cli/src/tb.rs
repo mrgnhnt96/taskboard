@@ -521,6 +521,11 @@ enum Cmd {
         #[arg(long = "alert-every", value_name = "MIN")]
         alert_every: Option<i64>,
     },
+    /// Show the usage and today's share of the week, or change the daily limit
+    Usage {
+        #[command(subcommand)]
+        action: Option<UsageCmd>,
+    },
     /// Show or change how Midna keeps the Mac awake for agents in the work hours (`tb hours` sets when)
     KeepAwake {
         #[arg(long)]
@@ -1442,6 +1447,24 @@ enum GoalCmd {
         delete_tasks: bool,
         #[arg(long)]
         delete_backlog: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UsageCmd {
+    /// Set the daily limit: each day gets a share of the week, and no new work starts once it's used
+    Daily {
+        /// off, even (the week's usage left over the days left) or a fixed share per day (15 or 15%)
+        #[arg(long)]
+        base: Option<String>,
+        /// Where a day's unused share goes: next-day (rolls to tomorrow) or spread (over the days left)
+        #[arg(long)]
+        carry: Option<String>,
+    },
+    /// Lift today's limit until midnight, only on the owner's word; --off puts it back
+    Override {
+        #[arg(long)]
+        off: bool,
     },
 }
 
@@ -2505,6 +2528,32 @@ fn question_unconfirmed(e: CallError, owner: &str) -> String {
 
 fn out(line: &str) {
     out_to(&mut std::io::stdout(), &STDOUT_GONE, line);
+}
+
+/// What `tb usage` prints: each usage window, then the daily limit and today's numbers.
+fn usage_lines(v: &Value) -> Vec<String> {
+    let mut lines = vec![];
+    for w in v["windows"].as_array().into_iter().flatten() {
+        let pct = w["pct"].as_f64().map(|p| format!("{}% used", p.round() as i64)).unwrap_or_else(|| "not known".into());
+        let resets = w["resets_at"].as_str().map(|at| format!(", resets {}", taskboardd::hours::say_reset(at))).unwrap_or_default();
+        lines.push(format!("{}: {pct}{resets}", w["label"].as_str().unwrap_or("?")));
+    }
+    if v["windows"].as_array().is_none_or(|w| w.is_empty()) {
+        lines.push("No usage reported yet".into());
+    }
+    let d = &v["daily"];
+    if d["on"] != true {
+        lines.push("Daily limit: off".into());
+        return lines;
+    }
+    let base = match &d["base"] {
+        Value::Number(n) => format!("{n}% a day"),
+        _ => "an even share of the week".into(),
+    };
+    let carry = if d["carry"] == "spread" { "unused share spread over the days left" } else { "unused share rolls to the next day" };
+    lines.push(format!("Daily limit: {base}, {carry}"));
+    lines.push(d["line"].as_str().map(str::to_string).unwrap_or_else(|| "Today: waiting for the weekly usage".into()));
+    lines
 }
 
 fn out_to(w: &mut impl std::io::Write, gone: &std::sync::atomic::AtomicBool, line: &str) {
@@ -6791,6 +6840,29 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Usage { action } => {
+            let v = match action {
+                None => c.call("GET", "/usage", None)?,
+                Some(UsageCmd::Daily { base, carry }) => {
+                    if base.is_none() && carry.is_none() {
+                        return Err("give --base (off, even or a share like 15%) and/or --carry (next-day or spread)".into());
+                    }
+                    let mut b = json!({});
+                    if let Some(x) = base {
+                        b["base"] = json!(x);
+                    }
+                    if let Some(x) = carry {
+                        b["carry"] = json!(x);
+                    }
+                    c.call("POST", "/usage/daily", Some(b))?
+                }
+                Some(UsageCmd::Override { off }) => c.call("POST", "/usage/override", Some(json!({"off": off})))?,
+            };
+            for line in usage_lines(&v) {
+                out(&line);
+            }
+            Ok(0)
+        }
         Cmd::KeepAwake { on, off, mode, day, min_battery, linger, today } => {
             let mut b = json!({});
             if on || off {
@@ -7910,6 +7982,18 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_prints_the_weekly_window_and_todays_share() {
+        let v = json!({
+            "windows": [{"key": "seven_day", "label": "7d", "pct": 41.6, "resets_at": null}],
+            "daily": {"on": true, "base": "even", "carry": "next_day", "line": "Today: 4% used of 12%, 8% left"},
+        });
+        assert_eq!(usage_lines(&v), vec!["7d: 42% used", "Daily limit: an even share of the week, unused share rolls to the next day", "Today: 4% used of 12%, 8% left"]);
+        let fixed = json!({"windows": [], "daily": {"on": true, "base": 15, "carry": "spread"}});
+        assert_eq!(usage_lines(&fixed), vec!["No usage reported yet", "Daily limit: 15% a day, unused share spread over the days left", "Today: waiting for the weekly usage"]);
+        assert_eq!(usage_lines(&Value::Null), vec!["No usage reported yet", "Daily limit: off"]);
+    }
 
     #[test]
     fn an_unconfirmed_question_says_what_to_do_and_never_that_it_may_go_through() {

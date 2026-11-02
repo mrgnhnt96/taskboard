@@ -1840,8 +1840,10 @@ fn status_text(v: &Value) -> String {
     if let Some(d) = v["workspace"]["current_dir"].as_str().or(v["cwd"].as_str()) {
         parts.push(d.trim_end_matches('/').rsplit('/').next().unwrap_or(d).to_string());
     }
-    if let Some(p) = v["rate_limits"]["five_hour"]["used_percentage"].as_f64() {
-        parts.push(format!("5h {}%", p.round() as i64));
+    let limits = &v["rate_limits"];
+    let shown = [("five_hour", "5h"), ("seven_day", "7d")].into_iter().find_map(|(key, label)| limits[key]["used_percentage"].as_f64().map(|p| (label, p)));
+    if let Some((label, p)) = shown {
+        parts.push(format!("{label} {}%", p.round() as i64));
     }
     parts.join(" · ")
 }
@@ -1884,6 +1886,15 @@ fn save_private(dir: &std::path::Path, name: &str, raw: &str) -> std::io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_status_line_shows_the_weekly_usage_when_the_five_hour_window_is_gone() {
+        let weekly = status_text(&serde_json::json!({"model": {"display_name": "Opus"}, "rate_limits": {"seven_day": {"used_percentage": 41.6}}}));
+        assert_eq!(weekly, "Opus · 7d 42%");
+        let both = status_text(&serde_json::json!({"rate_limits": {"five_hour": {"used_percentage": 12.2}, "seven_day": {"used_percentage": 41.6}}}));
+        assert_eq!(both, "5h 12%");
+        assert_eq!(status_text(&serde_json::json!({"rate_limits": {}})), "");
+    }
 
     #[test]
     fn bash_commands_read_from_dev_null() {
