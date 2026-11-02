@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::util::{advance_clock, reset_clock, RowExt};
+use taskboardd::util::{advance_clock, parse_iso, reset_clock, RowExt};
 use taskboardd::{board, dispatch, midna, p, prflow, reports};
 
 struct Board {
@@ -93,6 +93,9 @@ fn a_merge_left_open_is_retried_then_alerts_once() {
     for (n, wait) in [60.0, 300.0, 900.0].iter().enumerate() {
         b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", p![]).unwrap();
         b.post(&format!("tasks/T{id}/pr/wait"), json!({}));
+        let f: Value = serde_json::from_str(&t().st("pr_flow")).unwrap();
+        let at = |k: &str| parse_iso(f[k].as_str().unwrap()).unwrap();
+        assert_eq!(at("reread_at") - at("handled_at"), *wait + 1.0, "the PR is read again when the retry is due, poll or not");
         step();
         assert_eq!(wakes(), n as i64 + 1, "not before its wait");
         advance_clock(*wait + 1.0);
@@ -100,13 +103,16 @@ fn a_merge_left_open_is_retried_then_alerts_once() {
         assert_eq!(wakes(), n as i64 + 2, "try {}", n + 1);
     }
     b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", p![]).unwrap();
+    prflow::note_merge_refused(&b.app, id, &rec("APPROVED", 0, ""), "checks failed: build").unwrap();
     b.post(&format!("tasks/T{id}/pr/wait"), json!({}));
+    assert!(t().st("pr_flow").contains("reread_at"), "the give-up alert is read for too");
     advance_clock(901.0);
     step();
     step();
     assert_eq!(wakes(), 4, "three retries, then no more");
     let alerts: Vec<Value> = dispatch::alerts(&b.app).into_iter().filter(|a| a["text"].as_str().unwrap().contains("still open after 3 tries")).collect();
     assert_eq!(alerts.len(), 1);
+    assert!(alerts[0]["text"].as_str().unwrap().ends_with("tb pr merge refused: checks failed: build."), "the alert says why: {}", alerts[0]["text"]);
     assert!(prflow::wake_stuck(&t()), "the alert holds until it merges");
     reset_clock();
 }

@@ -516,6 +516,39 @@ fn merge_stalled(f: &Row, key: &str) -> bool {
     f.s("handled") == Some(key) && !f.contains_key("woke") && tries < MERGE_RETRY_WAITS.len() && since_handled(f) >= MERGE_RETRY_WAITS[tries] as f64
 }
 
+/// When a merge visit that ended with the PR still open is due its next look: the next retry (1, 5, then
+/// 15 minutes after the visit), then the give-up alert. The PR is read again then (`reread_at`,
+/// [`late_reads`]), so neither waits for a poll, which rests while nothing changes on the host (#834).
+fn merge_look_at(phase: &str, f: &Row) -> Option<f64> {
+    if phase != "merge" || !f.contains_key("handled") || f.contains_key("woke") || f.contains_key("merge_gave_up") {
+        return None;
+    }
+    let tries = (f.i0("merge_tries") as usize).min(MERGE_RETRY_WAITS.len() - 1);
+    Some(f.s("handled_at").and_then(parse_iso)? + MERGE_RETRY_WAITS[tries] as f64 + 1.0)
+}
+
+/// `reread_at` brought forward to `at` when no read is due sooner.
+fn reread_by(f: &Row, at: Option<f64>) -> Option<(&'static str, Value)> {
+    let at = at.filter(|a| *a > now_ts())?;
+    let set = f.s("reread_at").and_then(parse_iso).filter(|r| *r > now_ts());
+    set.is_none_or(|r| r > at).then(|| ("reread_at", json!(iso(at))))
+}
+
+/// `tb pr merge` refused this PR (or its host wouldn't merge it): kept with its head for the alert raised
+/// once the merge retries run out.
+pub fn note_merge_refused(app: &App, id: i64, rec: &Value, why: &str) -> Result<()> {
+    let refused = json!({"head": rec["head"], "why": one_line(why, 500), "at": now_iso()});
+    app.db.tx(|| merge_flow(app, id, fields!["merge_refused" => refused.clone()]).map(|_| ()))
+}
+
+/// Why the merge visits on this head ended with the PR still open, for the give-up alert.
+fn merge_refusal(f: &Row, rec: &Value) -> String {
+    match f.get("merge_refused").filter(|r| r["head"] == rec["head"]).and_then(|r| r["why"].as_str()) {
+        Some(why) => format!("tb pr merge refused: {why}"),
+        None => "its visits ended without running tb pr merge".into(),
+    }
+}
+
 /// Every retry is spent and it's still open: alert once.
 fn merge_given_up(f: &Row, key: &str) -> bool {
     f.s("handled") == Some(key)
@@ -1245,10 +1278,32 @@ fn not_ours_card(f: &Row, rec: &Value) -> Value {
     n
 }
 
-/// The failed checks that still count: those `tb pr not-ours` didn't clear for this push.
-pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
+/// The failed checks that still count: those the board didn't stop itself ([`board_stopped`]) and
+/// `tb pr not-ours` didn't clear for this push. The one verdict the stage, the card, `tb pr merge`,
+/// `tb pr status` and `tb pr skip-checks` all go by.
+pub fn failing(app: &App, f: &Row, rec: &Value) -> Vec<String> {
     let cleared = str_list(&not_ours(f, rec)["checks"]);
-    str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().any(|x| x.eq_ignore_ascii_case(c))).collect()
+    let stopped = board_stopped(app, f, rec);
+    str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().chain(&stopped).any(|x| x.eq_ignore_ascii_case(c))).collect()
+}
+
+/// The failed checks that are builds the board stopped, which count as passed: a cancelled build reads
+/// as failed on the host. While PR builds are stopped (`prbuilds.rs`) that's every failed check; after
+/// a resume, the ones `tb pr skip-checks` counted as stopped on this push (its entry's `stopped`).
+pub fn board_stopped(app: &App, f: &Row, rec: &Value) -> Vec<String> {
+    let failed = str_list(&rec["failed"]);
+    if crate::prbuilds::stopped(app) {
+        return failed;
+    }
+    let listed = skip_entry(f, rec).map(|v| str_list(&v["stopped"])).unwrap_or_default();
+    failed.into_iter().filter(|c| listed.iter().any(|x| x.eq_ignore_ascii_case(c))).collect()
+}
+
+/// The board cancelled builds on this push (`pr_flow.builds_cancelled`, `prbuilds.rs`): its failed
+/// checks may be those cancels, which `tb pr skip-checks` counts as stopped.
+fn cancelled_here(f: &Row, rec: &Value) -> bool {
+    let head = rec["head"].as_str().unwrap_or("");
+    !head.is_empty() && f.get("builds_cancelled").and_then(|m| m.get(head)).is_some()
 }
 
 /// The checks a push is expected to post, and where that came from: `"command"` (the project's
@@ -1561,9 +1616,8 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     }
     let f = flow(t);
     // While the board's PR builds are stopped (`prbuilds.rs`), checks count as passed.
-    let stopped = crate::prbuilds::stopped(app);
-    let skipped = checks_skipped(&f, rec).is_some() || stopped;
-    if !stopped && !skip_hides_failures(&f, rec) && !failing(&f, rec).is_empty() {
+    let skipped = checks_skipped(&f, rec).is_some() || crate::prbuilds::stopped(app);
+    if !skip_hides_failures(&f, rec) && !failing(app, &f, rec).is_empty() {
         return "fix".into();
     }
     if !skipped && (checks_waiting(app, t, &f, rec) || running_on_host(&f, rec)) {
@@ -1793,11 +1847,20 @@ fn gate_once(app: &App, t: &Row, rec: &Value) -> Result<bool> {
 }
 
 /// `tb pr skip-checks`: this push's checks (or, with `all`, every push's) that were stopped, are running
-/// or never posted count as passed. Never a failure: that's a fix, or `tb pr not-ours` with proof.
+/// or never posted count as passed. Never a failure: that's a fix, or `tb pr not-ours` with proof. A
+/// build the board stopped isn't a failure though it reads as one (#834): while PR builds are stopped,
+/// or on a push whose builds the board cancelled, the failed checks are noted as stopped (`stopped` in
+/// this push's entry), and count as passed after a resume too.
 pub fn skip_checks(app: &App, t: &Row, reason: &str, all: bool, who: &str) -> Result<()> {
     let f = flow(t);
     let rec = f.get("rec").cloned().unwrap_or(Value::Null);
-    let failed = failing(&f, &rec);
+    let stopped = if crate::prbuilds::stopped(app) || cancelled_here(&f, &rec) {
+        let cleared = str_list(&not_ours(&f, &rec)["checks"]);
+        str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().any(|x| x.eq_ignore_ascii_case(c))).collect()
+    } else {
+        vec![]
+    };
+    let failed: Vec<String> = failing(app, &f, &rec).into_iter().filter(|c| !stopped.contains(c)).collect();
     if !failed.is_empty() {
         return err(
             409,
@@ -1811,10 +1874,18 @@ pub fn skip_checks(app: &App, t: &Row, reason: &str, all: bool, who: &str) -> Re
     let head = rec["head"].as_str().filter(|h| !h.is_empty());
     let key = if all { "*" } else { head.unwrap_or("*") };
     let mut skips = f.get("skip_checks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-    skips.insert(key.to_string(), json!({"reason": reason, "who": who, "at": now_iso()}));
+    let entry = json!({"reason": reason, "who": who, "at": now_iso()});
+    skips.insert(key.to_string(), entry.clone());
+    // The stopped builds are this push's alone, even with `all`: a later push's failure is a failure.
+    if let (false, Some(head)) = (stopped.is_empty(), head) {
+        let mut mine = entry;
+        mine["stopped"] = json!(stopped);
+        skips.insert(head.to_string(), mine);
+    }
     merge_flow(app, t.id(), fields!["skip_checks" => Value::Object(skips)])?;
     let which = if key == "*" { "every push's checks" } else { "this push's checks" };
-    board::log_event(app, t.id(), who, "status", &format!("PR #{}: skipped {which}: {reason}", t.i0("pr_num")))?;
+    let also = if stopped.is_empty() { String::new() } else { format!(" (builds the board stopped: {})", stopped.join(", ")) };
+    board::log_event(app, t.id(), who, "status", &format!("PR #{}: skipped {which}{also}: {reason}", t.i0("pr_num")))?;
     if let Some(rec) = f.get("rec").filter(|r| r.is_object()) {
         step(app, &board::get_task(app, t.id())?, rec)?;
     }
@@ -1874,9 +1945,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     changes.extend(crate::prpace::note(app, t, &f, rec, &phase, phase_changed)?);
     let build = if crate::prbuilds::stopped(app) {
         "Builds stopped"
-    } else if checks_skipped(&f, rec).is_some() && (skip_hides_failures(&f, rec) || failing(&f, rec).is_empty()) {
+    } else if checks_skipped(&f, rec).is_some() && (skip_hides_failures(&f, rec) || failing(app, &f, rec).is_empty()) {
         "Checks skipped"
-    } else if !str_list(&rec["failed"]).is_empty() && failing(&f, rec).is_empty() {
+    } else if !str_list(&rec["failed"]).is_empty() && failing(app, &f, rec).is_empty() {
         "Failed, not this PR"
     } else {
         build_label(rec)
@@ -1979,10 +2050,11 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         dispatch::add_alert(
             app,
             &format!(
-                "PR #{} for {} is ready to merge but still open after {} tries to merge it. Its log says why.",
+                "PR #{} for {} is ready to merge but still open after {} tries to merge it: {}.",
                 t.i0("pr_num"),
                 rf("task", t.id()),
-                MERGE_RETRY_WAITS.len()
+                MERGE_RETRY_WAITS.len(),
+                merge_refusal(&now_flow, rec)
             ),
             Some(t.id()),
             t.i("goal_id"),
@@ -2026,6 +2098,15 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         )?;
         changes.push(("merge_alerted", json!(head)));
     }
+    let mut after = f.clone();
+    for (k, v) in &changes {
+        if v.is_null() {
+            after.remove(*k);
+        } else {
+            after.insert(k.to_string(), v.clone());
+        }
+    }
+    changes.extend(reread_by(&after, merge_look_at(&phase, &after)));
     board::update_task(app, t.id(), task_fields)?;
     merge_flow(app, t.id(), changes)?;
     Ok(phase_changed)
@@ -2306,7 +2387,12 @@ pub fn waited(app: &App, t: &Row) -> Result<Row> {
         ch.push(("handled", json!(key)));
         ch.push(("handled_at", json!(now_iso())));
     }
-    merge_flow(app, t.id(), ch)
+    let f = merge_flow(app, t.id(), ch)?;
+    // A merge visit that ends with the PR still open is looked at again when its retry is due.
+    match reread_by(&f, merge_look_at(t.s("pr_phase").unwrap_or(""), &f)) {
+        Some(at) => merge_flow(app, t.id(), vec![at]),
+        None => Ok(f),
+    }
 }
 
 /// Ends the visit without settling it: the host has the board rate-limited until `until`, so the agent
