@@ -1020,6 +1020,38 @@ fn expected_checks_that_haven_t_posted_aren_t_not_needed() {
 }
 
 #[test]
+fn a_cleared_failure_doesn_t_finish_checks_while_expected_ones_are_still_to_come() {
+    // #860: the only posted check failed and was cleared as not this PR's; the Checks step showed
+    // "Not this PR's" (done) while the expected mobile and cloud checks hadn't finished.
+    let b = board_with(|c| {
+        c.pr.projects.insert("webapp".into(), PrProject { expected: Some(vec!["mobile".into(), "cloud".into()]), expected_wait_mins: Some(90.0), ..Default::default() });
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks = vec![check("ci", "failed")];
+    let h = fake(&b, rec);
+    poll(&b);
+    let good = json!({"reason": "Bitbucket rate-limited the pipeline read, so CI was canceled.", "title": "Canceled CI", "proof": ["https://ci.example.com/b/1"]});
+    b.post(&format!("/tasks/T{id}/pr/not-ours"), good);
+    let card = || board::pr_card(&b.app, &b.task(id));
+    assert_eq!(b.phase(id), "checks", "mobile and cloud haven't posted");
+    assert_eq!(bar_checks(&b, id), Value::Null);
+    assert_eq!(card()["checks"], "pending");
+    // Mobile starts: still running.
+    h.rec.lock().checks.push(check("mobile", "running"));
+    poll(&b);
+    assert_eq!(bar_checks(&b, id), Value::Null);
+    assert_eq!(card()["checks"], "pending");
+    // Mobile passes and cloud waits out: now the cleared failure is what the step shows.
+    h.rec.lock().checks[1].state = "passed".into();
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 91.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    assert_eq!(bar_checks(&b, id), "not_ours");
+    assert_eq!(card()["checks"], "pass");
+}
+
+#[test]
 fn no_checks_are_not_needed_only_once_the_grace_runs_out() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
