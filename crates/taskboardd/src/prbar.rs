@@ -41,8 +41,11 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     let waits = t.s("pr_phase") == Some("waits");
     // Builds the board stopped aren't failures, cleared or not.
     let stopped = prflow::board_stopped(app, &f, &rec);
+    // Cleared failures don't finish the step while other checks still run or expected ones haven't
+    // posted within their wait: it shows them running, as the stage does.
     let cleared = !prflow::not_ours(&f, &rec).is_null()
         && !failing
+        && !prflow::checks_waiting(app, t, &f, &rec)
         && rec["failed"].as_array().is_some_and(|a| a.iter().filter_map(|c| c.as_str()).any(|c| !stopped.iter().any(|s| s == c)));
     // Skipped (a hook, or `tb pr skip-checks` for builds that didn't fail) is told apart from failures
     // cleared as not this PR's, which come with proof.

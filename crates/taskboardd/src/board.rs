@@ -268,6 +268,9 @@ pub fn pr_card(app: &App, t: &Row) -> Value {
             "pending"
         } else if r["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
             "none"
+        } else if !builds_stopped && prflow::checks_waiting(app, t, &flow, r) {
+            // Some checks posted, but expected ones are still to come within their wait: not passed yet.
+            "pending"
         } else {
             "pass"
         }
