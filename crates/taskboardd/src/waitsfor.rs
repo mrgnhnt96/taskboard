@@ -27,21 +27,28 @@ pub fn deps(t: &Row) -> Vec<i64> {
     all
 }
 
-pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>> {
+/// The task ids in a list of refs (`T4 T5`, `T4,T5`, `["T4", 5]`), each once; `none` is skipped.
+pub fn ref_ids(value: &Value) -> Result<Vec<i64>> {
     let items: Vec<String> = match value {
-        Value::Null => return Ok(None),
-        Value::String(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("none") => return Ok(None),
+        Value::Null => vec![],
         Value::String(s) => s.replace(',', " ").split_whitespace().map(|x| x.to_string()).collect(),
-        Value::Array(a) if a.is_empty() => return Ok(None),
         Value::Array(a) => a.iter().map(|x| x.as_str().map(|s| s.to_string()).unwrap_or_else(|| x.to_string())).collect(),
         other => vec![other.to_string()],
     };
     let mut out: Vec<i64> = vec![];
-    for v in items {
-        if v.eq_ignore_ascii_case("none") {
-            continue;
+    for v in items.iter().filter(|v| !v.eq_ignore_ascii_case("none")) {
+        if let Some(n) = parse_ref_str(v, "task")? {
+            if !out.contains(&n) {
+                out.push(n);
+            }
         }
-        let Some(n) = parse_ref_str(&v, "task")? else { continue };
+    }
+    Ok(out)
+}
+
+pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>> {
+    let mut out: Vec<i64> = vec![];
+    for n in ref_ids(value)? {
         if let Some(t) = t {
             if n == t.id() {
                 return err(400, "A task can't wait for itself.");
@@ -124,6 +131,41 @@ pub fn set_merged(app: &App, t: &Row, wanted: &[i64]) -> Result<()> {
     board::save_context(app, t.id(), &ctx, false)
 }
 
+/// Stops `t` waiting for the tasks in `value` (`tb wait-for --drop`), merge waits too, and keeps its
+/// other waits. The task it stacks on isn't a wait to drop: `tb task set --stack-on none` ends that.
+pub fn drop(app: &App, t: &Row, value: &Value) -> Result<Vec<i64>> {
+    let gone = ref_ids(value)?;
+    if gone.is_empty() {
+        return err(400, "Say which wait to drop, for example: tb wait-for --drop T14.");
+    }
+    let waits = ids(t);
+    let me = rf("task", t.id());
+    for n in &gone {
+        if crate::stack::parent_id(t) == Some(*n) {
+            return err(409, format!("{me} stacks on {}, so it needs its PR merged: tb task set {me} --stack-on none stops that.", rf("task", *n)));
+        }
+        if !waits.contains(n) {
+            return err(400, format!("{me} doesn't wait for {}.", rf("task", *n)));
+        }
+    }
+    let rest: Vec<i64> = waits.into_iter().filter(|n| !gone.contains(n)).collect();
+    let rest = if rest.is_empty() { None } else { Some(jdumps(&json!(rest))) };
+    board::update_task(app, t.id(), fields!["waits_for" => rest])?;
+    let t = board::get_task(app, t.id())?;
+    let until_merged = merged_ids(&t);
+    if until_merged.iter().any(|n| gone.contains(n)) {
+        let mut ctx = board::task_context(&t);
+        let left: Vec<i64> = until_merged.into_iter().filter(|n| !gone.contains(n)).collect();
+        if left.is_empty() {
+            ctx.remove("waits_merged");
+        } else {
+            ctx.insert("waits_merged".into(), json!(left));
+        }
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    Ok(gone)
+}
+
 /// Forgets every merge wait (`tb wait-for none`).
 pub fn clear_merged(app: &App, t: &Row) -> Result<()> {
     let mut ctx = board::task_context(t);
@@ -137,8 +179,13 @@ fn pr_merged(o: &Row) -> bool {
     o.st("pr_state").eq_ignore_ascii_case("MERGED") || o.s("pr_phase") == Some("merged")
 }
 
-fn pr_declined(o: &Row) -> bool {
+pub fn pr_declined(o: &Row) -> bool {
     matches!(o.st("pr_state").to_uppercase().as_str(), "CLOSED" | "DECLINED" | "SUPERSEDED") || o.s("pr_phase") == Some("declined")
+}
+
+/// The commit someone said its work landed in on the main branch outside its PR (`tb task set --landed`).
+pub fn landed(o: &Row) -> Option<&str> {
+    o.s("landed").filter(|s| !s.is_empty())
 }
 
 /// Done, and its PR is open: neither merged nor declined.
@@ -204,9 +251,9 @@ pub fn stack_landed(app: &App, t: &Row) -> Result<bool> {
     Ok(false)
 }
 
-/// Its PR merged and its work is on the main branch.
+/// Its work is on the main branch: its PR merged there, or it landed another way.
 pub fn on_main(app: &App, t: &Row) -> Result<bool> {
-    Ok(pr_merged(t) && stack_landed(app, t)?)
+    Ok(landed(t).is_some() || (pr_merged(t) && stack_landed(app, t)?))
 }
 
 /// The head-merge tasks whose PR merged into this task's branch, to count as merged once it reaches the main branch.
@@ -248,9 +295,12 @@ fn dropped_in(app: &App, t: &Row) -> Result<Option<(Row, Row)>> {
 }
 
 /// Done and not failed, and its work is on the base branch: its PR merged (with its stack, for a head
-/// merge), or it ships no PR.
+/// merge), it landed another way, or it ships no PR.
 pub fn merged(app: &App, other: Option<&Row>) -> Result<bool> {
     let Some(o) = other.filter(|o| ready(Some(o))) else { return Ok(false) };
+    if landed(o).is_some() {
+        return Ok(true);
+    }
     if pr_merged(o) {
         return stack_landed(app, o);
     }
@@ -301,6 +351,13 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
                     ),
                     None => format!("Blocked by {who} until {pr} merges"),
                 },
+                Some(pr) if pr_declined(&other) && ids(t).contains(&n) => {
+                    let r = rf("task", n);
+                    format!(
+                        "Blocked by {who}, whose {pr} was declined, so its work isn't merged. If it landed another way: tb task set {r} --landed <commit>. To go on without it: tb wait-for --drop {r} --task {}",
+                        rf("task", t.id())
+                    )
+                }
                 Some(pr) if pr_declined(&other) => format!("Blocked by {who}, whose {pr} was declined, so its work isn't merged"),
                 Some(pr) => format!("Blocked by {who} until {pr} merges"),
                 None => format!("Blocked by {who} until its PR merges"),
@@ -433,7 +490,9 @@ fn where_it_is(app: &App, other: &Row) -> Result<String> {
     let branch = branch_of(other);
     let mut bits = vec![format!("{} “{}”", label(app, other)?, short(&other.st("title"), 60))];
     let merged = on_main(app, other)?;
-    if merged {
+    if let Some(c) = landed(other) {
+        bits.push(format!("landed on the main branch in {}, outside its PR", &c[..c.len().min(12)]));
+    } else if merged {
         bits.push(format!("is merged (PR #{}), so its work is on the main branch", other.i0("pr_num")));
     } else if pr_merged(other) {
         let into = crate::stack::parent(app, other)?;
@@ -466,7 +525,9 @@ fn where_it_is(app: &App, other: &Row) -> Result<String> {
 /// Where another project's task's work is, for a task that waits for it.
 fn elsewhere(app: &App, other: &Row) -> Result<String> {
     let mut line = format!("{} “{}” in {}", label(app, other)?, short(&other.st("title"), 60), other.st("project"));
-    if on_main(app, other)? {
+    if let Some(c) = landed(other) {
+        line += &format!(" landed on the main branch in {}, outside its PR", &c[..c.len().min(12)]);
+    } else if on_main(app, other)? {
         line += &format!(" is merged (PR #{} {})", other.i0("pr_num"), other.st("pr_url"));
     } else if other.i("pr_num").is_some() {
         line += &format!(" is in PR #{} ({}), not merged yet", other.i0("pr_num"), other.st("pr_url"));
@@ -632,7 +693,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
                 continue;
             }
             let other = other.unwrap();
-            let now = json!({"head": head_of(&other), "merged": other.st("pr_state").eq_ignore_ascii_case("MERGED") && stack_landed(app, &other)?});
+            let now = json!({"head": head_of(&other), "merged": landed(&other).is_some() || (other.st("pr_state").eq_ignore_ascii_case("MERGED") && stack_landed(app, &other)?)});
             let key = n.to_string();
             let Some(before) = seen.get(&key) else {
                 changes.insert(key, now);

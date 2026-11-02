@@ -1378,6 +1378,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         if has_key("ships_pr") {
             planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], &who)?;
         }
+        if has_key("landed") {
+            planned |= crate::declined::set_landed(app, &board::get_task(app, id)?, &body["landed"], &who)?;
+        }
         if planned && f.is_empty() {
             return board::bump_ctx(app, id);
         }
@@ -1450,6 +1453,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    if body.get("landed").is_some() {
+        app.wake_runner();
+    }
     let mut d = task_detail(app, id)?;
     if !warnings.is_empty() {
         d["warnings"] = json!(warnings);

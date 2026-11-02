@@ -330,6 +330,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The folder Midna says the terminal is in, which for a slot's terminal is the slot, not its
     // project's checkout (`project_path`). A PR visit types into an old terminal only in its own slot.
     ("sessions", "cwd", "TEXT"),
+    // The commit a done task's work landed in on the main branch outside its PR (`tb task set
+    // --landed`, `declined.rs`), so a declined PR's waiters count it as merged; null when it didn't.
+    ("tasks", "landed", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
