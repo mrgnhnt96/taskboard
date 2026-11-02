@@ -2,7 +2,8 @@
 //! (`tb submit --merged-note`), and once its PR merges the board posts it on the ticket, then the "PR #n was
 //! merged" line, and only then moves the ticket to `[jira] merged`. A merge with no note leaves the ticket
 //! where it is, raises an alert and brings the conversation back to write one. A post or move that fails
-//! raises an alert and is tried again every `RETRY_SECS` until the ticket has moved.
+//! raises an alert and is tried again every `RETRY_SECS` until the ticket has moved, unless trying again
+//! can't help (a refused sign-in or permission): then the owner hears once and setting the note again retries.
 
 use serde_json::{json, Value};
 
@@ -168,12 +169,14 @@ fn live_job(app: &App, t: &Row) -> Result<Option<Row>> {
     )
 }
 
+/// When the last job failed, if it did and trying again could help.
 fn last_failed_at(app: &App, t: &Row) -> Result<Option<f64>> {
     let j = app.db.q1(
-        "SELECT state, updated_at FROM jobs WHERE kind = 'jira' AND task_id IS ? AND json_extract(args, '$.op') = 'merged_note' ORDER BY id DESC LIMIT 1",
+        "SELECT state, updated_at, json_extract(result, '$.lasting') AS lasting FROM jobs \
+         WHERE kind = 'jira' AND task_id IS ? AND json_extract(args, '$.op') = 'merged_note' ORDER BY id DESC LIMIT 1",
         p![t.id()],
     )?;
-    Ok(j.filter(|j| matches!(j.s("state"), Some("failed") | Some("expired"))).and_then(|j| j.s("updated_at").and_then(parse_iso)))
+    Ok(j.filter(|j| matches!(j.s("state"), Some("failed") | Some("expired")) && j.i0("lasting") == 0).and_then(|j| j.s("updated_at").and_then(parse_iso)))
 }
 
 /// The runner's sweep: a ticket still waiting with its note written, whose last try failed a while ago, goes again.
@@ -211,19 +214,22 @@ pub fn set_posted(app: &App, task_id: i64, how_far: &str) {
     }
 }
 
-/// The job finished: the ticket moved, or the owner hears why it didn't.
-pub fn finished(app: &App, t: &Row, ok: bool, why: &str) -> Result<()> {
+/// The job finished: the ticket moved, or the owner hears why it didn't, and whether the board tries again.
+pub fn finished(app: &App, t: &Row, ok: bool, why: &str, lasting: bool) -> Result<()> {
     if ok {
         board::update_task(app, t.id(), fields!["merged_note_wait" => null])?;
         return dispatch::clear_alert_key(app, &alert_key(t));
     }
     let me = rf("task", t.id());
-    let text = format!(
-        "Couldn't post {me}'s note for testers and move {}: {}. The board tries again in {} minutes.",
-        t.st("jira_key"),
-        why.trim_end_matches('.'),
-        (RETRY_SECS / 60.0) as i64
-    );
+    let next = if lasting {
+        format!(
+            "Trying again won't help until that's fixed, so the board has stopped; then run {} task set {me} --merged-note \"<markdown>\" to try again.",
+            board::tb_cmd(app)
+        )
+    } else {
+        format!("The board tries again in {} minutes.", (RETRY_SECS / 60.0) as i64)
+    };
+    let text = format!("Couldn't post {me}'s note for testers and move {}: {}. {next}", t.st("jira_key"), why.trim_end_matches('.'));
     dispatch::clear_alert_key(app, &alert_key(t))?;
     dispatch::add_alert_keyed(app, &text, Some(t.id()), t.i("goal_id"), &alert_key(t))
 }
