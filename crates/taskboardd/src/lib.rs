@@ -108,6 +108,7 @@ pub mod spans;
 pub mod stamp;
 pub mod tidy;
 pub mod stack;
+pub mod stack_drop;
 pub mod suggest;
 pub mod startword;
 pub mod statusbar;

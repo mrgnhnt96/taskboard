@@ -1902,6 +1902,12 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     let until_merged = as_bool(r.body.get("merged"), false);
     if until_merged {
         waitsfor::set_merged(app, &board::get_task(app, t.id())?, &wanted_ids)?;
+        // A head-merged PR's commits may be gone from the branch it merged into: look now, not at the next sweep.
+        for n in &wanted_ids {
+            if let Some(o) = board::find_task(app, Some(*n))? {
+                crate::stack_drop::check(app, &o)?;
+            }
+        }
     }
     let t = board::get_task(app, t.id())?;
     let names = wanted_ids.iter().map(|n| rf("task", *n)).collect::<Vec<_>>().join(", ");

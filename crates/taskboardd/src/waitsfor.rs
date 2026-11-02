@@ -184,12 +184,16 @@ pub fn stack_on_open(app: &App, t: &Row) -> Result<Option<i64>> {
 
 /// Whether the task's PR, once merged, has its work on the main branch: it isn't a head merge (`stack.rs`),
 /// or the parent it merged into is there too. A head merge lands in its parent's branch, so it only
-/// reaches the main branch with the bottom PR of its stack.
+/// reaches the main branch with the bottom PR of its stack, and not at all while a push to that branch
+/// has dropped its commits (`stack_drop.rs`).
 pub fn stack_landed(app: &App, t: &Row) -> Result<bool> {
     let mut t = t.clone();
     for _ in 0..64 {
         if !crate::stack::head(&t) {
             return Ok(true);
+        }
+        if crate::stack_drop::dropped(&t) {
+            return Ok(false);
         }
         let Some(p) = crate::stack::parent(app, &t)? else { return Ok(true) };
         if !pr_merged(&p) {
@@ -226,6 +230,23 @@ fn stack_bottom(app: &App, t: &Row) -> Result<Option<Row>> {
     Ok(b)
 }
 
+/// The task in a head-merged task's stack whose merged commits a push dropped (`stack_drop.rs`), and the
+/// task whose branch lost them.
+fn dropped_in(app: &App, t: &Row) -> Result<Option<(Row, Row)>> {
+    let mut t = t.clone();
+    for _ in 0..64 {
+        if !crate::stack::head(&t) {
+            break;
+        }
+        let Some(p) = crate::stack::parent(app, &t)? else { break };
+        if crate::stack_drop::dropped(&t) {
+            return Ok(Some((t, p)));
+        }
+        t = p;
+    }
+    Ok(None)
+}
+
 /// Done and not failed, and its work is on the base branch: its PR merged (with its stack, for a head
 /// merge), or it ships no PR.
 pub fn merged(app: &App, other: Option<&Row>) -> Result<bool> {
@@ -260,8 +281,17 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
             return Ok(Some(format!("Waits for you to do {who}")));
         }
         let pr = other.i("pr_num").map(|p| format!("PR #{p}"));
+        let dropped = if pr_merged(&other) { dropped_in(app, &other)? } else { None };
         return Ok(Some(match other.s("status") {
             Some("done") if !other.b("failed") => match pr {
+                Some(pr) if dropped.is_some() => {
+                    let (d, into) = dropped.unwrap();
+                    format!(
+                        "Blocked by {who}: {} merged into {}'s branch, but a push to that branch dropped its commits, so its work isn't on the main branch",
+                        if d.id() == other.id() { format!("its {pr}") } else { format!("{}'s PR #{}", rf("task", d.id()), d.i0("pr_num")) },
+                        rf("task", into.id())
+                    )
+                }
                 Some(pr) if pr_merged(&other) => match stack_bottom(app, &other)? {
                     Some(bt) => format!(
                         "Blocked by {who}: its {pr} merged into {}'s branch, and reaches the main branch once {}'s{} merges",
