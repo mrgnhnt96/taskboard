@@ -441,7 +441,10 @@ pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&st
         None => None,
     };
     let rec = crate::util::jloads_obj(t.s("pr_flow")).get("rec").cloned().filter(|r| !pr_side(r, "base").is_empty() && !pr_side(r, "branch").is_empty());
-    let Some(rec) = rec else { return Ok(dir.and_then(|d| branch_refusal(&app.cfg, &d, what))) };
+    let Some(rec) = rec else {
+        let base = crate::steps::real_base(app, t)?;
+        return Ok(dir.and_then(|d| branch_refusal(&app.cfg, &d, Some(&base), what)));
+    };
     let repo = crate::projects::project_path(app, t.s("project"))?.or_else(|| t.s("repo_path").map(|s| s.to_string()));
     let dirs: Vec<String> = dir.into_iter().chain(repo).collect();
     Ok(refusal(&app.cfg, pr_adds(&app.cfg.comments, &dirs, &rec), "this PR", what))
@@ -507,9 +510,12 @@ fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
     git.run(dir, &args)
 }
 
-/// Where the branch at `dir` forked from its default branch.
-fn fork_point(git: &Git, dir: &str) -> Option<String> {
+/// Where the branch at `dir` forked from `base` (the branch its PR goes into), else its default branch.
+fn fork_point(git: &Git, dir: &str, base: Option<&str>) -> Option<String> {
     let mut bases = vec![];
+    if let Some(b) = base.filter(|b| !b.is_empty()) {
+        bases.extend([format!("origin/{b}"), b.to_string()]);
+    }
     if let Some(h) = git.run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
         bases.push(h.trim().to_string());
     }
@@ -577,20 +583,21 @@ pub fn diff_adds(c: &CommentsConfig, diff: &str) -> Vec<Found> {
     out
 }
 
-/// The comments the branch at `dir` adds over its default branch, committed or not.
-pub fn branch_adds(c: &CommentsConfig, dir: &str) -> Vec<Found> {
+/// The comments the branch at `dir` adds over `base` (the branch its PR goes into), else its default
+/// branch, committed or not.
+pub fn branch_adds(c: &CommentsConfig, dir: &str, base: Option<&str>) -> Vec<Found> {
     if !c.guard || dir.is_empty() || !Path::new(dir).is_dir() {
         return vec![];
     }
     let git = Git(crate::proc::which("git"));
-    let Some(base) = fork_point(&git, dir) else { return vec![] };
+    let Some(base) = fork_point(&git, dir, base) else { return vec![] };
     let diff = git.run(dir, &["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", &base]).unwrap_or_default();
     diff_adds(c, &diff)
 }
 
-/// Why `what` ("opening the PR", "finishing") can't go ahead: the branch adds comments.
-pub fn branch_refusal(cfg: &Config, dir: &str, what: &str) -> Option<String> {
-    refusal(cfg, branch_adds(&cfg.comments, dir), "this branch", what)
+/// Why `what` ("opening the PR", "finishing") can't go ahead: the branch adds comments over `base`.
+pub fn branch_refusal(cfg: &Config, dir: &str, base: Option<&str>, what: &str) -> Option<String> {
+    refusal(cfg, branch_adds(&cfg.comments, dir, base), "this branch", what)
 }
 
 fn refusal(cfg: &Config, found: Vec<Found>, whose: &str, what: &str) -> Option<String> {

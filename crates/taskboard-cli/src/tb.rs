@@ -109,6 +109,10 @@ enum Cmd {
         /// another task is busy in can stay where it is)
         #[arg(long = "branch", value_name = "BRANCH", requires = "pr_body")]
         pr_branch: Option<String>,
+        /// With --pr-body: open the PR into this branch (like release/1.2 for a backport) instead of the
+        /// default branch; kept as the task's PR base (tb task set --base)
+        #[arg(long = "base", value_name = "BRANCH", requires = "pr_body")]
+        pr_base: Option<String>,
         /// It finishes without the PR it was meant to open, and why
         #[arg(long = "no-pr", value_name = "WHY")]
         no_pr: Option<String>,
@@ -1339,6 +1343,9 @@ enum GoalCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
+        /// The branch its tasks' PRs go into instead of the repo's default, like release/1.2 for a backport; their worktrees start there. default to clear
+        #[arg(long, value_name = "BRANCH|default")]
+        base: Option<String>,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog")]
         not_backlog: bool,
@@ -1375,6 +1382,9 @@ enum GoalCmd {
         /// Where its tasks on auto work: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks per task)
         #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
         lane: Option<String>,
+        /// The branch its tasks' PRs go into instead of the repo's default, like release/1.2 for a backport; their worktrees start there. default to clear
+        #[arg(long, value_name = "BRANCH|default")]
+        base: Option<String>,
         /// Queue its planned tasks to run (and unpause it), when the owner says so
         #[arg(long)]
         run: bool,
@@ -1527,6 +1537,9 @@ enum TaskCmd {
         /// Where it works: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks; `tb planning` lists the rules)
         #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
         lane: Option<String>,
+        /// The branch its PR goes into instead of the repo's default, like release/1.2 for a backport; its worktree starts there. default to clear
+        #[arg(long, value_name = "BRANCH|default")]
+        base: Option<String>,
         /// With --here --lane slot: claim its slot now and move the uncommitted edits in these files from the
         /// shared checkout into it (on its own, none)
         #[arg(long, num_args = 0.., value_name = "FILE", requires = "here")]
@@ -1613,6 +1626,9 @@ enum TaskCmd {
         /// Where it works: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks)
         #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
         lane: Option<String>,
+        /// The branch its PR goes into instead of the repo's default, like release/1.2 for a backport; its worktree starts there. default to clear
+        #[arg(long, value_name = "BRANCH|default")]
+        base: Option<String>,
         /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
@@ -3775,6 +3791,9 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
     if let Some(l) = task_lane_line(v) {
         lines.push(l);
     }
+    if let Some(b) = v["pr_base"].as_str().filter(|b| !b.is_empty()) {
+        lines.push(format!("PR into: {b}"));
+    }
     for (label, key) in [("Detail", "detail"), ("Summary", "summary")] {
         let block = indented(label, v[key].as_str().unwrap_or(""));
         if !block.is_empty() {
@@ -4861,6 +4880,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
     if let Some(l) = lane_text(g["lane"].as_str().unwrap_or("auto")) {
         lines.push(l.into());
     }
+    if let Some(b) = g["pr_base"].as_str().filter(|b| !b.is_empty()) {
+        lines.push(format!("PRs into: {b}"));
+    }
     let own: Vec<String> = g["devices"]["devices"]
         .as_array()
         .into_iter()
@@ -5714,7 +5736,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Withdraw { why, t } => c.run_report("tb.withdraw", json!({"why": why}), t.task, true, |v| {
             format!("Withdrew the question on {}; it's no longer waiting on {}.", v["task"].as_str().unwrap_or("the task"), c.cfg.owner)
         }),
-        Cmd::Submit { summary, pr, pr_body, pr_title, pr_branch, no_pr, no_evidence, merged_note, human, t } => {
+        Cmd::Submit { summary, pr, pr_body, pr_title, pr_branch, pr_base, no_pr, no_evidence, merged_note, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
             let Some(file) = pr_body else {
                 // The board runs the task.finishing hooks and checks the diff before it answers.
@@ -5735,6 +5757,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             f["pr_body"] = json!(text);
             f["pr_title"] = json!(pr_title);
             f["pr_branch"] = json!(pr_branch);
+            f["pr_base"] = json!(pr_base);
             // Not spooled: the PR opens now or not at all. On the progress stream: the board fetches,
             // checks the branch, opens the PR and runs the finishing hooks, a stage at a time.
             let task = t.task.map(|x| task_ref(&x)).transpose()?;
@@ -6058,10 +6081,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Goal { action } => match action {
-            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area, not_backlog } => {
+            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area, base, not_backlog } => {
                 short_task_titles(&tasks)?;
                 let after = if after.is_empty() { Value::Null } else { json!(after) };
-                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area, "not_backlog": not_backlog});
+                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area, "pr_base": base, "not_backlog": not_backlog});
                 match c.report("tb.goal", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
@@ -6088,7 +6111,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, jira, worktrees, lane, run, deprioritize, prioritize, area, devices, after } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, jira, worktrees, lane, base, run, deprioritize, prioritize, area, devices, after } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -6120,6 +6143,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = worktrees {
                     b["worktree_base"] = json!(x);
+                }
+                if let Some(x) = base {
+                    b["pr_base"] = json!(x);
                 }
                 if let Some(x) = lane {
                     b["lane"] = json!(x);
@@ -6333,7 +6359,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -6394,6 +6420,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(l) = &lane {
                     body["lane"] = json!(l);
                 }
+                if let Some(x) = base {
+                    body["pr_base"] = json!(x);
+                }
                 if let Some(m) = model {
                     body["model"] = json!(m);
                 }
@@ -6449,7 +6478,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, landed, area, model, effort, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, landed, area, model, effort, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -6484,6 +6513,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = lane {
                     b["lane"] = json!(x);
+                }
+                if let Some(x) = base {
+                    b["pr_base"] = json!(x);
                 }
                 if let Some(x) = model {
                     b["model"] = json!(x);

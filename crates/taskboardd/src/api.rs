@@ -1295,6 +1295,13 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 bump = true;
             }
         }
+        if has_key("pr_base") {
+            let b = crate::worktrees::clean_pr_base(body.get("pr_base"))?;
+            if b.as_deref() != t.s("pr_base").filter(|b| !b.is_empty()) {
+                f.push(("pr_base", json!(b)));
+                bump = true;
+            }
+        }
         if has_key("model") {
             let m = crate::runner::clean_model(body.get("model"))?;
             if m.as_deref() != t.s("model") {
@@ -2246,6 +2253,9 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         if hk("lane") {
             f.push(("lane", json!(crate::worklane::clean(body.get("lane"))?.unwrap_or_else(|| "auto".into()))));
         }
+        if hk("pr_base") {
+            f.push(("pr_base", json!(crate::worktrees::clean_pr_base(body.get("pr_base"))?)));
+        }
         if hk("after") {
             f.push(("after_goals", json!(crate::chain::clean(app, &body["after"], Some(&g))?)));
         }
@@ -2530,6 +2540,9 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
         "shared" => lines.push("Lane: shared. Its tasks work in the shared checkout.".into()),
         "alone" => lines.push("Lane: alone. Each task runs with nothing else in the goal beside it.".into()),
         _ => {}
+    }
+    if let Some(b) = g.s("pr_base").filter(|b| !b.is_empty()) {
+        lines.push(format!("PRs go into: {b}, not the default branch. Each task's worktree starts from it."));
     }
     let notes = board::goal_notes(app, g.id())?;
     if !notes.is_empty() {

@@ -3,7 +3,8 @@
 //! (`locks.rs`), and `auto`, the default, leaves the pick to the board: a slot for a task in a wave whose
 //! mates' planned files overlap its own, or that plans no files, or whose mate has the shared checkout
 //! already (one task's branch at a time); else the shared checkout. A goal's lane
-//! is what its tasks on `auto` take (a goal with a `worktree_base` is on `slot`). An auto pick is kept in
+//! is what its tasks on `auto` take (a goal with a `worktree_base` or `pr_base` is on `slot`, and so is a
+//! task with its own `pr_base`). An auto pick is kept in
 //! the task's context once it starts, so the task never moves folders part way through.
 
 use std::path::Path;
@@ -35,20 +36,22 @@ fn chosen(lane: Option<&str>) -> Option<&str> {
     lane.filter(|l| LANES.contains(l) && *l != "auto")
 }
 
-/// A goal's lane: its own, else `slot` when it has a worktree base, else auto.
+/// A goal's lane: its own, else `slot` when it has a worktree base or a PR base, else auto.
 pub fn goal_lane(g: &Row) -> &str {
     match chosen(g.s("lane")) {
         Some(l) => l,
-        None if g.s("worktree_base").is_some_and(|b| !b.is_empty()) => "slot",
+        None if ["worktree_base", "pr_base"].iter().any(|k| g.s(k).is_some_and(|b| !b.is_empty())) => "slot",
         None => "auto",
     }
 }
 
-/// The task's own lane: what it was given, else `alone` when it runs alone, else auto.
+/// The task's own lane: what it was given, else `alone` when it runs alone, else `slot` when its PR
+/// goes into another branch (its worktree starts there), else auto.
 pub fn own_lane(t: &Row) -> &str {
     match chosen(t.s("lane")) {
         Some(l) => l,
         None if t.s("alone").is_some() => "alone",
+        None if t.s("pr_base").is_some_and(|b| !b.is_empty()) => "slot",
         None => "auto",
     }
 }

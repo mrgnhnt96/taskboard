@@ -11,7 +11,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{PrLink, RowExt};
-use taskboardd::{board, dispatch, midna, p, prflow, progress, reports, runner, slot_ageing, worklane, worktrees};
+use taskboardd::{board, dispatch, midna, p, prflow, progress, reports, runner, slot_ageing, steps, worklane, worktrees};
 
 struct Board {
     app: Arc<App>,
@@ -306,6 +306,44 @@ fn a_worktree_base_is_checked_and_a_missing_one_fails_the_start_with_retries() {
     assert!(row.st("latest").contains("Couldn't make its worktree from origin/nope"), "{}", row.st("latest"));
     runner::start_queued(&b.app).unwrap();
     assert!(b.started().is_empty(), "it waits for the retry");
+}
+
+#[test]
+fn a_backport_task_starts_from_its_pr_base_and_its_pr_goes_into_it() {
+    let b = new_board();
+    let first = git_repo(&b);
+    let repo = b.dir.path().join("webapp");
+    git(&repo, &["push", "-q", "origin", "main:release/1.x"]);
+    std::fs::write(repo.join("README"), "webapp 2\n").unwrap();
+    git(&repo, &["commit", "-q", "-am", "Second"]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    let g = b.side_by_side();
+
+    let (code, msg) = b.post_err(&format!("goals/G{g}"), json!({"pr_base": "a..b"}));
+    assert_eq!(code, 400);
+    assert!(msg.contains("isn't a branch a PR can go into"), "{msg}");
+
+    let t = b.task("Backport the fix", json!({"goal_id": g, "pr_base": "origin/release/1.x"}));
+    let row = board::get_task(&b.app, t).unwrap();
+    assert_eq!(row.st("pr_base"), "release/1.x", "origin/ is dropped");
+    assert_eq!(worklane::pick(&b.app, &row).unwrap(), "slot", "a task with its own base works in a slot");
+    assert_eq!(steps::real_base(&b.app, &row).unwrap(), "release/1.x");
+    runner::start_queued(&b.app).unwrap();
+    let job = b.start_job(t);
+    assert_eq!(job.st("cwd"), slot(&b, 1));
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]), first, "it starts at the release branch, not main");
+    assert!(job.st("prompt").contains("Its PR goes into release/1.x, not the default branch"), "{}", job.st("prompt"));
+
+    // A goal's base is what its tasks take unless they name their own; default clears a task's.
+    b.post(&format!("goals/G{g}"), json!({"pr_base": "release/2.x"}));
+    let other = b.task("Another", json!({"goal_id": g}));
+    assert_eq!(steps::real_base(&b.app, &board::get_task(&b.app, other).unwrap()).unwrap(), "release/2.x");
+    b.post(&format!("tasks/T{t}"), json!({"pr_base": "default"}));
+    let row = board::get_task(&b.app, t).unwrap();
+    assert!(row.s("pr_base").is_none());
+    assert_eq!(steps::real_base(&b.app, &row).unwrap(), "release/2.x");
+    b.post(&format!("goals/G{g}"), json!({"pr_base": "default"}));
+    assert_eq!(steps::real_base(&b.app, &board::get_task(&b.app, other).unwrap()).unwrap(), "main");
 }
 
 /// A repository that was made but never committed to, with the files a scaffolding task left in it.

@@ -486,13 +486,21 @@ fn base_branch(repo: &str) -> String {
     default_base(repo).unwrap_or_else(|| "main".into())
 }
 
+/// The branch the task's PR is set to go into (`pr_base`): its own, else its goal's. None: the repo's default.
+pub fn chosen_base(app: &App, t: &Row) -> Result<Option<String>> {
+    if let Some(b) = t.s("pr_base").filter(|b| !b.is_empty()) {
+        return Ok(Some(b.to_string()));
+    }
+    Ok(crate::board::find_goal(app, t.i("goal_id"))?.and_then(|g| g.s("pr_base").filter(|b| !b.is_empty()).map(|b| b.to_string())))
+}
+
 /// The branch this task's PR goes into: the branch of the PR it stacks on while that's unmerged, else
-/// the repo's default.
+/// the one it's set to (`chosen_base`), else the repo's default.
 pub fn real_base(app: &App, t: &Row) -> Result<String> {
-    Ok(match crate::stack::base_branch(app, t)? {
-        Some(b) => b,
-        None => base_branch(&t.st("repo_path")),
-    })
+    if let Some(b) = crate::stack::base_branch(app, t)? {
+        return Ok(b);
+    }
+    Ok(chosen_base(app, t)?.unwrap_or_else(|| base_branch(&t.st("repo_path"))))
 }
 
 /// What placeholders fill in for a task (`{task}`, `{branch}`, …). Scripts get them as `TASKBOARD_<NAME>`.
