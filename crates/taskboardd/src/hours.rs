@@ -221,7 +221,8 @@ fn starts_from(h: &Hours, now: &NaiveDateTime, until: &NaiveDateTime, wait: bool
     from.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(from)
 }
 
-/// `today_until`: a time later today (the app's "until … today").
+/// `today_until`: the app's "Today until". A time that has passed today is tomorrow's (6am
+/// typed at 4 PM runs overnight), as with `until`; only a bare time, no `tomorrow` prefix.
 pub fn set_today_until(app: &App, v: &str) -> Result<Option<Extra>> {
     if clears(v) {
         app.db.set_setting(TODAY_KEY, None)?;
@@ -229,10 +230,7 @@ pub fn set_today_until(app: &App, v: &str) -> Result<Option<Extra>> {
     }
     let now = now_local();
     let until = parse_time(v, "end")?;
-    if mins(&until) <= minute_of(&now) {
-        return err(400, format!("{} has already passed today.", clock(&until)));
-    }
-    let at = now.date().and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(mins(&until));
+    let at = next_time(&now, &until)?;
     save_extra(app, &now, at, true).map(Some)
 }
 
