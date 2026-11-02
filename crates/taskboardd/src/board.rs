@@ -405,6 +405,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("model_runs".into(), json!(app.cfg.models.resolve(t.s("model"))));
         o.insert("effort".into(), t.v("effort"));
         o.insert("effort_runs".into(), json!(app.cfg.models.resolve_effort(t.s("model"), t.s("effort"))));
+        // When a start that failed is tried again, while it waits on that retry.
+        o.insert("start_retry_at".into(), start_retry_at(t, &status));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
@@ -417,6 +419,11 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("author_review".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
     }
     Ok(card)
+}
+
+fn start_retry_at(t: &Row, status: &str) -> Value {
+    let retrying = status == "queued" && t.i("start_job").is_none() && t.i0("start_tries") > 0;
+    if retrying { t.v("retry_at") } else { Value::Null }
 }
 
 /// The task's open terminal: its own, or one visiting its PR.

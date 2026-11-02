@@ -95,3 +95,30 @@ fn a_parked_task_the_owner_starts_as_its_wait_ends_opens_one_terminal() {
     let starts = b.app.db.count("SELECT COUNT(*) FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'start'", p![id]).unwrap();
     assert_eq!(starts, 1);
 }
+
+#[test]
+fn the_owners_start_tries_a_failed_start_again_now() {
+    let b = board();
+    let id = b.task("Flaky start", json!({}));
+    let t = board::get_task(&b.app, id).unwrap();
+    b.app.db.tx(|| taskboardd::jobs::start_failed(&b.app, &t, "Couldn't start: no worktree", true, true)).unwrap();
+    let card = board::task_card(&b.app, &board::get_task(&b.app, id).unwrap()).unwrap();
+    assert_eq!(card["status"], "queued");
+    assert!(card["start_retry_at"].is_string(), "the card says when it tries again: {card}");
+
+    b.started(id);
+    let t = board::get_task(&b.app, id).unwrap();
+    assert_eq!((t.i0("start_tries"), t.s("retry_at")), (0, None), "the owner's start clears the retry");
+    let card = board::task_card(&b.app, &t).unwrap();
+    assert!(card["start_retry_at"].is_null(), "{card}");
+}
+
+#[test]
+fn the_owners_start_runs_a_task_that_gave_up_starting() {
+    let b = board();
+    let id = b.task("Flaky start", json!({}));
+    let t = board::get_task(&b.app, id).unwrap();
+    b.app.db.tx(|| taskboardd::jobs::start_failed(&b.app, &t, "Couldn't start: no worktree", true, false)).unwrap();
+    assert_eq!(board::get_task(&b.app, id).unwrap().s("needs_reason"), Some("start_failed"));
+    b.started(id);
+}

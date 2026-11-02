@@ -1652,6 +1652,7 @@ fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &st
             app,
             id,
             fields!["pickup" => mode, "pickup_session" => if mode == "attach" { sid.clone() } else { None }, "lost" => 0,
+                    "start_tries" => 0, "retry_at" => null,
                     "session_id" => if t.b("lost") { None } else { t.s("session_id").map(|s| s.to_string()) }],
         )?;
         board::log_event(app, id, board::OWNER, "status", started)?;

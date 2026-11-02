@@ -156,6 +156,30 @@ fn a_stuck_working_task_shows_the_stuck_banner() {
 }
 
 #[::core::prelude::v1::test]
+fn a_start_waiting_on_its_retry_can_try_again_now() {
+    let at = "2026-10-09T21:26:00Z";
+    let goal = json!({"ref": "G1", "title": "Checkout"});
+    let task = json!({"ref": "T5", "id": 5, "status": "queued", "goal": goal, "latest": "Couldn't start: no worktree", "start_retry_at": at});
+    let n = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    let (text, acts) = (json!(view::text(&n)).to_string(), view::acts(&n));
+    assert!(text.contains("Couldn’t start in Midna") && text.contains("Couldn't start: no worktree"), "{text}");
+    assert!(text.contains(&format!("Trying again at {}", crate::fmt::hhmm(at))), "{text}");
+    assert_eq!(acts.iter().filter(|a| a.starts_with("start:")).collect::<Vec<_>>(), ["start:new"], "{acts:?}");
+    // Once it's starting, or with no retry pending, the box is gone.
+    for task in [
+        json!({"ref": "T5", "id": 5, "status": "queued", "goal": goal, "start_retry_at": at, "starting": true}),
+        json!({"ref": "T5", "id": 5, "status": "queued", "goal": goal}),
+    ] {
+        let text = json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+        assert!(!text.contains("Couldn’t start in Midna"), "{text}");
+    }
+    // A task outside a goal shows it in place of its Start buttons.
+    let task = json!({"ref": "T5", "id": 5, "status": "queued", "start_retry_at": at});
+    let acts = view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})));
+    assert_eq!(acts.iter().filter(|a| a.starts_with("start:")).collect::<Vec<_>>(), ["start:new"], "{acts:?}");
+}
+
+#[::core::prelude::v1::test]
 fn write_an_answer_opens_its_terminal_or_a_new_one() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
     // No terminal but a question: focus reopens one that asks it again, keeping the question.

@@ -33,6 +33,8 @@ pub struct WRow {
     pub design: bool,
     pub row: status::Row,
     pub pr: String,
+    /// Its start failed, or waits on a retry timer: the row offers to try it again now.
+    pub retry: bool,
 }
 
 /// A card: its header (none when the goal has no waves), the gate under it, its rows.
@@ -135,7 +137,18 @@ pub fn wrow(t: &Value) -> WRow {
         design: kit::is_design(t),
         row: status::row(t),
         pr: pr_cell(t),
+        retry: start_failed(t),
     }
+}
+
+/// A task whose start gave up, or one queued to try its start again later.
+fn start_failed(t: &Value) -> bool {
+    (s(t, "status") == "needs" && s(t, "needs_reason") == "start_failed") || crate::ui::task_panel::start_retry_at(t).is_some()
+}
+
+/// Run a failed start again now.
+pub fn try_again(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
+    run(m, format!("task-start:{r}"), None, true, format!("tasks/{r}/start"), json!({"mode": "new"}), cx, |_, _, _| "Starting".into());
 }
 
 /// The goal's cards, in wave order.
@@ -219,7 +232,7 @@ fn gate_el(m: &MainWindow, t: &Theme, gr: &str, g: Gate, cx: &mut Context<MainWi
         .children(inline_note(m, t, &format!("wgate:{gr}")))
 }
 
-fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let (loud, _, _) = x.row.st.colors(t);
     let (o1, o2) = (x.r.clone(), x.r.clone());
     let (hover, link) = (t.panel_2, t.accent);
@@ -264,8 +277,21 @@ fn row_el(t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
             1.,
         ))
         .child(cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(kit::clipped(SharedString::from(format!("goal-task-line-{}", x.r)), x.row.line)), 1.1))
+        .when(x.retry, |d| d.child(retry_btn(m, t, &x.r, cx)))
         .child(pr)
         .child(div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(x.row.age))
+}
+
+fn retry_btn(m: &MainWindow, t: &Theme, r: &str, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let id = SharedString::from(format!("goal-task-retry-{r}"));
+    if m.goal_page.busy.contains(&format!("task-start:{r}")) {
+        return kit::disabled(kit::btn_small(t, id, "Starting…")).flex_none();
+    }
+    let r = r.to_string();
+    kit::btn_small(t, id, "Try again").flex_none().on_click(cx.listener(move |m, _, _, cx| {
+        cx.stop_propagation();
+        try_again(m, &r, cx);
+    }))
 }
 
 /// How many list items card `c` takes: its header (with its gate) when it has one, then each row.
@@ -280,7 +306,7 @@ pub fn piece(m: &MainWindow, t: &Theme, gr: &str, cards: &[Card], c: usize, k: u
     let head = (card.head.is_some() || card.gate.is_some()) as usize;
     let (top, bottom) = (k == 0, k + 1 == pieces(card));
     let body = match k.checked_sub(head) {
-        Some(r) => row_el(t, card.rows[r].clone(), cx).into_any_element(),
+        Some(r) => row_el(m, t, card.rows[r].clone(), cx).into_any_element(),
         None => div().flex().flex_col().children(card.head.clone().map(|h| head_el(t, h))).children(card.gate.clone().map(|g| gate_el(m, t, gr, g, cx))).into_any_element(),
     };
     let edge = div()
@@ -329,6 +355,15 @@ mod tests {
         assert!(wrow(&json!({"ref": "T1", "title": "Concepts", "kind": "design"})).design);
         assert!(!wrow(&json!({"ref": "T2", "title": "Build it", "kind": "agent"})).design);
         assert!(kit::is_design(&json!({"kind": "design"})) && !kit::is_design(&json!({"kind": "human"})));
+    }
+
+    #[test]
+    fn a_task_whose_start_failed_offers_to_try_again() {
+        assert!(wrow(&json!({"ref": "T1", "status": "needs", "needs_reason": "start_failed"})).retry);
+        assert!(wrow(&json!({"ref": "T2", "status": "queued", "start_retry_at": "2026-11-02T15:05:00Z"})).retry);
+        assert!(!wrow(&json!({"ref": "T3", "status": "queued", "start_retry_at": "2026-11-02T15:05:00Z", "starting": true})).retry);
+        assert!(!wrow(&json!({"ref": "T4", "status": "queued"})).retry);
+        assert!(!wrow(&json!({"ref": "T5", "status": "needs", "needs_reason": "question"})).retry);
     }
 
     #[test]

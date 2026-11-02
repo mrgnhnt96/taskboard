@@ -100,7 +100,7 @@ impl Act {
         match self {
             Act::Restart(_) => "Restart",
             Act::MarkDone(_) => "Mark done",
-            Act::Start(_) => "Start",
+            Act::Start(_) => "Try again",
             Act::Focus(_) => "Open terminal",
             Act::AskAgain(_) => "Open new terminal",
             Act::Continue(..) => "Continue",
