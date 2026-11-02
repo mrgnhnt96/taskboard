@@ -19,7 +19,6 @@ pub fn find_ci(hay: &str, needle: &str) -> Option<Range<usize>> {
     }
     let want: Vec<char> = needle.chars().collect();
     let chars: Vec<(usize, char)> = hay.char_indices().collect();
-    let low = |c: char| c.to_lowercase().next().unwrap_or(c);
     (0..chars.len()).find_map(|start| {
         let ok = want.len() <= chars.len() - start && want.iter().enumerate().all(|(k, w)| low(chars[start + k].1) == *w);
         ok.then(|| {
@@ -29,24 +28,45 @@ pub fn find_ci(hay: &str, needle: &str) -> Option<Range<usize>> {
     })
 }
 
+/// One char in lower case, the same way for the query and the text it's matched against: a
+/// whole-string lower case can differ (a final sigma, a dotted I) and then never match.
+fn low(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
 /// The query as lower-case words.
 pub fn words(q: &str) -> Vec<String> {
-    q.split_whitespace().map(str::to_lowercase).collect()
+    q.split_whitespace().map(|w| w.chars().map(low).collect()).collect()
+}
+
+/// Whether `w` names the ref `r` (both lower case): its whole (`t332`), or its number alone (`332`).
+/// `Some(true)` for all of it, `Some(false)` for its start, `None` when it doesn't.
+fn ref_match(r: &str, w: &str) -> Option<bool> {
+    let num = r.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let bare = !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit()) && num.len() < r.len();
+    if r.is_empty() {
+        None
+    } else if r == w || (bare && num == w) {
+        Some(true)
+    } else if r.starts_with(w) || (bare && num.starts_with(w)) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// How well an object matches: `None` when a word is found nowhere, else lower is better —
-/// its ref, then its title's start, a word in its title, anywhere in its title, then its other text.
+/// its ref (with or without its letter), then its title's start, a word in its title, anywhere in
+/// its title, then its other text.
 /// The highlights are each word's first place in the title.
 pub fn score(r: &str, title: &str, other: &[&str], words: &[String]) -> Option<(u8, Vec<Range<usize>>)> {
-    let r = r.to_lowercase();
+    let r: String = r.chars().map(low).collect();
     let mut best = u8::MAX;
     let mut hl = Vec::new();
     for w in words {
         let in_title = find_ci(title, w);
-        let rank = if !r.is_empty() && r == *w {
-            0
-        } else if !r.is_empty() && r.starts_with(w.as_str()) {
-            1
+        let rank = if let Some(whole) = ref_match(&r, w) {
+            if whole { 0 } else { 1 }
         } else if let Some(at) = &in_title {
             if at.start == 0 {
                 2
@@ -170,6 +190,22 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_number_finds_its_ref() {
+        let w = words("332");
+        assert_eq!(score("T332", "x", &[], &w).unwrap().0, 0);
+        assert_eq!(score("B3320", "x", &[], &w).unwrap().0, 1);
+        assert_eq!(score("T1332", "x", &[], &w), None, "a number inside the ref isn't it");
+        assert_eq!(score("", "x", &["332"], &w).unwrap().0, 5, "no ref: other text");
+        assert_eq!(score("T9", "x", &[], &words("t")).unwrap().0, 1, "a letter alone still starts a ref");
+    }
+
+    #[test]
+    fn the_query_and_the_text_lower_case_alike() {
+        assert!(score("T1", "ΟΔΟΣ", &[], &words("ΟΔΟΣ")).is_some(), "a final sigma");
+        assert!(score("T1", "İstanbul", &[], &words("İst")).is_some(), "a dotted I");
+    }
+
+    #[test]
     fn sends_the_best_few_and_counts_every_match() {
         let (_d, app) = board();
         for n in 0..300 {
@@ -193,6 +229,7 @@ mod tests {
         assert_eq!(v["issues_total"], 1);
 
         assert_eq!(refs(&search(&app, &format!("t{other}"), "6"), "tasks")[0], format!("T{other}"), "a ref first");
+        assert_eq!(refs(&search(&app, &other.to_string(), "6"), "tasks")[0], format!("T{other}"), "its number alone too");
         let none = search(&app, "", "500");
         assert_eq!(none["tasks_total"], 202, "nothing typed: the open tasks");
         assert_eq!(refs(&none, "tasks")[0], format!("T{needs}"), "the one that needs you first");
