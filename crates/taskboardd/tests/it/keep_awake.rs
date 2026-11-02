@@ -137,10 +137,10 @@ fn extra_hours_run_past_midnight_for_agents_and_keep_awake() {
         assert!(v["until"].as_str().unwrap().starts_with(&tomorrow), "{v}");
         assert_eq!(v["today_until"], json!(null), "not a time today");
         assert_eq!(sets(dir.path()).last().unwrap()["today"]["until"], json!(past.format("%H:%M").to_string()));
-        // The app's today_until still only takes a time later today.
-        let (code, msg) = post(json!({"today_until": past.format("%H:%M").to_string()})).unwrap_err();
-        assert_eq!(code, 400);
-        assert!(msg.contains("already passed today"), "{msg}");
+        // The app's today_until too: a time that has passed today is tomorrow's.
+        let v = post(json!({"today_until": past.format("%H:%M").to_string()})).unwrap();
+        assert!(v["until"].as_str().unwrap().starts_with(&tomorrow), "{v}");
+        assert_eq!(sets(dir.path()).last().unwrap()["today"]["until"], json!(past.format("%H:%M").to_string()));
     }
 
     let (code, msg) = post(json!({"for": "25h"})).unwrap_err();

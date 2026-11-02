@@ -1,7 +1,8 @@
 //! Work hours: the status-bar pill (`hoursPill`: "Work hours 9am–5pm", "Agents off until Thu 6am")
 //! and its menu (`hoursMenuHtml`: the on/off check, From / to, the days, "Today until"). Every
 //! change is saved at once (`saveHours`: `POST /hours`, `today_until` only when it changed).
-//! The times are typed ("7p", "730pm", "17:30") with an am/pm chip beside each.
+//! The times are typed as digits only, the colon put in for you ("730" shows "7:30"), with an
+//! am/pm chip beside each. A "Today until" earlier than now is tomorrow's.
 use crate::app::{MainWindow, Pill};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
@@ -55,7 +56,7 @@ impl State {
             start: s(h, "start").into(),
             end: s(h, "end").into(),
             days: arr(h, "days").iter().filter_map(|d| d.as_str().map(str::to_string)).collect(),
-            today: s(h, "today_until").into(),
+            today: extra_end(h),
             first_day: arr(h, "week_days").first().and_then(|d| d.as_str()).unwrap_or("sun").into(),
             ..Default::default()
         };
@@ -100,12 +101,23 @@ impl State {
     }
 }
 
+/// The extra hours' end as `HH:MM` ("" for none): `today_until` when it's today, else the time
+/// of `until` (a "Today until" that passed today runs to tomorrow).
+pub fn extra_end(h: &Value) -> String {
+    match fmt::opt_s(h, "today_until") {
+        Some(t) => t.to_string(),
+        None => fmt::opt_s(h, "until").and_then(|u| u.get(11..16)).unwrap_or_default().to_string(),
+    }
+}
+
 /// `hoursPill`, as data (`cls` is `hours` or `hours closed`).
 pub fn pill_view(h: &Value) -> Pill {
     let (cls, label) = if !b(h, "on") {
         ("hours", "No work hours".to_string())
     } else if b(h, "open") && fmt::opt_s(h, "today_until").is_some() {
         ("hours", format!("Work hours until {} today", fmt::clock12(s(h, "today_until"))))
+    } else if b(h, "open") && fmt::opt_s(h, "until").is_some() {
+        ("hours", format!("Work hours until tomorrow {}", fmt::clock12(&extra_end(h))))
     } else if b(h, "open") {
         ("hours", format!("Work hours {}–{}", fmt::clock12(s(h, "start")), fmt::clock12(s(h, "end"))))
     } else {
@@ -122,6 +134,21 @@ pub fn shown(hhmm: &str) -> (String, Option<bool>) {
         return (String::new(), None);
     };
     (format!("{}:{m:02}", if h % 12 == 0 { 12 } else { h % 12 }), Some(h >= 12))
+}
+
+/// What a time field shows for what was typed: the digits only (4 at most), with the colon put
+/// in where it can only go: "7" → "7", "17" → "17", "73" → "7:3", "730" → "7:30", "173" →
+/// "17:3", "1730" → "17:30".
+pub fn digits_shown(text: &str) -> String {
+    let d: String = text.chars().filter(char::is_ascii_digit).take(4).collect();
+    let n = |s: &str| s.parse::<u32>().unwrap_or(0);
+    match d.len() {
+        2 if n(&d) > 23 => format!("{}:{}", &d[..1], &d[1..]),
+        3 if n(&d[1..]) > 59 => format!("{}:{}", &d[..2], &d[2..]),
+        3 => format!("{}:{}", &d[..1], &d[1..]),
+        4 => format!("{}:{}", &d[..2], &d[2..]),
+        _ => d,
+    }
 }
 
 /// Splits a typed time into its digits and the half it names: "7:30p" → ("7:30", Some(pm)).
@@ -222,7 +249,7 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
 
 /// `saveHours`.
 pub fn save(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let body = m.hours.body(s(&m.state()["work_hours"], "today_until"));
+    let body = m.hours.body(&extra_end(&m.state()["work_hours"]));
     m.post_or(
         "hours",
         body,
@@ -241,15 +268,20 @@ pub fn save(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     );
 }
 
-/// The menu's time fields, filled with the values; typing an am/pm moves the chip, leaving a
-/// field saves it.
+/// The menu's time fields, filled with the values. They keep only digits and put the colon in
+/// (a pasted "7:30pm" moves the chip to pm first); leaving a field saves it.
 fn make_fields(st: &State, window: &mut Window, cx: &mut Context<MainWindow>) -> Fields {
     let inputs = [START, END, TODAY].map(|i| kit::Input::with_text(cx, if i == TODAY { "Usual end" } else { "" }, false, &shown(st.value(i)).0));
     let mut subs = Vec::new();
     for (i, input) in inputs.iter().enumerate() {
         subs.push(cx.subscribe(&input.field, move |m: &mut MainWindow, field, _: &FieldChanged, cx| {
-            if let Some(pm) = typed_half(field.read(cx).text()) {
+            let text = field.read(cx).text().to_string();
+            if let Some(pm) = typed_half(&text) {
                 m.hours.pm[i] = pm;
+            }
+            let shown = digits_shown(&text);
+            if shown != text {
+                field.update(cx, |f, cx| f.set_text(&shown, cx));
             }
             cx.notify();
         }));
@@ -588,6 +620,32 @@ mod tests {
         assert_eq!(typed_half("7:30"), None);
         let st = State::from_hours(&json!({"start": "09:00", "end": "17:00", "today_until": ""}));
         assert_eq!(st.pm, [false, true, true], "an unset Today until starts on pm");
+    }
+
+    #[::core::prelude::v1::test]
+    fn fields_keep_digits_and_put_the_colon_in() {
+        use super::digits_shown as d;
+        for (typed, shown) in [("", ""), ("7", "7"), ("12", "12"), ("17", "17"), ("73", "7:3"), ("730", "7:30"), ("123", "1:23"),
+            ("1230", "12:30"), ("173", "17:3"), ("1730", "17:30"), ("12305", "12:30"), ("7:30", "7:30"), ("7:3", "7:3"),
+            ("6:0", "6:0"), ("7:30pm", "7:30"), ("abc", ""), ("1a2", "12"), (" 9 ", "9")] {
+            assert_eq!(d(typed), shown, "{typed:?}");
+        }
+        for t in ["7", "12", "730", "1230", "17:30"] {
+            assert!(parse_time(&d(t), false).is_some(), "{t:?} still reads as a time");
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn today_until_can_end_tomorrow() {
+        use super::extra_end;
+        assert_eq!(extra_end(&json!({"today_until": "23:59", "until": "2026-11-02T23:59"})), "23:59");
+        assert_eq!(extra_end(&json!({"today_until": null, "until": "2026-11-03T06:00"})), "06:00");
+        assert_eq!(extra_end(&json!({"today_until": null, "until": null})), "");
+        let st = State::from_hours(&json!({"on": true, "start": "06:00", "end": "14:30", "until": "2026-11-03T06:00"}));
+        assert_eq!((st.today.as_str(), st.pm[2]), ("06:00", false), "tomorrow's 6am shows in the field");
+        assert!(st.body("06:00").get("today_until").is_none(), "unchanged: not sent again");
+        let p = pill_view(&json!({"on": true, "open": true, "start": "06:00", "end": "14:30", "until": "2026-11-03T06:00"}));
+        assert_eq!(p.label, "Work hours until tomorrow 6am");
     }
 
     #[::core::prelude::v1::test]
