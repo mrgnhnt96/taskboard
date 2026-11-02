@@ -326,6 +326,14 @@ impl PrHost for GithubHost {
         Ok(out)
     }
 
+    fn lines(&self, pr: &PrRef) -> HostResult<(i64, i64)> {
+        let v = self.api("GET", &format!("repos/{}/pulls/{}", pr.repo, pr.num), &[])?;
+        match (v["additions"].as_i64(), v["deletions"].as_i64()) {
+            (Some(a), Some(d)) => Ok((a, d)),
+            _ => Err(format!("GitHub gave no line counts for {}#{}", pr.repo, pr.num)),
+        }
+    }
+
     fn commits(&self, pr: &PrRef) -> HostResult<Vec<String>> {
         let mut out = vec![];
         for page in 1..=3 {

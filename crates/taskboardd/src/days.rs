@@ -533,6 +533,8 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     let mut projects: BTreeSet<String> = rows.keys().cloned().collect();
 
     let mon = week_start(date, app.cfg.first_weekday);
+    let merged = crate::merges::by_day(app, start_of(mon - Duration::days(7)), start_of(mon + Duration::days(7)), &hide, NO_PROJECT)?;
+    let merged_on = |d: NaiveDate| merged.get(&d).copied().unwrap_or_default();
     let mut week = Vec::new();
     let mut last_week = Vec::new();
     let mut week_tasks: BTreeMap<i64, Value> = BTreeMap::new();
@@ -544,6 +546,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
             let mut t = totals(&s);
             t["date"] = json!(date_str(d));
             t["future"] = json!(d > today);
+            merged_on(d).put(&mut t);
             list.push(t);
         }
         // How long tasks took this week: each task's work and waits, added up over its days.
@@ -669,6 +672,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     day_json["waits"] = json!(waits);
     day_json["tasks"] = json!(rows.iter().filter(|(p, _)| !hide.contains(*p)).flat_map(|(_, v)| v["tasks"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>());
     day_json["finished"] = json!(finished_on(app, &rows, &hide)?);
+    merged_on(date).put(&mut day_json);
 
     Ok(json!({
         "date": date_str(date),
@@ -868,7 +872,10 @@ pub fn cleanup(app: &App) -> Result<Value> {
     })?;
     let days = match summary_days(app) {
         0 => 0,
-        n => app.db.changed("DELETE FROM day_stats WHERE date < ?", p![date_str(today - Duration::days(n))])?,
+        n => {
+            crate::merges::prune(app, start_of(today - Duration::days(n)))?;
+            app.db.changed("DELETE FROM day_stats WHERE date < ?", p![date_str(today - Duration::days(n))])?
+        }
     };
     app.db.set_setting(LAST_CLEANUP_KEY, Some(&now_iso()))?;
     app.info(format!("history cleanup: {events} events, {states} status changes, {lines} terminal lines, {days} day rows removed"));

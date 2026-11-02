@@ -492,6 +492,11 @@ impl PrHost for BitbucketHost {
         Ok(stats.iter().filter_map(|d| d["new"]["path"].as_str().or_else(|| d["old"]["path"].as_str())).map(str::to_string).collect())
     }
 
+    fn lines(&self, pr: &PrRef) -> HostResult<(i64, i64)> {
+        let stats = self.get_all(&format!("{}/diffstat?pagelen=100&fields=next,values.lines_added,values.lines_removed", self.pr_url(pr)), DIFFSTAT_PAGES)?;
+        Ok(stats.iter().fold((0, 0), |(a, r), d| (a + d["lines_added"].as_i64().unwrap_or(0), r + d["lines_removed"].as_i64().unwrap_or(0))))
+    }
+
     fn commits(&self, pr: &PrRef) -> HostResult<Vec<String>> {
         let list = self.get_all(&format!("{}/commits?pagelen=100&fields=next,values.hash", self.pr_url(pr)), 3)?;
         Ok(list.iter().filter_map(|c| c["hash"].as_str()).map(str::to_string).collect())

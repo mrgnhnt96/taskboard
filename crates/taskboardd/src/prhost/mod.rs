@@ -482,6 +482,10 @@ pub trait PrHost: Send + Sync {
     fn commits(&self, _pr: &PrRef) -> HostResult<Vec<String>> {
         Err(format!("the board can't list a {} PR's commits", self.id()))
     }
+    /// The lines the PR adds and removes, across all its files.
+    fn lines(&self, _pr: &PrRef) -> HostResult<(i64, i64)> {
+        Err(format!("the board can't count a {} PR's lines", self.id()))
+    }
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;
@@ -575,6 +579,8 @@ pub struct FakeHost {
     pub open_prs: Mutex<Vec<OpenPr>>,
     /// What `commits` answers (any PR); empty: the record's head alone.
     pub commits: Mutex<Vec<String>>,
+    /// What `lines` answers (any PR); unset: an error.
+    pub lines: Mutex<Option<(i64, i64)>>,
     /// The builds `cancel_builds` stops.
     pub stops: Mutex<Vec<String>>,
     /// What `request_reviews` answers instead of asking, while set.
@@ -603,7 +609,7 @@ pub struct FakeHost {
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), lines: Mutex::new(None), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -737,6 +743,10 @@ impl PrHost for FakeHost {
         self.log(format!("commits {}", pr.num));
         let listed = self.commits.lock().clone();
         Ok(if listed.is_empty() { vec![self.rec.lock().head.clone()] } else { listed })
+    }
+    fn lines(&self, pr: &PrRef) -> HostResult<(i64, i64)> {
+        self.log(format!("lines {}", pr.num));
+        self.lines.lock().ok_or_else(|| format!("no line counts for #{}", pr.num))
     }
     fn my_open_prs(&self, repo: &str) -> HostResult<Vec<OpenPr>> {
         self.log(format!("open prs {repo}"));

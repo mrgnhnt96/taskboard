@@ -60,6 +60,7 @@ pub mod lost_done;
 pub mod locks;
 pub mod logfile;
 pub mod mdcopy;
+pub mod merges;
 pub mod merged_note;
 pub mod midna;
 pub mod ops;
@@ -189,6 +190,7 @@ pub fn start_threads(app: &Arc<App>) {
         spawn(app, "spans", spans::run);
         spawn(app, "review", review::run);
         spawn(app, "code-review", code_review::run);
+        spawn(app, "merged-lines", merges::fill_loop);
     } else {
         spawn(app, "spool", |a| {
             while !a.stopping() {
