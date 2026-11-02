@@ -2063,8 +2063,11 @@ pub fn refresh(app: &App) -> Result<i64> {
     refresh_where(app, false)
 }
 
-/// The timed PR poll: [`refresh`], skipping the PRs a healthy stream relay covers until their reconcile
-/// is due (`feed::pr_poll_skips`), and the PRs not due at their pace (`prpace.rs`).
+/// The timed PR poll: [`refresh`] of the PRs it has a reason to read (`feed::timed_poll_why`) that are
+/// due at their pace (`prpace.rs`), each group's calls counted under its reason. In board mode it skips
+/// the PRs a healthy stream relay covers until their reconcile is due. While prs streams it leaves
+/// those PRs to their events, and for the rest asks the host what changed and reads in full only the
+/// ones that did: no hourly full read, and no full-read fallback when the host can't say.
 pub fn poll(app: &App) -> Result<i64> {
     refresh_where(app, true)
 }
@@ -2077,19 +2080,37 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
         "SELECT * FROM tasks WHERE pr_host IN ('github', 'bitbucket') AND pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
         p![],
     )?;
-    let mut by_host: std::collections::BTreeMap<String, Vec<Row>> = Default::default();
+    let streams = skip_covered && crate::stream::streams(app, "prs");
+    let mut by_host: std::collections::BTreeMap<String, std::collections::BTreeMap<Option<&'static str>, Vec<Row>>> = Default::default();
     for t in tasks {
-        if skip_covered && (crate::feed::pr_poll_skips(app, &t) || !crate::prpace::due(app, &t)?) {
-            continue;
-        }
-        by_host.entry(t.st("pr_host")).or_default().push(t);
+        let why = match skip_covered {
+            true => match crate::feed::timed_poll_why(app, &t) {
+                Some(why) if crate::prpace::due(app, &t)? => Some(why),
+                _ => continue,
+            },
+            false => None,
+        };
+        by_host.entry(t.st("pr_host")).or_default().entry(why).or_default().push(t);
+    }
+    if streams {
+        note_stream_poll(app, &by_host);
     }
     let mut changed = 0;
-    for (host, tasks) in by_host {
-        let (polled, calls) = crate::prhost::limit::counting(|| poll_host(app, &host, &tasks, skip_covered));
-        let (stepped, full) = polled?;
-        changed += stepped;
-        crate::prhost::limit::limits().note_poll(&host, tasks.len(), full, calls.get(&host).copied().unwrap_or(0), now_ts());
+    for (host, groups) in by_host {
+        let (mut prs, mut full, mut calls) = (0, 0, 0);
+        for (why, tasks) in groups {
+            let run = || poll_host(app, &host, &tasks, skip_covered, streams);
+            let (polled, counted) = crate::prhost::limit::counting(|| match why {
+                Some(why) => crate::prhost::limit::reader(why, run),
+                None => run(),
+            });
+            let (stepped, read) = polled?;
+            changed += stepped;
+            prs += tasks.len();
+            full += read;
+            calls += counted.get(&host).copied().unwrap_or(0);
+        }
+        crate::prhost::limit::limits().note_poll(&host, prs, full, calls, now_ts());
     }
     crate::stack::retarget(app)?;
     crate::stack::base_mismatches(app)?;
@@ -2100,6 +2121,45 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     }
     app.shared.lock().prs_checked_at = Some(now_iso());
     Ok(changed)
+}
+
+/// Logs why the timed poll in stream mode reads PRs, when that changes: the stream went down, a
+/// relay came back, PRs no relay covers, or none at all once a healthy stream covers every PR again.
+fn note_stream_poll(app: &App, by_host: &std::collections::BTreeMap<String, std::collections::BTreeMap<Option<&'static str>, Vec<Row>>>) {
+    use crate::prhost::limit::{POLL_CATCH_UP, POLL_NOT_COVERED, POLL_STREAM_DOWN};
+    let mut counts: Vec<(&'static str, usize)> = vec![];
+    for (why, tasks) in by_host.values().flatten() {
+        let Some(why) = why else { continue };
+        match counts.iter_mut().find(|(w, _)| w == why) {
+            Some((_, n)) => *n += tasks.len(),
+            None => counts.push((why, tasks.len())),
+        }
+    }
+    counts.sort();
+    let whys: Vec<&'static str> = counts.iter().map(|(w, _)| *w).collect();
+    if std::mem::replace(&mut app.shared.lock().pr_poll_whys, whys.clone()) == whys {
+        return;
+    }
+    if counts.is_empty() {
+        app.info("prs: the PR stream covers every open PR, so the timed poll reads none of them; their events and the agent's commands do");
+        return;
+    }
+    let parts: Vec<String> = counts
+        .iter()
+        .map(|(why, n)| {
+            let prs = plural(*n as i64, "PR");
+            match *why {
+                w if w == POLL_STREAM_DOWN => {
+                    let down = crate::feed::problem(app).map(|(_, why)| format!(" ({})", why.trim_end_matches('.'))).unwrap_or_default();
+                    format!("{prs} while the PR stream is down{down}")
+                }
+                w if w == POLL_CATCH_UP => format!("{prs} once, for the events missed while its relay was away"),
+                w if w == POLL_NOT_COVERED => format!("{prs} no stream relay covers"),
+                w => format!("{prs} ({w})"),
+            }
+        })
+        .collect();
+    app.info(format!("prs: falling back to the timed poll for {}: it asks the host what changed and reads in full only those that did", parts.join(", ")));
 }
 
 /// The poll reads a PR in full at least this often even while its stamp stays put: a stamp can miss
@@ -2125,8 +2185,8 @@ const UNKNOWN_READ_EVERY: f64 = 900.0;
 /// are what spends a nearly used-up budget.
 ///
 /// [`PrHost::stamps`]: crate::prhost::PrHost::stamps
-fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result<(i64, usize)> {
-    let (stamps, unknown) = match stamps(app, host, tasks) {
+fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool, streams: bool) -> Result<(i64, usize)> {
+    let (stamps, unknown) = match stamps(app, host, tasks, streams) {
         Some(s) => (s, false),
         None => (vec![None; tasks.len()], true),
     };
@@ -2137,7 +2197,7 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool) -> Result
             let rests = || skip_covered && crate::feed::pr_poll_rests(app, host, t.s("pr_repo").unwrap_or(""));
             let held = || crate::prhost::PrRef::of(t).is_some_and(|pr| host_held(app, &pr).is_some());
             let read_lately = || skip_covered && full_age(t).is_some_and(|age| age < UNKNOWN_READ_EVERY);
-            if unknown && (rests() || held() || read_lately()) { Need::Wait } else { need(t, stamp.as_deref(), unknown) }
+            if unknown && (rests() || held() || read_lately()) { Need::Wait } else { need(t, stamp.as_deref(), unknown, streams) }
         })
         .collect();
     let mut due: Vec<(f64, i64)> = tasks
@@ -2207,22 +2267,26 @@ enum Need {
     /// Its stamp moved, the host has none for it, or it was never read: read it in full now.
     Changed,
     /// The host couldn't say what changed, and its account is rate-limited, or on the timed poll a
-    /// healthy relay covers it or it was read in full under [`UNKNOWN_READ_EVERY`] ago: left for a later poll.
+    /// healthy relay covers it, it was read in full under [`UNKNOWN_READ_EVERY`] ago, or prs streams:
+    /// left for a later poll.
     Wait,
 }
 
-fn need(t: &Row, stamp: Option<&str>, unknown: bool) -> Need {
+/// `streams`: the timed poll while prs streams ([`poll`]), which reads a PR in full only when its
+/// stamp moved (or it was never read): its unchanged stamp is fresh however old its last full read,
+/// and with no stamps it waits for its events or the next poll.
+fn need(t: &Row, stamp: Option<&str>, unknown: bool, streams: bool) -> Need {
     let f = flow(t);
     let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { return Need::Changed };
     if unknown {
-        return Need::Due(rec);
+        return if streams { Need::Wait } else { Need::Due(rec) };
     }
     let Some(stamp) = stamp else { return Need::Changed };
     if f.get("stamp").and_then(|s| s.as_str()) != Some(stamp) {
         return Need::Changed;
     }
     match full_age(t) {
-        Some(age) if age < FULL_READ_EVERY => Need::Fresh(rec),
+        Some(age) if streams || age < FULL_READ_EVERY => Need::Fresh(rec),
         _ => Need::Due(rec),
     }
 }
@@ -2233,7 +2297,7 @@ fn full_age(t: &Row) -> Option<f64> {
 }
 
 /// Each task's PR stamp, in order (None for one the host had none for); None when the host couldn't say.
-fn stamps(app: &App, host: &str, tasks: &[Row]) -> Option<Vec<Option<String>>> {
+fn stamps(app: &App, host: &str, tasks: &[Row], streams: bool) -> Option<Vec<Option<String>>> {
     use crate::prhost::{Look, PrRef};
     let refs: Vec<Option<PrRef>> = tasks.iter().map(PrRef::of).collect();
     let looks: Vec<Look> = refs.iter().zip(tasks).filter_map(|(pr, t)| Some(Look { pr: pr.clone()?, checks: waits_on_checks(t) })).collect();
@@ -2242,6 +2306,10 @@ fn stamps(app: &App, host: &str, tasks: &[Row]) -> Option<Vec<Option<String>>> {
     let mut got = match got {
         Ok(got) if got.len() == looks.len() => got.into_iter(),
         Ok(_) => return None,
+        Err(e) if streams => {
+            app.info(format!("prs: couldn't ask {host} what changed; the PR stream is on, so its PRs wait for their events or the next poll instead of being read in full: {e}"));
+            return None;
+        }
         Err(e) => {
             app.info(format!("prs: couldn't ask {host} what changed, so its PRs are read in full (the timed poll leaves those a relay covers): {e}"));
             return None;

@@ -455,7 +455,7 @@ fn a_relay_covering_only_bitbucket_leaves_github_prs_polled() {
     bb.rec.lock().title = "Bitbucket again".into();
     prflow::poll(&b.app).unwrap();
     assert_eq!(title(gh_task).as_deref(), Some("GitHub again"), "the GitHub PR is polled every round");
-    assert_eq!(title(bb_task).as_deref(), Some("read from Bitbucket"), "bb-relay drives the Bitbucket PR until its reconcile");
+    assert_eq!(title(bb_task).as_deref(), Some("read from Bitbucket"), "bb-relay's events are the Bitbucket PR's state: no timed read");
 
     let relays = b.source("prs")["relays"].as_array().unwrap().clone();
     let names: Vec<&str> = relays.iter().map(|r| r["relay"].as_str().unwrap()).collect();
@@ -590,7 +590,7 @@ fn polling_some_names_the_repos_it_polls_and_why() {
     b.send(from("bb", ev("h1", "heartbeat", json!({"sources": ["prs"], "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}))));
     assert_eq!(
         b.source("prs")["polled"],
-        json!([{"host": "bitbucket", "repo": "acme/webapp", "prs": 1, "why": "reconcile"}, {"host": "github", "repo": "acme/quill", "prs": 1, "why": "not covered"}]),
+        json!([{"host": "bitbucket", "repo": "acme/webapp", "prs": 1, "why": "catch-up"}, {"host": "github", "repo": "acme/quill", "prs": 1, "why": "not covered"}]),
         "the Bitbucket PR hasn't been read since the relay connected"
     );
     prflow::poll(&b.app).unwrap();
@@ -607,7 +607,7 @@ fn polling_some_names_the_repos_it_polls_and_why() {
     *bb.stamps_error.lock() = None;
     prflow::merge_flow(&b.app, covered, vec![("read_at", json!(ago(7200.0)))]).unwrap();
     prflow::poll(&b.app).unwrap();
-    assert_eq!(*bb.reads.lock(), before + 2, "its reconcile reads it once the host answers");
+    assert_eq!(*bb.reads.lock(), before + 2, "its catch-up reads it once the host answers");
 }
 
 #[test]
@@ -617,7 +617,7 @@ fn one_relay_covering_every_provider_works_as_before() {
     let prs = b.source("prs");
     assert_eq!(prs["healthy"], true);
     assert_eq!(prs["polling"], false);
-    assert!(feed::poll_rests(&b.app, "prs") && feed::poll_due(&b.app), "the poll runs, for the relay's hourly reconcile");
+    assert!(feed::poll_rests(&b.app, "prs") && feed::poll_due(&b.app), "the poll runs, for the catch-up read after a relay comes back");
     assert!(feed::pr_poll_rests(&b.app, "github", "acme/webapp"));
     assert!(prs["last_heartbeat_at"].is_string(), "the source's own fields still show the last heartbeat");
 
@@ -671,6 +671,121 @@ fn in_board_mode_a_relay_covered_pr_is_read_hourly_or_when_its_relay_comes_back(
     b.send(bb_relay("h3", json!({})));
     assert!(read_again(&b, "six"), "fi came back since the last read");
     assert!(!read_again(&b, "seven"));
+}
+
+// --- no timed reads of a streamed PR (#841) ---
+
+/// A Bitbucket PR read once (stamp `s1`), then covered by the fi relay, which connected long ago.
+fn streamed_pr(b: &Board) -> (Arc<FakeHost>, i64) {
+    let h = FakeHost::new("bitbucket", Record { title: "one".into(), ..host_rec("h1") });
+    *h.stamp.lock() = Some("s1".into());
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task(BB);
+    prflow::refresh(&b.app).unwrap();
+    b.send(bb_relay("h1", json!({})));
+    let mut st: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
+    st["relays"]["fi"]["connected_at"] = json!(ago(9000.0));
+    st["relays"]["fi"].as_object_mut().unwrap().remove("back_at");
+    b.feed_state("prs", st);
+    (h, id)
+}
+
+fn poll_whys(b: &Board) -> Vec<&'static str> {
+    b.app.shared.lock().pr_poll_whys.clone()
+}
+
+fn set_fi(b: &Board, k: &str, v: Value) {
+    let mut st: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
+    st["relays"]["fi"][k] = v;
+    b.feed_state("prs", st);
+}
+
+#[test]
+fn in_stream_mode_a_healthy_relay_s_prs_get_no_timed_reads_even_hours_on() {
+    let b = board_with(stream_mode("prs"));
+    let (h, id) = streamed_pr(&b);
+    prflow::merge_flow(&b.app, id, vec![("read_at", json!(ago(9500.0)))]).unwrap();
+    assert_eq!(b.source("prs")["polled"], json!([{"host": "bitbucket", "repo": "acme/webapp", "prs": 1, "why": "catch-up"}]));
+    let reads = *h.reads.lock();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads, "the catch-up asks what changed, and the stamp hasn't moved since its last read");
+    assert_eq!(poll_whys(&b), ["poll (catch-up)"]);
+    assert_eq!(b.source("prs")["polled"], json!([]), "caught up");
+
+    h.calls.lock().clear();
+    prflow::merge_flow(&b.app, id, vec![("read_at", json!(ago(7200.0))), ("full_at", json!(ago(7200.0)))]).unwrap();
+    *h.stamp.lock() = Some("s2".into());
+    for _ in 0..3 {
+        prflow::poll(&b.app).unwrap();
+    }
+    assert_eq!(*h.reads.lock(), reads, "two hours since its last read, and still no timed read while fi covers it");
+    assert!(h.calls().is_empty(), "not even a what-changed call: {:?}", h.calls());
+    assert!(poll_whys(&b).is_empty(), "logged once: the stream covers every open PR");
+
+    let board_mode = board();
+    let (h, id) = streamed_pr(&board_mode);
+    prflow::merge_flow(&board_mode.app, id, vec![("read_at", json!(ago(4000.0))), ("full_at", json!(ago(4000.0)))]).unwrap();
+    let reads = *h.reads.lock();
+    prflow::poll(&board_mode.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads + 1, "board mode keeps its hourly reconcile");
+}
+
+#[test]
+fn in_stream_mode_a_stream_down_poll_asks_what_changed_and_reads_only_what_did() {
+    let b = board_with(stream_mode("prs"));
+    let (h, id) = streamed_pr(&b);
+    prflow::poll(&b.app).unwrap();
+    let reads = *h.reads.lock();
+
+    set_fi(&b, "last_heartbeat_at", json!(ago(200.0)));
+    assert_eq!(b.source("prs")["problem"], "stuck");
+    h.calls.lock().clear();
+    prflow::merge_flow(&b.app, id, vec![("full_at", json!(ago(7200.0)))]).unwrap();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(h.calls(), ["stamps 1"], "one what-changed call for the host");
+    assert_eq!(*h.reads.lock(), reads, "unchanged: no full read, however old the last one");
+    assert_eq!(poll_whys(&b), ["poll (stream down)"]);
+
+    *h.stamp.lock() = Some("s2".into());
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads + 1, "its stamp moved: read in full");
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads + 1);
+
+    *h.stamps_error.lock() = Some("Bitbucket answered 429".into());
+    prflow::merge_flow(&b.app, id, vec![("full_at", json!(ago(7200.0))), ("read_at", json!(ago(7200.0)))]).unwrap();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads + 1, "the host can't say what changed: no full-read fallback while prs streams");
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads + 2, "a refresh someone asked for still reads it");
+
+    *h.stamps_error.lock() = None;
+    set_fi(&b, "last_heartbeat_at", json!(ago(5.0)));
+    set_fi(&b, "back_at", json!(ago(1.0)));
+    prflow::merge_flow(&b.app, id, vec![("read_at", json!(ago(100.0)))]).unwrap();
+    h.calls.lock().clear();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(poll_whys(&b), ["poll (catch-up)"], "fi came back: one catch-up round");
+    prflow::poll(&b.app).unwrap();
+    assert!(poll_whys(&b).is_empty());
+    assert_eq!(h.calls(), ["stamps 1"], "the catch-up's what-changed call, then nothing");
+}
+
+#[test]
+fn in_stream_mode_a_pr_no_relay_covers_is_polled_by_what_changed() {
+    let b = board_with(stream_mode("prs"));
+    let h = FakeHost::new("github", Record { title: "one".into(), ..host_rec("g1") });
+    *h.stamp.lock() = Some("s1".into());
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task("https://github.com/acme/webapp/pull/7");
+    b.send(bb_relay("h1", json!({})));
+    prflow::poll(&b.app).unwrap();
+    let reads = *h.reads.lock();
+    assert_eq!(poll_whys(&b), ["poll (not covered)"]);
+    prflow::merge_flow(&b.app, id, vec![("full_at", json!(ago(7200.0)))]).unwrap();
+    prflow::poll(&b.app).unwrap();
+    assert_eq!(*h.reads.lock(), reads, "no hourly full read while prs streams; the stamp says nothing changed");
+    assert_eq!(b.source("prs")["polled"], json!([{"host": "github", "repo": "acme/webapp", "prs": 1, "why": "not covered"}]));
 }
 
 #[test]

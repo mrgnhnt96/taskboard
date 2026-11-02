@@ -108,7 +108,9 @@
 //!
 //! Each call is counted against the reader that made it ([`reader`]: the timed PR poll, its full-read
 //! fallback when the host couldn't say what changed, reads after a review hint, the master watch, the
-//! review sweep, and `tb` commands); calls made outside one count as `other`. The `rate limit:` line
+//! review sweep, and `tb` commands); calls made outside one count as `other`. While the PR stream is
+//! on, the timed poll's calls are split by why it read the PR ([`POLL_STREAM_DOWN`],
+//! [`POLL_NOT_COVERED`], [`POLL_CATCH_UP`]): a PR a healthy stream covers isn't polled at all. The `rate limit:` line
 //! a limit logs gives the split for the hour and the minute, with the last `X-Request-Count` Bitbucket
 //! sent: its own count of the account's calls, which takes in other tools on the same account. The
 //! board only shows that count; it doesn't pace on it. Once an hour the log gets a line with the
@@ -406,8 +408,16 @@ thread_local! {
     static READER: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
+/// The timed PR poll while the PR stream is on reads a PR only for one of these reasons, each its own
+/// reader in the split: a relay that covers it came back and its missed events catch up once, the
+/// stream is down (stuck, silent or resting), or no relay covers the PR's repo.
+pub const POLL_CATCH_UP: &str = "poll (catch-up)";
+pub const POLL_STREAM_DOWN: &str = "poll (stream down)";
+pub const POLL_NOT_COVERED: &str = "poll (not covered)";
+
 /// The readers [`reader`] names, in the order the split shows them.
-pub const READERS: [&str; 7] = ["poll", "full-read fallback", "hint", "master", "reviewers", "agent", "tb api"];
+pub const READERS: [&str; 10] =
+    ["poll", POLL_STREAM_DOWN, POLL_NOT_COVERED, POLL_CATCH_UP, "full-read fallback", "hint", "master", "reviewers", "agent", "tb api"];
 
 /// Runs `f` with the calls it makes counted against `name` (one of [`READERS`]) in the split of an
 /// account's calls (see "Who made the calls"); an inner one names its own calls.
@@ -1865,6 +1875,24 @@ mod tests {
         assert_eq!(st["request_count_text"], said.as_str());
         assert_eq!(st["calls_last_hour"], 0, "the header isn't one of the board's calls");
         assert_eq!(l.held_until("bb:1", T0 + 1.0), Some(until), "the header doesn't change the hold");
+    }
+
+    #[test]
+    fn the_hourly_line_says_why_the_poll_ran_while_prs_streams() {
+        // #841: "poll 52" didn't say whether the stream was down or a PR no relay covered.
+        let l = Limits::default();
+        reader("poll", || l.admit("bb:1", "bitbucket", false, false, T0)).unwrap();
+        l.hourly(T0);
+        l.take_log();
+        for (who, n) in [(POLL_STREAM_DOWN, 3), (POLL_NOT_COVERED, 2), (POLL_CATCH_UP, 1), ("agent", 1)] {
+            for _ in 0..n {
+                reader(who, || l.admit("bb:1", "bitbucket", false, false, T0 + 60.0)).unwrap();
+            }
+        }
+        l.hourly(T0 + HOUR + 1.0);
+        let log = l.take_log();
+        assert!(log[0].contains("(poll (stream down) 3, poll (not covered) 2, poll (catch-up) 1, agent 1)"), "{}", log[0]);
+        assert_eq!(l.status(T0 + HOUR + 1.0)[0]["calls_by_reader"], json!({"poll (stream down)": 3, "poll (not covered)": 2, "poll (catch-up)": 1, "agent": 1}));
     }
 
     #[test]
