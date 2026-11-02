@@ -308,6 +308,47 @@ fn a_worktree_base_is_checked_and_a_missing_one_fails_the_start_with_retries() {
     assert!(b.started().is_empty(), "it waits for the retry");
 }
 
+/// A repository that was made but never committed to, with the files a scaffolding task left in it.
+fn uncommitted_repo(b: &Board) {
+    let repo = b.dir.path().join("webapp");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README"), "webapp\n").unwrap();
+}
+
+#[test]
+fn a_repo_with_no_commits_fails_the_start_at_once_and_says_why() {
+    let b = new_board();
+    uncommitted_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "main"}));
+    let t = b.task("Design", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.started().is_empty());
+    let row = board::get_task(&b.app, t).unwrap();
+    assert_eq!(row.st("status"), "needs", "no retries: only a first commit can help");
+    assert!(row.s("retry_at").is_none());
+    assert!(row.st("latest").contains("has no commits yet"), "{}", row.st("latest"));
+    assert!(row.st("latest").contains("Commit its files"), "{}", row.st("latest"));
+}
+
+#[test]
+fn a_submit_is_refused_while_its_new_repo_has_nothing_committed() {
+    let b = new_board();
+    uncommitted_repo(&b);
+    b.add_session("s1");
+    let t = b.task("Scaffold", json!({}));
+    b.report("tb.take", "s1", json!({"task": format!("T{t}")}));
+    let (code, msg) = b.try_report("tb.done", "s1", json!({"summary": "Scaffolded it."})).expect_err("refused");
+    assert_eq!(code, 409);
+    assert!(msg.contains("Nothing in") && msg.contains("is committed yet"), "{msg}");
+
+    let repo = b.dir.path().join("webapp");
+    git(&repo, &["-c", "user.email=t@e.com", "-c", "user.name=T", "add", "README"]);
+    git(&repo, &["-c", "user.email=t@e.com", "-c", "user.name=T", "commit", "-q", "-m", "First"]);
+    b.report("tb.done", "s1", json!({"summary": "Scaffolded it."}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["status"], "done");
+}
+
 fn slot(b: &Board, n: i64) -> String {
     format!("{}/.claude/worktrees/slot-{n}", b.repo())
 }

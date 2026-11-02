@@ -173,6 +173,9 @@ pub fn make(app: &App, t: &Row, start: Option<&str>) -> Result<String> {
         }
         crate::progress::stage("Fetched origin");
     }
+    if !has_commits(&repo) {
+        return err(409, no_commits_text(&repo));
+    }
     let base = goal_base(app, t)?.unwrap_or_else(|| default_base(&repo, remote));
     // A stacked task starts from its parent's branch while the parent's PR is unmerged.
     let start = match crate::stack::base_branch(app, t)? {
@@ -180,6 +183,24 @@ pub fn make(app: &App, t: &Row, start: Option<&str>) -> Result<String> {
         None => base,
     };
     crate::slots::claim(app, t, &repo, &start)
+}
+
+/// What ends a start in a repository with no commits: retrying can't help, only a first commit can.
+pub const NO_COMMITS: &str = "has no commits yet";
+
+fn no_commits_text(repo: &str) -> String {
+    format!("{repo} {NO_COMMITS}, so there's nothing to make its worktree from. Commit its files there, then press Start")
+}
+
+/// Whether a start failed because its repository has no commits.
+pub fn is_no_commits(message: &str) -> bool {
+    message.contains(NO_COMMITS)
+}
+
+/// Whether the repository at `repo` has any commit on any ref (fetched ones count). False when git fails.
+pub fn has_commits(repo: &str) -> bool {
+    let r = git(repo, &["rev-list", "-n", "1", "--all"], GIT_SECS);
+    r.code == 0 && !r.out.trim().is_empty()
 }
 
 /// Where a stacked task starts: its parent's branch on the remote, else the local one; None when

@@ -431,7 +431,8 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         };
         if t.s("pickup") != Some("attach") {
             if let Err(e) = worktrees::ensure(app, &t) {
-                app.db.tx(|| jobs::start_failed(app, &t, &format!("Couldn't start: {}", e.message), true, true).map(|_| ()))?;
+                let retry = !worktrees::is_no_commits(&e.message);
+                app.db.tx(|| jobs::start_failed(app, &t, &format!("Couldn't start: {}", e.message), true, retry).map(|_| ()))?;
                 continue;
             }
         }

@@ -2169,6 +2169,17 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     if !no_pr && !r.spooled && r.b("merged_note").trim().is_empty() && !crate::merged_note::has_note(t) && crate::merged_note::needed(app, t)? {
         return err(409, crate::merged_note::refusal(app, t));
     }
+    if !r.spooled {
+        if let Some(repo) = uncommitted_new_repo(app, t)? {
+            return err(
+                409,
+                format!(
+                    "Nothing in {repo} is committed yet, so {me}'s work there isn't saved and the next task can't start from it. \
+                     Commit its files, then run {tb} submit again."
+                ),
+            );
+        }
+    }
     // A design task's design is what it delivers: it needs one attached, and no evidence of building to it.
     if crate::design::is(t) {
         return crate::design::refuse_bare_submit(app, t);
@@ -2189,6 +2200,16 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The task's repository when it has no commits yet but has files in it: work that would be lost.
+fn uncommitted_new_repo(app: &App, t: &Row) -> Result<Option<String>> {
+    let Some(repo) = crate::worktrees::repo_of(app, t)?.filter(|r| std::path::Path::new(r).join(".git").exists()) else { return Ok(None) };
+    if crate::worktrees::has_commits(&repo) {
+        return Ok(None);
+    }
+    let status = crate::worktrees::git(&repo, &["status", "--porcelain"], crate::worktrees::GIT_SECS);
+    Ok((status.code == 0 && !status.out.trim().is_empty()).then_some(repo))
 }
 
 /// `task.finishing`'s hooks, before `tb submit` (outside the transaction: a hook may call `tb`). A stop is
