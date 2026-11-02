@@ -200,6 +200,9 @@ enum Cmd {
         /// Wait until its PR merges, not just until it's done
         #[arg(long)]
         merged: bool,
+        /// Stop waiting for this task and keep the other waits (repeat for more)
+        #[arg(long)]
+        drop: Vec<String>,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -1625,6 +1628,10 @@ enum TaskCmd {
         /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`); none clears it
         #[arg(long = "merged-note", value_name = "MARKDOWN|none")]
         merged_note: Option<String>,
+        /// The commit a done task's work landed in on the main branch outside its PR (a declined PR), which
+        /// counts as merged for the tasks waiting for it; none takes it back
+        #[arg(long, value_name = "COMMIT|none")]
+        landed: Option<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
         #[arg(long, value_name = "NAME|none")]
         area: Option<String>,
@@ -5801,9 +5808,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(v["context"].as_str().unwrap_or("No task on this terminal."));
             Ok(0)
         }
-        Cmd::WaitFor { tasks, why, merged, t } => {
-            if tasks.is_empty() {
-                return Err("say which task this one needs, for example: tb wait-for T14 (or none)".into());
+        Cmd::WaitFor { tasks, why, merged, drop, t } => {
+            if tasks.is_empty() && drop.is_empty() {
+                return Err("say which task this one needs, for example: tb wait-for T14 (or none, or --drop T14)".into());
             }
             let list = if tasks.len() == 1 && tasks[0].eq_ignore_ascii_case("none") {
                 json!("none")
@@ -5813,6 +5820,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let mut body = json!({"tasks": list, "why": why});
             if merged {
                 body["merged"] = json!(true);
+            }
+            if !drop.is_empty() {
+                body["drop"] = json!(drop.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?);
             }
             c.run_report("tb.wait_for", body, t.task, true, |v| {
                 if v["moved_on"] == true {
@@ -6385,7 +6395,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, area, model, effort, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, landed, area, model, effort, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -6463,6 +6473,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = merged_note {
                     b["merged_note"] = if x.eq_ignore_ascii_case("none") { json!("") } else { json!(x) };
                 }
+                if let Some(x) = landed {
+                    b["landed"] = json!(x);
+                }
                 if let Some(x) = area {
                     b["area"] = json!(x);
                 }
@@ -6473,6 +6486,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
                 }
                 let moving = b.get("project").is_some();
+                let landing = b.get("landed").is_some();
                 let v = c.call("POST", &format!("/tasks/{t}"), Some(b))?;
                 let mut bits = String::new();
                 if moving {
@@ -6486,6 +6500,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if v["ships_pr_set"].is_boolean() {
                     bits += if v["ships_pr"] == true { " · ends in a PR" } else { " · no PR" };
+                }
+                if landing {
+                    bits += &match v["landed"].as_str() {
+                        Some(c) => format!(" · landed in {}", &c[..c.len().min(12)]),
+                        None => " · not landed".to_string(),
+                    };
                 }
                 if let Some(why) = v["why"].as_str() {
                     bits += &format!(" · {why}");

@@ -2398,6 +2398,7 @@ pub fn mark_declined(app: &App, t: &Row, who: &str, reason: &str) -> Result<()> 
     let why = if reason.is_empty() { String::new() } else { format!(": {reason}") };
     board::log_event(app, t.id(), who, "status", &format!("Closed PR #{} without merging{why}", t.i0("pr_num")))?;
     dispatch::clear_alerts(app, Some(t.id()), None)?;
+    crate::declined::check(app, &board::get_task(app, t.id())?)?;
     Ok(())
 }
 
