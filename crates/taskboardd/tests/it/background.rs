@@ -2,14 +2,15 @@
 //! not idle: it shows "waiting", isn't offered work, and closes only by force.
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::util::{iso, now_ts};
-use taskboardd::{midna, reports, transcript};
+use taskboardd::util::{iso, now_ts, RowExt};
+use taskboardd::{board, fields, midna, p, reports, slots, transcript};
 
 struct Board {
     app: Arc<App>,
@@ -264,4 +265,58 @@ fn every_idle_prompt_recounts_its_background_work() {
     let s = b.session();
     assert_eq!(s["background"], Value::Null, "the idle prompt counted none running");
     assert_ne!(s["status"], "waiting");
+}
+
+/// A PR visit on `s1` for the done task `A` (PR #7, fixing), holding slot-1 of a webapp repo with a
+/// review fix not yet committed in it. `A`, the repo and the slot.
+fn visiting(b: &Board) -> (i64, String, String) {
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    let git = |args: &[&str]| assert!(Command::new("git").current_dir(&repo).args(args).output().unwrap().status.success(), "git {args:?}");
+    git(&["init", "-q"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+    let slot = format!("{repo}/.claude/worktrees/slot-1");
+    git(&["worktree", "add", "-q", "--detach", &slot, "HEAD"]);
+    let ctx = json!({"worktree_slot": slot, "worktree_base": "HEAD"}).to_string();
+    let flow = json!({"session": "s1", "woke": "fix:h1"}).to_string();
+    let a = b
+        .app
+        .db
+        .insert("tasks", fields!["title" => "A", "status" => "done", "project" => "webapp", "pr_num" => 7, "pr_phase" => "fix", "context" => ctx, "pr_flow" => flow])
+        .unwrap();
+    b.app.db.insert("worktree_slots", fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone(), "task_id" => a]).unwrap();
+    std::fs::write(format!("{slot}/fix.rs"), "a review fix").unwrap();
+    (a, repo, slot)
+}
+
+fn stopped(b: &Board, task: i64) -> Value {
+    let t = board::get_task(&b.app, task).unwrap();
+    serde_json::from_str::<Value>(t.s("pr_flow").unwrap()).unwrap()["stopped"].clone()
+}
+
+fn logged(b: &Board, task: i64, text: &str) -> bool {
+    b.app.db.q("SELECT text FROM events WHERE task_id = ?", p![task]).unwrap().iter().any(|e| e.st("text").contains(text))
+}
+
+#[test]
+fn a_pr_visit_waiting_on_its_background_command_keeps_going_in_its_slot() {
+    // #830: the visit ran its tests in the background and ended its turn to wait for them.
+    let b = new_board();
+    b.midna_says("idle");
+    let (a, repo, slot) = visiting(&b);
+    let now = iso(now_ts());
+    let path = b.transcript(&[shell_started("b1", &now)]);
+    b.report("hook.stop", json!({"last_message": "The tests are running in the background; I'll wait for them.", "transcript_path": path}));
+    assert_eq!(stopped(&b, a), Value::Null, "waiting on its own tests isn't stopping");
+    assert!(!logged(&b, a, "Stopped on PR"));
+    assert_eq!(b.session()["status"], "waiting");
+
+    let other = board::get_task(&b.app, b.app.db.insert("tasks", fields!["title" => "B", "status" => "queued", "project" => "webapp"]).unwrap()).unwrap();
+    assert_ne!(slots::claim(&b.app, &other, &repo, "HEAD").unwrap(), slot, "another task gets a slot of its own");
+    assert_eq!(std::fs::read_to_string(format!("{slot}/fix.rs")).unwrap(), "a review fix", "the visit's slot is as it left it");
+
+    // The tests report back and wake it; a turn that ends there with the visit unfinished is a stop.
+    let path = b.transcript(&[shell_started("b1", &now), finished("b1", &now)]);
+    b.report("hook.stop", json!({"last_message": "The tests fail and I can't see why.", "transcript_path": path}));
+    assert_eq!(stopped(&b, a)["message"], "The tests fail and I can't see why.");
+    assert!(logged(&b, a, "Stopped on PR #7 before it was finished"));
 }

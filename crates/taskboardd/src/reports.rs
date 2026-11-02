@@ -633,6 +633,11 @@ fn on_stop(r: &mut Report) -> Result<Value> {
             r.set_session_status("working")?;
             return Ok(with(ok(None, None), json!({"block": ask})));
         }
+        // A PR visit that ended its turn to wait on its own background command or agent hasn't stopped:
+        // it carries on when that work reports back, in the slot it's running in.
+        if r.background.total() > 0 {
+            return Ok(ok(prflow::visited_by(app, r.sid().unwrap_or(""))?.as_ref(), None));
+        }
         return pr_visit_paused(r, &one_line(&r.b("last_message"), 500));
     };
     let msg = clip(&r.b("last_message"), 2000);
