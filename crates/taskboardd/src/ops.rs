@@ -148,6 +148,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let lock_names = crate::locks::clean(body.get("locks"))?;
     let lock_warning = crate::locks::unseen_warning(app, lock_names.as_deref(), None)?;
     let (lane, alone) = crate::worklane::with_alone(body, None)?;
+    let pr_base = crate::worktrees::clean_pr_base(body.get("pr_base"))?;
     let model = if human { None } else { crate::runner::clean_model(body.get("model"))? };
     let effort = if human { None } else { crate::runner::clean_effort(body.get("effort"))? };
     let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
@@ -162,7 +163,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "from_issue_id" => body.get("from_issue_id"), "context" => "{}",
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
-                "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone, "lane" => lane, "model" => model, "effort" => effort,
+                "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone, "lane" => lane, "pr_base" => pr_base, "model" => model, "effort" => effort,
                 "latest" => if latest.is_empty() { None } else { Some(latest) },
                 "ticket_summary" => if ticket_summary.is_empty() { None } else { Some(ticket_summary) },
                 "ticket_text" => if ticket_text.is_empty() { None } else { Some(ticket_text) },
@@ -324,6 +325,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
     let base = crate::worktrees::clean_base(body.get("worktree_base"))?;
     // A goal that makes worktrees takes the slot lane unless it names another.
     let lane = crate::worklane::clean(body.get("lane"))?.or_else(|| base.is_some().then(|| "slot".to_string()));
+    let pr_base = crate::worktrees::clean_pr_base(body.get("pr_base"))?;
     let gid = app.db.insert(
         "goals",
         fields!["name" => name, "outcome" => body_str(body, "outcome"), "tldr" => if tldr.is_empty() { None } else { Some(tldr) },
@@ -331,7 +333,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
                 "area" => area.clone(), "area_source" => if area.is_null() { None } else { Some("set") }, "epic_key" => ekey,
                 "run_in_order" => as_bool(body.get("run_in_order"), true) as i64, "max_terminals" => max_t,
                 "auto_close" => as_bool(body.get("auto_close"), true) as i64, "product" => product,
-                "worktree_base" => base, "lane" => lane,
+                "worktree_base" => base, "lane" => lane, "pr_base" => pr_base,
                 "setup" => clean_setup(body),
                 "created_at" => now, "updated_at" => now, "archived" => 0],
     )?;

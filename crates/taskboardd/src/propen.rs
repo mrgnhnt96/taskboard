@@ -621,6 +621,17 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     if !body_str(body, "pr").is_empty() {
         return err(400, "Give either --pr (a PR you opened) or --pr-body (the board opens it), not both.");
     }
+    // A --base is kept as the task's PR base, so the rebase check, the PR and its stack all use it.
+    let fresh;
+    let t = match body.get("pr_base").filter(|b| !b.is_null()) {
+        Some(b) => {
+            let b = crate::worktrees::clean_pr_base(Some(b))?;
+            app.db.update("tasks", &json!(t.id()), crate::fields!["pr_base" => b])?;
+            fresh = board::get_task(app, t.id())?;
+            &fresh
+        }
+        None => t,
+    };
     let branch = body_str(body, "pr_branch");
     let branch = Some(branch.trim()).filter(|b| !b.is_empty());
     // A --branch's steps are judged on its pushed tip, not the checkout's HEAD.

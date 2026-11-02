@@ -409,6 +409,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("effort".into(), t.v("effort"));
         o.insert("effort_runs".into(), json!(app.cfg.models.resolve_effort(t.s("model"), t.s("effort"))));
         // When a start that failed is tried again, while it waits on that retry.
+        // The branch its PR is set to go into instead of the repo's default (a backport's).
+        o.insert("pr_base".into(), t.v("pr_base"));
         o.insert("start_retry_at".into(), start_retry_at(t, &status));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
@@ -993,7 +995,7 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
+        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "pr_base": g.v("pr_base"), "setup": g.v("setup"),
         "lane": crate::worklane::goal_lane(g),
         "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
         "after_blocker": crate::chain::blocker(app, g)?,

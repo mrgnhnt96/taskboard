@@ -233,6 +233,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "locks", "TEXT"),
     ("tasks", "alone", "TEXT"),
     ("goals", "worktree_base", "TEXT"),
+    // The branch its PRs go into instead of the repo's default (a backport's release branch).
+    ("goals", "pr_base", "TEXT"),
+    ("tasks", "pr_base", "TEXT"),
     ("goals", "setup", "TEXT"),
     ("tasks", "jira_none", "INT DEFAULT 0"),
     ("sessions", "compacting_at", "TEXT"),

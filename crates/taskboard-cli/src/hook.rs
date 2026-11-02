@@ -46,6 +46,8 @@ fn opens_pr(tool: &str, input: &Value) -> bool {
     PR_CLI_RE.is_match(cmd) || (PR_API_RE.is_match(cmd) && POST_RE.is_match(cmd))
 }
 
+/// The branch a `gh pr create` / `glab mr create` names its PR into: `--base` / `-B`, `--target-branch` / `-b`.
+static PR_BASE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:^|\s)(?:--base|-B|--target-branch|-b)(?:=|\s+)["']?([A-Za-z0-9][A-Za-z0-9._/-]*)"#).unwrap());
 static PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b").unwrap());
 
 /// A git command that changes a repository: a commit, a push, a new worktree, or moving its checkout
@@ -1053,6 +1055,16 @@ fn onto_default(cmd: &str, cwd: &str, remote: &str) -> Option<(&'static str, Pat
     })
 }
 
+/// The branch a PR being opened goes into, when the command or tool names one (`origin/` dropped).
+fn opened_into(tool: &str, input: &Value) -> Option<String> {
+    let b = if tool == "Bash" {
+        PR_BASE_RE.captures(input["command"].as_str().unwrap_or(""))?.get(1)?.as_str().to_string()
+    } else {
+        input["base"].as_str()?.trim().to_string()
+    };
+    Some(b.strip_prefix("origin/").unwrap_or(&b).to_string()).filter(|b| !b.is_empty())
+}
+
 /// `PreToolUse`: with `[default_branch] guard` on (the default), refuses a commit on a repository's
 /// default branch and a push that lands on it, so work gets there through PRs. Read locally, no board needed.
 fn default_branch_refused(payload: &Value, cfg: &Config, cwd: &str) -> bool {
@@ -1127,7 +1139,8 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
         return false;
     }
     if opening {
-        if let Some(reason) = cwd.as_deref().and_then(|d| comments::branch_refusal(&cfg, d, "opening the PR")) {
+        let base = opened_into(tool, &payload["tool_input"]);
+        if let Some(reason) = cwd.as_deref().and_then(|d| comments::branch_refusal(&cfg, d, base.as_deref(), "opening the PR")) {
             deny(&reason);
             return true;
         }
@@ -2003,6 +2016,16 @@ mod tests {
         git_repo(&root);
         assert!(elsewhere(&root.join(".zshrc"), &a, "T115", "a").is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_pr_being_opened_names_its_base() {
+        let bash = |c: &str| opened_into("Bash", &json!({"command": c}));
+        assert_eq!(bash("gh pr create --base release/1.x --title x").as_deref(), Some("release/1.x"));
+        assert_eq!(bash("gh pr create -B 'origin/release/1.x'").as_deref(), Some("release/1.x"));
+        assert_eq!(bash("glab mr create --target-branch=hotfix").as_deref(), Some("hotfix"));
+        assert_eq!(bash("gh pr create --title x"), None);
+        assert_eq!(opened_into("mcp__github__create_pull_request", &json!({"base": "release/2"})).as_deref(), Some("release/2"));
     }
 
     #[test]

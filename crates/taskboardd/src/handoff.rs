@@ -436,6 +436,11 @@ fn worktree_and_lock_lines(app: &App, t: &Row, ctx: &Row) -> Result<Vec<String>>
             ));
         }
     }
+    if let Some(b) = crate::steps::chosen_base(app, t)? {
+        lines.push(format!(
+            "Its PR goes into {b}, not the default branch: base the work on origin/{b} and keep main's other commits out of it."
+        ));
+    }
     let held = crate::locks::names(t);
     if !held.is_empty() {
         lines.push(format!("This task holds {}: no other task that names the same lock runs while it does.", held.join(", ")));

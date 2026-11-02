@@ -83,6 +83,23 @@ fn in_slot(app: &App, t: &Row) -> Result<bool> {
     Ok(crate::worklane::pick(app, t)? == "slot")
 }
 
+/// A PR base from a body (`pr_base`): a branch name, `origin/` dropped; default, off or none clears it.
+pub fn clean_pr_base(value: Option<&Value>) -> Result<Option<String>> {
+    let v = match value {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => return Ok(None),
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(v) => v.to_string(),
+    };
+    let v = v.strip_prefix("origin/").unwrap_or(&v).to_string();
+    if v.is_empty() || ["default", "off", "none"].iter().any(|w| v.eq_ignore_ascii_case(w)) {
+        return Ok(None);
+    }
+    if !BASE_RE.is_match(&v) || v.contains("..") || v.ends_with(".lock") || v.ends_with('/') {
+        return err(400, format!("“{v}” isn't a branch a PR can go into. Give one like release/1.2, or default."));
+    }
+    Ok(Some(v))
+}
+
 /// What a slot starts from when its goal names no base: the remote's default branch, else main or
 /// master, else the checkout's head.
 fn default_base(repo: &str, remote: bool) -> String {
@@ -176,7 +193,12 @@ pub fn make(app: &App, t: &Row, start: Option<&str>) -> Result<String> {
     if !has_commits(&repo) {
         return err(409, no_commits_text(&repo));
     }
-    let base = goal_base(app, t)?.unwrap_or_else(|| default_base(&repo, remote));
+    // A task whose PR goes into another branch (a backport) starts from that branch.
+    let chosen = crate::steps::chosen_base(app, t)?.map(|b| if remote { format!("origin/{b}") } else { b });
+    let base = match chosen.or(goal_base(app, t)?) {
+        Some(b) => b,
+        None => default_base(&repo, remote),
+    };
     // A stacked task starts from its parent's branch while the parent's PR is unmerged.
     let start = match crate::stack::base_branch(app, t)? {
         Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),
