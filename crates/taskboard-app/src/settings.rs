@@ -51,19 +51,21 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) -> Option<WindowHandle<Sett
 enum Sec {
     Accounts,
     History,
+    Usage,
     Qa,
     Reviewers,
     Worktrees,
     System,
 }
 
-const SECS: [Sec; 6] = [Sec::Accounts, Sec::History, Sec::Qa, Sec::Reviewers, Sec::Worktrees, Sec::System];
+const SECS: [Sec; 7] = [Sec::Accounts, Sec::History, Sec::Usage, Sec::Qa, Sec::Reviewers, Sec::Worktrees, Sec::System];
 
 impl Sec {
     fn label(self) -> &'static str {
         match self {
             Sec::Accounts => "Accounts",
             Sec::History => "History",
+            Sec::Usage => "Usage",
             Sec::Qa => "QA",
             Sec::Reviewers => "Reviewers",
             Sec::Worktrees => "Worktrees",
@@ -75,6 +77,7 @@ impl Sec {
         match self {
             Sec::Accounts => "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers.",
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
+            Sec::Usage => "A daily share of Claude's weekly limit. Once today's share is used, the board starts no new work until midnight; running agents carry on.",
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
             Sec::Worktrees => "Each project's reusable worktree slots, kept warm between tasks. tb project set sizes a project's pool.",
@@ -86,6 +89,7 @@ impl Sec {
         match self {
             Sec::Accounts => "@",
             Sec::History => "◷",
+            Sec::Usage => "◔",
             Sec::Qa => "✓",
             Sec::Reviewers => "☺",
             Sec::Worktrees => "⑂",
@@ -152,6 +156,10 @@ pub struct SettingsWindow {
     history: Option<Value>,
     history_busy: bool,
     history_note: Option<(String, bool)>,
+    /// `GET /usage`'s `daily` block, a call in flight, and the line under its card.
+    daily: Option<Value>,
+    daily_busy: bool,
+    daily_note: Option<(String, bool)>,
     /// `GET /qa`, a call in flight, and the line under its card.
     qa: Option<Value>,
     qa_busy: bool,
@@ -197,6 +205,9 @@ impl SettingsWindow {
             history: None,
             history_busy: false,
             history_note: None,
+            daily: None,
+            daily_busy: false,
+            daily_note: None,
             qa: None,
             qa_busy: false,
             qa_note: None,
@@ -208,6 +219,7 @@ impl SettingsWindow {
         };
         s.load(false, cx);
         s.load_history(cx);
+        s.load_daily(cx);
         s.load_qa(cx);
         s.load_reviewers(cx);
         s.load_info(cx);
@@ -288,6 +300,43 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.reviewers = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_daily(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("usage", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(v) = r {
+                    s.daily = Some(daily_of(&v));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `POST usage/daily {base?, carry?}` or `usage/override {off?}`; both answer with `GET /usage`.
+    fn post_daily(&mut self, path: &'static str, body: Value, cx: &mut Context<Self>) {
+        if self.daily_busy {
+            return;
+        }
+        self.daily_busy = true;
+        self.daily_note = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.post(path, body) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.daily_busy = false;
+                match r {
+                    Ok(v) => s.daily = Some(daily_of(&v)),
+                    Err(e) => s.daily_note = Some((e.message, true)),
                 }
                 cx.notify();
             });
@@ -534,6 +583,7 @@ impl Render for SettingsWindow {
         let body = match self.view {
             Sec::Accounts => self.accounts_page(&t, window, cx).into_any_element(),
             Sec::History => self.history_page(&t, cx).into_any_element(),
+            Sec::Usage => self.usage_page(&t, cx).into_any_element(),
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
             Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
             Sec::Worktrees => self.worktrees_page(&t).into_any_element(),
@@ -607,6 +657,9 @@ impl SettingsWindow {
                         }
                         if sec == Sec::Worktrees {
                             s.load_slots(cx);
+                        }
+                        if sec == Sec::Usage {
+                            s.load_daily(cx);
                         }
                         cx.notify();
                     })),
@@ -1104,6 +1157,85 @@ impl SettingsWindow {
     }
 }
 
+// ------------------------------------------------------------------ usage
+
+/// `GET /usage` answers `null` while there's no reading and the limit is off: that's the plan switched off.
+fn daily_of(usage: &Value) -> Value {
+    match &usage["daily"] {
+        Value::Null => serde_json::json!({"base": "off", "carry": "next_day", "on": false}),
+        d => d.clone(),
+    }
+}
+
+/// The daily limit's base choices: off, even, the fixed shares, and a fixed share set elsewhere
+/// (`tb usage daily`) in its place among them.
+fn daily_bases(cur: &Value) -> Vec<Value> {
+    let mut pcts: Vec<f64> = vec![10., 15., 20., 25.];
+    if let Some(n) = cur.as_f64().filter(|n| !pcts.contains(n)) {
+        pcts.push(n);
+        pcts.sort_by(f64::total_cmp);
+    }
+    [json!("off"), json!("even")].into_iter().chain(pcts.into_iter().map(|n| json!(n))).collect()
+}
+
+fn daily_base_label(b: &Value) -> String {
+    match b.as_f64() {
+        Some(n) => format!("{}%", crate::app::js_num(&json!(n))),
+        None if b == "even" => "Even".into(),
+        None => "Off".into(),
+    }
+}
+
+impl SettingsWindow {
+    fn usage_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = div().id("usage-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let Some(d) = self.daily.clone() else {
+            return list.child(kit::empty(t, "Asking the board…"));
+        };
+        let busy = self.daily_busy;
+        let bases = daily_bases(&d["base"]);
+        let labels: Vec<String> = bases.iter().map(daily_base_label).collect();
+        let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let on = bases.iter().position(|b| b.as_f64().zip(d["base"].as_f64()).map_or(*b == d["base"], |(a, c)| a == c)).unwrap_or(0);
+        let base = kit::seg(t, "daily-base", &refs, on, |i, item| {
+            let b = bases[i].clone();
+            if busy || i == on {
+                item
+            } else {
+                item.on_click(cx.listener(move |s, _, _, cx| s.post_daily("usage/daily", json!({"base": b}), cx)))
+            }
+        });
+        let note = "Even splits what's left of the week over the days to its reset; a percent gives each day that share of the week.";
+        let mut card = kit::card(t).overflow_hidden().child(line(t, "daily-base-row", true, false, "Daily limit", note, None).child(controls().child(base)));
+        if d["on"] == true {
+            let spread = d["carry"] == "spread";
+            let carry = kit::seg(t, "daily-carry", &["Next day", "Spread"], spread as usize, |i, item| {
+                if busy || (i == 1) == spread {
+                    item
+                } else {
+                    item.on_click(cx.listener(move |s, _, _, cx| s.post_daily("usage/daily", json!({"carry": if i == 1 { "spread" } else { "next_day" }}), cx)))
+                }
+            });
+            let carry_note = if spread { "What a day leaves is shared over the rest of the week." } else { "What a day leaves goes to the next day." };
+            card = card.child(line(t, "daily-carry-row", false, false, "Unused share", carry_note, None).child(controls().child(carry)));
+            let lifted = d["overridden"] == true;
+            let today = d["line"].as_str().unwrap_or("No 7-day reading yet.");
+            let toggle = kit::seg(t, "daily-override", &["Limit", "Lifted"], lifted as usize, |i, item| {
+                if busy || (i == 1) == lifted {
+                    item
+                } else {
+                    item.on_click(cx.listener(move |s, _, _, cx| s.post_daily("usage/override", json!({"off": i == 0}), cx)))
+                }
+            });
+            card = card.child(line(t, "daily-today-row", false, d["limited"] == true, "Today", today, None).child(controls().child(toggle)));
+        }
+        if let Some((text, bad)) = &self.daily_note {
+            card = card.child(row(t, "daily-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
+        }
+        list.child(card)
+    }
+}
+
 // ------------------------------------------------------------------ QA
 
 impl SettingsWindow {
@@ -1538,6 +1670,51 @@ mod tests {
         let w = cx.add_window(|window, cx| SettingsWindow::new(be, window, cx));
         settle(cx);
         (w, rec)
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_daily_base_choices_keep_a_share_set_from_tb_in_order() {
+        let labels = |cur| super::daily_bases(&cur).iter().map(super::daily_base_label).collect::<Vec<_>>();
+        assert_eq!(labels(json!("off")), ["Off", "Even", "10%", "15%", "20%", "25%"]);
+        assert_eq!(labels(json!(12.5)), ["Off", "Even", "10%", "12.5%", "15%", "20%", "25%"]);
+        assert_eq!(labels(json!(15)), ["Off", "Even", "10%", "15%", "20%", "25%"]);
+    }
+
+    #[gpui_kit::test]
+    fn the_daily_limit_sets_its_base_and_carry_and_lifts_today(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, _, cx| {
+            assert_eq!(s.daily.as_ref().unwrap()["on"], false, "off until switched on");
+            s.view = super::Sec::Usage;
+            s.post_daily("usage/daily", json!({"base": "even"}), cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, cx| {
+            let d = s.daily.clone().unwrap();
+            assert_eq!((d["on"].clone(), d["base"].clone(), d["carry"].clone()), (json!(true), json!("even"), json!("next_day")));
+            s.post_daily("usage/daily", json!({"carry": "spread"}), cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, cx| {
+            assert_eq!(s.daily.as_ref().unwrap()["carry"], "spread");
+            s.post_daily("usage/daily", json!({"base": 0}), cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, _| {
+            assert_eq!(s.daily.as_ref().unwrap()["base"], "even", "a bad share is refused and kept");
+            assert!(s.daily_note.as_ref().is_some_and(|(m, bad)| *bad && m.contains("1 to 100")), "{:?}", s.daily_note);
+        })
+        .unwrap();
+        w.update(cx, |s, _, cx| s.post_daily("usage/override", json!({"off": false}), cx)).unwrap();
+        settle(cx);
+        w.update(cx, |s, _, cx| s.post_daily("usage/override", json!({"off": true}), cx)).unwrap();
+        settle(cx);
+        let posts: Vec<_> = rec.posts().into_iter().filter(|(p, _)| p.starts_with("usage/")).collect();
+        assert_eq!(posts.len(), 5);
+        assert_eq!(posts[3], ("usage/override".to_string(), json!({"off": false})));
     }
 
     #[gpui_kit::test]

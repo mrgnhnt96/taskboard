@@ -590,6 +590,7 @@ function agentsHeldWhy() {
   const five = ((S.state && S.state.usage && S.state.usage.windows) || []).find(w => w.key === 'five_hour');
   if (h && h.on && !h.open) return 'After hours';
   if (five && five.pct >= 100) return 'Out of usage';
+  if (S.state && S.state.usage && S.state.usage.daily && S.state.usage.daily.limited) return "Today's usage is used up";
   return '';
 }
 const agentsHeld = () => !!agentsHeldWhy();
@@ -1633,14 +1634,25 @@ function resetWhen(iso) {
   const day = d.toDateString() === new Date().toDateString() ? '' : d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ';
   return day + clock12(d.toTimeString().slice(0, 5));
 }
+// Today's share of the week while the daily limit is on: the bar is how much of it is used, the value what's left.
+function usageToday(d) {
+  if (!d || d.on !== true || typeof d.allowed !== 'number') return null;
+  const share = d.allowed > 0 ? (d.used || 0) / d.allowed * 100 : 100;
+  const lifted = d.overridden === true;
+  return { level: lifted ? 'lifted' : usageLevel(share), label: 'Today', width: Math.round(Math.min(100, Math.max(0, share)) * 10) / 10,
+    value: lifted ? 'Lifted' : `${d.left}% left` };
+}
 function usagePill() {
   const u = S.state && S.state.usage;
   if (!u || !u.windows.length) return '';
   const stale = Date.now() - new Date(u.seen_at).getTime() > 3600e3;
+  const today = usageToday(u.daily);
   const title = u.windows.map(w => `${USAGE_NAMES[w.key] || w.label} limit: ${w.pct}% used${w.resets_at ? `, resets ${resetWhen(w.resets_at)}` : ''}`)
-    .concat(stale ? [`Last read ${ago(u.seen_at)}`] : []).join('\n');
-  return `<span class="conn usage${stale ? ' stale' : ''}" role="status" aria-label="Claude usage" title="${esc(title)}">${u.windows.map(w =>
-    `<span class="u-win ${usageLevel(w.pct)}"><span class="u-k">${esc(w.label)}</span><span class="u-bar"><i style="width:${Math.min(100, Math.max(0, w.pct))}%"></i></span><span class="u-v">${w.pct}%</span></span>`).join('')}</span>`;
+    .concat(today ? [u.daily.line] : [], stale ? [`Last read ${ago(u.seen_at)}`] : []).join('\n');
+  const wins = u.windows.map(w => ({ level: usageLevel(w.pct), label: w.label, width: Math.min(100, Math.max(0, w.pct)), value: `${w.pct}%` }))
+    .concat(today ? [today] : []);
+  return `<span class="conn usage${stale ? ' stale' : ''}" role="status" aria-label="Claude usage" title="${esc(title)}">${wins.map(w =>
+    `<span class="u-win ${w.level}"><span class="u-k">${esc(w.label)}</span><span class="u-bar"><i style="width:${w.width}%"></i></span><span class="u-v">${esc(w.value)}</span></span>`).join('')}</span>`;
 }
 function hourOptions(cur) {
   const times = [];

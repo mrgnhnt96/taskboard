@@ -223,7 +223,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                       "visiting": match v { Some(v) => card(&v)?, None => Value::Null },
                       "last": match last { Some(l) => card(&l)?, None => Value::Null },
                       "goal": match goal { Some(g) => json!({"ref": rf("goal", g.id()), "name": g.v("name")}), None => Value::Null },
-                      "status_bar": crate::statusbar::get(app).to_json()}))
+                      "status_bar": crate::statusbar::get(app).to_json(),
+                      "usage_daily": crate::usage_daily::state(app)}))
         }
         ("GET", ["steps"]) => {
             let t = match query.get("task").filter(|s| !s.is_empty()) {
@@ -526,6 +527,14 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["keep-awake"]) => keep_awake::call(app, None),
         ("POST", ["keep-awake"]) => keep_awake::call(app, Some(body)),
         ("GET", ["usage"]) => Ok(usage::state(app)),
+        ("POST", ["usage", "daily"]) => {
+            app.db.tx(|| crate::usage_daily::set(app, body))?;
+            Ok(usage::state(app))
+        }
+        ("POST", ["usage", "override"]) => {
+            app.db.tx(|| crate::usage_daily::set_override(app, as_bool(body.get("off"), false)))?;
+            Ok(usage::state(app))
+        }
         ("GET", ["terminals"]) => crate::dispatch::terminals_state(app),
         ("POST", ["terminals"]) => {
             crate::dispatch::set_board_max(app, body)?;

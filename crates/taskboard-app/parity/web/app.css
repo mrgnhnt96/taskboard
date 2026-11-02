@@ -279,6 +279,8 @@ button.conn:hover, button.conn[aria-expanded="true"] { border-color: currentColo
 .u-win.warm .u-v { color: var(--warn-fg); }
 .u-win.hot .u-bar i { background: var(--down); }
 .u-win.hot .u-v { color: var(--down); font-weight: 600; }
+.u-win.lifted .u-bar i { background: var(--accent); }
+.u-win.lifted .u-v { color: var(--accent); }
 .hours-menu { width: 280px; gap: 10px; padding: 10px; }
 .hours-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 0 4px; }
 .hours-row select { width: auto; flex: 1; min-width: 0; }

@@ -128,7 +128,29 @@ rewrote `line` ("Out of 5-hour usage: agents start again at …").
 ```
 Claude plan usage. `pct` is rounded used percentage (0 once `resets_at` has passed). The pill greys out when
 `seen_at` is over an hour old. Omit (null) when nothing is known; an empty `windows` also hides it. A `five_hour`
-window at 100 % makes goals show "Queued until agents can start".
+window at 100 % makes goals show "Queued until agents can start". Claude may stop reporting `five_hour`: then only
+`seven_day` is listed, and nothing may assume a `five_hour` window.
+
+`usage.daily` is the daily limit: each local day gets a share of the 7-day window, and once today's share is used
+the board starts no new task or goal work until local midnight (running agents keep going). It is there whenever
+`usage` is; with the limit on and no reading yet, `usage` is `{"windows": [], "daily": …}`. With it off it's only
+`{"base": "off", "carry": …, "on": false}`, and `usage` is null when no reading is known, as before.
+```
+{
+  "base": "off"|"even"|number,       // even: the week's % left ÷ days left to the reset; a number: that % a day
+  "carry": "next_day"|"spread",      // where a day's unused (or overspent) share goes
+  "on": bool,
+  // only while on and the 7-day window is known:
+  "allowed": number, "used": number, "left": number,  // today's share, what's used of it, what's left (% of the week)
+  "carried": number,                 // what earlier days left over (+) or overspent (−) into today
+  "limited": bool,                   // today's share is used and not overridden: new work waits
+  "overridden": bool,                // `POST /usage/override` lifted today's limit
+  "day": "YYYY-MM-DD", "until": "YYYY-MM-DDTHH:MM",   // today, and the local midnight that ends it
+  "days_left": int,                  // days to the reset, today included
+  "resets_at": iso,
+  "line": str                        // "Today: 4% used of 12%, 8% left (+2% carried)", "Today's 12% is used up: …"
+}
+```
 
 #### `session_row` (from `api.session_list`)
 ```
@@ -955,6 +977,8 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | Path | Body | Notes |
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
+| `POST /usage/daily` | `{base?: "off"\|"even"\|number\|"15%", carry?: "next_day"\|"spread"}` | The daily limit (`tb usage daily`). A number is 1–100; anything else is a 400. A new base, carry or 7-day reset starts a fresh plan from the week's % now; `off` drops the plan. **Response read:** the `usage` object. |
+| `POST /usage/override` | `{off?: bool}` | Lifts today's limit until local midnight (`tb usage override`); `off: true` puts it back. **Response read:** the `usage` object. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
 | `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. A new alert is marked `suggest: "pending"` (unless `[alerts] suggest = false`), as an agent's question alert is: the board then asks Haiku for its card's `title`, `detail` and one to three `actions` (`{label, prompt, command: ""}`, each opening a Claude terminal with `prompt` typed in), and sets `suggest` to `"done"`, or `"failed"` with the alert left as plain text. **Response read:** `{alert}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |

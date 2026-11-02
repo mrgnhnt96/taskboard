@@ -263,6 +263,39 @@ fn with_the_usage_used_up_the_next_task_waits_until_it_resets_and_start_still_ru
 }
 
 #[test]
+fn with_todays_share_of_the_week_used_the_next_task_waits_until_an_override() {
+    let b = new_board();
+    b.on_task("s1", "Fix the header");
+    let t2 = b.split("s1", "Make the footer sticky", "next")["created"][0].as_str().unwrap().to_string();
+    let now = taskboardd::util::now_ts();
+    let resets = taskboardd::util::iso(now + 3.0 * 86400.0);
+    let weekly = |pct: i64, at: f64| json!({"seven_day": {"used_percentage": pct, "resets_at": resets}, "observed_at": taskboardd::util::iso(at)});
+    b.app.shared.lock().midna_usage = Some(weekly(30, now - 60.0));
+    let usage = b.post("usage/daily", json!({"base": "even"}));
+    assert_eq!(usage["daily"]["used"], json!(0.0));
+    assert_eq!(usage["daily"]["limited"], false);
+
+    b.app.shared.lock().midna_usage = Some(weekly(95, now));
+    let daily = taskboardd::usage::state(&b.app)["daily"].clone();
+    assert_eq!(daily["limited"], true, "no five_hour window, and the hold still works: {daily}");
+    let out = b.report("tb.done", "s1", json!({"summary": "Fixed it.", "no_pr": "Test"}));
+    assert!(out["context"].is_null(), "no new work starts with today's share used");
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1"), None);
+    assert!(b.task(&t2)["waiting"].as_str().unwrap().starts_with("Waits for today's usage limit"));
+
+    b.post("usage/override", json!({}));
+    b.post("usage/override", json!({"off": true}));
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1"), None, "an undone override holds again");
+
+    let usage = b.post("usage/override", json!({}));
+    assert_eq!(usage["daily"]["overridden"], true);
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()), "the override lets it through");
+}
+
+#[test]
 fn the_usage_meter_keeps_a_window_a_later_report_leaves_out() {
     let b = new_board();
     let now = taskboardd::util::now_ts();

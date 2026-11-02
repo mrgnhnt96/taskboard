@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::usage;
+use crate::usage_daily;
 use crate::util::*;
 
 const KEY: &str = "work_hours";
@@ -378,12 +379,12 @@ pub fn is_open(app: &App) -> bool {
 }
 
 pub fn may_start(app: &App) -> bool {
-    is_open(app) && usage::out_until(app).is_none()
+    is_open(app) && usage::out_until(app).is_none() && usage_daily::limited_until(app).is_none()
 }
 
 /// Whether a goal's work may start now: inside the hours, or the goal was started "now" until the hours open.
 pub fn goal_open(app: &App, g: Option<&Row>) -> bool {
-    if usage::out_until(app).is_some() {
+    if usage::out_until(app).is_some() || usage_daily::limited_until(app).is_some() {
         return false;
     }
     if is_open(app) {
@@ -513,6 +514,8 @@ pub fn state(app: &App) -> Value {
     };
     if let Some(out) = usage::out_until(app) {
         line = format!("Out of usage: agents start again {}", at_time(&say_reset(&out)));
+    } else if let Some(until) = usage_daily::limited_until(app) {
+        line = format!("Today's usage is used up: agents start again {}", at_time(&say_when(&until)));
     }
     let every = h.alert_every_mins;
     let alerts_line = if every > 0 {
@@ -537,6 +540,9 @@ pub fn state(app: &App) -> Value {
 pub fn blocker(app: &App) -> Option<String> {
     if let Some(out) = usage::out_until(app) {
         return Some(format!("Waits for the usage to reset ({})", say_reset(&out)));
+    }
+    if let Some(until) = usage_daily::limited_until(app) {
+        return Some(format!("Waits for today's usage limit ({})", say_when(&until)));
     }
     if is_open(app) {
         return None;

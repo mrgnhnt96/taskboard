@@ -18893,6 +18893,85 @@
       "expect": "G2"
     },
     {
+      "name": "agentsHeldWhy today used up",
+      "input": {
+        "fn": "agentsHeldWhy",
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T14:59:48.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": true,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "Work hours 9am–5pm: agents start until 5pm",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": {
+            "seen_at": "2026-10-07T14:50:00.000Z",
+            "windows": [
+              {
+                "key": "seven_day",
+                "label": "7d",
+                "pct": 40,
+                "resets_at": "2026-10-10T09:00:00Z"
+              }
+            ],
+            "daily": {
+              "base": "even",
+              "carry": "next_day",
+              "on": true,
+              "allowed": 12,
+              "used": 12.6,
+              "left": 0,
+              "carried": 0,
+              "limited": true,
+              "overridden": false,
+              "line": "Today: 12.6% used of 12%"
+            }
+          },
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [
+            "webapp",
+            "zeta"
+          ],
+          "goals": [],
+          "columns": {},
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        }
+      },
+      "expect": "Today's usage is used up"
+    },
+    {
       "name": "connPill up",
       "input": {
         "fn": "connPill",
@@ -19264,6 +19343,398 @@
             "label": "x",
             "width": 89,
             "value": "89%"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill weekly only",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today off",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "off",
+            "carry": "next_day",
+            "on": false
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 12,
+            "used": 4,
+            "left": 8,
+            "carried": 2,
+            "limited": false,
+            "overridden": false,
+            "line": "Today: 4% used of 12%, 8% left (+2% carried)"
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 4% used of 12%, 8% left (+2% carried)",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "ok",
+            "label": "Today",
+            "width": 33.3,
+            "value": "8% left"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today warm",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 12,
+            "used": 9.5,
+            "left": 2.5,
+            "carried": 0,
+            "limited": false,
+            "overridden": false,
+            "line": "Today: 9.5% used of 12%"
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 9.5% used of 12%",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "warm",
+            "label": "Today",
+            "width": 79.2,
+            "value": "2.5% left"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today hot",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 12,
+            "used": 11.2,
+            "left": 0.8,
+            "carried": 0,
+            "limited": false,
+            "overridden": false,
+            "line": "Today: 11.2% used of 12%"
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 11.2% used of 12%",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "hot",
+            "label": "Today",
+            "width": 93.3,
+            "value": "0.8% left"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today used up",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 12,
+            "used": 12.6,
+            "left": 0,
+            "carried": 0,
+            "limited": true,
+            "overridden": false,
+            "line": "Today’s 12% is used up: new work starts again at 12am"
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday’s 12% is used up: new work starts again at 12am",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "hot",
+            "label": "Today",
+            "width": 100,
+            "value": "0% left"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today lifted",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 12,
+            "used": 15,
+            "left": 0,
+            "carried": 0,
+            "limited": false,
+            "overridden": true,
+            "line": "Today’s limit is lifted until midnight: 15% used of 12%"
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday’s limit is lifted until midnight: 15% used of 12%",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "lifted",
+            "label": "Today",
+            "width": 100,
+            "value": "Lifted"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today nothing allowed",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T14:50:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 0,
+            "used": 0.4,
+            "left": 0,
+            "carried": 0,
+            "limited": true,
+            "overridden": false,
+            "line": "Today: 0.4% used of 0%"
+          }
+        }
+      },
+      "expect": {
+        "stale": false,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 0.4% used of 0%",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "hot",
+            "label": "Today",
+            "width": 100,
+            "value": "0% left"
+          }
+        ]
+      }
+    },
+    {
+      "name": "usagePill today stale",
+      "input": {
+        "fn": "usagePill",
+        "usage": {
+          "seen_at": "2026-10-07T13:30:00.000Z",
+          "windows": [
+            {
+              "key": "seven_day",
+              "label": "7d",
+              "pct": 40,
+              "resets_at": "2026-10-10T09:00:00Z"
+            }
+          ],
+          "daily": {
+            "base": "even",
+            "carry": "next_day",
+            "on": true,
+            "allowed": 12,
+            "used": 4,
+            "left": 8,
+            "carried": 0,
+            "limited": false,
+            "overridden": false,
+            "line": "Today: 4% used of 12%"
+          }
+        }
+      },
+      "expect": {
+        "stale": true,
+        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 4% used of 12%\nLast read 2h ago",
+        "windows": [
+          {
+            "level": "ok",
+            "label": "7d",
+            "width": 40,
+            "value": "40%"
+          },
+          {
+            "level": "ok",
+            "label": "Today",
+            "width": 33.3,
+            "value": "8% left"
           }
         ]
       }
