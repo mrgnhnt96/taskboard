@@ -395,6 +395,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("ships_pr".into(), json!(crate::projects::task_ships_pr(app, t)?));
         o.insert("ships_pr_set".into(), t.i("ships_pr").map(|v| json!(v != 0)).unwrap_or(Value::Null));
         o.insert("no_pr".into(), t.v("no_pr"));
+        // The commit its work landed in outside its PR (`declined.rs`).
+        o.insert("landed".into(), t.v("landed"));
         // Whether Focus shows a terminal or opens a new one.
         o.insert("terminal_open".into(), json!(live_session(app, t)?.is_some()));
         o.insert("no_evidence".into(), t.v("no_evidence"));

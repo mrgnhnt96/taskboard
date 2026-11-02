@@ -1895,6 +1895,29 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
         r.log(t.id(), "note", "Waits for nothing any more", None)?;
         return Ok(with(ok(Some(&t), Some("It waits for nothing now.".into())), json!({"parked": false})));
     }
+    let t = match r.body.get("drop").cloned().filter(|v| !v.is_null()) {
+        None => t,
+        Some(drop) => {
+            let gone = waitsfor::drop(app, &t, &drop)?;
+            let names = gone.iter().map(|n| rf("task", *n)).collect::<Vec<_>>().join(", ");
+            r.log(t.id(), "note", &format!("No longer waits for {names}"), None)?;
+            for n in &gone {
+                if let Some(o) = board::find_task(app, Some(*n))? {
+                    crate::declined::check(app, &o)?;
+                }
+            }
+            app.wake_runner();
+            let t = board::get_task(app, t.id())?;
+            if waitsfor::ref_ids(&tasks)?.is_empty() {
+                let text = match waitsfor::blocker(app, &t)? {
+                    Some(b) => format!("It no longer waits for {names}. {b}"),
+                    None => format!("It no longer waits for {names}, and has everything else it waits for."),
+                };
+                return Ok(with(ok(Some(&t), Some(text)), json!({"parked": false})));
+            }
+            t
+        }
+    };
     let Some(wanted) = waitsfor::clean(app, &tasks, Some(&t))? else {
         return err(400, "Say which task this one needs, for example: tb wait-for T14.");
     };
@@ -1907,6 +1930,12 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     let until_merged = as_bool(r.body.get("merged"), false);
     if until_merged {
         waitsfor::set_merged(app, &board::get_task(app, t.id())?, &wanted_ids)?;
+        // A head-merged PR's commits may be gone from the branch it merged into: look now, not at the next sweep.
+        for n in &wanted_ids {
+            if let Some(o) = board::find_task(app, Some(*n))? {
+                crate::stack_drop::check(app, &o)?;
+            }
+        }
     }
     let t = board::get_task(app, t.id())?;
     let names = wanted_ids.iter().map(|n| rf("task", *n)).collect::<Vec<_>>().join(", ");
@@ -1934,6 +1963,11 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     }
     let held = t.s("session_id").filter(|s| !s.is_empty()).map(|s| s.to_string());
     waitsfor::park(app, &t, merged.as_deref().unwrap_or("[]"), &r.name(), &why)?;
+    for n in &wanted_ids {
+        if let Some(o) = board::find_task(app, Some(*n))? {
+            crate::declined::check(app, &o)?;
+        }
+    }
     let t = board::get_task(app, t.id())?;
     r.set_session_status("idle")?;
     let b = waitsfor::blocker(app, &t)?;

@@ -117,11 +117,16 @@ pub fn row(c: &Value) -> Row {
         // with its PR still open is in review until the PR merges.
         _ => (by_task(c), format!("{} · {}", tile.status, tile.line), false, String::new()),
     };
-    // A merged PR says so on a done row.
-    let line = if st == St::Done && line.is_empty() {
-        c["pr"]["num"].as_i64().map(|n| format!("PR #{n} merged")).unwrap_or_default()
-    } else {
-        line
+    // A done row says how its PR ended: merged, or declined while its waiters still wait on it,
+    // unless its work landed on the main branch another way.
+    let pr_num = c["pr"]["num"].as_i64();
+    let landed = opt_s(c, "landed").filter(|l| !l.is_empty());
+    let declined = c["pr"]["state"].as_str().is_some_and(|st| !st.eq_ignore_ascii_case("MERGED") && !st.eq_ignore_ascii_case("OPEN"));
+    let line = match (st == St::Done, pr_num, landed) {
+        (true, Some(_), Some(sha)) if declined => format!("Landed in {}", &sha[..sha.len().min(7)]),
+        (true, Some(n), None) if declined => format!("PR #{n} declined"),
+        (true, Some(n), _) if line.is_empty() => format!("PR #{n} merged"),
+        _ => line,
     };
     Row { st, line, loud, age }
 }
@@ -205,6 +210,12 @@ mod tests {
         assert_eq!((fix.st, fix.line.as_str()), (St::Review, "Checks failed · PR #4"));
         let merged = row(&card(json!({"status": "done", "pr": {"num": 4, "state": "MERGED"}})));
         assert_eq!((merged.st, merged.line.as_str()), (St::Done, "PR #4 merged"));
+        // A declined PR never reads as merged, even over the summary; once its work landed another
+        // way the row says where.
+        let declined = row(&card(json!({"status": "done", "summary": "Fixed it", "pr": {"num": 4, "state": "DECLINED"}})));
+        assert_eq!((declined.st, declined.line.as_str()), (St::Done, "PR #4 declined"));
+        let landed = row(&card(json!({"status": "done", "landed": "0123456789abcdef", "pr": {"num": 4, "state": "DECLINED"}})));
+        assert_eq!((landed.st, landed.line.as_str()), (St::Done, "Landed in 0123456"));
         assert_eq!(row(&card(json!({"status": "done", "failed": true}))).st, St::Failed);
     }
 

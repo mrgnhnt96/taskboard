@@ -745,11 +745,13 @@ pub fn prs(app: &App) -> Result<()> {
     prflow::prompts_missed(app)?;
     app.db.tx(|| crate::prbuilds::sweep(app))?;
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
+    app.db.tx(|| crate::declined::sweep(app))?;
     crate::setup::auto_sync(app)?;
     app.db.tx(|| crate::setup::sweep(app))?;
     crate::lost_done::sweep(app)?;
     crate::release_tags::sweep(app)?;
     crate::default_sync::sweep(app)?;
+    crate::stack_drop::sweep(app)?;
     crate::slot_ageing::sweep(app)?;
     crate::slot_tidy::sweep(app)?;
     worktrees::clean_up(app).map(|_| ())

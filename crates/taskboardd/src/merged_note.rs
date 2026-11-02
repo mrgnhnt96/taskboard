@@ -81,6 +81,10 @@ pub fn ticket_merged(app: &App, t: &Row, comment: &str) -> Result<()> {
     }
     landed(app, t, comment)?;
     for k in crate::waitsfor::head_merged_children(app, t.id())? {
+        // A push to this branch may have dropped the child's commits (`stack_drop.rs`): that flags it instead.
+        if crate::stack_drop::check(app, &k)? {
+            continue;
+        }
         board::log_event(app, k.id(), board::BOARD, "jira", &format!("Its stack reached the main branch with {}'s PR", rf("task", t.id())))?;
         stack_landed(app, &k)?;
     }
@@ -91,7 +95,9 @@ pub fn ticket_merged(app: &App, t: &Row, comment: &str) -> Result<()> {
 fn stack_landed(app: &App, t: &Row) -> Result<()> {
     landed(app, t, &crate::prflow::merged_comment(t))?;
     for k in crate::waitsfor::head_merged_children(app, t.id())? {
-        stack_landed(app, &k)?;
+        if !crate::stack_drop::check(app, &k)? {
+            stack_landed(app, &k)?;
+        }
     }
     Ok(())
 }
