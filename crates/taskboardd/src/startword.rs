@@ -1332,6 +1332,25 @@ pub fn note_prompt(app: &App, sid: &str, owners: bool) -> Result<Option<String>>
         let all = if named.is_empty() { last } else { format!("{} and {last}", named.join(", ")) };
         return Ok(Some(format!("Task board: the owner's start word in this prompt covers {all}: run tb start for it.")));
     }
+    // "Queue it once G7 finishes": when a goal on the board follows G7, running it is what waits for G7,
+    // so the wait holds nothing back ([`owners_goal_word`] reads it against the goal run).
+    // A prompt that asks for a new goal: the goal can follow what the prompt waits on, and a condition on
+    // it not being there yet ("If this doesn't exist, create a goal and start it") is the agent's to meet.
+    let makes = MAKE_GOAL_RE.is_match(&text);
+    let text = if makes { without_made_if(&text) } else { text };
+    let mut followed = vec![];
+    for n in GOAL_WAIT_RE.captures_iter(&text).filter_map(|c| c[1].parse::<i64>().ok()) {
+        if makes {
+            followed.push(n);
+            continue;
+        }
+        let pattern = format!("%{n}%");
+        let rows = app.db.q("SELECT after_goals FROM goals WHERE after_goals LIKE ? AND COALESCE(archived, 0) = 0", p![pattern])?;
+        if rows.iter().any(|g| crate::chain::ids(g).contains(&n)) {
+            followed.push(n);
+        }
+    }
+    let text = without_waits_on(&text, &followed);
     Ok(holds_only(&text).then(|| "Task board: this prompt is not a start word: don't run tb start on it.".to_string()))
 }
 
@@ -2522,6 +2541,42 @@ static GOAL_GO_RE: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+/// A wait on another goal finishing ("once G7 finishes", "after G7 is done", "when G7 lands", "behind
+/// G7", "wait for G7 to finish"), with its number.
+static GOAL_WAIT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)\b(?:once|after|when|as\s+soon\s+as|behind|wait(?:ing)?\s+(?:for|on))\s+(?:the\s+)?(?:goal\s+)?[Gg](\d+)\b",
+        r"(?:(?:[’']s|\s+(?:is|has(?:\s+been)?|gets?))?\s+(?:finish(?:es|ed)?|done|complete[ds]?|land(?:s|ed)?|merge[ds]?|wrap(?:s|ped)?(?:\s+up)?|ship(?:s|ped)?|over|through|close[ds]?)\b",
+        r"|\s+to\s+(?:finish|land|complete|merge|wrap(?:\s+up)?|be\s+(?:done|finished|merged)))?",
+        // "once G7 finishes then" / "after G7, then start it": the "then" is the wait's.
+        r"(?:[\s,]+then\b)?"
+    ))
+    .unwrap()
+});
+
+/// A condition on the goal not being there yet ("If this doesn't already exist, create a goal and start
+/// it", "start it if we don't have one"): met once the agent made the goal in reply.
+static MADE_IF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\bif\s+(?:there\s+(?:is|are|[’']s)\s+no\b|[^,.;!?\n]*?(?:n[’']t|\bnot)\s+(?:already\s+|yet\s+)?(?:exist|have|got|there)\b)[^,.;!?\n]*,?").unwrap()
+});
+
+/// `text` less its conditions on the goal not being there yet ([`MADE_IF_RE`]).
+fn without_made_if(text: &str) -> String {
+    MADE_IF_RE.replace_all(text, " ").trim().to_string()
+}
+
+/// `text` less its waits on goals in `after` finishing ([`GOAL_WAIT_RE`]): for a goal that follows them
+/// (`--after`), running it waits for them anyway, so "start it once G7 finishes" is the word to run it
+/// now ("start it"), not a start put off.
+pub fn without_waits_on(text: &str, after: &[i64]) -> String {
+    if after.is_empty() {
+        return text.to_string();
+    }
+    GOAL_WAIT_RE
+        .replace_all(text, |c: &regex::Captures| if c[1].parse::<i64>().is_ok_and(|n| after.contains(&n)) { String::new() } else { c[0].to_string() })
+        .into_owned()
+}
+
 /// Which prompt, newest first, is the word to run goal `id`. Read like [`word_in`]: the latest prompt
 /// that speaks of the run decides, and a prompt whose end never reached the board is no word. A prompt is
 /// also the word when it's only a yes to the agent's question about running it, and it's the latest
@@ -2593,9 +2648,12 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
     // Every prompt, every task and goal the conversation made, every message the agent ended a turn on
     // and every run on a word here, oldest first.
     let rows = app.db.q(
-        "SELECT id, kind, text, full, data FROM session_events WHERE session_id = ?1 AND kind IN ('prompt', 'reply', ?2, ?3) AND id > ?4 ORDER BY id",
+        "SELECT id, at, kind, text, full, data FROM session_events WHERE session_id = ?1 AND kind IN ('prompt', 'reply', ?2, ?3) AND id > ?4 ORDER BY id",
         p![sid, MADE, RAN, since],
     )?;
+    // The goals it follows (`--after`): a wait on one of them finishing is the board's to keep, not a
+    // start put off ([`without_waits_on`]).
+    let after = app.db.q1("SELECT after_goals FROM goals WHERE id = ?", p![id])?.map(|g| crate::chain::ids(&g)).unwrap_or_default();
     // The conversation's goals: its task's, the ones it made or made a task in, and the ones the board
     // opened it to plan ("Plan in Claude": its system prompt is the goal).
     let mut theirs: std::collections::BTreeSet<i64> = crate::board::task_for_session(app, Some(sid))?.and_then(|t| t.i("goal_id")).into_iter().collect();
@@ -2617,6 +2675,8 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
     // Oldest first: (prompt, goals made in reply to it, the agent's message before it). The prompt's
     // `made` is the tasks made in reply to it in no goal: with them, "start it" could mean either.
     let mut said: Vec<(Prompt, Vec<i64>, Option<String>)> = vec![];
+    // Each prompt as typed, and when.
+    let mut as_typed: Vec<(String, String)> = vec![];
     let mut reply: Option<String> = None;
     // The goals the conversation made, oldest first.
     let mut made_goals: Vec<i64> = vec![];
@@ -2646,11 +2706,22 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
             }
             _ => {
                 let (text, clipped) = typed(r);
+                as_typed.push((text.clone(), r.st("at")));
+                let text = without_waits_on(&text, &after);
                 said.push((Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), ..Prompt::default() }, vec![], reply.take()));
             }
         }
     }
     said.reverse();
+    as_typed.reverse();
+    // A run of it here was refused since the prompt before the latest: the agent just tried to run it.
+    let tried = match (as_typed.get(1), as_typed.first()) {
+        (Some((_, from)), Some((_, to))) => app
+            .db
+            .q1("SELECT id FROM start_misses WHERE session_id = ? AND ref = ? AND at >= ? AND at <= ? LIMIT 1", p![sid, rf("goal", id), from, to])?
+            .is_some(),
+        _ => false,
+    };
     // The prompts after the board's handoff, if any, come before it here.
     let handed = said.iter().position(|(p, ..)| p.board && MARKER_RE.find_iter(&p.text).any(|m| ids_in(&GOALS, m.as_str()).contains(&id)));
     for (p, ..) in said.iter().filter(|(p, ..)| p.board) {
@@ -2665,6 +2736,13 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
         .enumerate()
         .map(|(i, (p, made_here, before))| {
             let ours = ours || handed.is_some_and(|h| i < h);
+            let met;
+            let p = if made_here.contains(&id) {
+                met = Prompt { text: without_made_if(&p.text), ..p.clone() };
+                &met
+            } else {
+                p
+            };
             // What the owner's prompt before it asked the agent to make ("set up the emulator").
             let prompt = said.get(i + 1).filter(|(q, ..)| !q.boards()).and_then(|(q, ..)| prompt_topic(&owners_text(&q.text)));
             let own = owners_text(&p.text);
@@ -2704,13 +2782,20 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
                 // The latest prompt the conversation made something in reply to also got a task outside the
                 // goal: "start it" could be that.
                 let mixed = said.iter().take(1 + UNNAMED_REACH).find(|(q, m, _)| !m.is_empty() || !q.made.is_empty()).is_some_and(|(q, ..)| !q.made.is_empty());
-                it = asked || names || asked_for(p, made_here) || (bare && !reply_other && !mixed && (earlier || only));
+                // "You can queue it": the goal the agent just made in reply to the prompt before, or just
+                // tried to run, unless the prompt or the agent's message speaks of something else ("add a
+                // test and ship it", "T5 needs a fix first"), or it's only the word to go answering what the
+                // agent asked ("Want me to write the PR description?" "go ahead and start").
+                let spoke_else = matches!(&spoke, Some(Antecedent::Refs(r)) if r.iter().any(|x| *x != (true, id) && !(x.0 && after.contains(&x.1))));
+                let made_just = said.get(1).is_some_and(|(_, m, _)| m.last() == Some(&id));
+                let just = (tried || (made_just && !spoke_else)) && prompt_topic(&own) != Some(Topic::Other) && (go || !GOAL_GO_RE.is_match(own.trim()));
+                it = asked || names || asked_for(p, made_here) || (!reply_other && !mixed && ((bare && (earlier || only)) || just));
             }
             GoalPrompt { prompt: p.clone(), ours, it, asked }
         })
         .collect();
     let fresh = &prompts[..prompts.len() - spent];
-    Ok(goal_word_in(fresh, id).map(|i| fresh[i].prompt.text.clone()))
+    Ok(goal_word_in(fresh, id).map(|i| as_typed[i].0.clone()))
 }
 
 /// An agent's question about doing something else to a thing ("Ready to merge?", "Should I merge the PR?").
