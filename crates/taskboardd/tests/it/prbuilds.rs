@@ -657,3 +657,94 @@ fn a_failed_check_holds_neither_the_merge_nor_the_card_while_builds_are_stopped(
     assert!(!held.iter().any(|x| x.starts_with("checks")), "{held:?}");
     assert_eq!(board::pr_card(&b.app, &b.task(id))["checks"], "pass");
 }
+
+/// #834: a build the board stopped reads as failed on the host. `tb pr status`, the merge gate and
+/// `tb pr skip-checks` give it one verdict, passed, while builds stay stopped and (skipped) after a
+/// resume. A later push's failure is still a failure.
+#[test]
+fn a_build_the_board_stopped_gets_one_verdict_in_status_merge_and_skip_checks() {
+    let b = board_with(|_, _| {});
+    let id = b.pr_task(GH);
+    let h = FakeHost::new("github", running());
+    prhost::install(&b.app, h.clone());
+    prflow::refresh(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": true, "who": "Sam"}));
+    prbuilds::tick(&b.app).unwrap();
+    assert!(b.flow(id)["builds_cancelled"]["h1"].is_string());
+    // The cancel lands: the host reads the build as failed.
+    h.rec.lock().checks[0].state = "failed".into();
+    let gate = |b: &Board| {
+        let t = b.task(id);
+        let rec = b.flow(id)["rec"].clone();
+        taskboardd::prcmds::merge_blockers(&b.app, &t, &rec, true).unwrap()
+    };
+
+    let status = taskboardd::prcmds::status(&b.app, id).unwrap();
+    assert_eq!(status["failures"], json!([]), "status doesn't list the stopped build as failed: {status}");
+    assert_eq!(status["builds_note"], "PR builds are stopped: its checks count as passed");
+    assert_eq!(b.task(id).st("pr_phase"), "review");
+    assert!(!gate(&b).iter().any(|x| x.starts_with("checks")), "the merge agrees: {:?}", gate(&b));
+
+    b.post(&format!("/tasks/T{id}/pr/skip-checks"), json!({"reason": "builds stopped", "all": true}));
+    let skips = &b.flow(id)["skip_checks"];
+    assert_eq!(skips["h1"]["stopped"], json!(["build"]), "{skips}");
+    assert!(skips["*"]["stopped"].is_null(), "the stopped builds are this push's alone: {skips}");
+
+    b.post("/pr-builds", json!({"stopped": false, "who": "Sam"}));
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(b.task(id).st("pr_phase"), "review", "skipped: the stopped build still counts as passed after a resume");
+    let status = taskboardd::prcmds::status(&b.app, id).unwrap();
+    assert_eq!(status["failures"], json!([]), "{status}");
+    let note = status["builds_note"].as_str().unwrap();
+    assert!(note.contains("builds stopped") && note.ends_with("Builds the board stopped count as passed: build"), "{note}");
+    assert!(!gate(&b).iter().any(|x| x.starts_with("checks")), "{:?}", gate(&b));
+
+    // A later push's build ran and failed.
+    h.rec.lock().head = "h2".into();
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(b.task(id).st("pr_phase"), "fix", "a failure on a push the board didn't stop counts");
+    assert!(gate(&b).iter().any(|x| x.starts_with("checks failed")), "{:?}", gate(&b));
+    let e = api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/pr/skip-checks"), &Query::new(), &json!({"reason": "again"})).unwrap_err();
+    assert!(e.status == 409 && e.message.contains("not failures"), "{}", e.message);
+}
+
+/// #834: after a resume the builds the board cancelled read as failed again; `tb pr skip-checks` takes
+/// them, as the stop's own builds, not as failures.
+#[test]
+fn skip_checks_takes_the_builds_the_board_cancelled_after_a_resume() {
+    let b = board_with(|_, _| {});
+    let id = b.pr_task(GH);
+    let h = FakeHost::new("github", running());
+    prhost::install(&b.app, h.clone());
+    prflow::refresh(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": true, "who": "Sam"}));
+    prbuilds::tick(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": false, "who": "Sam"}));
+    h.rec.lock().checks[0].state = "failed".into();
+    prflow::refresh(&b.app).unwrap();
+    assert_eq!(b.task(id).st("pr_phase"), "fix");
+
+    b.post(&format!("/tasks/T{id}/pr/skip-checks"), json!({"reason": "the board cancelled them"}));
+    assert_eq!(b.task(id).st("pr_phase"), "review");
+    assert_eq!(b.flow(id)["skip_checks"]["h1"]["stopped"], json!(["build"]));
+    let status = taskboardd::prcmds::status(&b.app, id).unwrap();
+    assert_eq!(status["failures"], json!([]), "{status}");
+    let logged = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE '%(builds the board stopped: build)%'", vec![json!(id)]).unwrap();
+    assert_eq!(logged, 1);
+}
+
+/// #834: a refused `tb pr merge` is kept with the push it was refused on, for the alert raised once the
+/// merge retries run out.
+#[test]
+fn a_refused_merge_is_kept_with_its_reason() {
+    let b = board_with(|c, _| c.pr.approvals = 1);
+    let id = b.pr_task(GH);
+    prhost::install(&b.app, FakeHost::new("github", Record { checks: vec![Check { name: "build".into(), state: "passed".into(), url: None, at: None }], ..running() }));
+    prflow::refresh(&b.app).unwrap();
+    let e = api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/pr/merge"), &Query::new(), &json!({})).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
+    let refused = &b.flow(id)["merge_refused"];
+    assert_eq!(refused["head"], "h1");
+    let why = refused["why"].as_str().unwrap();
+    assert!(!why.is_empty() && e.message.contains(why), "{why} / {}", e.message);
+}
