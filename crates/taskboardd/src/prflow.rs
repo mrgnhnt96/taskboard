@@ -375,6 +375,25 @@ pub fn prompts_missed(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// The task's goal is paused: the board doesn't bring its PR conversations back until it's resumed.
+pub fn goal_paused(app: &App, t: &Row) -> Result<bool> {
+    Ok(board::find_goal(app, t.i("goal_id"))?.is_some_and(|g| g.b("paused")))
+}
+
+/// A resumed goal's PRs that wait on their agent, stepped again with their last record so the wakes
+/// the pause held go now.
+pub fn goal_resumed(app: &App, goal_id: i64) -> Result<()> {
+    for t in app.db.q("SELECT * FROM tasks WHERE goal_id = ? AND status = 'done' AND pr_num IS NOT NULL", p![goal_id])? {
+        if !WAKE.contains(&t.s("pr_phase").unwrap_or("")) {
+            continue;
+        }
+        if let Some(rec) = flow(&t).get("rec").filter(|r| r.is_object()).cloned() {
+            step(app, &t, &rec)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn waking(app: &App, t: &Row) -> Result<bool> {
     Ok(live_job(app, t)?.is_some() || (WAKE.contains(&t.s("pr_phase").unwrap_or("")) && flow(t).contains_key("woke")))
 }
@@ -906,7 +925,7 @@ pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
 /// Brings a merged task's conversation back to write its note for testers (`[jira] merged_note`).
 /// None when it can't yet, as with `follow_wake`.
 pub fn ask_for_note(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
-    if visit_live(app, t)? {
+    if visit_live(app, t)? || goal_paused(app, t)? {
         return Ok(None);
     }
     let Some(cwd) = wake_cwd(app, t, Again::Nothing)? else { return Ok(None) };
@@ -2015,6 +2034,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         && !retry_later(&f)
         && !visit_live(app, t)?
         && hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref())
+        && !goal_paused(app, t)?
         // The agent isn't brought back to ask for reviews while the PR feed holds asks.
         && (phase != "ask" || crate::asks::held(app, t)?.is_none());
     // A visit whose step works on the host waits while the account the PR's host signs in as is

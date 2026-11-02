@@ -719,7 +719,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
             let text = lines.join("\n");
             if live {
                 deliver::add(app, "follow", &text, t.id(), None, None)?;
-            } else if prflow::waking(app, &t)? || !hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
+            } else if prflow::waking(app, &t)? || !hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) || prflow::goal_paused(app, &t)? {
                 continue;
             } else if prflow::follow_wake(app, &t, &text)?.is_none() {
                 // No slot or a visit under way: left unrecorded, so the next poll wakes it.

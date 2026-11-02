@@ -1666,6 +1666,21 @@ fn a_conflict_while_waiting_on_a_reviewer_wakes_the_agent() {
 }
 
 #[test]
+fn a_paused_goal_holds_its_pr_wakes_until_it_is_resumed() {
+    let b = board_with(|c| c.pr.wake = true);
+    let id = b.pr_task(BB);
+    let g = b.post("/goals", json!({"name": "Held", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE tasks SET goal_id = ? WHERE id = ?", p![g, id]).unwrap();
+    b.post(&format!("/goals/G{g}"), json!({"paused": true}));
+    fake(&b, conflicting(green()));
+    poll(&b);
+    assert_eq!(b.phase(id), "rebase");
+    assert!(wakes(&b, id).is_empty(), "a paused goal's PR waits");
+    b.post(&format!("/goals/G{g}"), json!({"paused": false}));
+    assert_eq!(wakes(&b, id).len(), 1, "resuming sends the held wake");
+}
+
+#[test]
 fn a_conflict_doesnt_ask_for_a_rebase_when_the_policy_is_never() {
     let b = board_with(|c| c.pr.rebase = RebasePolicy::Never);
     let id = b.pr_task(BB);
