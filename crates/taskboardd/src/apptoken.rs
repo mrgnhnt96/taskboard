@@ -73,6 +73,20 @@ pub fn matches(given: Option<&str>, token: &str) -> bool {
 
 /// Shell variables (`$X`, `${X}`) and a word-leading `~`.
 static VAR_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?").unwrap());
+/// What's left of a word's run-time values once the hook filled in what it could: `$X`, `${…}`, `$1`,
+/// `$@`, and `$__`, which stands for a command substitution.
+static RUNTIME_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| regex::Regex::new(r"\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])").unwrap());
+/// A `$` the shell keeps as it is (in single quotes, or `\$`), so it isn't read as a variable.
+const LITERAL_DOLLAR: char = '\u{1}';
+/// A run-time value in a word: it can be any text, a leading dot too.
+const RUNTIME: char = '\u{2}';
+
+/// `w` with its kept `$`s back as `$`.
+fn literal(w: &str) -> String {
+    w.replace(LITERAL_DOLLAR, "$")
+}
+
 static TILDE_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"(^|[\s=:;|&(<>])~(/|$|[\s;|&)])").unwrap());
 
 /// `$X` and `${X}` filled in from this environment (`$TASKBOARD_DATA` is always `dir`, `$HOME` the home
@@ -113,7 +127,8 @@ fn shell_word(w: &str, dir: &Path) -> String {
 }
 
 /// Whether glob `pat` (`*`, `?`, `[…]`, `{a,b}`) matches `name`, ignoring case. As in the shell, a
-/// leading `*`, `?` or `[…]` doesn't match a dot file's dot.
+/// leading `*`, `?` or `[…]` doesn't match a dot file's dot; a run-time value ([`RUNTIME`]) matches any
+/// text.
 fn glob_matches(pat: &str, name: &str) -> bool {
     if name.starts_with('.') && pat.starts_with(['*', '?', '[']) {
         return false;
@@ -145,7 +160,8 @@ fn glob_matches(pat: &str, name: &str) -> bool {
                 braces -= 1;
                 re.push(')');
             }
-            c => re.push_str(&regex::escape(&c.to_string())),
+            RUNTIME => re.push_str(".*"),
+            c => re.push_str(&regex::escape(&literal(&c.to_string()))),
         }
     }
     re.push_str(&")".repeat(braces));
@@ -220,10 +236,10 @@ impl Script {
             let c = chars[i];
             i += 1;
             if single {
-                if c == '\'' {
-                    single = false;
-                } else {
-                    word.push(c);
+                match c {
+                    '\'' => single = false,
+                    '$' => word.push(LITERAL_DOLLAR),
+                    c => word.push(c),
                 }
                 continue;
             }
@@ -233,7 +249,9 @@ impl Script {
                         if double && !matches!(n, '$' | '`' | '"' | '\\' | '\n') {
                             word.push('\\');
                         }
-                        if n != '\n' {
+                        if n == '$' {
+                            word.push(LITERAL_DOLLAR);
+                        } else if n != '\n' {
                             word.push(n);
                         }
                         i += 1;
@@ -289,8 +307,9 @@ impl Script {
     /// Keeps a command, and reads the scripts a shell is handed (`sh -c '…'`, `eval '…'`).
     fn push(&mut self, cmd: Vec<String>) {
         if let Some(("sh" | "bash" | "zsh" | "dash" | "ksh" | "eval", args)) = command_word(&cmd) {
+            // The shell it's handed to reads the `$`s that were kept for it.
             for a in args.iter().filter(|a| !a.starts_with('-')) {
-                self.read(a);
+                self.read(&literal(a));
             }
         }
         self.commands.push(cmd);
@@ -346,31 +365,37 @@ fn command_word(cmd: &[String]) -> Option<(&str, &[String])> {
 
 /// Whether glob `pattern`'s segments past a folder reach the token, whose path below that folder is
 /// `target` (`[…, DIR, FILE]`): a segment matches the token's folder, or they end at the token. `**`
-/// matches any number of folders; a segment with a variable the hook can't fill in matches anything.
+/// matches any number of folders; a variable the hook can't fill in matches any text in its segment.
 fn glob_reaches(pattern: &[&str], target: &[String]) -> bool {
     match (pattern.first(), target.first()) {
         (None, _) => target.len() <= 1,
         (Some(&"**"), _) => glob_reaches(&pattern[1..], target) || (!target.is_empty() && glob_reaches(pattern, &target[1..])),
         (Some(_), None) => false,
-        (Some(p), Some(t)) => (p.contains('$') || glob_matches(p, t)) && (target.len() == 2 || glob_reaches(&pattern[1..], &target[1..])),
+        (Some(p), Some(t)) => glob_matches(p, t) && (target.len() == 2 || glob_reaches(&pattern[1..], &target[1..])),
     }
 }
 
 /// Whether a simple command's `words` reach the token's folder `private` (resolved): a path in it
-/// (through a symlink too), or a glob or variable that can match it or the token.
+/// (through a symlink too), or a glob or variable that can match it or the token. A word that's one
+/// variable and nothing else (`"$f"` in a loop, `$(…)`) isn't placed: its value is whole at run time,
+/// anywhere at all, and the hook can't say where.
 fn words_reach(words: &[String], dir: &Path, private: &Path, cwd: Option<&Path>) -> bool {
     let token = private.join(FILE);
     for word in words {
         // `--path=/x` and `X=/x` hand over the part after `=`.
         let after = word.split_once('=').map(|(_, v)| v).filter(|_| word.starts_with('-') || ASSIGN_RE.is_match(word));
         for w in std::iter::once(word.as_str()).chain(after).map(|w| shell_word(w, dir)) {
+            let w = RUNTIME_RE.replace_all(&w, RUNTIME.to_string().as_str()).into_owned();
+            if w == RUNTIME.to_string() {
+                continue;
+            }
             let segs: Vec<&str> = w.split('/').collect();
-            let plain: Vec<&str> = segs.iter().take_while(|s| !has_glob(s) && !s.contains('$')).copied().collect();
-            let base = match plain.as_slice() {
+            let plain: Vec<&str> = segs.iter().take_while(|s| !has_glob(s) && !s.contains(RUNTIME)).copied().collect();
+            let base = literal(&match plain.as_slice() {
                 [] => ".".to_string(),
                 [""] => "/".to_string(),
                 _ => plain.join("/"),
-            };
+            });
             let Some(p) = resolve(&base, cwd) else { continue };
             if p.starts_with(private) {
                 return true;
@@ -452,7 +477,7 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
         // can't follow (`cd $X`, `cd -`) leaves it where it was.
         if let Some(("cd", args)) = command_word(cmd) {
             let to = match args.iter().find(|a| !a.starts_with('-') || a.as_str() == "-") {
-                Some(a) => Some(shell_word(a, dir)).filter(|a| !a.contains('$') && !has_glob(a) && a != "-"),
+                Some(a) => Some(shell_word(a, dir)).filter(|a| !RUNTIME_RE.is_match(a) && !has_glob(a) && a != "-").map(|a| literal(&a)),
                 None => dirs::home_dir().map(|h| h.to_string_lossy().to_string()),
             };
             if let Some(p) = to.and_then(|t| resolve(&t, at.as_deref())) {
@@ -551,6 +576,51 @@ mod tests {
             ("Edit", json!({"file_path": "/repo/SKILL.md", "old_string": format!("never read {FILE}"), "new_string": "x"})),
         ] {
             assert!(!tool_reaches(tool, &input, &dir, Some(&home)), "{tool} {input}");
+        }
+    }
+
+    /// #840: reads of the data folder's config and logs, and loops over files found elsewhere, from a
+    /// working folder in the data folder or above it.
+    #[test]
+    fn reads_of_config_and_logs_from_the_data_folder_pass() {
+        let home = dirs::home_dir().unwrap();
+        let dir = home.join(".config/taskboard");
+        let var = data_var();
+        let reads = [
+            r#"cd ~/.config/taskboard && sed -n 15,40p config.toml; sed -n 95,135p config.toml; echo ---; grep -i -E "429|rate.?limit|too many" server.log server.log.1 | awk '{print $1}' | cut -c1-13 | sort | uniq -c | tail -30"#.to_string(),
+            r#"grep -rl --include=hooks.json "tb" ~/.claude/plugins 2>/dev/null | head -3 | while read f; do echo "== $f"; grep -n "command" "$f"; done"#.into(),
+            r#"cd ~/.config/taskboard && diff config.toml.bak-before-no-rate-caps config.toml; grep -n -i -E "bitbucket|poll|interval|rate|limit|cap" config.toml"#.into(),
+            r#"grep -h -i -E "429|rate.?limit|too many requests" server.log server.log.1 | cut -c1-13 | sort | uniq -c"#.into(),
+            "for f in ~/.config/taskboard/*.log; do tail -5 \"$f\"; done".into(),
+            "awk '{print $1}' server.log | sort | uniq -c".into(),
+            "awk '$3 ~ /x/ {print ${1}}' server.log".into(),
+            format!("ls {var}/*.toml | xargs -n1 wc -l"),
+        ];
+        for cwd in [&home, &home.join(".config"), &dir] {
+            for no in &reads {
+                assert!(!tool_reaches("Bash", &json!({"command": no}), &dir, Some(cwd)), "{} from {}", no, cwd.display());
+            }
+        }
+
+        // A variable that's part of a path still matches whatever it can be, a leading dot too.
+        let (head, tail) = DIR.split_at(5);
+        for yes in [
+            "cd ~/.config/taskboard && cat $X/*".to_string(),
+            "cd ~/.config/taskboard && cat ./\"$f\"".into(),
+            "cd ~/.config/taskboard && cat $a$b/*".into(),
+            "cd ~/.config/taskboard && cat $(echo x)/*".into(),
+            "cat ~/.config/taskboard/$X/*".into(),
+            "cat ~/.config/taskboard/${X}/*".into(),
+            format!("cat ~/.config/taskboard/{head}$X/*"),
+            format!("cat ~/.config/taskboard/${{X}}{tail}/*"),
+            "cd ~/.config/taskboard && sh -c 'cat $X/*'".into(),
+            "cd ~/.config/taskboard && bash -c \"cat \\$X/*\"".into(),
+        ] {
+            assert!(tool_reaches("Bash", &json!({"command": yes}), &dir, Some(&home)), "{yes}");
+        }
+        // In single quotes or after `\`, `$` is a plain character, not a variable.
+        for no in ["cat ~/.config/taskboard/'$X'/*", "cat ~/.config/taskboard/\\$X/*", "cd ~/.config/taskboard && cat '$X'/*"] {
+            assert!(!tool_reaches("Bash", &json!({"command": no}), &dir, Some(&home)), "{no}");
         }
     }
 
