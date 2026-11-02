@@ -519,9 +519,14 @@ fn session_live(t: &Value) -> bool {
     obj(t, "session").is_some_and(|x| s(x, "status") != "gone")
 }
 
+/// When a queued task whose start failed tries again (`start_retry_at` on its card).
+pub(crate) fn start_retry_at(t: &Value) -> Option<&str> {
+    opt_s(t, "start_retry_at").filter(|_| s(t, "status") == "queued" && !b(t, "starting"))
+}
+
 /// `startsByHand`.
 fn starts_by_hand(t: &Value) -> bool {
-    matches!(s(t, "status"), "queued" | "planned") && obj(t, "goal").is_none() && !b(t, "starting")
+    matches!(s(t, "status"), "queued" | "planned") && obj(t, "goal").is_none() && !b(t, "starting") && start_retry_at(t).is_none()
 }
 
 /// `uncommitted`.
@@ -1503,6 +1508,14 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
             txt(opt_s(t, "latest").unwrap_or("Midna didn’t start a terminal for this task."), St::BannerText),
             el(K::Row, row),
         ];
+        (BoxTone::Lost, bx)
+    } else if let Some(at) = start_retry_at(t) {
+        let mut row = vec![c.btn("Try again now", Act::new("start", "new", &r, &act), Look::Primary, false, None)];
+        row.extend(c.note(&act));
+        let mut bx = vec![txt("Couldn’t start in Midna", St::BoxLabel)];
+        bx.extend(opt_s(t, "latest").map(|l| txt(l, St::BannerText)));
+        bx.push(txt(format!("Trying again at {}", fmt::hhmm(at)), St::Small));
+        bx.push(el(K::Row, row));
         (BoxTone::Lost, bx)
     } else if status == "needs" && s(t, "needs_reason") == "compact_failed" {
         let grp = format!("compact:{r}");

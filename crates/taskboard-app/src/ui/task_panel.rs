@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 pub use view::{Act, Go, Node};
-pub(crate) use view::{ATT_KINDS, att_file_type};
+pub(crate) use view::{ATT_KINDS, att_file_type, start_retry_at};
 use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, TlSt, Tone};
 
 /// How long an inline note stays (`setNote`: 5 s, errors 15 s).
