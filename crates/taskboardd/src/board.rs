@@ -148,6 +148,9 @@ pub fn update_goal(app: &App, id: i64, f: Vec<(&str, Value)>) -> Result<()> {
     }
     if before.b("paused") != after.b("paused") {
         hooks::fire_goal(app, if after.b("paused") { "goal.paused" } else { "goal.resumed" }, &after, None);
+        if !after.b("paused") {
+            crate::prflow::goal_resumed(app, id)?;
+        }
     }
     Ok(())
 }

@@ -236,6 +236,9 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
     let planned = tasks.iter().filter(|x| s(x, "status") == "planned").count() as i64;
     let going = tasks.iter().filter(|x| matches!(s(x, "status"), "queued" | "working" | "needs")).count() as i64;
     let unstarted = tasks.iter().any(|x| s(x, "status") == "needs" && s(x, "needs_reason") == "start_failed");
+    // Done tasks whose PRs are still open: a pause holds their follow-ups (fixes, comments, merges) too.
+    let reviewing = tasks.iter().any(awaiting_merge);
+    let paused = b(g, "paused");
     let mut out = Vec::new();
     let mut split = false;
     if planned > 0 && after_hours(hours) {
@@ -249,7 +252,7 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
             title: format!("Queue the planned tasks now; they start when work hours open{}", if at.is_empty() { String::new() } else { format!(" ({day} at {at})") }),
             busy_label: "Queuing…",
         });
-    } else if planned > 0 || (going > 0 && (b(g, "paused") || unstarted)) {
+    } else if planned > 0 || (going > 0 && (paused || unstarted)) || (paused && reviewing) {
         let label = if planned == 0 {
             "Resume".to_string()
         } else if going > 0 {
@@ -261,6 +264,8 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
             format!("Queue the {}; the goal’s rules decide what runs when", fmt::plural(planned, "planned task", "planned tasks"))
         } else if unstarted {
             "Queue the tasks that couldn’t start again".into()
+        } else if going == 0 {
+            "Let the board work on the PRs again".into()
         } else {
             "Let new tasks start again".into()
         };
@@ -270,7 +275,7 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
     // it's waiting for the hours, its menu starting it now or pausing it; Start tomorrow's menu holds
     // Pause instead when that shows.
     let waiting = waits_for_hours(g, hours);
-    if going > 0 && !b(g, "paused") && !b(g, "deprioritized") && !unstarted && !(split && waiting) {
+    if (going > 0 || reviewing) && !paused && !b(g, "deprioritized") && !unstarted && !(split && waiting) {
         out.push(if waiting {
             let (day, at) = opens_at(hours);
             RunButton {
@@ -280,7 +285,12 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
                 busy_label: "Sending…",
             }
         } else {
-            RunButton { act: "goal-pause", label: "Pause".into(), title: "Nothing new starts; running tasks carry on".into(), busy_label: "Sending…" }
+            let title = match (going > 0, reviewing) {
+                (true, true) => "Nothing new starts and PRs wait for fixes, comments and merges; running tasks carry on",
+                (false, true) => "PRs wait: no fixes, review comments or merges until you resume",
+                _ => "Nothing new starts; running tasks carry on",
+            };
+            RunButton { act: "goal-pause", label: "Pause".into(), title: title.into(), busy_label: "Sending…" }
         });
     }
     out.push(RunButton {
@@ -1391,8 +1401,22 @@ mod tests {
     // An explicit import beats the glob: `#[gpui_kit::test]` expands to `#[test]`, which must be std's.
     use ::core::prelude::v1::test;
 
+    #[test]
+    fn pause_and_resume_show_while_prs_are_in_review() {
+        let hours = json!({"on": false, "open": true});
+        let in_review = json!({"status": "done", "pr": {"num": 5, "state": "OPEN"}});
+        let acts = |g: &Value| run_buttons_view(g, &hours).1.iter().map(|b| (b.act, b.label.clone())).collect::<Vec<_>>();
+        let open = json!({"tasks": [{"status": "done"}, in_review]});
+        assert_eq!(acts(&open)[0], ("goal-pause", "Pause".to_string()));
+        let paused = json!({"paused": true, "tasks": [{"status": "done"}, in_review]});
+        assert_eq!(acts(&paused)[0], ("goal-run", "Resume".to_string()));
+        let merged = json!({"tasks": [{"status": "done", "pr": {"num": 5, "state": "MERGED"}}]});
+        assert_eq!(acts(&merged).len(), 1, "only Open in Claude with nothing left to hold");
+    }
+
     /// The run signals still match the web board's, less Deprioritize (only the banner's "Bring it
-    /// back" is left) and with the plan button named "Open in Claude".
+    /// back" is left), with the plan button named "Open in Claude", and with Pause while only PRs
+    /// are left to work on (a pause holds their follow-ups).
     #[test]
     fn run_signals_match_web() {
         let g = golden("goal");
@@ -1404,11 +1428,15 @@ mod tests {
             .cloned()
             .map(|mut c| {
                 if c["input"]["fn"] == "runButtons" {
-                    let bs: Vec<Value> = arr(&c["expect"], "buttons")
-                        .iter()
+                    let goal = &c["input"]["goal"];
+                    let only_prs = arr(goal, "tasks").iter().any(awaiting_merge)
+                        && !b(goal, "paused")
+                        && !b(goal, "deprioritized")
+                        && arr(&c["expect"], "buttons").iter().all(|b| b["act"] == "goal-plan-edit");
+                    let pause = json!({"act": "goal-pause", "label": "Pause", "title": "PRs wait: no fixes, review comments or merges until you resume"});
+                    let bs: Vec<Value> = only_prs.then_some(pause).into_iter().chain(arr(&c["expect"], "buttons").iter().cloned())
                         .filter(|b| b["act"] != "goal-deprio-ask")
-                        .map(|b| {
-                            let mut b = b.clone();
+                        .map(|mut b| {
                             if b["act"] == "goal-plan-edit" {
                                 b["label"] = json!("Open in Claude");
                             }

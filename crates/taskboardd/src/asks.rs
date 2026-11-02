@@ -538,6 +538,9 @@ fn stage_one(app: &App, t: &Row) -> Result<bool> {
         app.info(format!("reviewers: not asking for {} yet: {why}", rf("task", t.id())));
         return Ok(false);
     }
+    if prflow::goal_paused(app, t)? {
+        return Ok(false);
+    }
     let f = flow(t);
     if agent_asks(app, t)? {
         // The agent asks: bring it back now if the feed held its wake before.
