@@ -646,11 +646,8 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         if review.changes {
             let who: Vec<String> = review.requesters.iter().map(|(u, n)| if n.is_empty() { u.clone() } else { n.clone() }).collect();
             out.push(if who.is_empty() { "a reviewer asked for changes".into() } else { format!("{} asked for changes", who.join(", ")) });
-        } else if !owner_approved && !prflow::approved(app, t, &review) {
-            out.push(match prflow::approvals_needed(app, t) {
-                Some(n) => format!("it has {} of the {n} approval{} it needs", review.approvals, if n == 1 { "" } else { "s" }),
-                None => "it isn't approved".into(),
-            });
+        } else if !owner_approved {
+            out.extend(approvals_short(app, t, rec));
         }
     }
     let open = prflow::open_threads(&f, rec);
@@ -680,6 +677,23 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         out.push(format!("its merge steps haven't passed on its head: {}", crate::steps::names(&steps)));
     }
     Ok(out)
+}
+
+/// How the PR falls short of the approvals it needs ("it has 1 of the 2 approvals it needs"), or `None`
+/// when it has them, its review is skipped or a reviewer asks for changes (which holds it on its own).
+fn approvals_short(app: &App, t: &Row, rec: &Value) -> Option<String> {
+    let f = flow(t);
+    if prflow::review_skipped(app, t, &f, rec) {
+        return None;
+    }
+    let review = prflow::review_of(&f, rec);
+    if review.changes || prflow::approved(app, t, &review) {
+        return None;
+    }
+    Some(match prflow::approvals_needed(app, t) {
+        Some(n) => format!("it has {} of the {n} approval{} it needs", review.approvals, if n == 1 { "" } else { "s" }),
+        None => "it isn't approved".into(),
+    })
 }
 
 /// The checks still running on this push, unless its checks are skipped.
@@ -791,11 +805,23 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
             format!("{} merges this project's PRs (agents_merge is off), and hasn't told you to merge this one in this terminal. Run tb pr wait and leave it to them.", app.cfg.owner),
         );
     }
+    // `--owner-approved "<reason>"`: the owner's override of the approval count (#835). From an agent it
+    // needs their word in its terminal to merge this PR; stack order, conflicts, checks, changes asked for
+    // and threads still hold.
+    let override_why = one_line(&body_str(body, "owner_approved"), 500);
+    if !override_why.is_empty() && agent && word.is_none() {
+        return err(
+            403,
+            format!("--owner-approved is {}'s override, and they haven't told you to merge this PR in this terminal. Ask them.", app.cfg.owner),
+        );
+    }
     let pr = pr_of(&before)?;
     let (t, rec) = fresh(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "merge", e))?;
     let site = prhost::limit::label(&pr.host);
     progress::stage(&format!("Read PR #{} from {site}", pr.num));
-    let blockers = merge_blockers(app, &t, &rec, word.as_ref().is_some_and(|w| w.approved))?;
+    // What the override stands in for, kept for the task's log once the merge goes through.
+    let overridden = if override_why.is_empty() { None } else { approvals_short(app, &t, &rec) };
+    let blockers = merge_blockers(app, &t, &rec, !override_why.is_empty() || word.as_ref().is_some_and(|w| w.approved))?;
     if !blockers.is_empty() {
         let running = running_checks(&t, &rec);
         if !running.is_empty() {
@@ -830,7 +856,12 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         Some(_) => format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)),
         None => who_of(app, body),
     };
-    app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who))?;
+    app.db.tx(|| {
+        if let Some(short) = &overridden {
+            board::log_event(app, id, &who, "status", &format!("Merged PR #{} on {}'s approval although {short}: {override_why}", pr.num, app.cfg.owner))?;
+        }
+        prflow::mark_merged(app, &board::get_task(app, id)?, &who)
+    })?;
     crate::reports::give_back_slot(app, id);
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))

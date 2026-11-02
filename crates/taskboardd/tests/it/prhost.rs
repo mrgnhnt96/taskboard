@@ -727,6 +727,86 @@ fn the_owners_word_in_the_terminal_merges_one_pr_and_its_approved_counts() {
     assert_eq!(b.phase(id), "merged");
 }
 
+/// #835: 1 of 2 approvals, and the reviewer who asked for changes has nothing left open.
+fn one_of_two_approved() -> Record {
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved"), reviewer("b", "changes")];
+    rec.approvals = 1;
+    rec
+}
+
+#[test]
+fn the_owner_approved_override_merges_short_of_the_approval_count_and_logs_why() {
+    let b = board_with(|c| c.pr.approvals = 2);
+    let id = b.pr_task(BB);
+    let h = fake(&b, one_of_two_approved());
+    poll(&b);
+    let url = format!("/tasks/T{id}/pr/merge");
+    let e = b.try_post(&url, json!({})).unwrap_err();
+    assert!(e.contains("it has 1 of the 2 approvals it needs"), "{e}");
+    b.post(&url, json!({"owner_approved": "b's change request is answered; one approval is enough"}));
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "merged");
+    assert!(logged(&b, id, "although it has 1 of the 2 approvals it needs: b's change request is answered; one approval is enough"));
+}
+
+#[test]
+fn an_agent_overrides_the_approval_count_only_on_the_owners_word_to_merge() {
+    let b = board_with(|c| {
+        c.pr.approvals = 2;
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task(BB);
+    let h = fake(&b, one_of_two_approved());
+    poll(&b);
+    let merge = || b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "via_session": "s1", "owner_approved": "One approval is enough"}));
+    let e = merge().unwrap_err();
+    assert!(e.contains("--owner-approved is") && e.contains("haven't told you to merge this PR"), "{e}");
+    b.report("hook.prompt", "s1", json!({"prompt": "merge PR #9, one approval is enough"}));
+    merge().unwrap();
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert!(logged(&b, id, "although it has 1 of the 2 approvals it needs: One approval is enough"));
+}
+
+#[test]
+fn the_owner_approved_override_keeps_the_conflict_changes_and_stack_checks() {
+    let why = json!({"owner_approved": "One approval is enough"});
+    // A conflict with its base.
+    let b = board_with(|c| c.pr.approvals = 2);
+    let id = b.pr_task(BB);
+    let mut rec = one_of_two_approved();
+    rec.mergeable = json!("CONFLICTING");
+    let h = fake(&b, rec);
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), why.clone()).unwrap_err();
+    assert!(e.contains("it conflicts with its base branch main") && !e.contains("approvals it needs"), "{e}");
+    // A reviewer still asking for changes on an open thread.
+    {
+        let mut r = h.rec.lock();
+        r.mergeable = Value::Null;
+        r.threads = vec![thread("1", "b")];
+        r.threads[0].author = "b".into();
+    }
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), why.clone()).unwrap_err();
+    assert!(e.contains("B asked for changes") && e.contains("1 thread open"), "{e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert!(!logged(&b, id, "although it has"), "nothing recorded for a refused merge");
+
+    // A stacked base that hasn't merged.
+    let b = board_with(|c| c.pr.approvals = 2);
+    let below = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/8");
+    let mut low = green();
+    low.branch = "base-work".into();
+    fake(&b, low);
+    poll(&b);
+    let id = b.pr_task(BB);
+    let mut rec = one_of_two_approved();
+    rec.base = "base-work".into();
+    let h = fake(&b, rec);
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), why).unwrap_err();
+    assert!(e.contains(&format!("its base branch base-work is T{below}'s PR #8, which hasn't merged yet")) && !e.contains("approvals it needs"), "{e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+}
+
 #[test]
 fn the_owner_closes_a_pr_and_an_agent_only_on_their_word() {
     let b = board_with(|_| {});

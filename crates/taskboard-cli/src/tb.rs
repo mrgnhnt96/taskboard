@@ -1999,7 +1999,12 @@ enum PrCmd {
         dry_run: bool,
     },
     /// Merge it once it's approved, green and every thread is answered (the board checks first)
-    Merge { task: Option<String> },
+    Merge {
+        task: Option<String>,
+        /// The owner's override of the approval count, with why (an agent: only on their word to merge it)
+        #[arg(long, value_name = "REASON")]
+        owner_approved: Option<String>,
+    },
     /// Close it without merging (Bitbucket: decline), keeping its branch: only on the owner's word
     Close {
         task: Option<String>,
@@ -6954,9 +6959,16 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&pr_reviewers_line(&t, &v));
                 Ok(0)
             }
-            PrCmd::Merge { task } => {
+            PrCmd::Merge { task, owner_approved } => {
                 let t = c.pr_task(task)?;
-                c.call_progress("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
+                if owner_approved.as_deref().is_some_and(|r| r.trim().is_empty()) {
+                    return Err("--owner-approved needs a reason: why the approvals it has are enough.".into());
+                }
+                let mut b = json!({"agent": !c.session.is_empty(), "via_session": c.session});
+                if let Some(r) = owner_approved {
+                    b["owner_approved"] = json!(r);
+                }
+                c.call_progress("POST", &format!("/tasks/{t}/pr/merge"), Some(b))?;
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
                 Ok(0)
             }
