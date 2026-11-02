@@ -1700,3 +1700,128 @@ fn a_goal_run_now_on_the_owners_word_runs_outside_the_hours() {
     assert!(taskboardd::hours::goal_open(&b.app, Some(&board::get_goal(&b.app, g).unwrap())));
     assert!(!taskboardd::hours::goal_open(&b.app, Some(&board::get_goal(&b.app, other).unwrap())), "only that goal runs");
 }
+
+impl Board {
+    /// Goal `g` follows goal `after` (`--after`).
+    fn follows(&self, g: i64, after: i64) {
+        self.app.db.x("UPDATE goals SET after_goals = ? WHERE id = ?", p![json!([after]).to_string(), g]).unwrap();
+    }
+}
+
+/// #844: "start it once G107 finishes", for a goal made with `--after G107`, is the word to run it: the
+/// board holds the run until G107 is done. A wait on any other goal, or a time, still puts the run off.
+#[test]
+fn a_wait_on_the_goal_it_follows_is_no_hold() {
+    let cases: Vec<(&str, bool, bool)> = vec![
+        // (prompt, the goal follows the goal it names, runs)
+        ("If this doesn't already exist for us in the mobile app, create a goal and start it once P finishes", true, true),
+        ("make a goal for the mobile app and queue it after P", true, true),
+        ("make a goal for the mobile app and run it when P is done", true, true),
+        ("make a goal for the mobile app, wait for P to finish, then start it", true, true),
+        ("If this doesn't already exist for us in the mobile app, create a goal and start it once P finishes", false, false),
+        ("make a goal for the mobile app and start it once O finishes", true, false),
+        ("create a goal for the mobile app and start it if we don't have one yet", false, true),
+        ("If the tests pass, create a goal for the mobile app and start it", true, false),
+        ("make a goal for the mobile app and start it tomorrow once P finishes", true, false),
+        ("make a goal for the mobile app and don't start it once P finishes", true, false),
+    ];
+    let mut wrong = vec![];
+    for (prompt, follows, runs) in cases {
+        let b = board();
+        let (p, o) = (b.goal(), b.goal());
+        let prompt = prompt.replace(" P ", &format!(" G{p} ")).replace(" P", &format!(" G{p}")).replace(" O ", &format!(" G{o} "));
+        b.typed(&prompt);
+        let g = b.goal_new();
+        if follows {
+            b.follows(g, p);
+        }
+        let got = b.tb_run(g);
+        if got.is_ok() != runs {
+            wrong.push(format!("{prompt} (follows: {follows}): {got:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// #844: "You can queue it after G107, that is allowed", "queue it" and "queue G109" after the agent
+/// made the goal and its run was refused: "it" is the goal it just made or just tried to run.
+#[test]
+fn queue_it_means_the_goal_just_made_or_tried() {
+    let mut wrong = vec![];
+    // (after the refused run: the agent's message, the owner's answer, runs)
+    let cases: Vec<(&str, &str, bool)> = vec![
+        ("I made G, set to run after P, but tb refused to queue it.", "You can queue it after P, that is allowed", true),
+        ("I made G, set to run after P, but tb refused to queue it.", "you can queue it", true),
+        ("I made G, set to run after P, but tb refused to queue it.", "queue G", true),
+        ("Couldn't queue it: only a human can run it.", "ok, queue it once P finishes then", true),
+        ("I made G, set to run after P, but tb refused to queue it.", "You can queue it after O, that is allowed", false),
+        ("I made G, set to run after P, but tb refused to queue it.", "don't queue it yet", false),
+        ("I made G, set to run after P, but tb refused to queue it.", "queue it tomorrow", false),
+    ];
+    for (reply, answer, runs) in cases {
+        let b = board();
+        let (p, o) = (b.goal(), b.goal());
+        b.typed("make a goal for the mobile app's settings screen");
+        let g = b.goal_new();
+        b.follows(g, p);
+        assert_eq!(b.tb_run(g).unwrap_err().0, 403, "no word yet");
+        let refs = |t: &str| t.replace("G,", &format!("G{g},")).replace(" P", &format!(" G{p}")).replace(" O", &format!(" G{o}"));
+        b.replied(&refs(reply));
+        let answer = refs(answer).replace("queue G", &format!("queue G{g}"));
+        b.typed(&answer);
+        let got = b.tb_run(g);
+        if got.is_ok() != runs {
+            wrong.push(format!("{answer:?} after {reply:?}: {got:?}"));
+        }
+    }
+
+    // Made in reply to the prompt before, and not tried: "it" is still the goal just made…
+    let b = board();
+    b.typed("make a goal for the mobile app's settings screen");
+    let g = b.goal_new();
+    b.replied(&format!("Made G{g} with two tasks."));
+    b.typed("You can queue it, that is allowed");
+    if b.tb_run(g).is_err() {
+        wrong.push("just made: refused".into());
+    }
+    // …unless the prompt speaks of something else it could be.
+    let b = board();
+    b.typed("make a goal for the mobile app's settings screen");
+    let g = b.goal_new();
+    b.replied(&format!("Made G{g} with two tasks."));
+    b.typed("write a test for the parser and ship it");
+    if b.tb_run(g).is_ok() {
+        wrong.push("just made, prompt about a test: ran".into());
+    }
+    // A goal neither made nor tried here isn't "it".
+    let b = board();
+    let g = b.goal();
+    b.planned(g);
+    b.typed("make a task for the footer");
+    b.new_task();
+    b.typed("You can queue it, that is allowed");
+    if b.tb_run(g).is_ok() {
+        wrong.push("neither made nor tried: ran".into());
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// #844: the prompt hook doesn't tell the agent "not a start word" for a wait on a goal another goal
+/// follows, or one the goal a prompt asks for can follow; a wait on a goal nothing follows still is a hold.
+#[test]
+fn a_wait_on_a_followed_goal_isnt_called_no_start_word() {
+    let b = board();
+    let (p, o) = (b.goal(), b.goal());
+    let g = b.goal();
+    b.follows(g, p);
+    let said = b.told(&format!("You can queue it after G{p}, that is allowed"));
+    assert!(!said.contains("not a start word"), "{said}");
+    let said = b.told(&format!("queue it after G{o} finishes"));
+    assert!(said.contains("not a start word"), "{said}");
+    // A prompt for a new goal: the goal made can follow what it waits on, and "if it doesn't exist" is
+    // the agent's to check.
+    let said = b.told(&format!("If this doesn't already exist for us in the mobile app, create a goal and start it once G{o} finishes"));
+    assert!(!said.contains("not a start word"), "{said}");
+    let said = b.told("If the tests pass, create a goal for the mobile app and start it");
+    assert!(said.contains("not a start word"), "{said}");
+}
