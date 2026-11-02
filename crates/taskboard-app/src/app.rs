@@ -1827,7 +1827,7 @@ pub fn conn_pill(m: &Value) -> Pill {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsageWin {
-    /// ok, warm (75 %+), hot (90 %+).
+    /// ok, warm (75 %+), hot (90 %+); `lifted` for today's share while its limit is off for the day.
     pub level: &'static str,
     pub label: String,
     /// Bar width in percent (0–100).
@@ -1854,7 +1854,7 @@ pub fn usage_level(pct: f64) -> &'static str {
 }
 
 /// A JSON number as JS prints it (`35`, `35.5`).
-fn js_num(v: &Value) -> String {
+pub(crate) fn js_num(v: &Value) -> String {
     match v.as_f64() {
         Some(f) if f.fract() == 0. && f.abs() < 1e15 => format!("{}", f as i64),
         Some(f) => format!("{f}"),
@@ -1882,6 +1882,10 @@ pub fn usage_view(u: &Value) -> Option<UsageView> {
             format!("{name} limit: {}% used{resets}", js_num(&w["pct"]))
         })
         .collect();
+    let today = usage_today(&u["daily"]);
+    if today.is_some() {
+        title.push(s(&u["daily"], "line").to_string());
+    }
     if stale {
         title.push(format!("Last read {}", fmt::ago(s(u, "seen_at"))));
     }
@@ -1891,8 +1895,26 @@ pub fn usage_view(u: &Value) -> Option<UsageView> {
             let pct = w["pct"].as_f64().unwrap_or(0.);
             UsageWin { level: usage_level(pct), label: s(w, "label").to_string(), width: pct.clamp(0., 100.), value: format!("{}%", js_num(&w["pct"])) }
         })
+        .chain(today)
         .collect();
     Some(UsageView { stale, title: title.join("\n"), windows })
+}
+
+/// `usageToday`: today's share of the week while the daily limit is on; the bar is how much of it is
+/// used, the value what's left.
+fn usage_today(d: &Value) -> Option<UsageWin> {
+    if d["on"] != Value::Bool(true) || !d["allowed"].is_number() {
+        return None;
+    }
+    let allowed = d["allowed"].as_f64().unwrap_or(0.);
+    let share = if allowed > 0. { d["used"].as_f64().unwrap_or(0.) / allowed * 100. } else { 100. };
+    let lifted = d["overridden"] == Value::Bool(true);
+    Some(UsageWin {
+        level: if lifted { "lifted" } else { usage_level(share) },
+        label: "Today".into(),
+        width: (share.clamp(0., 100.) * 10.).round() / 10.,
+        value: if lifted { "Lifted".into() } else { format!("{}% left", js_num(&d["left"])) },
+    })
 }
 
 // ------------------------------------------------------------------ chrome drawing
@@ -2147,6 +2169,7 @@ pub(crate) fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
         .tooltip(kit::tip(u.title.clone()));
     for (n, w) in u.windows.iter().enumerate() {
         let (bar_c, val_c) = match w.level {
+            "lifted" => (t.accent, t.accent),
             "hot" => (t.down, t.down),
             "warm" => (t.warn, t.warn_fg),
             _ => (t.up, t.text_2),
