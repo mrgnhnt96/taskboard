@@ -433,7 +433,8 @@ impl View {
             .into_iter()
             .filter_map(|(key, label)| {
                 let all = day["usage"][key].as_array()?;
-                Some((label, ((from_hour * 6) as usize..(to_hour * 6) as usize).map(|k| all.get(k).and_then(|x| x.as_f64())).collect()))
+                let pts: Vec<Option<f64>> = ((from_hour * 6) as usize..(to_hour * 6) as usize).map(|k| all.get(k).and_then(|x| x.as_f64())).collect();
+                pts.iter().any(Option::is_some).then_some((label, pts))
             })
             .collect();
 
@@ -1189,8 +1190,8 @@ fn host_row(h: &HostRow, t: &Theme, label_w: f32) -> Div {
 /// The usage windows' lines over the timeline's hours, 0 to 100%, with each slot's readings on hover.
 fn usage_row(v: &View, t: &Theme, label_w: f32) -> Div {
     const H: f32 = 56.;
-    let colors = [t.accent, t.goal];
-    let lines: Vec<(Hsla, Vec<Option<f64>>)> = v.usage.iter().zip(colors).map(|((_, pts), c)| (c, pts.clone())).collect();
+    let color = |label: &str| if label == "5h" { t.accent } else { t.goal };
+    let lines: Vec<(Hsla, Vec<Option<f64>>)> = v.usage.iter().map(|(label, pts)| (color(label), pts.clone())).collect();
     let n = v.running.len().max(1);
     let grid = t.divider;
     let chart = canvas(
@@ -1234,7 +1235,7 @@ fn usage_row(v: &View, t: &Theme, label_w: f32) -> Div {
             .h_full()
             .when(!read.is_empty(), |d| d.tooltip(kit::tip(format!("{} · {}", hour_clock(at), read.join(" · ")))))
     }));
-    let key = div().flex().flex_col().gap(px(2.)).text_color(t.muted).children(v.usage.iter().zip(colors).map(|((label, _), c)| legend_item(t, div().w(px(12.)).h(px(2.)).bg(c), *label)));
+    let key = div().flex().flex_col().gap(px(2.)).text_color(t.muted).children(v.usage.iter().map(|(label, _)| legend_item(t, div().w(px(12.)).h(px(2.)).bg(color(label)), *label)));
     div()
         .flex()
         .border_t_1()
@@ -1615,6 +1616,20 @@ mod tests {
         v["week_tasks"] = tasks;
         v["usual"] = json!({"days": 10, "agent_min": 450.0, "done": 4.0, "prs": 3.0, "wait_min": 13.0, "wait_each": 18.0});
         v
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_usage_row_has_no_5h_line_once_claude_stops_reporting_it() {
+        let mut v = sample();
+        let mut week = vec![Value::Null; 144];
+        week[55] = json!(41.0);
+        v["day"]["usage"] = json!({"five_hour": vec![Value::Null; 144], "seven_day": week});
+        let view = View::of(&v).unwrap();
+        assert_eq!(view.usage.len(), 1, "a window with no reading in the shown hours has no line");
+        assert_eq!(view.usage[0].0, "7d");
+        assert_eq!(view.usage[0].1[1], Some(41.0));
+        v["day"]["usage"] = json!({});
+        assert!(View::of(&v).unwrap().usage.is_empty());
     }
 
     #[::core::prelude::v1::test]

@@ -1,4 +1,4 @@
-//! Midna's status bar: the selected terminal's task, its goal and its line, drawn by the bundled
+//! Midna's status bar: the selected terminal's task, its goal and its line, then today's usage share, drawn by the bundled
 //! `plugin/task-board/bin/midna-status` script (`tb peek --midna`).
 //!
 //! What it shows is the board's: the goal and the titles are on unless `tb status-bar` turns them
@@ -148,7 +148,33 @@ pub fn segments(v: &Value, o: Options) -> Value {
         let rest: Vec<&str> = line[LINE_MAX..].iter().filter_map(|x| x["ref"].as_str()).collect();
         segs.push(json!({"text": format!("+{}", rest.len()), "tone": "dim", "join": true, "tooltip": format!("Also in line: {}", rest.join(", "))}));
     }
+    if let Some(s) = today(&v["usage_daily"]) {
+        segs.push(s);
+    }
     Value::Array(segs)
+}
+
+/// Today's share of the weekly usage while the daily limit is on (`usage_daily` in the whoami): what's
+/// left, amber past 75% of it used and red past 90% or once it's used up, accent while it's lifted.
+fn today(d: &Value) -> Option<Value> {
+    let left = d["left"].as_f64().filter(|_| d["on"].as_bool().unwrap_or(false))?;
+    let allowed = d["allowed"].as_f64().unwrap_or(0.0);
+    let used = if allowed > 0.0 { d["used"].as_f64().unwrap_or(0.0) / allowed * 100.0 } else { 100.0 };
+    let (text, tone) = match () {
+        _ if d["overridden"].as_bool().unwrap_or(false) => ("Today: no limit".to_string(), "accent"),
+        _ if d["limited"].as_bool().unwrap_or(false) => ("Today: used up".to_string(), "err"),
+        _ => (format!("Today: {} left", pct(left)), if used >= 90.0 { "err" } else if used >= 75.0 { "need" } else { "ok" }),
+    };
+    Some(json!({"text": text, "tone": tone, "tooltip": d["line"].as_str().unwrap_or(""), "link": "taskboard://days"}))
+}
+
+fn pct(n: f64) -> String {
+    let r = (n.max(0.0) * 10.0).round() / 10.0;
+    if r.fract() == 0.0 {
+        format!("{}%", r as i64)
+    } else {
+        format!("{r:.1}%")
+    }
 }
 
 /// A submitted task waits on its PR until it merges or closes; only then is it Done.
@@ -315,6 +341,41 @@ mod tests {
         let v = json!({"task": null, "line": [], "visiting": null, "last": null, "goal": {"ref": "G2", "name": "Polish"}});
         let s = segments(&v, Options { goal: false, title: true });
         assert_eq!((s[0]["text"].as_str(), s[0]["link"].as_str()), (Some("G2 Polish"), Some("taskboard://goal/G2")));
+    }
+
+    #[test]
+    fn todays_share_shows_while_the_daily_limit_is_on() {
+        let with = |d: Value| {
+            let mut v = json!({"task": null, "line": [], "visiting": null});
+            v["usage_daily"] = d;
+            segments(&v, Options::default())
+        };
+        assert_eq!(with(json!({"base": "off", "carry": "next_day", "on": false})), json!([]), "off: nothing");
+        assert_eq!(with(json!({"base": "even", "carry": "next_day", "on": true})), json!([]), "on with no reading yet: nothing");
+        let day = |used: f64, extra: Value| {
+            let mut d = json!({"base": "even", "carry": "next_day", "on": true, "allowed": 12.0, "used": used, "left": 12.0 - used,
+                               "limited": false, "overridden": false, "line": "Today: 4% used of 12%, 8% left"});
+            for (k, x) in extra.as_object().unwrap() {
+                d[k] = x.clone();
+            }
+            with(d)[0].clone()
+        };
+        let s = day(4.0, json!({}));
+        assert_eq!((s["text"].as_str(), s["tone"].as_str()), (Some("Today: 8% left"), Some("ok")));
+        assert_eq!((s["tooltip"].as_str(), s["link"].as_str()), (Some("Today: 4% used of 12%, 8% left"), Some("taskboard://days")));
+        assert_eq!(day(9.5, json!({}))["tone"], "need", "past 75% of today's share");
+        assert_eq!(day(11.0, json!({}))["text"], "Today: 1% left");
+        assert_eq!(day(11.0, json!({}))["tone"], "err", "past 90%");
+        let s = day(12.5, json!({"left": 0.0, "limited": true}));
+        assert_eq!((s["text"].as_str(), s["tone"].as_str()), (Some("Today: used up"), Some("err")));
+        let s = day(14.0, json!({"left": 0.0, "overridden": true}));
+        assert_eq!((s["text"].as_str(), s["tone"].as_str()), (Some("Today: no limit"), Some("accent")));
+        let s = with(json!({"on": true, "allowed": 12.0, "used": 4.0, "left": 8.0, "line": "x"}));
+        assert_eq!(s.as_array().unwrap().len(), 1);
+        let mut v = whoami();
+        v["usage_daily"] = json!({"on": true, "allowed": 12.0, "used": 4.0, "left": 8.0, "line": "x"});
+        let s = segments(&v, Options::default());
+        assert_eq!(s.as_array().unwrap().last().unwrap()["text"], "Today: 8% left", "after the task and its line");
     }
 
     #[test]

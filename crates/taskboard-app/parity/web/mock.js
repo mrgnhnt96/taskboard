@@ -404,8 +404,9 @@
       jira: { enabled: JIRA_ON },
       work_hours: hoursOut(),
       usage: { seen_at: now(), windows: [
-        { key: 'five_hour', label: '5h', pct: 82, resets_at: iso(Date.now() + 95 * 60e3) },
-        { key: 'seven_day', label: '7d', pct: 37, resets_at: iso(Date.now() + 4 * 86400e3) }] },
+        { key: 'seven_day', label: '7d', pct: 37, resets_at: iso(Date.now() + 4 * 86400e3) }],
+        daily: { base: 'even', carry: 'next_day', on: true, allowed: 17.3, used: 13.6, left: 3.7, carried: 1.5, limited: false, overridden: false,
+          days_left: 4, line: 'Today: 13.6% used of 17.3%, 3.7% left (+1.5% carried)' } },
       midna: db.midnaUp ? { up: true, seen_at: now() } : { up: false, seen_at: ago(45) },
       projects: db.projects,
       sessions: live.filter(s => inP(s.project)).map(sessionOut),

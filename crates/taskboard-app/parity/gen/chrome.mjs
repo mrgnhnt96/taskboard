@@ -44,6 +44,9 @@ const HOURS_CLOSED_THU = { ...HOURS_OPEN, open: false, next_open: '2026-10-08T06
 const HOURS_OFF = { ...HOURS_OPEN, on: false, open: true, line: 'No work hours: agents start any time' };
 const USAGE = { seen_at: at(10), windows: [{ key: 'five_hour', label: '5h', pct: 35, resets_at: '2026-10-07T18:00:00Z' }, { key: 'seven_day', label: '7d', pct: 78, resets_at: '2026-10-10T09:00:00Z' }] };
 const USAGE_HOT = { seen_at: at(90), windows: [{ key: 'five_hour', label: '5h', pct: 100, resets_at: null }, { key: 'seven_day', label: '7d', pct: 90, resets_at: '2026-10-07T20:00:00Z' }] };
+const WEEKLY = { seen_at: at(10), windows: [{ key: 'seven_day', label: '7d', pct: 40, resets_at: '2026-10-10T09:00:00Z' }] };
+const today = (allowed, used, o = {}) => ({ base: 'even', carry: 'next_day', on: true, allowed, used, left: Math.round(Math.max(0, allowed - used) * 10) / 10, carried: 0,
+  limited: false, overridden: false, line: `Today: ${used}% used of ${allowed}%`, ...o });
 const state = o => ({
   now: NOW, midna: { up: true, seen_at: at(0.2) }, jira: { enabled: false }, alerts: [], work_hours: HOURS_OPEN, usage: USAGE,
   projects: [{ name: 'api', path: '/tmp/api' }, { name: 'webapp', path: '/tmp/webapp' }],
@@ -237,6 +240,13 @@ for (const fg of ['all', 'G13', 'G99']) {
   add(`goals page opens (filter ${fg})`, { fn: 'goalsLanding', goals: GOALS, filterGoal: fg }, first ? first.ref : null);
 }
 
+{
+  const usage = { ...WEEKLY, daily: today(12, 12.6, { left: 0, limited: true }) };
+  const w = web();
+  w.set('S.state', state({ usage }));
+  add('agentsHeldWhy today used up', { fn: 'agentsHeldWhy', state: state({ usage }) }, w.call('agentsHeldWhy'));
+}
+
 // ---------------------------------------------------------------- status bar
 
 for (const [name, m] of [['up', { up: true, seen_at: at(0.2) }], ['up old', { up: true, seen_at: at(5) }], ['down', { up: false, seen_at: at(3) }], ['never', { up: false, seen_at: null }]]) {
@@ -251,7 +261,14 @@ for (const [name, h] of [['open', HOURS_OPEN], ['today until', HOURS_UNTIL], ['c
   add(`hoursPill ${name}`, { fn: 'hoursPill', hours: h }, { closed: html.includes('conn hours closed'), label: text(html), title: html.match(/title="([^"]*)"/)[1] });
 }
 for (const [name, u] of [['normal', USAGE], ['hot stale', USAGE_HOT], ['none', null], ['empty', { seen_at: at(1), windows: [] }],
-  ['warm edges', { seen_at: at(1), windows: [{ key: 'five_hour', label: '5h', pct: 74, resets_at: null }, { key: 'seven_day', label: '7d', pct: 75, resets_at: null }, { key: 'other', label: 'x', pct: 89, resets_at: null }] }]]) {
+  ['warm edges', { seen_at: at(1), windows: [{ key: 'five_hour', label: '5h', pct: 74, resets_at: null }, { key: 'seven_day', label: '7d', pct: 75, resets_at: null }, { key: 'other', label: 'x', pct: 89, resets_at: null }] }],
+  ['weekly only', WEEKLY], ['today off', { ...WEEKLY, daily: { base: 'off', carry: 'next_day', on: false } }],
+  ['today', { ...WEEKLY, daily: today(12, 4, { carried: 2, line: 'Today: 4% used of 12%, 8% left (+2% carried)' }) }],
+  ['today warm', { ...WEEKLY, daily: today(12, 9.5) }], ['today hot', { ...WEEKLY, daily: today(12, 11.2) }],
+  ['today used up', { ...WEEKLY, daily: today(12, 12.6, { left: 0, limited: true, line: 'Today’s 12% is used up: new work starts again at 12am' }) }],
+  ['today lifted', { ...WEEKLY, daily: today(12, 15, { left: 0, overridden: true, line: 'Today’s limit is lifted until midnight: 15% used of 12%' }) }],
+  ['today nothing allowed', { ...WEEKLY, daily: today(0, 0.4, { left: 0, limited: true }) }],
+  ['today stale', { ...WEEKLY, seen_at: at(90), daily: today(12, 4) }]]) {
   const w = web();
   w.set('S.state', state({ usage: u }));
   const html = w.call('usagePill');
