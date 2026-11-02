@@ -92,6 +92,27 @@ fn count(x: f64) -> String {
     if r.fract() == 0.0 { format!("{}", r as i64) } else { format!("{r}") }
 }
 
+/// 1234567 as "1,234,567".
+fn grouped(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (k, c) in digits.chars().enumerate() {
+        if k > 0 && (digits.len() - k) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
+/// "+1,234 −56 lines" for a day's merged PRs; empty while the host hasn't given the counts.
+fn lines_changed(v: &Value) -> String {
+    match (v["added"].as_i64(), v["removed"].as_i64()) {
+        (Some(a), Some(r)) if a + r > 0 => format!("+{} −{} lines", grouped(a), grouped(r)),
+        _ => String::new(),
+    }
+}
+
 /// "3:12 PM" in the reader's zone.
 fn clock(iso: &str) -> String {
     fmt::parse(iso).map(|t| fmt::local(t).format("%-I:%M %p").to_string()).unwrap_or_default()
@@ -334,6 +355,7 @@ impl View {
             },
             Kpi { label: "Tasks done", value: count(f(day, "done")), delta: String::new() },
             Kpi { label: "PRs opened", value: count(f(day, "prs")), delta: String::new() },
+            Kpi { label: "PRs merged", value: count(f(day, "merged")), delta: lines_changed(day) },
             Kpi { label: "Waiting on you", value: dur(f(day, "wait_min")), delta: String::new() },
         ];
 
@@ -348,6 +370,13 @@ impl View {
                 segs.sort_by_key(|(i, _)| *i);
                 let total = f(w, "agent_min");
                 let done = f(w, "done");
+                let merged = f(w, "merged");
+                let lines = lines_changed(w);
+                let merged_tip = match (merged > 0.0, lines.is_empty()) {
+                    (false, _) => String::new(),
+                    (true, true) => format!(", {} merged", count(merged)),
+                    (true, false) => format!(", {} merged ({lines})", count(merged)),
+                };
                 Some(Col {
                     date: d,
                     dow: d.format("%a").to_string(),
@@ -355,7 +384,7 @@ impl View {
                     done: if done > 0.0 { format!("{} done", count(done)) } else { String::new() },
                     selected: d == date,
                     future: w["future"].as_bool().unwrap_or(false),
-                    tip: format!("{}: {} agent time{}", d.format("%A, %B %-d"), dur(total), if done > 0.0 { format!(", {} done", count(done)) } else { String::new() }),
+                    tip: format!("{}: {} agent time{}", d.format("%A, %B %-d"), dur(total), if done > 0.0 { format!(", {} done", count(done)) } else { String::new() }) + &merged_tip,
                     segs,
                     total,
                 })
@@ -602,6 +631,8 @@ impl View {
         // Tasks done.
         let (dn, dl) = (week.iter().map(|w| f(w, "done")).sum::<f64>(), last_week.iter().map(|w| f(w, "done")).sum::<f64>());
         let (pn, pl) = (week.iter().map(|w| f(w, "prs")).sum::<f64>(), last_week.iter().map(|w| f(w, "prs")).sum::<f64>());
+        let (mn, ml) = (week.iter().map(|w| f(w, "merged")).sum::<f64>(), last_week.iter().map(|w| f(w, "merged")).sum::<f64>());
+        let merged_sub = if mn + ml > 0.0 { format!(" · {} merged, last week {}", count(mn), count(ml)) } else { String::new() };
         let done_bars = week
             .iter()
             .enumerate()
@@ -684,7 +715,7 @@ impl View {
             waits,
             wait_usual_x: (usual_each > 0.0).then(|| (usual_each.min(60.0) / 60.0) as f32),
             done_week: count(dn),
-            done_sub: format!("last week {} · {} PRs, last week {}", count(dl), count(pn), count(pl)),
+            done_sub: format!("last week {} · {} PRs, last week {}{merged_sub}", count(dl), count(pn), count(pl)),
             done_bars,
             split,
             planning,
@@ -1616,6 +1647,38 @@ mod tests {
         v["week_tasks"] = tasks;
         v["usual"] = json!({"days": 10, "agent_min": 450.0, "done": 4.0, "prs": 3.0, "wait_min": 13.0, "wait_each": 18.0});
         v
+    }
+
+    #[::core::prelude::v1::test]
+    fn merged_prs_show_with_their_lines_once_the_host_gives_them() {
+        let mut v = sample();
+        v["day"]["merged"] = json!(2);
+        v["day"]["added"] = json!(1234);
+        v["day"]["removed"] = json!(56);
+        v["week"][0]["merged"] = json!(1);
+        v["week"][0]["added"] = json!(10);
+        v["week"][0]["removed"] = json!(2);
+        v["week"][1]["merged"] = json!(3);
+        v["last_week"][0]["merged"] = json!(4);
+        let view = View::of(&v).unwrap();
+        let k = view.kpis.iter().find(|k| k.label == "PRs merged").unwrap();
+        assert_eq!((k.value.as_str(), k.delta.as_str()), ("2", "+1,234 −56 lines"));
+        assert!(view.cols[0].tip.ends_with(", 1 merged (+10 −2 lines)"), "{}", view.cols[0].tip);
+        assert!(view.cols[1].tip.ends_with(", 3 merged"), "unknown lines aren't shown: {}", view.cols[1].tip);
+        assert!(view.done_sub.ends_with(" · 4 merged, last week 4"), "{}", view.done_sub);
+
+        v["day"]["added"] = Value::Null;
+        v["day"]["removed"] = Value::Null;
+        let k = View::of(&v).unwrap().kpis.into_iter().find(|k| k.label == "PRs merged").unwrap();
+        assert_eq!(k.delta, "", "no line counts yet: nothing under the number");
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_week_with_no_merges_says_nothing_about_them() {
+        let view = View::of(&sample()).unwrap();
+        assert!(!view.done_sub.contains("merged"));
+        assert!(!view.cols[0].tip.contains("merged"));
+        assert_eq!(view.kpis.iter().find(|k| k.label == "PRs merged").unwrap().value, "0");
     }
 
     #[::core::prelude::v1::test]
