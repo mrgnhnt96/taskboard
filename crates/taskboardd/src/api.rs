@@ -245,6 +245,16 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                 None => Ok(json!({"task": null, "steps": []})),
             }
         }
+        ("GET", ["handoff"]) => {
+            let t = match query.get("task").filter(|s| !s.is_empty()) {
+                Some(r) => board::get_task(app, tid(r)?)?,
+                None => match board::task_for_session(app, query.get("session").map(|s| s.as_str()))? {
+                    Some(t) => t,
+                    None => return err(404, "No task on this terminal. Name one: tb handoff --task T<n>."),
+                },
+            };
+            Ok(json!({"ref": rf("task", t.id()), "text": handoff::build_full(app, t.id())?}))
+        }
         ("GET", ["jobs"]) => {
             let st = q(query, "state", "");
             let rows = if st.is_empty() {

@@ -28,6 +28,10 @@ impl Board {
     fn get(&self, path: &str) -> Value {
         api::dispatch(&self.app, "GET", path, &Query::new(), &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
     }
+    fn handoff(&self, t: i64) -> Value {
+        let q: Query = [("task".to_string(), format!("T{t}"))].into_iter().collect();
+        api::dispatch(&self.app, "GET", "/handoff", &q, &json!({})).unwrap_or_else(|e| panic!("GET /handoff: {}", e.message))["text"].clone()
+    }
     fn post(&self, path: &str, body: Value) -> Value {
         api::dispatch(&self.app, "POST", path, &Query::new(), &body).unwrap_or_else(|e| panic!("POST {path}: {}", e.message))
     }
@@ -147,6 +151,38 @@ fn a_long_handoff_keeps_the_device_lines_whole() {
     assert!(h.contains("Start it: xcrun simctl boot ABCD-UDID && open -a Simulator"), "{h}");
     assert!(h.contains("Stop it when you're done: xcrun simctl shutdown ABCD-UDID"), "{h}");
     assert!(h.find("Start it:").unwrap() < h.find("What to do:").unwrap(), "the device lines come before the detail");
+    assert!(h.contains("[Shortened to fit. tb handoff prints it in full.]"), "the shortened detail says where the rest is: {h}");
+    let full = b.handoff(a).as_str().unwrap().to_string();
+    assert!(full.contains(long.trim()), "tb handoff prints the detail whole");
+}
+
+#[test]
+fn a_long_handoff_points_to_its_reference_and_keeps_the_work_whole() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-c", "tags": "ios", "kind": "ios", "target": "ABCD-UDID", "start_cmd": "xcrun simctl boot {target}"}));
+    let g = b.post("/goals", json!({"name": "Tablet", "project": "webapp"}))["id"].as_i64().unwrap();
+    let setup = format!("Boot {{device}} first. {}", "Sign in as the test user and open the library. ".repeat(25));
+    b.post(&format!("/goals/G{g}"), json!({"setup": setup}));
+    for n in 0..12 {
+        b.post(
+            &format!("/goals/G{g}/attachments"),
+            json!({"url": format!("https://example.com/design/{n}"), "title": format!("Screen {n}"), "kind": "design",
+                   "summary": "Every state of the screen, light and dark, with the spacing called out. ".repeat(3)}),
+        );
+    }
+    let detail = format!("Fix the track list. {}", "The tester saw the rows jump when the list scrolls. ".repeat(20));
+    let a = b.post("/tasks", json!({"title": "Track list", "detail": detail, "project": "webapp", "goal_id": g, "devices": "ios"}))["id"]
+        .as_i64()
+        .unwrap();
+    runner::start_queued(&b.app).unwrap();
+    let h = handoff::build(&b.app, a).unwrap();
+    assert!(h.chars().count() <= 6000, "it fits: {}", h.chars().count());
+    assert!(h.contains(&format!("What to do:\n{}", detail.trim())), "the work is whole: {h}");
+    assert!(h.contains(setup.replace("{device}", "dev-c").trim()), "the goal's setup is whole: {h}");
+    assert!(h.contains("Attached (read these before you start): [Shortened to fit. tb handoff prints it in full.]"), "{h}");
+    assert!(!h.contains("Screen 11"), "the attachments wait for tb handoff");
+    let full = b.handoff(a).as_str().unwrap().to_string();
+    assert!(full.contains("Screen 11") && !full.contains("Shortened to fit"), "tb handoff has every attachment: {full}");
 }
 
 #[test]
