@@ -509,3 +509,77 @@ fn new_comments_link_to_the_first_unread_thread() {
     assert_eq!(bar["new_comments"], 2, "{bar}");
     assert_eq!(bar["comments_url"], "https://github.com/acme/webapp/pull/21#discussion_r1", "{bar}");
 }
+
+// ------------------------------------------------------------------ #878 stacked PRs link each other
+
+const STACK_BODY: &str = "## Summary\nCalls the endpoint. It is new.\n\n## Changes\n- Calls it\n\n## Testing\n- Unit tests\n";
+
+#[test]
+fn a_stacked_prs_context_links_its_base_by_title() {
+    use taskboardd::propen::context_block;
+    let b = new_board();
+    let parent = b.task("Add the endpoint", json!({}));
+    let tail = b.task("Use the endpoint", json!({"stack_on": format!("T{parent}")}));
+    let head = b.task("Show the endpoint", json!({"stack_on": format!("T{parent}"), "stack_merge": "head"}));
+    b.link(parent, 12, "feat/endpoint");
+    let ctx = context_block(&b.app, &b.row(tail)).unwrap();
+    assert!(ctx.contains("- Stacked on [Add the endpoint](https://github.com/acme/webapp/pull/12): merge that first"), "{ctx}");
+    assert!(!ctx.contains("#12"), "{ctx}");
+
+    // The host's title wins over the task's once the board has it.
+    board::update_task(&b.app, parent, vec![("pr_title", json!("Parse the settings file"))]).unwrap();
+    let ctx = context_block(&b.app, &b.row(head)).unwrap();
+    assert!(ctx.contains("- Stacked on [Parse the settings file](https://github.com/acme/webapp/pull/12): this merges into it"), "{ctx}");
+
+    // The head-merge parent lists the PRs that merge into it, with a sentence each; a tail child isn't one.
+    b.link(head, 14, "feat/show");
+    prflow::merge_flow(&b.app, head, vec![("summary_line", json!("Shows the endpoint."))]).unwrap();
+    b.link(tail, 13, "feat/use");
+    let ctx = context_block(&b.app, &b.row(parent)).unwrap();
+    assert!(ctx.contains("**PRs that merge into this one**\n- [Show the endpoint](https://github.com/acme/webapp/pull/14): Shows the endpoint."), "{ctx}");
+    assert!(!ctx.contains("pull/13"), "{ctx}");
+}
+
+#[test]
+fn a_late_head_merge_childs_link_is_added_to_its_heads_pr_once() {
+    let b = new_board();
+    let parent = b.task("Add the endpoint", json!({}));
+    let child = b.task("Show the endpoint", json!({"stack_on": format!("T{parent}"), "stack_merge": "head"}));
+    let tail = b.task("Use the endpoint", json!({"stack_on": format!("T{parent}")}));
+    b.link(parent, 12, "feat/endpoint");
+    b.link(tail, 13, "feat/use");
+    assert_eq!(taskboardd::propen::add_stack_links(&b.app).unwrap(), 0, "a tail child isn't listed");
+
+    b.link(child, 14, "feat/show");
+    prflow::merge_flow(&b.app, child, vec![("summary_line", json!("Shows the endpoint."))]).unwrap();
+    assert_eq!(taskboardd::propen::add_stack_links(&b.app).unwrap(), 1);
+    let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap();
+    assert!(log.contains("api -X PATCH repos/acme/webapp/pulls/12 -f body=## Summary\nAdds it.\n\n## Context\n**PRs that merge into this one**\n- [Show the endpoint](https://github.com/acme/webapp/pull/14): Shows the endpoint."), "{log}");
+    assert_eq!(b.flow(parent)["stack_links_added"], json!(["https://github.com/acme/webapp/pull/14"]));
+    assert_eq!(taskboardd::propen::add_stack_links(&b.app).unwrap(), 0, "only once");
+}
+
+#[test]
+fn a_stacked_prs_description_may_not_name_a_pr_by_number() {
+    let b = new_board();
+    let lone = b.task("Add passkeys", json!({}));
+    let parent = b.task("Add the endpoint", json!({}));
+    let child = b.task("Use the endpoint", json!({"stack_on": format!("T{parent}")}));
+    let bare = STACK_BODY.replace("It is new.", "It builds on #12.");
+    let check = |id: i64, body: &str| b.post(&format!("/tasks/T{id}/pr/body-check"), json!({"body": body}))["problems"].clone();
+
+    assert_eq!(check(lone, &bare), json!([]), "not stacked: a number is fine");
+    for id in [child, parent] {
+        let p = check(id, &bare);
+        assert!(p[0].as_str().unwrap().contains("names #12 by number"), "{p}");
+    }
+    let linked = STACK_BODY.replace("It is new.", "It builds on [Add the endpoint](https://github.com/acme/webapp/pull/12).\n\nCloses #878");
+    assert_eq!(check(child, &linked), json!([]));
+
+    // tb submit --pr-body refuses it before anything else.
+    b.link(parent, 12, "feat/endpoint");
+    b.take(child);
+    let (code, why) = b.report("tb.done", json!({"summary": "Uses it", "pr_body": bare, "cwd": b.repo()})).unwrap_err();
+    assert_eq!(code, 400, "{why}");
+    assert!(why.contains("names #12 by number"), "{why}");
+}

@@ -2235,6 +2235,7 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     crate::stack::retarget(app)?;
     crate::stack::base_mismatches(app)?;
     crate::propen::add_evidence(app)?;
+    crate::propen::add_stack_links(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {
         app.db.tx(|| heal(app, &t))?;

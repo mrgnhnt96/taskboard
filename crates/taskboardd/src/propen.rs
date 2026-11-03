@@ -19,6 +19,9 @@ static BOARD_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[TGBI]\d+\b").unw
 static BOARD_WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\btask[ -]?board\b").unwrap());
 static HEADING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#{1,6}\s+(.+?)\s*#*\s*$").unwrap());
 static BULLET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s+\S").unwrap());
+static BARE_PR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|[^\w&/#])#(\d+)\b").unwrap());
+static CLOSING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(?:#\d+\s*(?:,|\band\b)?\s*)*$").unwrap());
+static LINK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"!?\[[^\]]*\]\([^)]*\)|<?https?://[^\s>)]+>?|`[^`]*`").unwrap());
 static RULE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$").unwrap());
 /// A coding agent's closing line: "🤖 Generated with [Tool](url)" or a "Co-Authored-By:" trailer.
 static ATTRIBUTION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\W*(?:generated (?:with|by) \[[^\]]+\]\([^)]+\)|co-authored-by:\s*\S).*$").unwrap());
@@ -135,6 +138,58 @@ pub fn body_problems(cfg: &PrBodyConfig, body: &str) -> Vec<String> {
     out
 }
 
+/// `body_problems`, and for a stacked PR (one that stacks on another task's, or that others stack on) a
+/// PR named by a bare number: a reviewer can't tell from `#12` which PR it is or open it.
+pub fn body_problems_for(app: &App, t: &Row, body: &str) -> Result<Vec<String>> {
+    let mut out = body_problems(&app.cfg.pr_body, body);
+    if stacked(app, t)? {
+        out.extend(bare_pr_refs(body));
+    }
+    Ok(out)
+}
+
+/// The task stacks on another's PR, or another task stacks on its PR.
+pub fn stacked(app: &App, t: &Row) -> Result<bool> {
+    Ok(stack::parent_id(t).is_some() || app.db.q1("SELECT id FROM tasks WHERE pr_after = ? AND id != ?", p![t.id(), t.id()])?.is_some())
+}
+
+/// The first PR a description names by a bare `#<n>`, outside code, links and closing keywords
+/// (`Closes #12` closes an issue), as a problem for a stacked PR.
+pub fn bare_pr_refs(body: &str) -> Option<String> {
+    let mut fenced = false;
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let text = LINK_RE.replace_all(line, " ");
+        for c in BARE_PR_RE.captures_iter(&text) {
+            let m = c.get(0).unwrap();
+            if !CLOSING_RE.is_match(&text[..m.start() + m.as_str().find('#').unwrap_or(0)]) {
+                return Some(format!(
+                    "It names #{} by number. A stacked PR names its base and the other PRs in its stack by full link, with the PR's title as the text, for example “Stacked on [Parse the settings file](https://github.com/acme/webapp/pull/12)”, never a bare #<n>.",
+                    &c[1]
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// The first sentence of a description's `## Summary`, on one line.
+pub fn summary_sentence(body: &str) -> Option<String> {
+    let mut lines = body.lines().skip_while(|l| !HEADING_RE.captures(l.trim_end()).is_some_and(|c| c[1].eq_ignore_ascii_case("summary"))).skip(1);
+    let para: Vec<&str> = lines.by_ref().skip_while(|l| l.trim().is_empty()).take_while(|l| !l.trim().is_empty() && !HEADING_RE.is_match(l.trim_end())).map(str::trim).collect();
+    let text = para.join(" ");
+    let text = text.trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace());
+    let end = text.match_indices(". ").next().map(|(i, _)| i + 1).unwrap_or(text.len());
+    Some(one_line(&text[..end], 200)).filter(|s| !s.is_empty())
+}
+
 /// The prose paragraphs (not headings, bullets or blank lines), each joined into one line.
 fn paragraphs(lines: &[String]) -> Vec<String> {
     let mut out = vec![];
@@ -179,10 +234,10 @@ pub fn context_block(app: &App, t: &Row) -> Result<String> {
             None => lines.push(format!("- Ticket: {k}")),
         }
     }
-    if let Some(p) = stack::parent(app, t)? {
-        match (p.i("pr_num"), p.s("pr_url").filter(|u| !u.is_empty())) {
-            (Some(n), Some(u)) if !stack::merged(&p) => lines.push(format!("- Stacks on #{n} ({u}): merge that first")),
-            _ => {}
+    if let Some(p) = stack::parent(app, t)?.filter(|p| !stack::merged(p)) {
+        if let Some(u) = p.s("pr_url").filter(|u| !u.is_empty()) {
+            let then = if stack::head(t) { "this merges into it, and it takes both to the main branch" } else { "merge that first" };
+            lines.push(format!("- Stacked on {}: {then}", pr_link(&p, u)));
         }
     }
     lines.extend(bit_lines(&crate::bits::of_task(app, t.id())?));
@@ -204,14 +259,48 @@ pub fn context_block(app: &App, t: &Row) -> Result<String> {
         .into_iter()
         .map(|(title, url)| if is_web(&url) { format!("- [{}]({url})", if title.is_empty() { "Design" } else { &title }) } else { format!("- {}", file_name(&url)) })
         .collect();
-    if !designs.is_empty() {
+    let kids: Vec<String> = child_lines(app, t)?.into_iter().map(|(_, l)| l).collect();
+    for (label, group) in [(STACK_LABEL, kids), ("**Design**", designs)] {
+        if group.is_empty() {
+            continue;
+        }
         if !lines.is_empty() {
             lines.push(String::new());
         }
-        lines.push("**Design**".into());
-        lines.extend(designs);
+        lines.push(label.into());
+        lines.extend(group);
     }
     Ok(if lines.is_empty() { String::new() } else { format!("## Context\n{}", lines.join("\n")) })
+}
+
+/// The label over a head-merge PR's list of the PRs that merge into it.
+const STACK_LABEL: &str = "**PRs that merge into this one**";
+
+/// A task's PR as a markdown link with its title as the text (the task's title before the host gave one).
+fn pr_link(t: &Row, url: &str) -> String {
+    let title = t.s("pr_title").filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or_else(|| t.st("title"));
+    format!("[{}]({url})", one_line(&title, 200).replace('[', "(").replace(']', ")"))
+}
+
+/// The PRs that head-merge into the task's, oldest first: (url, line), each a titled link and the first
+/// sentence of the child's summary when the board opened it.
+pub fn child_lines(app: &App, t: &Row) -> Result<Vec<(String, String)>> {
+    let kids = app.db.q(
+        "SELECT * FROM tasks WHERE pr_after = ? AND id != ? AND stack_merge = 'head' AND pr_url IS NOT NULL AND pr_url != '' \
+         AND (pr_phase IS NULL OR pr_phase != 'declined') ORDER BY pr_num, id",
+        p![t.id(), t.id()],
+    )?;
+    Ok(kids
+        .iter()
+        .map(|k| {
+            let url = k.st("pr_url");
+            let line = match jloads_obj(k.s("pr_flow")).s("summary_line").filter(|s| !s.is_empty()) {
+                Some(s) => format!("- {}: {s}", pr_link(k, &url)),
+                None => format!("- {}", pr_link(k, &url)),
+            };
+            (url, line)
+        })
+        .collect())
 }
 
 /// The task's bits, so a reviewer knows the change ships dark and how to turn it on: one line for the
@@ -284,6 +373,40 @@ pub fn with_evidence(body: &str, links: &[(String, String)]) -> Option<String> {
     let mut out: Vec<String> = lines[..last].iter().map(|l| l.to_string()).collect();
     out.extend(new);
     out.extend(lines[last..].iter().map(|l| l.to_string()));
+    Some(out.join("\n"))
+}
+
+/// A head-merge PR's description with the child PR lines (url, line) it doesn't have yet, listed under
+/// [`STACK_LABEL`] in its `## Context` section (the label and the section made when missing); None when
+/// it has them all.
+pub fn with_stack_links(body: &str, links: &[(String, String)]) -> Option<String> {
+    let new: Vec<String> = links.iter().filter(|(u, _)| !body.contains(u.as_str())).map(|(_, l)| l.clone()).collect();
+    if new.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = body.trim_end().lines().collect();
+    let ctx = lines.iter().position(|l| HEADING_RE.captures(l.trim_end()).map(|c| c[1].eq_ignore_ascii_case("context")).unwrap_or(false));
+    let Some(start) = ctx else {
+        let (main, footer) = split_footer(body);
+        let sep = if main.trim().is_empty() { "" } else { "\n\n" };
+        return Some(with_footer(format!("{}{sep}## Context\n{STACK_LABEL}\n{}", main.trim_end(), new.join("\n")), footer));
+    };
+    let end = lines[start + 1..].iter().position(|l| HEADING_RE.is_match(l.trim_end())).map(|i| start + 1 + i).unwrap_or(lines.len());
+    let (at, add) = match lines[start..end].iter().position(|l| l.trim() == STACK_LABEL) {
+        Some(i) => {
+            let label = start + i;
+            let list = lines[label + 1..end].iter().take_while(|l| BULLET_RE.is_match(l)).count();
+            (label + 1 + list, new)
+        }
+        None => {
+            let last = lines[start..end].iter().rposition(|l| !l.trim().is_empty()).map(|i| start + i + 1).unwrap_or(start + 1);
+            let lead = if last > start + 1 { vec![String::new()] } else { vec![] };
+            (last, lead.into_iter().chain([STACK_LABEL.to_string()]).chain(new).collect())
+        }
+    };
+    let mut out: Vec<String> = lines[..at].iter().map(|l| l.to_string()).collect();
+    out.extend(add);
+    out.extend(lines[at..].iter().map(|l| l.to_string()));
     Some(out.join("\n"))
 }
 
@@ -381,6 +504,59 @@ pub fn add_evidence(app: &App) -> Result<i64> {
                 Err(e) => {
                     crate::prflow::merge_flow(app, t.id(), crate::fields!["evidence_retry_at" => iso(now_ts() + EVIDENCE_RETRY_MINS * 60.0)])?;
                     app.info(format!("prs: couldn't add evidence to {}: {e}", t.st("pr_url")));
+                }
+            }
+            Ok(())
+        })?;
+        if matches!(res, Ok(true)) {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// Adds each head-merge child's PR to its parent's open PR description once the child's PR is open,
+/// under the parent's `## Context` (`pr_flow.stack_links_added` keeps the links added; one already in
+/// the description isn't added again). Outside any transaction (it calls the host). Returns how many
+/// PRs changed.
+pub fn add_stack_links(app: &App) -> Result<i64> {
+    let heads = app.db.q(
+        "SELECT * FROM tasks WHERE pr_host IN ('github', 'bitbucket') AND pr_num IS NOT NULL \
+         AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined')) \
+         AND id IN (SELECT pr_after FROM tasks WHERE stack_merge = 'head' AND pr_url IS NOT NULL AND pr_url != '')",
+        p![],
+    )?;
+    let mut changed = 0;
+    for t in heads {
+        let f = jloads_obj(t.s("pr_flow"));
+        if f.s("stack_links_retry_at").map(|r| r > now_iso().as_str()).unwrap_or(false) {
+            continue;
+        }
+        let done: Vec<String> = f.get("stack_links_added").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+        let links: Vec<(String, String)> = child_lines(app, &t)?.into_iter().filter(|(u, _)| !done.contains(u)).collect();
+        if links.is_empty() {
+            continue;
+        }
+        let Some(pr) = crate::prhost::PrRef::of(&t) else { continue };
+        let res = crate::prhost::host_for(app, &pr.host).and_then(|h| {
+            let body = h.description(&pr)?;
+            match with_stack_links(&body, &links) {
+                Some(next) => h.set_description(&pr, &next).map(|_| true),
+                None => Ok(false),
+            }
+        });
+        let all: Vec<String> = done.iter().cloned().chain(links.iter().map(|(u, _)| u.clone())).collect();
+        app.db.tx(|| {
+            match &res {
+                Ok(edited) => {
+                    crate::prflow::merge_flow(app, t.id(), crate::fields!["stack_links_added" => all.clone(), "stack_links_retry_at" => null])?;
+                    if *edited {
+                        board::log_event(app, t.id(), board::BOARD, "status", &format!("Added the PRs that merge into it to PR #{}'s description", pr.num))?;
+                    }
+                }
+                Err(e) => {
+                    crate::prflow::merge_flow(app, t.id(), crate::fields!["stack_links_retry_at" => iso(now_ts() + EVIDENCE_RETRY_MINS * 60.0)])?;
+                    app.info(format!("prs: couldn't add the stacked PR links to {}: {e}", t.st("pr_url")));
                 }
             }
             Ok(())
@@ -572,7 +748,7 @@ fn already_open(app: &App, t: &Row, dir: &str, branch: &str, e: &str) -> Option<
 /// the host. Its link, or a refusal for the agent.
 pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str, given_branch: Option<&str>) -> Result<PrLink> {
     let cfg = &app.cfg.pr_body;
-    let problems = body_problems(cfg, body);
+    let problems = body_problems_for(app, t, body)?;
     if !problems.is_empty() {
         return err(400, format!("The PR description needs work before the board opens the PR:\n- {}\nFix the file and run tb submit again.", problems.join("\n- ")));
     }
@@ -652,6 +828,10 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     app.db.tx(|| {
         let t = board::get_task(app, t.id())?;
         crate::prflow::link_pr(app, &t, &pr, board::BOARD)?;
+        app.db.update("tasks", &json!(t.id()), crate::fields!["pr_title" => title(&app.cfg.pr_body, &t, &body_str(body, "pr_title"))])?;
+        if let Some(s) = summary_sentence(&text) {
+            crate::prflow::merge_flow(app, t.id(), crate::fields!["summary_line" => s])?;
+        }
         board::log_event(app, t.id(), board::BOARD, "status", &format!("Opened PR #{} into {}", pr.num, steps::real_base(app, &t)?))
     })?;
     body["pr"] = json!(pr.url);
@@ -798,5 +978,48 @@ mod tests {
         assert_eq!(title(&c, &t, ""), "ABC-12 Add login");
         assert_eq!(title(&c, &t, "ABC-12: Sign in"), "ABC-12: Sign in");
         assert_eq!(title(&PrBodyConfig { title_prefix: false, ..c }, &t, ""), "Add login");
+    }
+
+    #[test]
+    fn a_bare_pr_number_is_flagged() {
+        assert!(bare_pr_refs("## Summary\nStacked on #12, merge that first.\n").is_some_and(|p| p.contains("#12")));
+        assert!(bare_pr_refs("- builds on PR #7\n").is_some());
+    }
+
+    #[test]
+    fn links_code_urls_and_closing_keywords_pass() {
+        let ok = "## Summary\nStacked on [Parse the settings file](https://github.com/acme/webapp/pull/12).\n\n\
+                  ## Changes\n- Reads `#3` from the file\n- See https://example.com/a#12\n- Colour &#35; stays\n\n\
+                  ```\nlet x = \"#4\";\n```\n\nCloses #878\nFixes #1, #2 and #3\n";
+        assert_eq!(bare_pr_refs(ok), None);
+    }
+
+    #[test]
+    fn the_summary_sentence_is_the_first_of_the_summary() {
+        assert_eq!(summary_sentence(GOOD).as_deref(), Some("Adds passkey sign-in."));
+        assert_eq!(summary_sentence("## Summary\nReads the file. Then parses it.\n").as_deref(), Some("Reads the file."));
+        assert_eq!(summary_sentence("## Changes\n- a\n"), None);
+    }
+
+    fn kid(n: u32) -> (String, String) {
+        let u = format!("https://github.com/acme/webapp/pull/{n}");
+        (u.clone(), format!("- [Child {n}]({u}): Does {n}."))
+    }
+
+    #[test]
+    fn stack_links_make_their_own_group_in_the_context() {
+        let body = format!("{GOOD}\n## Context\n- Evidence: [run](https://x.test/1)\n");
+        let next = with_stack_links(&body, &[kid(13)]).unwrap();
+        assert!(next.contains("- Evidence: [run](https://x.test/1)\n\n**PRs that merge into this one**\n- [Child 13](https://github.com/acme/webapp/pull/13): Does 13."), "{next}");
+        let again = with_stack_links(&next, &[kid(13), kid(14)]).unwrap();
+        assert!(again.contains("pull/13): Does 13.\n- [Child 14](https://github.com/acme/webapp/pull/14): Does 14."), "{again}");
+        assert_eq!(with_stack_links(&again, &[kid(13), kid(14)]), None);
+    }
+
+    #[test]
+    fn stack_links_make_a_context_when_there_is_none() {
+        let next = with_stack_links(GOOD, &[kid(13)]).unwrap();
+        assert!(next.ends_with("## Context\n**PRs that merge into this one**\n- [Child 13](https://github.com/acme/webapp/pull/13): Does 13."), "{next}");
+        assert!(next.starts_with("## Summary\nAdds passkey sign-in."));
     }
 }
