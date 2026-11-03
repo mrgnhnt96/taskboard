@@ -964,6 +964,30 @@ fn expected_checks_hold_the_stage_until_they_post_or_their_wait_runs_out() {
 }
 
 #[test]
+fn new_review_threads_wake_the_agent_while_expected_checks_are_still_to_post() {
+    let b = board_with(|c| {
+        c.pr.wake = true;
+        c.pr.projects.insert("webapp".into(), PrProject { expected: Some(vec!["build".into(), "e2e".into()]), expected_wait_mins: Some(90.0), ..Default::default() });
+    });
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "e2e hasn't posted");
+    assert!(wakes(&b, id).is_empty());
+    h.rec.lock().threads = vec![thread("1", "rev"), thread("2", "rev")];
+    poll(&b);
+    assert_eq!(b.phase(id), "comments", "open threads don't wait for the checks");
+    let w = wakes(&b, id);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("There are open review threads"), "{}", w[0]);
+
+    let v = b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Done", "resolve": true, "who": "The agent"}));
+    assert_eq!(v["resolved"], true);
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done", "resolve": true, "who": "The agent"}));
+    assert_eq!(b.phase(id), "checks", "answered: back to watching the checks");
+}
+
+#[test]
 fn an_empty_expected_list_doesn_t_wait() {
     let b = board_with(|c| {
         c.pr.projects.insert("webapp".into(), PrProject { expected: Some(vec![]), ..Default::default() });

@@ -1639,7 +1639,13 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if !skip_hides_failures(&f, rec) && !failing(app, &f, rec).is_empty() {
         return "fix".into();
     }
-    if !skipped && (checks_waiting(app, t, &f, rec) || running_on_host(&f, rec)) {
+    let seen = f.i0("comments_seen");
+    let review = review_of(&f, rec);
+    let answered = f.get("answered_changes").map(|a| *a == rec["changes_at"]).unwrap_or(false);
+    let new_comments = if has_threads(rec) { !open_threads(&f, rec).is_empty() } else { rec["comments"].as_i64().unwrap_or(0) > seen };
+    let comments_open = (review.changes && !answered) || new_comments;
+    // Review comments don't wait for the checks (#869): the agent answers them while the build runs.
+    if !comments_open && !skipped && (checks_waiting(app, t, &f, rec) || running_on_host(&f, rec)) {
         return "checks".into();
     }
     // A conflict holds everything after the checks (a failed check's wake already says to rebase): the
@@ -1647,11 +1653,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if rebase_policy(app, t) != RebasePolicy::Never && conflicting(&f, rec) {
         return "rebase".into();
     }
-    let seen = f.i0("comments_seen");
-    let review = review_of(&f, rec);
-    let answered = f.get("answered_changes").map(|a| *a == rec["changes_at"]).unwrap_or(false);
-    let new_comments = if has_threads(rec) { !open_threads(&f, rec).is_empty() } else { rec["comments"].as_i64().unwrap_or(0) > seen };
-    if (review.changes && !answered) || new_comments {
+    if comments_open {
         return "comments".into();
     }
     let review_skipped = review_skipped(app, t, &f, rec);
