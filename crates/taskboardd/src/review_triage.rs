@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::code_review::{self, EVENT};
 use crate::util::*;
-use crate::{board, fields, p};
+use crate::{blocks, board, fields, p};
 
 /// The triage agent's job.
 pub const PURPOSE: &str = "code_review_triage";
@@ -122,10 +122,14 @@ fn prompt(app: &App, t: &Row, n: u64, result: &Value, intent: &str, diff: &str, 
          - backlog: real, but this task's change didn't cause it; the board files it in the task's backlog.\n\
          - dismiss: not real, already handled, or not worth acting on.\n\
          A finding that asks to undo what the task or its goal sets out to do is dismiss, saying so.\n\n\
-         Record each one, with a one-line reason, as soon as you've judged it: {tb} finding {me} <id> fix|backlog|dismiss \"<reason>\"\n\
+         Record each one, with a one-line reason, as soon as you've judged it: {tb} finding {me} <id> fix|dismiss \"<reason>\", or \
+         {tb} finding {me} <id> backlog --blocks none|pr|goal [--blocks-why \"<the failure, path or done-when line>\"] \"<reason>\" \
+         (a backlog finding always says whether it blocks; without --blocks-why, the reason is the why).\n\
+         {}\n\
          {tb} finding {me} lists them with what's left. Never change code, commit or run the project's tools: read the diff and the files \
          (git diff, git log and git show are fine) and judge. When every finding has an outcome, the board closes this terminal.\n\n\
          # The task\n\n{intent}\n# The change\n\n{change}\n\n# The findings\n\n{}\n\nEach finding in full (detail, url): {}",
+        blocks::RULE,
         list.join("\n"),
         files.join("findings.json").display()
     )
@@ -378,13 +382,27 @@ pub fn report(app: &App, task_id: i64, body: &Value) -> Result<Value> {
     if let Some(was) = d["triage"][&fid]["outcome"].as_str() {
         return err(409, format!("{fid} is already marked {was}."));
     }
+    let marked = if outcome == "backlog" {
+        let filer = blocks::Filer { task: Some(&t), goal_id: t.i("goal_id"), always: true };
+        Some(blocks::read(body, &filer, Some(reason), reason)?)
+    } else {
+        None
+    };
     let name = board::session_name(app, sid, None);
+    let mut blocks_level: Option<&str> = None;
     app.db.tx(|| {
-        let issue = if outcome == "backlog" { Some(file_issue(app, &t, n, f, reason, sid, &name)?) } else { None };
+        let issue = match &marked {
+            Some(b) => {
+                let (iid, level) = file_issue(app, &t, n, f, reason, b, sid, &name)?;
+                blocks_level = Some(level);
+                Some(iid)
+            }
+            None => None,
+        };
         if !d["triage"].is_object() {
             d["triage"] = json!({});
         }
-        d["triage"][&fid] = json!({"outcome": outcome, "reason": reason, "issue": issue, "at": now_iso()});
+        d["triage"][&fid] = json!({"outcome": outcome, "reason": reason, "issue": issue, "blocks": blocks_level, "at": now_iso()});
         app.db.x("UPDATE events SET data = ? WHERE id = ?", p![jdumps(&d), eid])?;
         let filed = issue.map(|i| format!(" (filed as {})", rf("issue", i))).unwrap_or_default();
         board::log_event_full(
@@ -399,12 +417,19 @@ pub fn report(app: &App, task_id: i64, body: &Value) -> Result<Value> {
         .map(|_| ())
     })?;
     let rest = left(&d);
-    let message = if rest.is_empty() {
-        format!("Marked {fid} {outcome}. That was the last one: round {n} is triaged and the board closes this terminal.")
-    } else {
-        format!("Marked {fid} {outcome}. Left: {}.", rest.join(", "))
+    let moved = match (marked.as_ref().map(|b| b.level), blocks_level) {
+        (Some(asked), Some(got)) if asked != got => {
+            let instead = if got == blocks::GOAL { "the goal instead" } else { "nothing instead" };
+            format!(" A {} finding in a file the change doesn't touch can't hold the PR, so it blocks {instead}.", f["severity"].as_str().unwrap_or("low"))
+        }
+        _ => String::new(),
     };
-    Ok(json!({"ok": true, "task": me, "round": n, "finding": fid, "outcome": outcome, "issue": d["triage"][&fid]["issue"].as_i64().map(|i| rf("issue", i)), "left": rest, "message": message}))
+    let message = if rest.is_empty() {
+        format!("Marked {fid} {outcome}.{moved} That was the last one: round {n} is triaged and the board closes this terminal.")
+    } else {
+        format!("Marked {fid} {outcome}.{moved} Left: {}.", rest.join(", "))
+    };
+    Ok(json!({"ok": true, "task": me, "round": n, "finding": fid, "outcome": outcome, "issue": d["triage"][&fid]["issue"].as_i64().map(|i| rf("issue", i)), "blocks": blocks_level, "left": rest, "message": message}))
 }
 
 /// `tb finding T<n> <id> fixed "<what changed>"`: the task's agent marks one of the round's `fix` findings fixed.
@@ -463,11 +488,22 @@ fn mark_fixed(app: &App, t: &Row, body: &Value, sid: Option<&str>) -> Result<Val
     Ok(json!({"ok": true, "task": me, "round": n, "finding": fid, "outcome": FIXED, "left": rest, "message": message}))
 }
 
-/// Files a `backlog` finding in the task's project and goal, or adds it to the open item that already has its title.
-fn file_issue(app: &App, t: &Row, n: u64, f: &Value, reason: &str, sid: Option<&str>, name: &str) -> Result<i64> {
+/// Files a `backlog` finding (or merges it into the open item it repeats) with what it blocks, after the
+/// off-diff check. Returns the item and the level it ended up with.
+fn file_issue(app: &App, t: &Row, n: u64, f: &Value, reason: &str, asked: &blocks::Blocks, sid: Option<&str>, name: &str) -> Result<(i64, &'static str)> {
     let me = rf("task", t.id());
     let title = one_line(f["title"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(f["id"].as_str().unwrap_or("A code review finding")), 300);
     let goal_id = t.i("goal_id");
+    let patch = std::fs::read_to_string(code_review::task_dir(app, t.id()).join(format!("round-{n}")).join("diff.patch")).ok();
+    let moved = blocks::off_diff(asked, f["severity"].as_str().unwrap_or(""), f["file"].as_str().unwrap_or(""), patch.as_deref(), goal_id);
+    let marked = moved.as_ref().map(|(b, _)| b).unwrap_or(asked);
+    let settle = |iid: i64, fresh: bool| -> Result<(i64, &'static str)> {
+        blocks::mark(app, iid, marked, goal_id, &title, name, fresh)?;
+        if let Some((_, why)) = &moved {
+            board::add_issue_event(app, iid, board::BOARD, "blocks", why, None)?;
+        }
+        Ok((iid, marked.level))
+    };
     let project = t.s("project");
     let key = norm_title(&title);
     let cands = match goal_id {
@@ -476,7 +512,7 @@ fn file_issue(app: &App, t: &Row, n: u64, f: &Value, reason: &str, sid: Option<&
     };
     if let Some(dup) = cands.iter().find(|c| norm_title(&c.st("title")) == key) {
         board::add_issue_event(app, dup.id(), name, "seen", &format!("Seen again in {me}'s code review round {n}, and left to the backlog: {reason}"), None)?;
-        return Ok(dup.id());
+        return settle(dup.id(), false);
     }
     let mut detail = f["detail"].as_str().unwrap_or("").trim().to_string();
     let at = finding_line(f);
@@ -489,14 +525,17 @@ fn file_issue(app: &App, t: &Row, n: u64, f: &Value, reason: &str, sid: Option<&
     let snap = json!({"task": format!("{me} · {}", t.st("title")), "terminal": name});
     let iid = app.db.insert(
         "issues",
-        fields!["goal_id" => goal_id, "project" => project, "kind" => "follow", "title" => title, "detail" => detail,
+        fields!["goal_id" => goal_id, "project" => project, "kind" => "follow", "title" => &title, "detail" => detail,
                 "said" => format!("“{}”", one_line(reason, 1000)), "how" => format!("{me}'s code review triage left it to the backlog."),
                 "source" => "terminal", "found_by_task" => t.id(), "found_by_session" => sid, "found_by_name" => name,
-                "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now, "misses_goal" => 0],
+                "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now]
+            .into_iter()
+            .chain(blocks::fields(marked))
+            .collect(),
     )?;
     board::add_issue_event(app, iid, name, "report", &format!("Left to the backlog by {me}'s code review triage"), Some(&snap))?;
     if let Some(g) = goal_id {
         app.db.x("UPDATE tasks SET ctx_version = COALESCE(ctx_version, 1) + 1 WHERE goal_id = ? AND status != 'done' AND id IS NOT ?", p![g, t.id()])?;
     }
-    Ok(iid)
+    settle(iid, true)
 }

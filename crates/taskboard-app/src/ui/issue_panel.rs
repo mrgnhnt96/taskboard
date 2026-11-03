@@ -1273,6 +1273,7 @@ fn panel_sheet(m: &mut MainWindow, t: &Theme, b: &Value, empty: bool, cx: &mut C
         .gap(px(8.))
         .child(web_pill(t, t.text_2, t.col, "Backlog", false))
         .child(web_pill(t, kfg, kbg, v.kind.clone(), false))
+        .when_some(blocks_label(b), |d, (pill, _)| d.child(web_pill(t, t.warn_text, t.warn_soft, pill, false)))
         .child(web_pill(t, t.muted, t.panel_2, r.clone(), true))
         .child(div().flex_1())
         .child(close);
@@ -1295,7 +1296,8 @@ fn panel_sheet(m: &mut MainWindow, t: &Theme, b: &Value, empty: bool, cx: &mut C
                 .child(div().flex().gap(px(4.)).child(sel(t, "issue-state", v.state_line.clone())).when_some(v.open_task.clone(), |d, tr| {
                     d.child("·").child(kit::link(t, "issue-open-task", "Open it").underline().on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx))))
                 })),
-        );
+        )
+        .when_some(blocks_label(b).and_then(|(_, why)| why), |d, why| d.child(div().text_size(px(13.)).text_color(t.warn_text).child(sel(t, "issue-blocks-why", why))));
     // The history's rows follow as the list's own items; the end item gives the bottom padding.
     let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(24.)).line_height(relative(1.5)).child(top)
         .child(title);
@@ -1320,6 +1322,16 @@ fn panel_sheet(m: &mut MainWindow, t: &Theme, b: &Value, empty: bool, cx: &mut C
         None => col = col.children(note_el(t, &v.note)),
     }
     col.child(detail_sections(t, &v.detail, false, cx)).child(history_head(t, false, empty))
+}
+
+/// "Blocks PR" or "Blocks goal" and its why, for an item that holds its task's PR or its goal.
+fn blocks_label(b: &Value) -> Option<(&'static str, Option<String>)> {
+    let pill = match s(b, "blocks") {
+        "pr" => "Blocks PR",
+        "goal" => "Blocks goal",
+        _ => return None,
+    };
+    Some((pill, Some(s(b, "blocks_why").to_string()).filter(|w| !w.is_empty())))
 }
 
 /// `.pill` (12px semibold, padding 2px 10px); `mono` is `.pill.ref`.
@@ -1386,10 +1398,12 @@ pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<
                     let (fg, bg) = kind_colors(t, s(b, "kind"));
                     kit::pill(fg, bg, v.kind.clone())
                 })
+                .when_some(blocks_label(b), |d, (pill, _)| d.child(kit::pill(t.warn_text, t.warn_soft, pill)))
                 .child(div().flex_1().min_w_0().text_size(px(12.5)).text_color(t.muted).child(v.help.clone()))
                 .child(kit::chip(t, v.r.clone())),
         )
         .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).line_height(px(23.)).child(sel(t, "aside-title", v.title.clone())))
+        .when_some(blocks_label(b).and_then(|(_, why)| why), |d, why| d.child(div().text_size(px(12.5)).text_color(t.warn_text).child(sel(t, "aside-blocks-why", why))))
         .when_some(v.open_task.clone(), |d, tr| {
             let label = format!("Open task {tr}");
             d.child(div().flex().text_size(px(12.5)).child(kit::link(t, "aside-open-task", label).on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx)))))

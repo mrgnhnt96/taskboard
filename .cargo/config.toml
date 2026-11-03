@@ -2,3 +2,8 @@
 # Cache compiled dependencies across worktrees with sccache when it's
 # installed (brew install sccache); falls back to plain rustc otherwise.
 rustc-wrapper = "scripts/rustc-wrapper.sh"
+
+[env]
+# Test threads get the 8 MiB a binary's main thread has: parsing tb's large command enum in a debug
+# build outgrows the 2 MiB default.
+RUST_MIN_STACK = "8388608"

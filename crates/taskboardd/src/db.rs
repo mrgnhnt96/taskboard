@@ -312,6 +312,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     // A backlog issue that misses its goal's own done-when (`tb found --misses-goal`): it alerts the
     // owner, and the goal isn't finished while it's open (`board::open_misses`).
     ("issues", "misses_goal", "INT DEFAULT 0"),
+    // Whether a backlog item holds its task's PR, its goal, or nothing (`blocks.rs`): `none`, `pr` or
+    // `goal`, set by whoever files it; `blocks_why` is the concrete failure, path or done-when line.
+    ("issues", "blocks", "TEXT DEFAULT 'none'"),
+    ("issues", "blocks_why", "TEXT"),
     // The model the task's terminal starts with (`tb task new --model`, `[models]`): `small`, `large`
     // or a model name; null for `[models] default`.
     ("tasks", "model", "TEXT"),

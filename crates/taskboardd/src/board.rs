@@ -1287,6 +1287,7 @@ pub fn issue_card(app: &App, b: &Row) -> Result<Value> {
         "found_by_task": b.v("found_by_task"),
         "found_by_name": b.v("found_by_name"), "source": b.v("source"),
         "created_at": b.v("created_at"), "updated_at": b.v("updated_at"), "state": b.v("state"), "misses_goal": b.b("misses_goal"),
+        "blocks": b.s("blocks").unwrap_or("none"), "blocks_why": b.v("blocks_why"),
         "jira_key": b.v("jira_key"), "jira_url": jira_url(app, b.s("jira_key").unwrap_or("")),
         "task_id": b.v("task_id"), "task_ref": rf_opt("task", b.i("task_id")),
         "from": issue_from_line(b),

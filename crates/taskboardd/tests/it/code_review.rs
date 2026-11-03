@@ -107,6 +107,14 @@ impl Board {
     fn triage(&self, id: i64, finding: &str, outcome: &str, reason: &str) -> Result<Value, (u16, String)> {
         self.post(&format!("/tasks/T{id}/code-review/triage"), json!({"finding": finding, "outcome": outcome, "reason": reason, "session": "s-triage"}))
     }
+    /// Files a finding to the backlog in triage, with what it blocks.
+    fn triage_blocks(&self, id: i64, finding: &str, reason: &str, blocks: Value) -> Result<Value, (u16, String)> {
+        let mut body = json!({"finding": finding, "outcome": "backlog", "reason": reason, "session": "s-triage"});
+        for (k, v) in blocks.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        self.post(&format!("/tasks/T{id}/code-review/triage"), body)
+    }
     fn stage(&self, id: i64) -> Value {
         self.get(&format!("tasks/T{id}"))["code_review"].clone()
     }
@@ -391,7 +399,10 @@ fn findings_go_to_a_triage_agent_that_marks_each_then_the_task_carries_on() {
     assert_eq!(b.triage(id, "F1", "dismiss", "Changed my mind").unwrap_err().0, 409);
     assert_eq!(b.stage(id)["triage"]["triaged"], 1);
 
-    let v = b.triage(id, "F2", "backlog", "The helper leaked before this change").unwrap();
+    let (code, why) = b.triage(id, "F2", "backlog", "The helper leaked before this change").unwrap_err();
+    assert_eq!(code, 400, "a triage backlog item says what it blocks");
+    assert!(why.contains("--blocks"), "{why}");
+    let v = b.triage_blocks(id, "F2", "The helper leaked before this change", json!({"blocks": "none"})).unwrap();
     assert!(v["message"].as_str().unwrap().contains("last one"), "{v}");
     let issue = b.app.db.q1("SELECT * FROM issues WHERE title = 'Old helper leaks'", p![]).unwrap().expect("a backlog item");
     assert_eq!(issue.i("goal_id"), Some(g));
@@ -545,4 +556,45 @@ fn a_triage_agent_that_cannot_open_lets_the_task_carry_on_and_alerts_the_owner()
         "{:?}",
         b.alerts()
     );
+}
+
+#[test]
+fn triage_backlog_says_what_it_blocks_and_a_minor_finding_off_the_diff_cant_hold_the_pr() {
+    let b = new_board(|d| Some(reviewer(d, TWO)));
+    let g = b.post("/goals", json!({"name": "Passkeys", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let id = b.task();
+    b.app.db.x("UPDATE tasks SET goal_id = ? WHERE id = ?", p![g, id]).unwrap();
+    b.push();
+    b.done().unwrap();
+    code_review::sweep(&b.app).unwrap();
+    let args: Value = serde_json::from_str(&b.app.db.q1("SELECT args FROM jobs WHERE purpose = 'code_review_triage'", p![]).unwrap().unwrap().st("args")).unwrap();
+    let prompt = args["prompt"].as_str().unwrap();
+    assert!(prompt.contains("--blocks none|pr|goal") && prompt.contains("leaves main worse"), "{prompt}");
+
+    let (code, why) = b.triage_blocks(id, "F1", "Older", json!({"blocks": "later"})).unwrap_err();
+    assert_eq!(code, 400, "{why}");
+
+    // A major finding in a file the change touches holds the PR as asked.
+    let v = b.triage_blocks(id, "F1", "Older but the PR makes it reachable", json!({"blocks": "pr", "blocks_why": "a.txt crashes on an empty page"})).unwrap();
+    assert_eq!(v["blocks"], "pr", "{v}");
+    let f1 = b.app.db.q1("SELECT * FROM issues WHERE title = 'Off by one'", p![]).unwrap().expect("F1 filed");
+    assert_eq!((f1.st("blocks").as_str(), f1.st("blocks_why").as_str()), ("pr", "a.txt crashes on an empty page"));
+    assert_eq!(f1.i("misses_goal"), Some(0));
+    let ev = b.app.db.q("SELECT kind, text FROM issue_events WHERE issue_id = ? AND kind = 'blocks'", p![f1.id()]).unwrap();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].st("text"), "Blocks its task's PR: a.txt crashes on an empty page");
+
+    // A minor finding in README, which the change doesn't touch, blocks the goal instead.
+    let v = b.triage_blocks(id, "F2", "The helper leaks on every sign-in", json!({"blocks": "pr"})).unwrap();
+    assert_eq!(v["blocks"], "goal", "{v}");
+    assert!(v["message"].as_str().unwrap().contains("blocks the goal instead"), "{v}");
+    let f2 = b.app.db.q1("SELECT * FROM issues WHERE title = 'Old helper leaks'", p![]).unwrap().expect("F2 filed");
+    assert_eq!((f2.st("blocks").as_str(), f2.st("blocks_why").as_str()), ("goal", "The helper leaks on every sign-in"));
+    assert_eq!(f2.i("misses_goal"), Some(1), "goal reuses the misses-goal hold");
+    let texts: Vec<String> = b.app.db.q("SELECT text FROM issue_events WHERE issue_id = ? AND kind = 'blocks' ORDER BY id", p![f2.id()]).unwrap().iter().map(|r| r.st("text")).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("minor finding in README") && t.contains("blocks the goal instead")), "{texts:?}");
+    assert!(b.alerts().iter().any(|a| a.contains("misses its done-when") && a.contains("Old helper leaks")), "{:?}", b.alerts());
+    let r = &code_review::rounds(&b.app, id).unwrap()[0];
+    assert_eq!((r["triage"]["F1"]["blocks"].as_str(), r["triage"]["F2"]["blocks"].as_str()), (Some("pr"), Some("goal")), "{r}");
 }

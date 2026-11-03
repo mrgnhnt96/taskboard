@@ -10,7 +10,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, stamp, steps, triage, usage};
+use crate::{accounts, blocks, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, stamp, steps, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -2943,7 +2943,16 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
     if !ISSUE_KINDS.contains(&kind.as_str()) {
         return err(400, "Type must be bug, gap, follow or clean.");
     }
-    let goal_id = opt_goal(body, "goal_id")?;
+    let sid = body_str(body, "session");
+    let filer = match body.get("task").filter(|v| !v.is_null() && *v != "") {
+        Some(v) => Some(board::get_task(app, need_ref(v, "task")?)?),
+        None => blocks::session_task(app, Some(&sid))?,
+    };
+    let mut goal_id = opt_goal(body, "goal_id")?;
+    if goal_id.is_none() && blocks::wants_goal(body) {
+        goal_id = filer.as_ref().and_then(|t| t.i("goal_id"));
+    }
+    let marked = blocks::read(body, &blocks::Filer { task: filer.as_ref(), goal_id, always: false }, None, &title)?;
     let id = app.db.tx(|| {
         let g = match goal_id {
             Some(g) => Some(board::get_goal(app, g)?),
@@ -2987,9 +2996,14 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
                     "said" => if said.is_empty() { None } else { Some(format!("“{said}”")) }, "how" => how, "source" => source,
                     "found_by_name" => who, "state" => "open",
                     "snapshot" => jdumps(&body.get("snapshot").filter(|s| s.is_object()).cloned().unwrap_or(json!({}))),
-                    "created_at" => now, "updated_at" => now],
+                    "found_by_task" => filer.as_ref().map(|t| t.id()), "found_by_session" => if sid.is_empty() { None } else { Some(sid.clone()) },
+                    "created_at" => now, "updated_at" => now]
+                .into_iter()
+                .chain(blocks::fields(&marked))
+                .collect(),
         )?;
         board::add_issue_event(app, id, &who, "note", &format!("Added from {page}"), None)?;
+        blocks::mark(app, id, &marked, goal_id, &title, &who, true)?;
         Ok(id)
     })?;
     issue_detail(app, id)
