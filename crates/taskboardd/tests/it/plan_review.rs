@@ -112,6 +112,11 @@ fn a_new_goal_is_reviewed_once_and_its_findings_kept_on_the_goal() {
     let args = b.calls();
     assert!(args.contains("--tools\nRead,Grep,Glob\n"), "read-only tools: {args}");
     assert!(!args.contains("Bash") && !args.contains("Edit"), "{args}");
+    assert!(args.contains("--max-turns\n30\n") && args.contains("--max-budget-usd\n2.00\n"), "room to read the checkout: {args}");
+    assert!(args.contains("Check the plan against the checkout before you answer"), "reads before it reports: {args}");
+    let schema = args.split("--json-schema\n").nth(1).and_then(|s| s.lines().next()).unwrap_or_default();
+    let schema: Value = serde_json::from_str(schema).unwrap_or_else(|e| panic!("{e}: {args}"));
+    assert_eq!(schema["required"], json!(["checked", "findings"]), "the checks it made are asked for: {schema}");
     assert!(args.contains("Done when: Every screen follows the system theme"), "the outcome: {args}");
     assert!(args.contains("Colors") && args.contains("pick the dark palette") && args.contains("Toggle"), "the tasks: {args}");
     assert_eq!(b.rounds(&g), 1);
@@ -128,6 +133,17 @@ fn a_new_goal_is_reviewed_once_and_its_findings_kept_on_the_goal() {
 
     let shown = &b.get(&format!("/goals/{g}"))["plan_review"];
     assert_eq!(shown["findings"], review["findings"], "goal detail carries the same review");
+}
+
+#[test]
+fn a_review_that_runs_out_of_turns_says_so() {
+    let b = board();
+    std::fs::write(b.dir.path().join("answer.json"), json!({"subtype": "error_max_turns", "num_turns": 31}).to_string()).unwrap();
+    let g = b.goal_new();
+
+    let review = &b.get(&format!("/goals/{g}/review"))["review"];
+    assert_eq!(review["state"], "failed", "{review}");
+    assert!(review["error"].as_str().unwrap_or_default().contains("ran out of turns (31)"), "{review}");
 }
 
 #[test]

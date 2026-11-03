@@ -120,8 +120,16 @@ pub(crate) fn ask_in_with(app: &App, prompt: String, schema: Value, repo: Option
 
 /// `ask_in` on `model` rather than `[backlog] model`.
 pub(crate) fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64) -> std::result::Result<Value, String> {
+    ask_model_limited(app, model, prompt, schema, repo, extra, timeout_secs, &app.cfg.backlog.budget_usd, None)
+}
+
+/// [`ask_model`] with its own spending cap and, when given, a cap on Claude's turns.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ask_model_limited(
+    app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64,
+    budget_usd: &str, max_turns: Option<u32>,
+) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
-    let c = &app.cfg.backlog;
     let read: &[&str] = if repo.is_some() { &["Read", "Grep", "Glob"] } else { &[] };
     let tools = read.iter().chain(extra).copied().collect::<Vec<_>>().join(",");
     let mut args: Vec<String> = vec![
@@ -136,7 +144,7 @@ pub(crate) fn ask_model(app: &App, model: &str, prompt: String, schema: Value, r
         tools.clone(),
         "--strict-mcp-config".into(),
         "--max-budget-usd".into(),
-        c.budget_usd.clone(),
+        budget_usd.into(),
         "--json-schema".into(),
         schema.to_string(),
         "--output-format".into(),
@@ -145,6 +153,9 @@ pub(crate) fn ask_model(app: &App, model: &str, prompt: String, schema: Value, r
     if !tools.is_empty() {
         args.extend(["--allowedTools".into(), tools]);
     }
+    if let Some(n) = max_turns {
+        args.extend(["--max-turns".into(), n.to_string()]);
+    }
     let cwd = repo.unwrap_or(app.cfg.data.as_path());
     let out = proc::run(&claude, &args, Some(cwd), timeout_secs as f64).map_err(|_| "claude didn't answer in time".to_string())?;
     let d: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| "claude's answer wasn't JSON".to_string())?;
@@ -152,7 +163,11 @@ pub(crate) fn ask_model(app: &App, model: &str, prompt: String, schema: Value, r
         .cloned()
         .filter(Value::is_object)
         .or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))
-        .ok_or_else(|| "claude's answer had no result".to_string())
+        .ok_or_else(|| match d["subtype"].as_str() {
+            Some("error_max_turns") => format!("claude ran out of turns ({}) before it answered", d["num_turns"]),
+            Some("error_max_budget_usd") => format!("claude reached its ${budget_usd} cap before it answered"),
+            _ => "claude's answer had no result".to_string(),
+        })
 }
 
 pub(crate) fn issue_block(b: &Row, with_fields: bool) -> String {

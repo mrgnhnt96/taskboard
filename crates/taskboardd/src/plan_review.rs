@@ -6,7 +6,9 @@
 //! and lessons the plan goes against. It never sees the planner's conversation. When the outcome points
 //! at a source the plan must match (a review, a doc, a design, a list of issues), it reads that source
 //! (the goal's attachments, with local text files inlined, the backlog issues named, links through
-//! WebFetch) and flags each of its items no task covers.
+//! WebFetch) and flags each of its items no task covers. Before it reports, it checks in the checkout
+//! that what each task names or relies on (files, functions, commands, docs) is there and does what the
+//! plan says, within a cap on its turns and spending.
 //!
 //! The review is advice: nothing waits for it. Each run is a row of `plan_reviews`, kept with the commit
 //! it read; the latest one is the goal's review. A run that can't start (the review is off, Claude isn't
@@ -33,6 +35,11 @@ CREATE INDEX IF NOT EXISTS plan_reviews_goal ON plan_reviews(goal_id, id);
 
 /// A review reads code like a dig does, so it gets as long.
 const TIMEOUT_SECS: u64 = 900;
+/// Turns to check what the tasks assume in the checkout and answer: a turn is one round of tool calls,
+/// and a plan's checks run several reads at once.
+const MAX_TURNS: u32 = 30;
+/// The spending cap of one review: `[backlog] budget_usd` when it's more.
+const BUDGET_USD: f64 = 2.0;
 pub const KINDS: [&str; 5] = ["outcome_unproven", "owner_prereq", "past_decision", "overlap", "lesson_ignored"];
 const FINDINGS_MAX: usize = 20;
 const REFS_MAX: usize = 12;
@@ -148,7 +155,14 @@ fn run(app: &App, gid: i64, round: i64, model: &str) -> std::result::Result<Valu
     let src = sources(app, &g).map_err(|e| e.message)?;
     let (prompt, known) = prompt(app, &g, sha.as_deref(), repo.is_some(), &src).map_err(|e| e.message)?;
     let extra: &[&str] = if src.web { &WEB_TOOLS } else { &[] };
-    triage::ask_model(app, model, prompt, schema(), repo.as_deref(), extra, TIMEOUT_SECS).and_then(|v| checked(&v, &known))
+    triage::ask_model_limited(app, model, prompt, schema(repo.is_some()), repo.as_deref(), extra, TIMEOUT_SECS, &budget(app), Some(MAX_TURNS))
+        .and_then(|v| checked(&v, &known))
+}
+
+/// One review's spending cap: [`BUDGET_USD`], or `[backlog] budget_usd` when that's more.
+fn budget(app: &App) -> String {
+    let backlog = app.cfg.backlog.budget_usd.trim().parse::<f64>().unwrap_or(0.0);
+    format!("{:.2}", backlog.max(BUDGET_USD))
 }
 
 fn finish(app: &App, gid: i64, round: i64, answer: std::result::Result<Value, String>) -> Result<()> {
@@ -225,9 +239,14 @@ pub fn start(app: &App, gid: i64, body: &Value) -> Result<Value> {
 
 // ------------------------------------------------------------------ asking Claude
 
-fn schema() -> Value {
+/// The answer: findings, and with a checkout the checks Claude made in it (asked for so it reads before
+/// it answers; not kept).
+fn schema(read: bool) -> Value {
     let strings = json!({"type": "array", "items": {"type": "string"}});
-    json!({"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array", "items": {
+    let checked = json!({"type": "array", "items": {"type": "object", "required": ["task", "assumes", "found"], "properties": {
+        "task": {"type": "string"}, "assumes": {"type": "string"}, "found": {"type": "string"}}}});
+    let required = if read { json!(["checked", "findings"]) } else { json!(["findings"]) };
+    json!({"type": "object", "required": required, "properties": {"checked": checked, "findings": {"type": "array", "items": {
         "type": "object", "required": ["kind", "short", "detail"],
         "properties": {"kind": {"enum": KINDS}, "short": {"type": "string"}, "detail": {"type": "string"},
                        "tasks": strings, "refs": strings}}}}})
@@ -410,7 +429,18 @@ fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool, src: &Sources) -> R
     let project = g.st("project");
     let at = sha.map(|s| format!(" at commit {}", &s[..s.len().min(12)])).unwrap_or_default();
     let reading = if read {
-        format!("You're in the project's checkout{at} and may read it (Read, Grep and Glob) to check what the tasks assume; you can't change anything.")
+        format!(
+            "You're in the project's checkout{at}, read-only (Read, Grep and Glob). Work in two steps.\n\
+             1. Check the plan against the checkout before you answer. For each task, list what it names or relies \
+             on (files, functions, types, commands, config keys, docs, behaviour it extends), find each with Grep and \
+             Glob and Read it, and see whether it's there and does what the plan says. Put each check in checked: \
+             the task, what it assumes, and what you found with its file and line. Read what settles each \
+             assumption, not the whole checkout: you have {MAX_TURNS} turns, so run several searches and reads at \
+             once. An answer with nothing in checked hasn't done this step.\n\
+             2. Report the gaps in findings. A task that rests on something the checkout doesn't have, or that works \
+             otherwise than the plan says, so it can't deliver its part as planned, is an outcome_unproven finding: \
+             quote the clause it leaves unbuilt, and give the file and what's there."
+        )
     } else {
         "The project has no checkout on this Mac, so judge from what's below.".to_string()
     };
