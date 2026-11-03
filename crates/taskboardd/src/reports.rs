@@ -2594,6 +2594,58 @@ fn on_switch(r: &mut Report) -> Result<Value> {
     Ok(ok(Some(&t), Some(c)))
 }
 
+/// `tb move [T<n>]`: on the owner's word, the task this terminal is on starts again in a new terminal of
+/// its own, from its handoff (checkpoints and notes) and in the slot it holds; this terminal is left on
+/// no task, for the owner's other work.
+fn on_move(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(sid) = r.sid.clone() else { return err(400, "tb move only works inside a Midna terminal.") };
+    let t = if body_has(&r.body, "task") {
+        board::get_task(app, need_ref(&r.body["task"], "task")?)?
+    } else {
+        match board::task_for_session(app, Some(&sid))? {
+            Some(t) => t,
+            None => return err(409, "This terminal isn't on a task, so there's nothing to move."),
+        }
+    };
+    let tr = rf("task", t.id());
+    if t.s("session_id") != Some(sid.as_str()) || !matches!(t.s("status"), Some("working") | Some("needs")) {
+        return err(409, format!("{tr} isn't the task this terminal is on, so it can't move from here. tb status shows which is."));
+    }
+    if t.s("status") == Some("needs") && t.s("needs_reason") == Some("question") {
+        return err(409, format!("{tr} waits here for the owner's answer (a question or a step); move it once that's in."));
+    }
+    if crate::startword::owners_move_word(app, &sid, t.id())?.is_none() {
+        return err(403, format!("Only {} moves a task to another terminal, and they haven't told you to move {tr} in this terminal. Ask them.", app.cfg.owner));
+    }
+    r.update_where(&t, false)?;
+    let slot = crate::slots::held(app, &t)?.map(|s| s.st("path"));
+    let from = r.name();
+    app.db.tx(|| {
+        deliver::drop(app, t.id(), "the task moved to a terminal of its own")?;
+        lines::leave(app, &t)?;
+        board::update_task(
+            app,
+            t.id(),
+            fields!["session_id" => null, "status" => "queued", "needs_reason" => null, "question" => null, "lost" => 0,
+                    "start_job" => null, "pickup" => "new", "pickup_session" => null, "start_tries" => 0, "retry_at" => null],
+        )?;
+        board::log_event(app, t.id(), &from, "status", &format!("Moved out of {from} to a terminal of its own, on {}'s word", app.cfg.owner))?;
+        crate::runner::start_task(app, &board::get_task(app, t.id())?, "new", None, None, None, slot.clone())?;
+        Ok(())
+    })?;
+    let carried = match &slot {
+        Some(p) => format!("its checkpoints, notes and its slot ({p})"),
+        None => "its checkpoints and notes".into(),
+    };
+    let c = format!(
+        "{tr} moves to a new terminal of its own and starts there from its handoff, with {carried}. This terminal is on no task now: \
+         leave {tr}'s work to that terminal and carry on with the owner's other asks here."
+    );
+    Ok(ok(Some(&t), Some(c)))
+}
+
 /// `tb line`: this terminal's line; with `drop`, a task out of it and back to the board.
 fn on_line(r: &mut Report) -> Result<Value> {
     let app = r.app;
@@ -3230,6 +3282,7 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
         "tb.fail" => Some(("fail", format!("Gave up on {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("reason")))),
         "tb.take" => out["task"].as_str().map(|t| ("take", format!("Picked up {t}"))),
         "tb.switch" => out["task"].as_str().map(|t| ("take", format!("Switched to {t}"))),
+        "tb.move" => out["task"].as_str().map(|t| ("take", format!("Moved {t} to a terminal of its own"))),
         _ => None,
     }
 }
@@ -3275,6 +3328,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.status" => on_status,
         "tb.switch" => on_switch,
         "tb.line" => on_line,
+        "tb.move" => on_move,
         _ => return None,
     })
 }
