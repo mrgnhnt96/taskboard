@@ -189,3 +189,12 @@ fn files_in_the_boards_folder_need_no_config() {
     let web = planning_for(&app, "project", "webapp");
     assert_eq!((web["from"].as_str(), web["skipped"].clone()), (Some("built-in"), json!([])));
 }
+
+#[test]
+fn the_built_in_rules_trace_the_outcome_and_plan_prerequisites_first() {
+    for bit in ["Trace the outcome", "maps to a task that proves it", "verification task with those devices", "List prerequisites first",
+                "A human task for anything only the owner can do", "Known failing tests go in the goal notes", "what other systems must provide",
+                "the first task writes them down", "plan up to it plus a re-plan task, not the whole goal"] {
+        assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
+    }
+}
