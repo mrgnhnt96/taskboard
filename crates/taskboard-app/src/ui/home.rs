@@ -233,12 +233,16 @@ pub fn ask_vm(a: &Value) -> Ask {
     let human = has_card && (reason == "human" || s(card, "kind") == "human");
     // A task found the goal's done-when unmet: the backlog item it filed holds the goal open.
     let miss = s(a, "key").strip_prefix("miss:").filter(|n| !n.is_empty()).map(|n| format!("B{n}"));
+    // A backlog item holds its task's PR and waits for you to approve or reject its fix.
+    let critical = s(a, "key").strip_prefix("critical-ask:").filter(|n| !n.is_empty()).map(|n| format!("B{n}"));
     // Its terminal is gone and it still asks: Focus opens a new terminal to ask again.
     let focus = |r: String| if card["terminal_open"] == false && opt_s(card, "question").is_some() { Act::AskAgain(r) } else { Act::Focus(r) };
     let (sev, kind, act): (Sev, &str, Option<Act>) = if let Some(id) = a["review_id"].as_i64() {
         (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
     } else if let Some(b) = &miss {
         (Sev::Warn, "Done-when missed", Some(Act::OpenIssue(b.clone())))
+    } else if let Some(b) = &critical {
+        (Sev::Warn, "Holds a PR", Some(Act::OpenIssue(b.clone())))
     } else if a["urgent"] == true {
         (Sev::Crit, "Urgent", r.clone().map(Act::OpenTask))
     } else if has_card && b(card, "lost") && looks_finished(card).is_some() {
@@ -329,7 +333,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         act,
         answer,
         // The board keeps these until they're handled (`dispatch::stays`).
-        dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true,
+        dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true && critical.is_none(),
         snooze: !s(a, "id").is_empty(),
         help,
         asks,
@@ -1401,6 +1405,25 @@ mod tests {
         assert_eq!(a.help.len(), 2);
         assert!(a.help[0].contains("Core Teardown can’t finish until B219 is settled"), "{:?}", a.help);
         assert!(a.help[1].starts_with("Dismiss only hides this"), "{:?}", a.help);
+    }
+
+    #[test]
+    fn a_pr_holding_item_opens_its_backlog_item_with_approve_and_reject_and_stays() {
+        let home = json!({"needs": [
+            {"id": "a5", "at": "2026-10-15T09:00:00Z", "key": "critical-ask:301", "goal": "G3", "card": null,
+             "title": "B301 holds T12's PR #40", "detail": "Saving drops the last row",
+             "text": "B301 holds T12's PR #40: Lost row. Why: Saving drops the last row.",
+             "actions": [
+                 {"label": "Approve", "command": "tb needs answer B301 --pick 1", "prompt": "Run it"},
+                 {"label": "Reject", "command": "tb needs answer B301 --pick 2", "prompt": "Run it"}
+             ]}
+        ]});
+        let a = &asks_vm(&home)[0];
+        assert_eq!((a.kind.as_str(), a.sev), ("Holds a PR", Sev::Warn));
+        assert_eq!(a.act, Some(Act::OpenIssue("B301".into())));
+        assert_eq!((a.title.as_str(), a.line.as_str()), ("B301 holds T12's PR #40", "Saving drops the last row"));
+        assert_eq!(a.actions.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), vec!["Approve", "Reject"]);
+        assert!(!a.dismiss && !a.answer);
     }
 
     #[test]

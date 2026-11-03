@@ -68,9 +68,10 @@ pub fn on_goal_finished(app: &App, goal_id: i64, task: Option<&Row>) -> Result<(
 }
 
 /// An open miss on a goal's done-when (`issue`, read before it left the backlog) was made a task, ticketed
-/// or closed: its alert comes down, and when it was the last thing open the goal finishes (it couldn't
+/// or closed: an item holding a PR lets the PR step again, the miss's alert comes down, and when it was the last thing open the goal finishes (it couldn't
 /// have been finished while the miss was open).
 pub fn miss_settled(app: &App, issue: &Row) -> Result<()> {
+    crate::samepr::critical_settled(app, issue)?;
     if !issue.b("misses_goal") {
         return Ok(());
     }

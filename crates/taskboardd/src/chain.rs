@@ -93,6 +93,9 @@ pub fn queue_planned(app: &App, id: i64, who: &str, queued: &str, again: &str) -
     app.db.update("goals", &json!(id), fields!["ran_at" => now_iso()])?;
     for t in board::goal_tasks(app, id)? {
         if t.s("status") == Some("planned") {
+            if crate::samepr::awaits_owner(app, t.id())? {
+                continue;
+            }
             let mut f = fields!["status" => "queued"];
             if t.s("pickup") == Some("manual") && t.s("line_session").is_none() {
                 f.extend(fields!["pickup" => "queue"]);

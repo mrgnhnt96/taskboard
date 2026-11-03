@@ -124,15 +124,17 @@ pub fn fields(b: &Blocks) -> Vec<(&'static str, Value)> {
 }
 
 /// Marks a filed item (new, or the open one it was merged into) with what it blocks: `goal` holds the
-/// goal open and alerts the owner. An item merged into one that already blocks keeps the stronger mark.
-pub fn mark(app: &App, iid: i64, b: &Blocks, goal_id: Option<i64>, title: &str, who: &str, fresh: bool) -> Result<()> {
+/// goal open and alerts the owner; `pr` filed from a task holds that task's PR and becomes a pre-merge
+/// fix (see [`crate::samepr::take_critical`]), and what became of it is returned for the filer. An item
+/// merged into one that already blocks keeps the stronger mark, and one already holding a PR keeps it.
+pub fn mark(app: &App, iid: i64, b: &Blocks, goal_id: Option<i64>, title: &str, who: &str, fresh: bool, filer: Option<&Row>) -> Result<Option<String>> {
     if !b.holds() {
-        return Ok(());
+        return Ok(None);
     }
     if !fresh {
         let was = board::get_issue(app, iid)?;
-        if was.s("blocks") == Some(GOAL) && b.level == PR {
-            return Ok(());
+        if (was.s("blocks") == Some(GOAL) && b.level == PR) || (was.s("blocks") == Some(PR) && was.i("holds_pr").is_some()) {
+            return Ok(None);
         }
         app.db.update("issues", &json!(iid), fields!["blocks" => b.level, "blocks_why" => b.why.clone(), "updated_at" => now_iso()])?;
         if b.level == GOAL {
@@ -141,10 +143,11 @@ pub fn mark(app: &App, iid: i64, b: &Blocks, goal_id: Option<i64>, title: &str, 
     }
     let what = if b.level == PR { "its task's PR" } else { "its goal" };
     board::add_issue_event(app, iid, who, "blocks", &format!("Blocks {what}: {}", b.why.as_deref().unwrap_or("")), None)?;
-    if let (GOAL, Some(g)) = (b.level, goal_id) {
-        miss_alert(app, iid, g, title)?;
+    match (b.level, goal_id, filer) {
+        (GOAL, Some(g), _) => miss_alert(app, iid, g, title).map(|_| None),
+        (PR, _, Some(t)) => crate::samepr::take_critical(app, iid, t, who),
+        _ => Ok(None),
     }
-    Ok(())
 }
 
 /// A miss on the goal's own done-when goes to the owner as an alert rather than waiting quietly in the
