@@ -3003,7 +3003,7 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
                 .collect(),
         )?;
         board::add_issue_event(app, id, &who, "note", &format!("Added from {page}"), None)?;
-        blocks::mark(app, id, &marked, goal_id, &title, &who, true)?;
+        blocks::mark(app, id, &marked, goal_id, &title, &who, true, filer.as_ref())?;
         Ok(id)
     })?;
     issue_detail(app, id)

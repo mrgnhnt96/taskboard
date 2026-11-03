@@ -1631,16 +1631,17 @@ fn on_found(r: &mut Report) -> Result<Value> {
             text += &format!(" They said: “{}”", one_line(&detail, 400));
         }
         board::add_issue_event(app, dup.id(), &name, "seen", &text, Some(&snap))?;
-        blocks::mark(app, dup.id(), &marked, goal_id, &dup.st("title"), &name, false)?;
+        let took = blocks::mark(app, dup.id(), &marked, goal_id, &dup.st("title"), &name, false, t.as_ref())?;
         if let Some(t) = &t {
+            let took = took.as_deref().map(|w| format!(" {w}")).unwrap_or_default();
             r.log(
                 t.id(),
                 "found",
-                &format!("Found an issue: {title}. It was already in the backlog as {}, so this sighting was added to it.", rf("issue", dup.id())),
+                &format!("Found an issue: {title}. It was already in the backlog as {}, so this sighting was added to it.{took}", rf("issue", dup.id())),
                 Some(json!({"issue": dup.id()})),
             )?;
         }
-        return Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", dup.id()), "seen": true, "misses_goal": misses, "blocks": marked.level})));
+        return Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", dup.id()), "seen": true, "misses_goal": misses, "blocks": marked.level, "held": took})));
     }
     let now = now_iso();
     let how = match &t {
@@ -1659,7 +1660,7 @@ fn on_found(r: &mut Report) -> Result<Value> {
             .collect(),
     )?;
     board::add_issue_event(app, iid, &name, "report", &format!("Reported{while_on}"), Some(&snap))?;
-    blocks::mark(app, iid, &marked, goal_id, &title, &name, true)?;
+    let took = blocks::mark(app, iid, &marked, goal_id, &title, &name, true, t.as_ref())?;
     if let Some(g) = goal_id {
         app.db.x(
             "UPDATE tasks SET ctx_version = COALESCE(ctx_version, 1) + 1 WHERE goal_id = ? AND status != 'done' AND id IS NOT ?",
@@ -1670,14 +1671,15 @@ fn on_found(r: &mut Report) -> Result<Value> {
         let text = if misses {
             format!("Found a miss on the goal’s done-when: {title}. Sent to you as {} with a snapshot; the goal stays open until it’s settled.", rf("issue", iid))
         } else if marked.level == blocks::PR {
-            format!("Found an issue that blocks this task’s PR: {title}. Filed as {} with a snapshot.", rf("issue", iid))
+            let took = took.as_deref().map(|w| format!(" {w}")).unwrap_or_default();
+            format!("Found an issue that blocks this task’s PR: {title}. Filed as {} with a snapshot.{took}", rf("issue", iid))
         } else {
             let place = if goal_id.is_some() { "the goal’s backlog" } else { "the backlog" };
             format!("Found an issue: {title}. Added to {place} with a snapshot of what the task was doing.")
         };
         r.log(t.id(), "found", &text, Some(json!({"issue": iid})))?;
     }
-    Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", iid), "seen": false, "misses_goal": misses, "blocks": marked.level})))
+    Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", iid), "seen": false, "misses_goal": misses, "blocks": marked.level, "held": took})))
 }
 
 fn rewrite(screened: &Value) -> Value {

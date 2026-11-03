@@ -498,7 +498,7 @@ fn file_issue(app: &App, t: &Row, n: u64, f: &Value, reason: &str, asked: &block
     let moved = blocks::off_diff(asked, f["severity"].as_str().unwrap_or(""), f["file"].as_str().unwrap_or(""), patch.as_deref(), goal_id);
     let marked = moved.as_ref().map(|(b, _)| b).unwrap_or(asked);
     let settle = |iid: i64, fresh: bool| -> Result<(i64, &'static str)> {
-        blocks::mark(app, iid, marked, goal_id, &title, name, fresh)?;
+        blocks::mark(app, iid, marked, goal_id, &title, name, fresh, Some(t))?;
         if let Some((_, why)) = &moved {
             board::add_issue_event(app, iid, board::BOARD, "blocks", why, None)?;
         }

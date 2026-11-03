@@ -5802,7 +5802,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             t.task,
             false,
             |v| {
-                if v["blocks"] == "pr" {
+                if let Some(held) = v["held"].as_str() {
+                    format!("Filed {}. {held}", v["issue"].as_str().unwrap_or(""))
+                } else if v["blocks"] == "pr" {
                     format!("Filed {} as blocking this task's PR.", v["issue"].as_str().unwrap_or(""))
                 } else if v["misses_goal"] == true {
                     format!("Sent {} to the owner as a miss on the goal's done-when; the goal stays open until it's settled.", v["issue"].as_str().unwrap_or(""))

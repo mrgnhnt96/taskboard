@@ -184,6 +184,9 @@ pub struct BacklogAi {
     pub tidy: bool,
     /// Hours between tidies (1 for hourly, 24 for daily).
     pub tidy_every_hours: f64,
+    /// How many items holding a PR a goal makes into pre-merge fix tasks; past it each goes to the
+    /// owner's Needs you list instead, still holding the PR.
+    pub critical_max: i64,
 }
 
 impl BacklogAi {
@@ -195,7 +198,7 @@ impl BacklogAi {
 
 impl Default for BacklogAi {
     fn default() -> Self {
-        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0 }
+        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0, critical_max: 3 }
     }
 }
 

@@ -213,10 +213,15 @@ pub fn note_head(app: &App, id: i64, head: Option<&str>) -> Result<()> {
     board::save_context(app, id, &ctx, false)
 }
 
-/// Why the anchor's PR holds: the first member that hasn't submitted yet.
+/// Why the anchor's PR holds: a backlog item that blocks it and isn't fixed yet, else the first member
+/// that hasn't submitted yet.
 pub fn hold(app: &App, t: &Row) -> Result<Option<String>> {
     if anchor_id(t).is_some() {
         return Ok(None);
+    }
+    if let Some(b) = holding(app, t.id())?.first() {
+        let why = b.s("blocks_why").filter(|w| !w.is_empty()).unwrap_or(b.st("title").as_str()).to_string();
+        return Ok(Some(format!("{} blocks this PR: {why}", rf("issue", b.id()))));
     }
     let open = members(app, t.id())?.into_iter().find(|m| m.s("status") != Some("done") && !m.b("failed"));
     Ok(open.map(|m| format!("{} shares this PR and hasn't added its work yet", rf("task", m.id()))))
@@ -348,5 +353,184 @@ pub fn shared_ids(app: &App, t: &Row) -> Result<Vec<i64>> {
     match anchor(app, t)?.filter(|a| !closed(a)) {
         Some(a) => Ok(group(app, &a)?.iter().map(|g| g.id()).filter(|n| *n != t.id()).collect()),
         None => Ok(vec![]),
+    }
+}
+
+/// The `pr` items holding task `a`'s PR: open, or made into a task that isn't done (or failed), oldest first.
+pub fn holding(app: &App, a: i64) -> Result<Vec<Row>> {
+    app.db.q(
+        "SELECT i.* FROM issues i LEFT JOIN tasks t ON t.id = i.task_id WHERE i.holds_pr = ? AND i.blocks = 'pr'
+         AND (i.state = 'open' OR (i.state = 'task' AND (t.id IS NULL OR t.status != 'done' OR COALESCE(t.failed, 0) = 1))) ORDER BY i.id",
+        p![a],
+    )
+}
+
+/// The alert a `pr` item raises when its goal already has `[backlog] critical_max` of them made into tasks.
+pub fn critical_key(issue: i64) -> String {
+    format!("critical:{issue}")
+}
+
+fn fix_title(a: i64) -> String {
+    format!("Pre-merge fixes for {}", rf("task", a))
+}
+
+fn fix_line(b: &Row) -> String {
+    let why = b.s("blocks_why").filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default();
+    format!("- {} {}{why}", rf("issue", b.id()), b.st("title"))
+}
+
+/// The group's pre-merge fix task that hasn't started yet, which more items join.
+fn open_fix(app: &App, a: i64) -> Result<Option<Row>> {
+    app.db.q1(
+        "SELECT t.* FROM tasks t JOIN issues i ON i.id = t.from_issue_id WHERE t.same_pr = ? AND i.holds_pr = ?
+         AND t.status IN ('planned', 'queued') AND t.started_at IS NULL AND COALESCE(t.failed, 0) = 0 ORDER BY t.id DESC LIMIT 1",
+        p![a, a],
+    )
+}
+
+/// Items made into pre-merge fixes in `a`'s goal (or, outside a goal, for `a`'s PR).
+fn promoted(app: &App, a: &Row) -> Result<i64> {
+    let sql = "SELECT COUNT(*) AS n FROM issues i JOIN tasks a ON a.id = i.holds_pr WHERE i.blocks = 'pr' AND i.state = 'task' AND ";
+    let row = match a.i("goal_id") {
+        Some(g) => app.db.q1(&format!("{sql}a.goal_id = ?"), p![g])?,
+        None => app.db.q1(&format!("{sql}a.id = ?"), p![a.id()])?,
+    };
+    Ok(row.map(|r| r.i0("n")).unwrap_or(0))
+}
+
+/// Whether more work can still go on `a`'s branch before its PR merges.
+fn takes_fixes(app: &App, a: &Row) -> Result<bool> {
+    Ok(!closed(a) && !crate::design::is(a) && !crate::human::is(a) && crate::projects::task_ships_pr(app, a)?)
+}
+
+/// A `pr` item filed from task `filer` holds its group's PR (the filer's anchor, or the filer when it
+/// has none) and becomes part of one pre-merge fix task that shares the PR: the first item makes it,
+/// later ones join it until it starts, and one after that makes another. Making it a task steps the PR
+/// again, so one already at merge goes back to waiting before anything wakes for the merge. Past `[backlog] critical_max`
+/// items in the goal, the owner hears of it instead and it holds the PR as it is. When the PR is already
+/// merged or closed, it blocks the goal and becomes an ordinary task there. Says what became of it.
+pub fn take_critical(app: &App, iid: i64, filer: &Row, who: &str) -> Result<Option<String>> {
+    let b = board::get_issue(app, iid)?;
+    if b.s("state") != Some("open") {
+        return Ok(None);
+    }
+    let a = anchor(app, filer)?.unwrap_or_else(|| filer.clone());
+    let ra = rf("task", a.id());
+    if !takes_fixes(app, &a)? {
+        return goal_instead(app, &b, &a, who).map(Some);
+    }
+    app.db.update("issues", &json!(iid), fields!["holds_pr" => a.id(), "updated_at" => now_iso()])?;
+    let b = board::get_issue(app, iid)?;
+    let max = app.cfg.backlog.critical_max.max(0);
+    let text = if promoted(app, &a)? >= max {
+        let place = a.i("goal_id").map(|g| rf("goal", g)).unwrap_or_else(|| format!("{ra}'s PR"));
+        let text = format!(
+            "{} holds {ra}'s PR: {}. {place} already has {max} items made into pre-merge fixes, so this one waits for you: make it a task or close it.",
+            rf("issue", iid),
+            b.st("title")
+        );
+        crate::dispatch::add_alert_keyed(app, &text, Some(a.id()), a.i("goal_id"), &critical_key(iid))?;
+        board::add_issue_event(app, iid, who, "blocks", &format!("Holds {ra}'s PR. Past the {max} pre-merge fixes a goal makes, so it went to {}.", app.cfg.owner), None)?;
+        restep(app, a.id())?;
+        format!("It holds {ra}'s PR; past the {max} pre-merge fixes a goal makes, so it went to {} to decide.", app.cfg.owner)
+    } else if let Some(fix) = open_fix(app, a.id())? {
+        let rfix = rf("task", fix.id());
+        let detail = format!("{}\n{}", fix.st("detail").trim_end(), fix_line(&b));
+        board::update_task(app, fix.id(), fields!["detail" => detail])?;
+        board::log_event(app, fix.id(), who, "note", &format!("Added {}: {}", rf("issue", iid), b.st("title")))?;
+        crate::api::issue_tasked(app, iid, fix.id(), who, &format!("Added to {rfix}, the pre-merge fix task for {ra}'s PR."))?;
+        format!("It holds {ra}'s PR and was added to {rfix}, its pre-merge fix task.")
+    } else {
+        let rfix = make_fix(app, &b, &a, who)?;
+        format!("It holds {ra}'s PR until {rfix}, its pre-merge fix task, is done.")
+    };
+    Ok(Some(text))
+}
+
+/// The pre-merge fix task for `a`'s PR, made from item `b`: it shares the PR, in `a`'s goal, one wave
+/// after the group's last task.
+fn make_fix(app: &App, b: &Row, a: &Row, who: &str) -> Result<String> {
+    let ra = rf("task", a.id());
+    let detail = format!(
+        "These backlog items hold {ra}'s PR: it can't merge until each is fixed on its branch. Read each one's report (tb backlog show) before changing anything.\n{}",
+        fix_line(b)
+    );
+    let mut body = crate::api::issue_task_fields(app, b, who);
+    body["title"] = json!(fix_title(a.id()));
+    body["detail"] = json!(detail);
+    body["project"] = a.v("project");
+    body["latest"] = json!(format!("Holds {ra}'s PR: fixes what was found before it merges."));
+    body["same_pr"] = json!(ra);
+    let mut log = format!("Added to fix what holds {ra}'s PR ({})", rf("issue", b.id()));
+    if let Some(g) = a.i("goal_id") {
+        let (status, why) = board::joining_status(app, g, false)?;
+        body["goal_id"] = json!(g);
+        body["status"] = json!(status);
+        if let Some(w) = tail(app, a, 0)?.i("wave") {
+            body["wave"] = json!(w + 1);
+        }
+        log += &format!(", {why}");
+    }
+    let c = crate::ops::new_task(app, &body, who, Some(&log))?;
+    let id = c["id"].as_i64().unwrap_or(0);
+    let rfix = rf("task", id);
+    crate::api::issue_tasked(app, b.id(), id, who, &format!("Made into {rfix}, the pre-merge fix task that shares {ra}'s PR."))?;
+    Ok(rfix)
+}
+
+/// A `pr` item whose PR is already merged or closed (or that has no PR to hold) blocks the goal instead
+/// and becomes an ordinary task in it; outside a goal it blocks nothing.
+fn goal_instead(app: &App, b: &Row, a: &Row, who: &str) -> Result<String> {
+    let ra = rf("task", a.id());
+    let why = if stack::merged(a) {
+        format!("{ra}'s PR is already merged")
+    } else if waitsfor::pr_declined(a) {
+        format!("{ra}'s PR is already closed")
+    } else {
+        format!("{ra} has no PR to hold")
+    };
+    let Some(g) = b.i("goal_id").or(a.i("goal_id")) else {
+        app.db.update("issues", &json!(b.id()), fields!["blocks" => crate::blocks::NONE, "holds_pr" => null, "updated_at" => now_iso()])?;
+        board::add_issue_event(app, b.id(), who, "blocks", &format!("{why} and this isn't in a goal, so it blocks nothing."), None)?;
+        return Ok(format!("{why} and it isn't in a goal, so it blocks nothing."));
+    };
+    app.db.update(
+        "issues",
+        &json!(b.id()),
+        fields!["blocks" => crate::blocks::GOAL, "misses_goal" => 1, "goal_id" => g, "holds_pr" => null, "updated_at" => now_iso()],
+    )?;
+    board::add_issue_event(app, b.id(), who, "blocks", &format!("{why}, so it blocks {} instead.", rf("goal", g)), None)?;
+    let b = board::get_issue(app, b.id())?;
+    let (status, join) = board::joining_status(app, g, false)?;
+    let mut body = crate::api::issue_task_fields(app, &b, who);
+    body["goal_id"] = json!(g);
+    body["status"] = json!(status);
+    let c = crate::ops::new_task(app, &body, who, Some(&format!("Added from the backlog ({}), {join}", rf("issue", b.id()))))?;
+    let id = c["id"].as_i64().unwrap_or(0);
+    let rt = rf("task", id);
+    crate::api::issue_tasked(app, b.id(), id, who, &format!("Made into {rt}, a {status} task in its goal: {why}."))?;
+    Ok(format!("{why}, so it blocks the goal instead, as {rt}."))
+}
+
+/// An item that holds a PR was made a task, ticketed or closed: its alert goes, and the PR steps again so
+/// the hold shows at once (it lifts unless a task it was made into is still to do).
+pub fn critical_settled(app: &App, b: &Row) -> Result<()> {
+    crate::dispatch::clear_alert_key(app, &critical_key(b.id()))?;
+    match b.i("holds_pr") {
+        Some(a) if b.s("blocks") == Some(crate::blocks::PR) => restep(app, a),
+        _ => Ok(()),
+    }
+}
+
+/// Steps task `a`'s open PR again with its last read, so a hold that came or went since shows now: a
+/// PR at merge goes back to waiting before anything wakes for the merge.
+fn restep(app: &App, a: i64) -> Result<()> {
+    let Some(t) = board::find_task(app, Some(a))? else { return Ok(()) };
+    if !board::pr_still_open(&t) {
+        return Ok(());
+    }
+    match crate::prflow::flow(&t).get("rec").filter(|r| r.is_object()) {
+        Some(rec) => crate::prflow::step(app, &t, rec).map(|_| ()),
+        None => Ok(()),
     }
 }

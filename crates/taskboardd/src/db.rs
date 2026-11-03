@@ -316,6 +316,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     // `goal`, set by whoever files it; `blocks_why` is the concrete failure, path or done-when line.
     ("issues", "blocks", "TEXT DEFAULT 'none'"),
     ("issues", "blocks_why", "TEXT"),
+    // The task whose PR a `pr` item holds: the filer's same-PR anchor, or the filer when it has none.
+    ("issues", "holds_pr", "INT"),
     // The model the task's terminal starts with (`tb task new --model`, `[models]`): `small`, `large`
     // or a model name; null for `[models] default`.
     ("tasks", "model", "TEXT"),
