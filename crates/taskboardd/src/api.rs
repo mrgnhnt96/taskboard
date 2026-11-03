@@ -396,6 +396,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["goals", id, "notes"]) => goal_note(app, gid(id)?, body),
         ("POST", ["goals", id, "notes", nid]) => goal_note_edit(app, gid(id)?, nid, body),
         ("POST", ["goals", id, "plan"]) => goal_plan(app, gid(id)?, body),
+        ("GET", ["goals", id, "review"]) => crate::plan_review::show(app, gid(id)?),
+        ("POST", ["goals", id, "review"]) => crate::plan_review::start(app, gid(id)?, body),
         ("POST", ["goals", id, "accept"]) => accept_goal(app, gid(id)?, body),
         ("POST", ["goals", id, "run"]) => run_goal(app, gid(id)?, query, body),
         ("POST", ["goals", id, "waves", n]) => {

@@ -119,7 +119,7 @@ pub(crate) fn ask_in_with(app: &App, prompt: String, schema: Value, repo: Option
 }
 
 /// `ask_in` on `model` rather than `[backlog] model`.
-fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64) -> std::result::Result<Value, String> {
+pub(crate) fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let c = &app.cfg.backlog;
     let read: &[&str] = if repo.is_some() { &["Read", "Grep", "Glob"] } else { &[] };
