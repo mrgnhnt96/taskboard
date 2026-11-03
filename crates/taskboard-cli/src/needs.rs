@@ -23,7 +23,8 @@ pub enum NeedsCmd {
     /// One item in full: what it asks, its options and what can be done about it
     Show { item: String },
     /// Answer a task's question, only on the owner's word: tb needs answer T12 "use the old API",
-    /// or by option number: tb needs answer T12 --pick 2 (a picker with several questions: --pick 1 --pick 2,3)
+    /// or by option number: tb needs answer T12 --pick 2 (a picker with several questions: --pick 1 --pick 2,3).
+    /// A backlog item that holds a PR: tb needs answer B12 --pick 1 approves it, --pick 2 rejects it
     Answer {
         item: String,
         /// The answer, in the owner's words
@@ -81,6 +82,8 @@ pub struct Item {
     pub snooze: bool,
     /// The backlog item a done-when miss holds the goal open on.
     pub miss: Option<String>,
+    /// The backlog item that holds a PR and waits for the owner to approve or reject it.
+    pub critical: Option<String>,
     pub review: Option<i64>,
 }
 
@@ -96,6 +99,9 @@ fn phase(card: &Value) -> &str {
     card["pr"]["stage"]["phase"].as_str().unwrap_or("")
 }
 
+/// The key of the alert a `pr` backlog item raises while it waits for the owner (`critical-ask:<n>`).
+const CRITICAL: &str = "critical-ask:";
+
 /// The same kinds, in the same order, as the app's home page (`ask_vm`).
 fn kind(a: &Value, card: &Value) -> &'static str {
     let reason = st(card, "needs_reason");
@@ -105,6 +111,8 @@ fn kind(a: &Value, card: &Value) -> &'static str {
         "Weekly review"
     } else if st(a, "key").starts_with("miss:") {
         "Done-when missed"
+    } else if st(a, "key").starts_with(CRITICAL) {
+        "Holds a PR"
     } else if a["urgent"] == true {
         "Urgent"
     } else if has_card && card["lost"] == true && card["looks_finished"].as_array().is_some_and(|f| !f.is_empty()) {
@@ -160,8 +168,13 @@ fn item(a: &Value) -> Item {
         })
         .unwrap_or_default();
     let has_id = alert.is_some();
+    let critical = st(a, "key").strip_prefix(CRITICAL).filter(|n| !n.is_empty()).map(|n| format!("B{n}"));
+    let (answer, asks, fixes) = match critical {
+        Some(_) => (true, vec![critical_ask()], vec![]),
+        None => (answer, if answer { asks } else { vec![] }, fixes),
+    };
     Item {
-        handle: task.clone().map(|t| t.replacen('H', "T", 1)).or_else(|| alert.clone()).or_else(|| goal.clone()).unwrap_or_default(),
+        handle: critical.clone().or_else(|| task.clone().map(|t| t.replacen('H', "T", 1))).or_else(|| alert.clone()).or_else(|| goal.clone()).unwrap_or_default(),
         kind,
         text: if text == title { String::new() } else { text },
         title,
@@ -172,15 +185,25 @@ fn item(a: &Value) -> Item {
         at: st(a, "at").to_string(),
         pr: opt(&card["pr"], "url"),
         answer,
-        asks: if answer { asks } else { vec![] },
+        asks,
         picker: answer && card["ask"]["picker"] == true,
         fixes,
-        dismiss: has_id && a["review"] != true && a["urgent"] != true && a["quiet"] != true,
+        dismiss: has_id && a["review"] != true && a["urgent"] != true && a["quiet"] != true && critical.is_none(),
         snooze: has_id,
         miss: st(a, "key").strip_prefix("miss:").filter(|n| !n.is_empty()).map(|n| format!("B{n}")),
+        critical,
         review: a["review_id"].as_i64(),
         alert,
     }
+}
+
+/// The owner's choice on a backlog item that holds a PR: option 1 approves it, option 2 rejects it.
+fn critical_ask() -> Asked {
+    let options = vec![
+        ("Approve".to_string(), "its fix task runs and fixes it before the PR merges".to_string()),
+        ("Reject".to_string(), "it goes back to the backlog and stops holding the PR".to_string()),
+    ];
+    ("Approve or reject?".to_string(), options, false)
 }
 
 /// A goal held after a wave for review (its `stopped` line, "Wave 1 is done. Review it, then continue").
@@ -208,6 +231,7 @@ fn stop(e: &Value) -> Option<Item> {
         dismiss: false,
         snooze: false,
         miss: None,
+        critical: None,
         review: None,
     })
 }
@@ -215,7 +239,7 @@ fn stop(e: &Value) -> Option<Item> {
 fn rank(i: &Item) -> u8 {
     match i.kind {
         "Urgent" | "Terminal lost" | "Couldn't start" | "Failed" | "Checks failed" => 0,
-        "Question" | "Needs you" => 1,
+        "Question" | "Needs you" | "Holds a PR" => 1,
         "Weekly review" | "Review the PR" | "Ready to merge" => 3,
         _ => 2,
     }
@@ -234,10 +258,11 @@ pub fn items(home: &Value, project: Option<&str>) -> Vec<Item> {
 pub fn find<'a>(items: &'a [Item], handle: &str) -> Result<&'a Item, String> {
     let h = handle.trim();
     let as_task = h.strip_prefix(['T', 't', 'H', 'h']).filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit())).map(|d| format!("T{d}"));
+    let as_issue = h.strip_prefix(['B', 'b']).filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit())).map(|d| format!("B{d}"));
     let as_goal = h.strip_prefix(['G', 'g']).filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit())).map(|d| format!("G{d}"));
     items
         .iter()
-        .find(|i| i.handle == h || i.alert.as_deref() == Some(h) || (as_task.is_some() && i.task == as_task) || (as_goal.is_some() && i.task.is_none() && i.goal == as_goal))
+        .find(|i| i.handle == h || i.alert.as_deref() == Some(h) || (as_issue.is_some() && i.critical == as_issue) || (as_task.is_some() && i.task == as_task) || (as_goal.is_some() && i.task.is_none() && i.critical.is_none() && i.goal == as_goal))
         .ok_or_else(|| format!("{h} isn't on the Needs you list. tb needs lists what is."))
 }
 
@@ -301,6 +326,10 @@ pub fn todo(i: &Item) -> Vec<String> {
         "Terminal lost" | "Looks finished" => {
             out.push(format!("tb needs restart {h}   (a new terminal from its handoff)"));
             out.push(format!("tb needs finish {h}   (its work shipped: a new terminal checks it and hands it in)"));
+        }
+        "Holds a PR" => {
+            out.push(format!("tb needs answer {h} --pick 1   (approve: its fix task runs before the PR merges)"));
+            out.push(format!("tb needs answer {h} --pick 2   (reject: back to the backlog, and the PR stops waiting on it)"));
         }
         "Couldn't start" => out.push(format!("tb start {h}")),
         "Wave stop" => out.push(format!("tb needs continue {h}   (wave {} starts)", i.wave.map(|n| n + 1).unwrap_or(0))),
@@ -399,6 +428,9 @@ fn picked(i: &Item, q: usize, pick: &str) -> Result<Vec<usize>, String> {
 
 /// The request that answers `i`: (path, body).
 pub fn answer_request(i: &Item, text: Option<&str>, picks: &[String]) -> Result<(String, Value), String> {
+    if let Some(b) = &i.critical {
+        return critical_request(i, b, text, picks);
+    }
     let task = i.task.as_deref().filter(|_| i.answer).ok_or_else(|| format!("{} isn't waiting on an answer ({}).", i.handle, i.kind))?;
     let text = text.map(str::trim).filter(|t| !t.is_empty());
     if i.picker {
@@ -422,6 +454,18 @@ pub fn answer_request(i: &Item, text: Option<&str>, picks: &[String]) -> Result<
     Ok((format!("/tasks/{task}/answer"), json!({"text": text, "when": "now"})))
 }
 
+/// Approving (`--pick 1`, or "approve") or rejecting (`--pick 2`, or "reject") backlog item `b`.
+fn critical_request(i: &Item, b: &str, text: Option<&str>, picks: &[String]) -> Result<(String, Value), String> {
+    let approve = match (text.map(str::trim).filter(|t| !t.is_empty()), picks) {
+        (Some(_), [_, ..]) => return Err("Give the answer or --pick, not both.".into()),
+        (None, [p]) => picked(i, 0, p)? == [0],
+        (Some(t), []) if t.eq_ignore_ascii_case("approve") => true,
+        (Some(t), []) if t.eq_ignore_ascii_case("reject") => false,
+        _ => return Err(format!("Approve or reject {b}: tb needs answer {b} --pick 1 (approve) or --pick 2 (reject).")),
+    };
+    Ok((format!("/backlog/{b}/critical"), json!({"approve": approve})))
+}
+
 /// The request for Restart, Finish, Continue, Dismiss or Snooze on `i`: (path, body).
 pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> {
     let lost = matches!(i.kind, "Terminal lost" | "Looks finished");
@@ -438,6 +482,7 @@ pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> 
             "Urgent" => "An urgent alert stays until it clears.".into(),
             "Weekly review" => "A weekly review stays until the owner opens it.".into(),
             "Review the PR" => "A PR waiting for the owner's review stays until they review it.".into(),
+            "Holds a PR" => format!("{} stays until the owner approves or rejects it.", i.handle),
             _ => format!("{} has no alert to dismiss: it stays until it's handled.", i.handle),
         }),
         NeedsCmd::Dismiss { .. } => Ok((format!("/alerts/{}/dismiss", alert()?), json!({}))),
@@ -457,6 +502,7 @@ pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> 
 pub fn done_line(cmd: &NeedsCmd, i: &Item, v: &Value) -> String {
     let h = &i.handle;
     match cmd {
+        NeedsCmd::Answer { .. } if i.critical.is_some() => v["text"].as_str().map(str::to_string).unwrap_or_else(|| format!("Answered {h}.")),
         NeedsCmd::Answer { .. } => format!("Answered {h}. Its agent carries on with it."),
         NeedsCmd::Restart { .. } => format!("Restarting {h} in a new terminal from its handoff."),
         NeedsCmd::Finish { .. } => format!("A new terminal checks {h} and hands it in."),
@@ -524,6 +570,9 @@ mod tests {
                  "card": {"ref": "T13", "title": "Lost one", "status": "needs", "needs_reason": "lost", "lost": true, "project": "api"}},
                 {"id": "cccc333333", "at": "2026-10-20T08:00:00Z", "text": "Picto misses its done-when (B268)", "goal": "G23", "key": "miss:268", "card": null,
                  "actions": [{"label": "Look", "prompt": "Look at B268", "command": ""}]},
+                {"id": "ffff666666", "at": "2026-10-20T14:00:00Z", "text": "B301 holds T40's PR #12: …", "title": "B301 holds T40's PR #12", "goal": "G3",
+                 "key": "critical-ask:301", "project": "web", "card": null,
+                 "actions": [{"label": "Approve", "prompt": "Run it", "command": "tb needs answer B301 --pick 1"}]},
                 {"id": "dddd444444", "at": "2026-10-20T08:30:00Z", "text": "H14: do the thing", "task": "T14",
                  "card": {"ref": "H14", "title": "Do the thing", "status": "needs", "needs_reason": "human", "project": "web"}},
                 {"id": "eeee555555", "at": "2026-10-20T13:00:00Z", "task": "T15",
@@ -545,6 +594,7 @@ mod tests {
                 ("T13", "Terminal lost"),
                 ("T12", "Question"),
                 ("T15", "Question"),
+                ("B301", "Holds a PR"),
                 ("cccc333333", "Done-when missed"),
                 ("T14", "Your task"),
                 ("G3", "Wave stop"),
@@ -608,5 +658,23 @@ mod tests {
         assert!(miss.iter().any(|l| l.contains("tb backlog task B268")), "{miss:#?}");
         assert!(miss.contains(&"  Suggested · Look: Look at B268".to_string()), "{miss:#?}");
         assert!(show_lines(find(&items, "T14").unwrap()).iter().any(|l| l.contains("press Done on its page in the app")));
+    }
+
+    #[test]
+    fn a_pr_holding_item_is_approved_or_rejected_and_stays_until_it_is() {
+        let items = items(&home(), None);
+        let b = find(&items, "b301").unwrap();
+        assert_eq!(b.handle, "B301");
+        assert_eq!(answer_request(b, None, &["1".into()]).unwrap(), ("/backlog/B301/critical".into(), json!({"approve": true})));
+        assert_eq!(answer_request(b, None, &["2".into()]).unwrap().1, json!({"approve": false}));
+        assert_eq!(answer_request(b, Some("Reject"), &[]).unwrap().1, json!({"approve": false}));
+        assert!(answer_request(b, Some("maybe"), &[]).unwrap_err().contains("--pick 1 (approve)"));
+        assert!(act_request(&NeedsCmd::Dismiss { item: "B301".into() }, b).unwrap_err().contains("approves or rejects"));
+        let lines = show_lines(b);
+        assert!(lines.contains(&"  1. Approve: its fix task runs and fixes it before the PR merges".to_string()), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.starts_with("  tb needs answer B301 --pick 2")), "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.contains("Suggested")), "{lines:#?}");
+        let done = done_line(&NeedsCmd::Answer { item: "B301".into(), text: None, pick: vec!["1".into()] }, b, &json!({"text": "Approved B301."}));
+        assert_eq!(done, "Approved B301.");
     }
 }

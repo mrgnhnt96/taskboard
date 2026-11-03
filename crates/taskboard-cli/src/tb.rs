@@ -68,9 +68,15 @@ enum Cmd {
         detail: Option<String>,
         #[arg(long)]
         output: Option<String>,
-        /// It misses the goal's own done-when: it goes to the owner, and the goal stays open until it's settled
+        /// It misses the goal's own done-when (same as --blocks goal): it goes to the owner, and the goal stays open until it's settled
         #[arg(long)]
         misses_goal: bool,
+        /// Whether it blocks: pr (merging this task's PR leaves main worse: a crash, data lost, a usable hole, something that works today stops), goal (the goal's done-when isn't met without it) or none. Required while the task's PR is open
+        #[arg(long, value_parser = ["none", "pr", "goal"])]
+        blocks: Option<String>,
+        /// For --blocks pr|goal: the concrete failure, path or done-when line, in one line
+        #[arg(long, value_name = "WHY")]
+        blocks_why: Option<String>,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -405,6 +411,12 @@ enum Cmd {
         outcome: Option<String>,
         /// Why, in one line (with fixed: what you changed)
         reason: Vec<String>,
+        /// Whether it blocks: pr (merging this task's PR leaves main worse: a crash, data lost, a usable hole, something that works today stops), goal (the goal's done-when isn't met without it) or none. Required with backlog
+        #[arg(long, value_parser = ["none", "pr", "goal"])]
+        blocks: Option<String>,
+        /// For --blocks pr|goal: the concrete failure, path or done-when line, in one line
+        #[arg(long, value_name = "WHY")]
+        blocks_why: Option<String>,
     },
     /// How this board slices a goal into tasks: the owner's planning file for the project or the board,
     /// else the built-in rules
@@ -1764,6 +1776,12 @@ enum BacklogCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
+        /// Whether it blocks: pr (merging this task's PR leaves main worse: a crash, data lost, a usable hole, something that works today stops), goal (the goal's done-when isn't met without it) or none. Required while the task's PR is open
+        #[arg(long, value_parser = ["none", "pr", "goal"])]
+        blocks: Option<String>,
+        /// For --blocks pr|goal: the concrete failure, path or done-when line, in one line
+        #[arg(long, value_name = "WHY")]
+        blocks_why: Option<String>,
     },
     /// Change a backlog issue's title, detail, area or project
     Set {
@@ -3357,7 +3375,7 @@ fn month_name(m: &str) -> String {
     chrono::NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").map(|d| d.format("%b %Y").to_string()).unwrap_or_else(|_| m.to_string())
 }
 
-fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<String>, reason: Vec<String>) -> Result<i32, String> {
+fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<String>, reason: Vec<String>, blocks: Option<String>, blocks_why: Option<String>) -> Result<i32, String> {
     let task = task_ref(&task)?;
     let path = format!("/tasks/{task}/code-review/triage");
     let Some(finding) = finding else {
@@ -3409,7 +3427,13 @@ fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<S
     if reason.trim().is_empty() {
         return Err(format!("Say why: tb finding {task} {finding} {outcome} \"<reason>\""));
     }
-    let v = c.call("POST", &path, Some(json!({"finding": finding, "outcome": outcome, "reason": reason, "session": c.session})))?;
+    if outcome != "backlog" && (blocks.is_some() || blocks_why.is_some()) {
+        return Err("--blocks is for a backlog outcome.".into());
+    }
+    if outcome == "backlog" && blocks.is_none() {
+        return Err(format!("Say whether it blocks: tb finding {task} {finding} backlog --blocks none|pr|goal \"<reason>\""));
+    }
+    let v = c.call("POST", &path, Some(json!({"finding": finding, "outcome": outcome, "reason": reason, "session": c.session, "blocks": blocks, "blocks_why": blocks_why})))?;
     out(v["message"].as_str().unwrap_or("Marked."));
     Ok(0)
 }
@@ -3882,6 +3906,9 @@ fn issue_show_lines(v: &Value) -> Vec<String> {
     if let Some(f) = v["from"].as_str().filter(|f| !f.is_empty()) {
         lines.push(f.to_string());
     }
+    if let Some(b) = blocks_line(v) {
+        lines.push(b);
+    }
     for (label, key) in [("Detail", "detail"), ("Said", "said"), ("How", "how")] {
         let block = indented(label, v[key].as_str().unwrap_or(""));
         if !block.is_empty() {
@@ -3897,6 +3924,19 @@ fn issue_show_lines(v: &Value) -> Vec<String> {
         lines.extend(history);
     }
     lines
+}
+
+/// "Blocks: its task's PR — <why>" for an item that holds its PR or goal; nothing for one that doesn't.
+fn blocks_line(v: &Value) -> Option<String> {
+    let what = match v["blocks"].as_str()? {
+        "pr" => "its task's PR",
+        "goal" => "its goal",
+        _ => return None,
+    };
+    Some(match v["blocks_why"].as_str().filter(|w| !w.is_empty()) {
+        Some(w) => format!("Blocks: {what} — {w}"),
+        None => format!("Blocks: {what}"),
+    })
 }
 
 fn lesson_ref(v: &str) -> Result<String, String> {
@@ -5756,13 +5796,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let f = checkpoint_body(done, next, decisions, files)?;
             c.run_report("tb.checkpoint", f, t.task, true, |v| format!("Checkpoint saved on {}.", v["task"].as_str().unwrap_or("")))
         }
-        Cmd::Found { title, kind, detail, output, misses_goal, t } => c.run_report(
+        Cmd::Found { title, kind, detail, output, misses_goal, blocks, blocks_why, t } => c.run_report(
             "tb.found",
-            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>()), "misses_goal": misses_goal}),
+            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>()), "misses_goal": misses_goal, "blocks": blocks, "blocks_why": blocks_why}),
             t.task,
             false,
             |v| {
-                if v["misses_goal"] == true {
+                if let Some(held) = v["held"].as_str() {
+                    format!("Filed {}. {held}", v["issue"].as_str().unwrap_or(""))
+                } else if v["blocks"] == "pr" {
+                    format!("Filed {} as blocking this task's PR.", v["issue"].as_str().unwrap_or(""))
+                } else if v["misses_goal"] == true {
                     format!("Sent {} to the owner as a miss on the goal's done-when; the goal stays open until it's settled.", v["issue"].as_str().unwrap_or(""))
                 } else if v["seen"] == true {
                     format!("Already in the backlog as {}; added this sighting. To look for related work: tb search \"<words>\".", v["issue"].as_str().unwrap_or(""))
@@ -6025,7 +6069,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
-        Cmd::Finding { task, finding, outcome, reason } => finding_cmd(c, task, finding, outcome, reason),
+        Cmd::Finding { task, finding, outcome, reason, blocks, blocks_why } => finding_cmd(c, task, finding, outcome, reason, blocks, blocks_why),
         Cmd::Planning { project, suggest, accept } => match (suggest, accept) {
             (false, false) => planning_cmd(c, project),
             _ => planning_lessons_cmd(c, project, accept),
@@ -6794,15 +6838,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Add { title, kind, detail, goal, project, area } } => {
+        Cmd::Backlog { action: BacklogCmd::Add { title, kind, detail, goal, project, area, blocks, blocks_why } } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let name = c.who();
             let v = c.call(
                 "POST",
                 "/backlog",
-                Some(json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "goal_id": goal, "project": project, "area": area, "cwd": c.cwd, "where": "tb", "who": name})),
+                Some(json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "goal_id": goal, "project": project, "area": area, "cwd": c.cwd, "where": "tb", "who": name, "session": c.session, "blocks": blocks, "blocks_why": blocks_why})),
             )?;
-            out(&format!("Added {} to the backlog.", v["ref"].as_str().unwrap_or("")));
+            let what = match v["blocks"].as_str() {
+                Some("pr") => ", blocking its task's PR",
+                Some("goal") => ", holding its goal open",
+                _ => "",
+            };
+            out(&format!("Added {} to the backlog{what}.", v["ref"].as_str().unwrap_or("")));
             Ok(0)
         }
         Cmd::Backlog { action: BacklogCmd::Note { issue, text } } => {
@@ -8515,6 +8564,22 @@ mod tests {
                        "task_ref": null, "jira_key": "", "from": "Found by T12", "detail": "tb can't list tasks.",
                        "history": [{"at": "", "who": "T12", "kind": "found", "text": "Filed"}]});
         assert_eq!(issue_show_lines(&b), ["B7 · open · gap · taskboard", "No readers", "Found by T12", "", "Detail:", "  tb can't list tasks.", "", "History:", "   · T12 · found: Filed"]);
+    }
+
+    #[test]
+    fn tb_backlog_show_says_what_an_item_blocks() {
+        let b = json!({"ref": "B7", "state": "open", "kind": "gap", "project": "taskboard", "goal": null, "title": "No readers",
+                       "task_ref": null, "jira_key": "", "from": "Found by T12", "detail": "tb can't list tasks.",
+                       "history": [{"at": "", "who": "T12", "kind": "found", "text": "Filed"}]});
+        let mut held = b.clone();
+        held["blocks"] = json!("pr");
+        held["blocks_why"] = json!("src/a.rs crashes on an empty page");
+        assert_eq!(issue_show_lines(&held)[2..4], ["Found by T12", "Blocks: its task's PR — src/a.rs crashes on an empty page"]);
+        held["blocks"] = json!("none");
+        assert_eq!(issue_show_lines(&held), issue_show_lines(&b), "none shows nothing");
+        let Cmd::Found { blocks, blocks_why, .. } = Cli::try_parse_from(["tb", "found", "x", "--blocks", "goal", "--blocks-why", "Done-when: y"]).unwrap().cmd else { panic!("not tb found") };
+        assert_eq!((blocks.as_deref(), blocks_why.as_deref()), (Some("goal"), Some("Done-when: y")));
+        assert!(Cli::try_parse_from(["tb", "found", "x", "--blocks", "later"]).is_err());
     }
 
     #[test]

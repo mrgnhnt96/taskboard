@@ -10,6 +10,7 @@ pub mod apporigin;
 pub mod apptoken;
 pub mod asks;
 pub mod bits;
+pub mod blocks;
 pub mod board;
 pub mod botrun;
 pub mod breaks;

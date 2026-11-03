@@ -510,6 +510,17 @@ pub struct Issue {
     pub title: String,
     /// Reported as a miss on the goal's done-when: the goal stays open until it's settled.
     pub misses_goal: bool,
+    /// "Blocks PR" or "Blocks goal", with its why: it holds its task's PR or the goal until it's settled.
+    pub blocks: Option<(&'static str, String)>,
+}
+
+fn blocks_of(x: &Value) -> Option<(&'static str, String)> {
+    let pill = match s(x, "blocks") {
+        "pr" => "Blocks PR",
+        "goal" => "Blocks goal",
+        _ => return None,
+    };
+    Some((pill, s(x, "blocks_why").to_string()))
 }
 
 /// The open backlog, misses on the done-when first, otherwise in the goal's order.
@@ -517,7 +528,7 @@ pub fn open_issues(g: &Value) -> Vec<Issue> {
     let mut v: Vec<Issue> = arr(g, "backlog")
         .iter()
         .filter(|x| fmt::opt_s(x, "state").unwrap_or("open") == "open")
-        .map(|x| Issue { r: fmt::ref_of(x, "B"), title: s(x, "title").to_string(), misses_goal: b(x, "misses_goal") })
+        .map(|x| Issue { r: fmt::ref_of(x, "B"), title: s(x, "title").to_string(), misses_goal: b(x, "misses_goal"), blocks: blocks_of(x) })
         .collect();
     v.sort_by_key(|x| !x.misses_goal);
     v
@@ -538,7 +549,7 @@ pub fn open_misses(g: &Value) -> Vec<Issue> {
             "task" => fmt::opt_s(x, "task_ref").is_none_or(|r| !done.contains(r)),
             _ => false,
         })
-        .map(|x| Issue { r: fmt::ref_of(x, "B"), title: s(x, "title").to_string(), misses_goal: true })
+        .map(|x| Issue { r: fmt::ref_of(x, "B"), title: s(x, "title").to_string(), misses_goal: true, blocks: blocks_of(x) })
         .collect()
 }
 
@@ -1290,22 +1301,30 @@ fn backlog_head(t: &Theme, n: usize) -> Div {
 }
 
 /// One open issue of the Backlog section, the `ix`th.
-fn issue_piece(t: &Theme, Issue { r, title, misses_goal }: Issue, ix: usize, last: bool, cx: &mut Context<MainWindow>) -> Div {
+fn issue_piece(t: &Theme, Issue { r, title, misses_goal, blocks }: Issue, ix: usize, last: bool, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.accent;
     let target = r.clone();
     let row = div()
-        .id(SharedString::from(format!("goal-issue-{r}")))
         .flex()
         .items_center()
         .gap(px(8.))
         .text_size(px(13.))
-        .cursor_pointer()
         .hover(move |s| s.text_color(hover))
         .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r))
         .child(div().flex_1().min_w_0().truncate().child(title))
         .when(misses_goal, |d| d.child(kit::pill(t.warn_text, t.warn_soft, "Misses goal")))
+        .when_some(blocks.as_ref().map(|(pill, _)| *pill), |d, pill| d.child(kit::pill(t.warn_text, t.warn_soft, pill)));
+    let why = blocks.map(|(_, why)| why).filter(|w| !w.is_empty());
+    let piece = div()
+        .id(SharedString::from(format!("goal-issue-{target}")))
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .cursor_pointer()
+        .child(row)
+        .when_some(why, |d, why| d.child(div().text_size(px(12.)).text_color(t.warn_text).line_clamp(2).child(why)))
         .on_click(cx.listener(move |m, _, _, cx| m.open_issue(target.clone(), cx)));
-    side_piece(t, false, last, if ix == 0 { 0. } else { 6. }, row)
+    side_piece(t, false, last, if ix == 0 { 0. } else { 6. }, piece)
 }
 
 /// "N more" under the first few open issues: lists them all.

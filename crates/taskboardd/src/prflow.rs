@@ -650,11 +650,14 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
         "comments" => format!(
             "There are open review threads{}. {tb} pr status {r} lists them with their ids, and {tb} pr thread {r} <thread> prints one's \
              whole text and replies. Address each in the worktree; \
-             one that can fairly wait for a later PR goes to the backlog instead ({tb} backlog add \"<title>\" --kind \
-             follow). Push the fixes, then answer each thread that asked for something with {tb} pr reply {r} <thread> \
+             one that can fairly wait for a later PR goes to the backlog instead, filed before you resolve its thread \
+             ({tb} backlog add \"<title>\" --kind follow --blocks none|pr|goal --blocks-why \"<the failure, path or \
+             done-when line>\"; --blocks can't be left out while the PR is open). {}\n\
+             Push the fixes, then answer each thread that asked for something with {tb} pr reply {r} <thread> \
              \"<what you did>\" --resolve. A comment that asks for nothing gets {tb} pr ack {r} <thread>: it's resolved \
              without a reply.{}",
             if rec["review_decision"] == "CHANGES_REQUESTED" { " and a reviewer asked for changes" } else { "" },
+            crate::blocks::RULE,
             if rec["review_decision"] == "CHANGES_REQUESTED" {
                 format!(" When every thread is answered, run {tb} pr addressed {r}: it asks the reviewers who wanted changes to look again.")
             } else {

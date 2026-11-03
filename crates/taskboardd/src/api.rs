@@ -10,7 +10,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, stamp, steps, triage, usage};
+use crate::{accounts, blocks, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, stamp, steps, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -457,6 +457,12 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["backlog", id, "history"]) => get_issue_history(app, iid(id)?, query),
         ("POST", ["backlog", id]) => app.db.tx(|| patch_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "promote"]) => app.db.tx(|| promote(app, iid(id)?, body)),
+        ("POST", ["backlog", id, "critical"]) => {
+            let Some(approve) = body["approve"].as_bool() else { return err(400, "Say approve: true or false.") };
+            let (v, gone) = app.db.tx(|| crate::samepr::answer(app, iid(id)?, approve, &issue_actor(body)))?;
+            remove_md(app, gone.as_slice());
+            Ok(v)
+        }
         ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?, body)),
         ("POST", ["backlog", id, "drop"]) => app.db.tx(|| drop_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "reopen"]) => app.db.tx(|| reopen_issue(app, iid(id)?, body)),
@@ -647,6 +653,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                     "An urgent alert stays until it clears."
                 } else if alerts::quiet(&a) {
                     "A weekly review stays until you open it."
+                } else if alerts::asks_owner(&a) {
+                    "It stays until you approve or reject it."
                 } else {
                     "A PR waiting for your review stays until you review it."
                 };
@@ -2131,9 +2139,10 @@ fn task_jira(app: &App, id: i64, body: &Value) -> Result<Value> {
     Ok(d)
 }
 
-fn purge_tasks(app: &App, ids: &[i64]) -> Result<()> {
+pub(crate) fn purge_tasks(app: &App, ids: &[i64]) -> Result<()> {
     let now = now_iso();
     for id in ids {
+        crate::samepr::forget_asks(app, *id)?;
         app.db.x("UPDATE jobs SET state = 'cancelled', updated_at = ? WHERE state = 'pending' AND task_id = ?", p![now, id])?;
         app.db.x("UPDATE jobs SET task_id = NULL WHERE task_id = ?", p![id])?;
         app.db.x("DELETE FROM events WHERE task_id = ?", p![id])?;
@@ -2151,7 +2160,7 @@ fn purge_tasks(app: &App, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
-fn remove_md(app: &App, ids: &[i64]) {
+pub(crate) fn remove_md(app: &App, ids: &[i64]) {
     for id in ids {
         let _ = std::fs::remove_file(app.cfg.md_dir().join(format!("{}.md", rf("task", *id))));
     }
@@ -2943,7 +2952,16 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
     if !ISSUE_KINDS.contains(&kind.as_str()) {
         return err(400, "Type must be bug, gap, follow or clean.");
     }
-    let goal_id = opt_goal(body, "goal_id")?;
+    let sid = body_str(body, "session");
+    let filer = match body.get("task").filter(|v| !v.is_null() && *v != "") {
+        Some(v) => Some(board::get_task(app, need_ref(v, "task")?)?),
+        None => blocks::session_task(app, Some(&sid))?,
+    };
+    let mut goal_id = opt_goal(body, "goal_id")?;
+    if goal_id.is_none() && blocks::wants_goal(body) {
+        goal_id = filer.as_ref().and_then(|t| t.i("goal_id"));
+    }
+    let marked = blocks::read(body, &blocks::Filer { task: filer.as_ref(), goal_id, always: false }, None, &title)?;
     let id = app.db.tx(|| {
         let g = match goal_id {
             Some(g) => Some(board::get_goal(app, g)?),
@@ -2987,9 +3005,14 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
                     "said" => if said.is_empty() { None } else { Some(format!("“{said}”")) }, "how" => how, "source" => source,
                     "found_by_name" => who, "state" => "open",
                     "snapshot" => jdumps(&body.get("snapshot").filter(|s| s.is_object()).cloned().unwrap_or(json!({}))),
-                    "created_at" => now, "updated_at" => now],
+                    "found_by_task" => filer.as_ref().map(|t| t.id()), "found_by_session" => if sid.is_empty() { None } else { Some(sid.clone()) },
+                    "created_at" => now, "updated_at" => now]
+                .into_iter()
+                .chain(blocks::fields(&marked))
+                .collect(),
         )?;
         board::add_issue_event(app, id, &who, "note", &format!("Added from {page}"), None)?;
+        blocks::mark(app, id, &marked, goal_id, &title, &who, true, filer.as_ref())?;
         Ok(id)
     })?;
     issue_detail(app, id)
