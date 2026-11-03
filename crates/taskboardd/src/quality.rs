@@ -2,7 +2,8 @@
 //! its tasks were added after its work started (not counting ones made with the goal or planned by
 //! one of its design tasks), how many failed or had to be started again, how many review rounds
 //! that found something to fix (see [`fix_rounds`]) and questions each task took, and the agent
-//! time its tasks took against the time a developer was estimated to take. A goal's numbers are
+//! time its tasks took (working, and visiting their PRs after submit) against the time a developer
+//! was estimated to take. A goal's numbers are
 //! worked out once it finishes and kept (setting `quality:G<n>`), so they outlive the cleanup of
 //! the events behind them; `tb quality` shows them by month, the Days page the last 30 days.
 
@@ -23,7 +24,7 @@ const BEFORE_DAYS: i64 = 180;
 const WITH_THE_GOAL_SECS: f64 = 5.0 * 60.0;
 
 /// Bumped when the numbers are counted differently, so kept ones are worked out again.
-const VERSION: &str = "v2";
+const VERSION: &str = "v4";
 
 fn setting_key(gid: i64) -> String {
     format!("quality:{}", rf("goal", gid))
@@ -40,21 +41,72 @@ fn count(app: &App, sql: &str, id: i64) -> Result<i64> {
     Ok(app.db.val(sql, p![id])?.as_i64().unwrap_or(0))
 }
 
-/// Minutes the task spent working, from its status changes.
-fn work_min(app: &App, id: i64) -> Result<f64> {
+/// Where a PR visit starts: the board brings the task's conversation back for its PR.
+const VISIT_STARTS: &str = "Brought the conversation back for PR #%";
+
+/// What ends a PR visit: the agent says it's done, the PR is merged or closed, the terminal closes
+/// or gives its slot back, or the next visit starts.
+const VISIT_ENDS: [&str; 7] = [
+    "The agent finished its visit to PR #%",
+    "%so the board is closing%",
+    "Merged PR #%",
+    "PR #% was merged%",
+    "PR #% was closed without merging%",
+    "%closed before it finished PR #%",
+    "Gave back worktree slot%",
+];
+
+/// The task's working spans, from its status changes, as (from, to) seconds.
+fn working_spans(app: &App, id: i64) -> Result<Vec<(f64, f64)>> {
     let states = app.db.q("SELECT at, status FROM task_states WHERE task_id = ? ORDER BY at, id", p![id])?;
-    let mut sum = 0.0;
-    for (i, s) in states.iter().enumerate() {
-        if s.s("status") != Some("working") {
+    Ok(states
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.s("status") == Some("working"))
+        .filter_map(|(i, s)| Some((at(s, "at")?, states.get(i + 1).and_then(|n| at(n, "at"))?)))
+        .collect())
+}
+
+/// The task's PR visits after it submitted (fixing checks, review comments, rebases, merges), as
+/// (from, to) seconds: from the handoff that brought it back to whatever ended the visit. A visit
+/// nothing ended isn't counted.
+fn visit_spans(app: &App, id: i64) -> Result<Vec<(f64, f64)>> {
+    let ends = VISIT_ENDS.iter().map(|_| "text LIKE ?").collect::<Vec<_>>().join(" OR ");
+    let sql = format!(
+        "SELECT at, kind = 'handoff' AND text LIKE ?1 AS starts FROM events WHERE task_id = ?2 AND ((kind = 'handoff' AND text LIKE ?1) OR {ends}) ORDER BY at, id"
+    );
+    let mut args = vec![json!(VISIT_STARTS), json!(id)];
+    args.extend(VISIT_ENDS.iter().map(|e| json!(e)));
+    let events = app.db.q(&sql, args)?;
+    let mut spans = vec![];
+    for (i, e) in events.iter().enumerate() {
+        if e.i0("starts") == 0 {
             continue;
         }
-        let a = s.s("at").and_then(parse_iso);
-        let b = states.get(i + 1).and_then(|n| n.s("at")).and_then(parse_iso);
-        if let (Some(a), Some(b)) = (a, b) {
-            sum += (b - a).max(0.0);
+        if let (Some(a), Some(b)) = (at(e, "at"), events.get(i + 1).and_then(|n| at(n, "at"))) {
+            spans.push((a, b));
         }
     }
-    Ok(sum / 60.0)
+    Ok(spans)
+}
+
+/// Minutes covered by the spans, counting time where they overlap once.
+fn covered_min(mut spans: Vec<(f64, f64)>) -> f64 {
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (mut sum, mut reach) = (0.0, f64::NEG_INFINITY);
+    for (a, b) in spans {
+        let from = a.max(reach);
+        if b > from {
+            sum += b - from;
+            reach = b;
+        }
+    }
+    sum / 60.0
+}
+
+/// Minutes the task spent on its work: its working spans and its PR visits after submit.
+fn work_min(app: &App, id: i64) -> Result<f64> {
+    Ok(covered_min([working_spans(app, id)?, visit_spans(app, id)?].concat()))
 }
 
 fn at(t: &Row, k: &str) -> Option<f64> {
@@ -107,6 +159,13 @@ pub fn fix_rounds(app: &App, id: i64) -> Result<i64> {
     Ok(n as i64)
 }
 
+/// The questions a task asked the owner: its `question` events that start "Asked" (in its reply, in
+/// its terminal, on its PR or through the board). The rest of that kind are stops, not questions:
+/// usage limits and API errors, "Waiting for you" notices and PR visits that stopped early.
+pub fn real_questions(app: &App, id: i64) -> Result<i64> {
+    count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'question' AND text LIKE 'Asked%'", id)
+}
+
 /// The numbers for one finished goal's tasks.
 pub fn work_out(app: &App, goal: &Row, tasks: &[Row]) -> Result<Value> {
     let finished = tasks.iter().filter_map(|t| t.s("finished_at")).max().map(|s| s.to_string());
@@ -119,7 +178,7 @@ pub fn work_out(app: &App, goal: &Row, tasks: &[Row]) -> Result<Value> {
             failed += 1;
         }
         rounds += fix_rounds(app, id)?;
-        questions += count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'question'", id)?;
+        questions += real_questions(app, id)?;
         if let Some(m) = t.i("human_min").filter(|m| *m > 0) {
             est += m as f64;
             work += work_min(app, id)?;
@@ -143,6 +202,13 @@ fn bare_fingerprint(tasks: &[Row]) -> String {
     format!("{}:{}", tasks.len(), tasks.iter().filter_map(|t| t.s("finished_at")).max().unwrap_or(""))
 }
 
+/// The kept numbers were for these tasks, whichever way they were counted.
+fn same_tasks(kept: &Value, tasks: &[Row]) -> bool {
+    let f = kept["fingerprint"].as_str().unwrap_or("");
+    let bare = f.strip_prefix('v').and_then(|r| r.split_once(':')).map_or(f, |(_, b)| b);
+    bare == bare_fingerprint(tasks)
+}
+
 /// The cleanup took the events behind the goal's numbers: none of its tasks has any left.
 fn events_gone(app: &App, tasks: &[Row]) -> Result<bool> {
     let ids = tasks.iter().map(|t| t.id().to_string()).collect::<Vec<_>>().join(",");
@@ -160,7 +226,7 @@ pub fn for_goal(app: &App, goal: &Row) -> Result<Option<Value>> {
         }
         // Counted the old way, and the events to count them again are gone: keep those numbers,
         // but the tasks added late come from the tasks alone, so count them again.
-        if v["fingerprint"] == bare_fingerprint(&tasks) && events_gone(app, &tasks)? {
+        if same_tasks(&v, &tasks) && events_gone(app, &tasks)? {
             v["added_late"] = json!(added_late(goal, &tasks).len());
             v["fingerprint"] = json!(fingerprint(&tasks));
             app.db.set_setting(&key, Some(&jdumps(&v)))?;
