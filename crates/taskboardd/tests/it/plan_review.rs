@@ -207,3 +207,20 @@ fn a_goal_with_no_tasks_has_no_plan_to_review() {
     assert_eq!(status, 409);
     assert!(msg.contains("no tasks yet"), "{msg}");
 }
+
+#[test]
+fn work_a_task_records_as_done_or_proves_itself_is_not_a_gap() {
+    let b = board();
+    b.report(
+        "tb.goal",
+        json!({"name": "Store sync", "project": "webapp", "outcome": "Every store page loads under a second, with timings attached",
+               "tasks": ["Sync::call the store API with the key Morgan already made; attach the page timings as results"]}),
+    );
+    let args = b.calls();
+    assert!(args.contains("with the key Morgan already made"), "the task's record of the done step reaches Claude: {args}");
+    assert!(args.contains("record as already done") && args.contains("isn't one."), "a done human step isn't an owner prerequisite: {args}");
+    assert!(
+        args.contains("attaching its own results") && args.contains("don't ask for a separate task to prove it"),
+        "a clause a task proves with its own results isn't unproven: {args}"
+    );
+}

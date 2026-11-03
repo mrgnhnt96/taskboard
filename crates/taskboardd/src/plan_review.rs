@@ -295,9 +295,13 @@ fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool) -> Result<(String, 
         "{owner}'s planner just planned goal {me} in {project}. Before its tasks run, review the plan against the \
          goal's outcome. {reading} You don't see the planner's conversation: judge the plan as written below.\n\n\
          Report only real gaps, each as one finding of one kind:\n\
-         - outcome_unproven: a clause of the outcome (\"Done when\") that no task builds or proves. Quote the clause.\n\
+         - outcome_unproven: a clause of the outcome (\"Done when\") that no task builds or proves. Quote the clause. \
+         A clause each task proves for itself, by delivering it or by attaching its own results (a report, a \
+         measurement, screenshots) the way the clause asks, is proven: don't ask for a separate task to prove it.\n\
          - owner_prereq: something only {owner} can do (a sign-in, an account, a key, a purchase, an approval, a \
-         device) that a task needs, with no human task (kind human) planned for it ahead of that task.\n\
+         device) that a task needs, with no human task (kind human) planned for it ahead of that task. A step a task \
+         or the goal notes record as already done (the key is made, the account exists, {owner} already signed in) \
+         isn't one.\n\
          - past_decision: a task planned past a decision, spec, design or baseline that isn't settled yet (an \
          earlier task settles it, or nothing does), so it would likely be redone once it is.\n\
          - overlap: a task that does what one of the other open goals below does or plans to.\n\
