@@ -1984,7 +1984,7 @@ enum PrCmd {
     Wait { task: Option<String> },
     /// The PR was merged
     Merged { task: Option<String> },
-    /// Check a PR description against the rules tb submit --pr-body uses ([pr_body] in config.toml)
+    /// Check a PR description against the rules tb submit --pr-body uses ([pr_body] in config.toml; on a stacked task's terminal, no bare #<n> PR references too)
     BodyCheck {
         /// The file (- for stdin)
         file: String,
@@ -7173,7 +7173,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
             PrCmd::BodyCheck { file } => {
-                let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &read_body(&file)?);
+                let text = read_body(&file)?;
+                let on_board = c.pr_task(None).ok().and_then(|t| c.call("POST", &format!("/tasks/{t}/pr/body-check"), Some(json!({"body": text}))).ok());
+                let problems: Vec<String> = match on_board.as_ref().and_then(|v| v["problems"].as_array()) {
+                    Some(a) => a.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect(),
+                    None => taskboardd::propen::body_problems(&c.cfg.pr_body, &text),
+                };
                 if problems.is_empty() {
                     out("The description is fine.");
                     return Ok(0);

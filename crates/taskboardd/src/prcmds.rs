@@ -216,15 +216,22 @@ fn note_write(app: &App, id: i64, th: &Thread, text: &str, resolved: bool) -> Re
     })
 }
 
+/// `tb pr body-check <file>` from a task's terminal: what the `--pr-body` checks find in the description,
+/// the stacked-PR rule included.
+pub fn check_body(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    Ok(json!({"problems": crate::propen::body_problems_for(app, &t, &body_str(body, "body"))?}))
+}
+
 /// `tb pr body <file>`: the open PR's description replaced by one that passes the `--pr-body` checks,
 /// keeping the sections the board wrote (`propen::replaced_body`).
 pub fn set_body(app: &App, id: i64, body: &Value) -> Result<Value> {
     let text = body_str(body, "body");
-    let problems = crate::propen::body_problems(&app.cfg.pr_body, &text);
+    let t = board::get_task(app, id)?;
+    let problems = crate::propen::body_problems_for(app, &t, &text)?;
     if !problems.is_empty() {
         return err(400, format!("The PR description needs work:\n- {}\nFix the file and run tb pr body again.", problems.join("\n- ")));
     }
-    let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
     if let Some(phase) = t.s("pr_phase").filter(|p| matches!(*p, "merged" | "declined")) {
         return err(409, format!("PR #{} is {phase}; its description can't change now.", pr.num));

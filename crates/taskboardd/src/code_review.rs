@@ -233,7 +233,7 @@ fn hold(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Value>
     }
     let pr_body = body["pr_body"].as_str().unwrap_or("");
     if !pr_body.trim().is_empty() && !spooled {
-        let problems = crate::propen::body_problems(&app.cfg.pr_body, pr_body);
+        let problems = crate::propen::body_problems_for(app, t, pr_body)?;
         if !problems.is_empty() {
             return err(400, format!("The PR description needs work before the board opens the PR:\n- {}\nFix the file and run tb submit again.", problems.join("\n- ")));
         }
