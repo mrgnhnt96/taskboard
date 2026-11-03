@@ -1582,6 +1582,10 @@ enum TaskCmd {
         /// merges; head merges it into its parent's branch, and the parent's PR takes it to main
         #[arg(long = "stack-merge", value_parser = ["head", "tail"], requires = "stack_on")]
         stack_merge: Option<String>,
+        /// It shares this task's branch and PR: it starts once the group's last task is done, from the
+        /// branch's tip, and adds its own section to the PR's description
+        #[arg(long = "same-pr", value_name = "T12", conflicts_with = "stack_on")]
+        same_pr: Option<String>,
         /// It ends in a PR, whatever its project does
         #[arg(long, conflicts_with = "no_pr")]
         pr: bool,
@@ -1600,7 +1604,7 @@ enum TaskCmd {
         /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
         /// starts on it, --detail holds the steps and links, and the owner presses Done in the app.
         /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that
-        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
+        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "same_pr", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
         human: bool,
         /// design: its work is a design (concepts, a canvas, mockups). It ends without a PR once its design
         /// is attached (tb attach <link> --kind design), and in a goal the other tasks wait for it
@@ -1670,6 +1674,9 @@ enum TaskCmd {
         /// merges; head merges it into its parent's branch, and the parent's PR takes it to main
         #[arg(long = "stack-merge", value_parser = ["head", "tail"])]
         stack_merge: Option<String>,
+        /// It shares this task's branch and PR, or none
+        #[arg(long = "same-pr", value_name = "T12|none")]
+        same_pr: Option<String>,
         /// Whether it ends in a PR: yes, no, or auto (its project's default)
         #[arg(long, value_parser = ["yes", "no", "auto"])]
         pr: Option<String>,
@@ -6452,7 +6459,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, same_pr, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -6537,6 +6544,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = stack_merge {
                     body["stack_merge"] = json!(x);
                 }
+                if let Some(x) = same_pr {
+                    body["same_pr"] = json!(task_ref(&x)?);
+                }
                 if pr || no_pr {
                     body["ships_pr"] = json!(pr);
                 }
@@ -6571,7 +6581,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, kind, status, merged_note, landed, area, model, effort, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, area, model, effort, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -6639,6 +6649,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = stack_merge {
                     b["stack_merge"] = json!(x);
+                }
+                if let Some(x) = same_pr {
+                    b["same_pr"] = if x.eq_ignore_ascii_case("none") { json!("none") } else { json!(task_ref(&x)?) };
                 }
                 if let Some(x) = kind {
                     b["kind"] = json!(x);
@@ -9114,6 +9127,10 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--stack-merge", "head"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "tail"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "sideways"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--same-pr", "T3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--same-pr", "T3", "--stack-on", "T3"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--same-pr", "T3", "--human", "--detail", "d"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--same-pr", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--no-pr", "covered by T3", "--no-evidence", "no UI"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--title", "Add x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());

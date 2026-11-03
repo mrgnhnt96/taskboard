@@ -2832,7 +2832,7 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
                     "status": status, "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"), "lane": lane, "pr_base": item.get("pr_base"),
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
-                    "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
+                    "stack_on": item.get("stack_on"), "same_pr": item.get("same_pr"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
                     "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model, "effort": effort,
                     "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"), "kind": item.get("kind"),
                     "not_backlog": item.get("not_backlog").filter(|v| !v.is_null()).or(r.body.get("not_backlog")),
@@ -2933,7 +2933,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"), "lane": r.body.get("lane"), "pr_base": r.body.get("pr_base"),
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
-                           "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
+                           "stack_on": r.body.get("stack_on"), "same_pr": r.body.get("same_pr"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                            "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
                            "not_backlog": r.body.get("not_backlog"), "kind": r.body.get("kind")}]);
         if let Some(b) = &issue {
@@ -2961,7 +2961,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                 "status": if planned_flag { "planned" } else { "queued" },
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"), "lane": r.body.get("lane"), "pr_base": r.body.get("pr_base"),
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
-                "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
+                "stack_on": r.body.get("stack_on"), "same_pr": r.body.get("same_pr"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                 "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
                 "not_backlog": r.body.get("not_backlog"), "origin": {"from": "Added by an agent", "by": r.name()}});
     if let Some(b) = &issue {
@@ -3072,7 +3072,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     }
     let mut fields = json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
-            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
+            "stack_on": r.body.get("stack_on"), "same_pr": r.body.get("same_pr"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
             "area": r.body.get("area"), "not_backlog": r.body.get("not_backlog"), "goal_id": goal.as_ref().map(|g| g.id()),
             "kind": r.body.get("kind"), "waits_for": "none",
             "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}});

@@ -199,7 +199,7 @@ fn pr_open(o: &Row) -> bool {
 /// worktree is cut or its conversation carries on. A wait for a merged PR, a `--merged` wait, another
 /// project's task and a task that stacks already stay as they are. The parent's id when it stacked.
 pub fn stack_on_open(app: &App, t: &Row) -> Result<Option<i64>> {
-    if crate::stack::parent_id(t).is_some() {
+    if crate::stack::parent_id(t).is_some() || crate::samepr::anchor_id(t).is_some() {
         return Ok(None);
     }
     let waits = ids(t);
@@ -558,7 +558,12 @@ fn elsewhere(app: &App, other: &Row) -> Result<String> {
 
 pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
     let (mut lines, mut away, mut owner) = (vec![], vec![], vec![]);
+    let shared = crate::samepr::shared_ids(app, t)?;
     for n in deps(t) {
+        if shared.contains(&n) {
+            // `samepr::handoff_line` says where the shared branch is and how this task's work reaches it.
+            continue;
+        }
         let other = board::find_task(app, Some(n))?;
         if ready_for(app, t, n, other.as_ref())? {
             let o = other.as_ref().unwrap();
@@ -643,8 +648,9 @@ pub fn parked(t: &Row) -> Option<Row> {
 /// rest it waited for.
 pub fn ready_text(app: &App, t: &Row) -> Result<String> {
     let stack = crate::stack::handoff_line(app, t, &app.cfg.pr_body.remote)?;
+    let shared = crate::samepr::handoff_line(app, t, &app.cfg.pr_body.remote)?.filter(|_| crate::samepr::anchor_id(t).is_some());
     let text = bring_in_text(app, t)?;
-    Ok(stack.into_iter().chain(Some(text)).filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n"))
+    Ok(stack.into_iter().chain(shared).chain(Some(text)).filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n"))
 }
 
 pub fn resume_prompt(app: &App, t: &Row) -> Result<String> {

@@ -377,6 +377,9 @@ fn other_tasks(app: &App, t: &Row) -> Result<Vec<String>> {
     if let Some(line) = crate::stack::handoff_line(app, t, &app.cfg.pr_body.remote)? {
         out.push(line);
     }
+    if let Some(line) = crate::samepr::handoff_line(app, t, &app.cfg.pr_body.remote)? {
+        out.push(line);
+    }
     let text = waitsfor::bring_in_text(app, t)?;
     if !text.is_empty() {
         out.push(text);

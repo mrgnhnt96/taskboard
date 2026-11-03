@@ -96,6 +96,7 @@ pub fn plan_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
     }
     out.extend(main_prs_warnings(app, &tasks)?);
     out.extend(chain_warnings(app, g, &tasks)?);
+    out.extend(crate::samepr::plan_warnings(app, &tasks)?);
     out.extend(single_wave_run_warnings(&tasks));
     Ok(out)
 }
@@ -365,6 +366,9 @@ pub fn holds(app: &App, t: &Row) -> Result<bool> {
 /// Why this task's PR holds for its stack: the first head-merge child that has to merge into it first,
 /// while it's open or its PR is.
 pub fn stack_hold(app: &App, t: &Row) -> Result<Option<String>> {
+    if let Some(h) = crate::samepr::hold(app, t)? {
+        return Ok(Some(h));
+    }
     let Some(k) = children(app, t.id())?.into_iter().find(head) else { return Ok(None) };
     let r = rf("task", k.id());
     Ok(Some(match k.i("pr_num") {

@@ -194,6 +194,10 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         let merge = parent.and_then(|_| crate::stack::default_merge(app, &t));
         board::update_task(app, tid, fields!["pr_after" => parent, "stack_merge" => merge])?;
     }
+    if body_has(body, "same_pr") {
+        let t = board::get_task(app, tid)?;
+        crate::samepr::set(app, &t, &body["same_pr"], who)?;
+    }
     if body_has(body, "stack_merge") {
         let t = board::get_task(app, tid)?;
         if crate::stack::parent_id(&t).is_none() {
