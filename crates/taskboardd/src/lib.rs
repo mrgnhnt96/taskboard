@@ -110,6 +110,7 @@ pub mod slowlog;
 pub mod spans;
 pub mod stamp;
 pub mod tidy;
+pub mod samepr;
 pub mod stack;
 pub mod stack_drop;
 pub mod suggest;

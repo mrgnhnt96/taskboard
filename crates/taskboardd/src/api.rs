@@ -1405,6 +1405,16 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
             planned |= crate::stack::set(app, &moved, &body["stack_on"], &who)?;
         }
+        if has_key("same_pr") {
+            let mut moved = board::get_task(app, id)?;
+            if let Some(w) = wave_changed {
+                moved.insert("wave".into(), json!(w));
+            }
+            if let Some(g) = new_goal_id {
+                moved.insert("goal_id".into(), json!(g));
+            }
+            planned |= crate::samepr::set(app, &moved, &body["same_pr"], &who)?;
+        }
         if has_key("stack_merge") {
             planned |= crate::stack::set_merge(app, &board::get_task(app, id)?, &body["stack_merge"], &who)?;
         }
@@ -1435,6 +1445,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if wave_changed.is_some() || new_goal_id.is_some() {
             crate::stack::check_waves(app, &board::get_task(app, id)?)?;
+            crate::samepr::check_waves(app, &board::get_task(app, id)?)?;
         }
         if bump {
             board::bump_ctx(app, id)?;

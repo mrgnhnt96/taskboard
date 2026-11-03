@@ -200,7 +200,7 @@ pub fn make(app: &App, t: &Row, start: Option<&str>) -> Result<String> {
         None => default_base(&repo, remote),
     };
     // A stacked task starts from its parent's branch while the parent's PR is unmerged.
-    let start = match crate::stack::base_branch(app, t)? {
+    let start = match crate::samepr::start_branch(app, t)?.or(crate::stack::base_branch(app, t)?) {
         Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),
         None => base,
     };

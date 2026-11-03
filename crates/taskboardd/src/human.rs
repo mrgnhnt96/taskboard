@@ -34,7 +34,7 @@ pub fn refuse_bare(body: &Value) -> Result<()> {
     if body_str(body, "detail").trim().is_empty() {
         return err(400, "A human task needs its steps in --detail: what to do, in order, with the links to open.");
     }
-    for k in ["stack_on", "locks", "alone"] {
+    for k in ["stack_on", "same_pr", "locks", "alone"] {
         if body_has(body, k) && !body[k].is_null() {
             return err(400, format!("A human task has no terminal, so it takes no {}.", k.replace('_', "-")));
         }

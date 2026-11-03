@@ -452,6 +452,35 @@ pub fn replaced_body(new: &str, current: &str) -> String {
     with_footer(text, footer)
 }
 
+/// `body` with `section` after its own sections: above the ones the board wrote and the footer.
+pub fn with_section(body: &str, section: &str) -> String {
+    let (main, footer) = split_footer(body);
+    let (kept, board) = split_board_sections(main);
+    let mut text = format!("{}\n\n{}", kept.trim_end(), section.trim());
+    for s in board {
+        text += &format!("\n\n{s}");
+    }
+    with_footer(text, footer)
+}
+
+/// A task's part of a shared PR's description: `## <title>`, then its `--pr-body` without the footer,
+/// its headings a level down.
+pub fn member_section(title: &str, text: &str) -> String {
+    let mut fenced = false;
+    let lines: Vec<String> = split_footer(text)
+        .0
+        .lines()
+        .map(|line| {
+            let t = line.trim_start();
+            if t.starts_with("```") || t.starts_with("~~~") {
+                fenced = !fenced;
+            }
+            if !fenced && t.starts_with('#') { format!("#{t}") } else { line.to_string() }
+        })
+        .collect();
+    format!("## {}\n\n{}", title.trim(), lines.join("\n").trim())
+}
+
 /// `text`, then the footer [`split_footer`] took off, after a blank line.
 fn with_footer(text: String, footer: &str) -> String {
     match footer.trim() {
@@ -569,7 +598,7 @@ pub fn add_stack_links(app: &App) -> Result<i64> {
 }
 
 /// Runs git in `dir`: its exit and trimmed stdout, or why it couldn't run.
-fn git(dir: &str, args: &[&str], timeout: f64) -> std::result::Result<(bool, String, String), String> {
+pub(crate) fn git(dir: &str, args: &[&str], timeout: f64) -> std::result::Result<(bool, String, String), String> {
     let bin = crate::proc::which("git").ok_or("git isn't installed")?;
     let mut all: Vec<String> = vec!["-C".into(), dir.into()];
     all.extend(args.iter().map(|a| a.to_string()));
@@ -672,7 +701,7 @@ fn where_str(t: &Row, key: &str) -> Option<String> {
 /// checkout or the task's repo. The terminal's folder comes after the task's own: a terminal in a
 /// shared checkout may be sitting on another task's branch. A folder in another repository than the
 /// task's (one it worked in before it moved project) is passed over.
-fn dir_for(t: &Row, cwd: &str) -> Option<String> {
+pub(crate) fn dir_for(t: &Row, cwd: &str) -> Option<String> {
     [where_str(t, "committed_in"), where_str(t, "worktree"), Some(cwd.to_string()), t.s("repo_path").map(|s| s.to_string())]
         .into_iter()
         .flatten()
@@ -790,6 +819,9 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
         return Ok(());
     }
     let Some(t) = t.filter(|t| !board::handed_in(t)) else { return Ok(()) };
+    if crate::samepr::member_submit(app, body, t, &text)? {
+        return Ok(());
+    }
     if has(t.s("pr_url")) {
         body["pr"] = json!(t.st("pr_url"));
         return Ok(());
@@ -824,10 +856,12 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     if !left.is_empty() {
         return err(409, steps::refusal_at(app, t, "opening the PR", &left, head));
     }
+    let head = head.map(|h| h.to_string());
     let pr = open(app, t, &body_str(body, "cwd"), &text, &body_str(body, "pr_title"), branch)?;
     app.db.tx(|| {
         let t = board::get_task(app, t.id())?;
         crate::prflow::link_pr(app, &t, &pr, board::BOARD)?;
+        crate::samepr::note_head(app, t.id(), head.as_deref())?;
         app.db.update("tasks", &json!(t.id()), crate::fields!["pr_title" => title(&app.cfg.pr_body, &t, &body_str(body, "pr_title"))])?;
         if let Some(s) = summary_sentence(&text) {
             crate::prflow::merge_flow(app, t.id(), crate::fields!["summary_line" => s])?;
@@ -888,6 +922,18 @@ mod tests {
     use super::*;
 
     const GOOD: &str = "## Summary\nAdds passkey sign-in.\n\n## Changes\n- New sign-in screen\n- Server checks the key\n\n## Testing\n- Unit tests\n";
+
+    #[test]
+    fn a_member_section_goes_above_the_board_sections_and_footer() {
+        let current = "## Summary\nA.\n\n## Code review\nClean.\n\n## Context\nWhy.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+        let section = member_section("Second part", "## Summary\nB.\n\n```\n# kept\n```\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)");
+        assert_eq!(section, "## Second part\n\n### Summary\nB.\n\n```\n# kept\n```");
+        let next = with_section(current, &section);
+        let at = |s: &str| next.find(s).unwrap_or_else(|| panic!("{s} missing from {next}"));
+        assert!(at("## Summary") < at("## Second part") && at("## Second part") < at("## Code review"), "{next}");
+        assert!(at("## Context") < at("🤖 Generated"), "{next}");
+        assert_eq!(next.matches("Generated with").count(), 1, "{next}");
+    }
 
     #[test]
     fn a_good_body_passes() {

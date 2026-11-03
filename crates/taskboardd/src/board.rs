@@ -420,6 +420,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
+        o.insert("same_pr".into(), json!(crate::samepr::anchor_id(t)));
         // `human` for a task only the owner does (`human.rs`), with the note they left on Done.
         o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
         o.insert("owner_note".into(), json!(crate::human::note(t)));

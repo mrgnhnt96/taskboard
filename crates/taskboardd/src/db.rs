@@ -246,6 +246,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "pr_after", "INT"),
     // How a stacked task's PR merges (`--stack-merge`): 'head' into its parent's branch; NULL for tail.
     ("tasks", "stack_merge", "TEXT"),
+    ("tasks", "same_pr", "INT"),
     // Whether the task ends in a PR: 1 or 0, or NULL for its project's default.
     ("tasks", "ships_pr", "INT"),
     // Why a PR-flow task finished without a PR (`tb submit --no-pr`), or without evidence (`--no-evidence`).
@@ -509,6 +510,7 @@ impl Db {
         conn.execute_batch(BACKFILL_MERGED)?;
         conn.execute_batch(crate::merges::SCHEMA)?;
         conn.execute_batch(crate::merges::BACKFILL)?;
+        conn.execute_batch(crate::samepr::SCHEMA)?;
         let changed: Arc<Mutex<Vec<(String, i64)>>> = Default::default();
         let hooked = changed.clone();
         conn.update_hook(Some(move |_, _: &str, table: &str, rowid: i64| hooked.lock().push((table.to_string(), rowid))));

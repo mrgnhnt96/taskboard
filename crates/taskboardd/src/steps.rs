@@ -497,6 +497,9 @@ pub fn chosen_base(app: &App, t: &Row) -> Result<Option<String>> {
 /// The branch this task's PR goes into: the branch of the PR it stacks on while that's unmerged, else
 /// the one it's set to (`chosen_base`), else the repo's default.
 pub fn real_base(app: &App, t: &Row) -> Result<String> {
+    if let Some(a) = crate::samepr::anchor(app, t)? {
+        return real_base(app, &a);
+    }
     if let Some(b) = crate::stack::base_branch(app, t)? {
         return Ok(b);
     }
@@ -530,6 +533,9 @@ pub fn vars_at(app: &App, t: &Row, head: Option<&str>) -> BTreeMap<String, Strin
     let mut v = vars(t);
     let base = real_base(app, t).unwrap_or_else(|_| v.get("base").cloned().unwrap_or_default());
     v.insert("base_ref".into(), format!("{}/{base}", app.cfg.pr_body.remote));
+    if let Some(h) = crate::samepr::review_base(app, t) {
+        v.insert("base_ref".into(), h);
+    }
     v.insert("base".into(), base);
     v.insert("head".into(), judged_head(t, head).or_else(|| asked_at(t, "head")).unwrap_or_default());
     v.insert("worktree".into(), worktree_of(t));
