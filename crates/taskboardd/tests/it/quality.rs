@@ -59,7 +59,7 @@ fn finished_goal(app: &App) -> i64 {
     app.db.update("tasks", &json!(t2), fields!["created_at" => "2026-10-02T09:00:00Z", "started_at" => "2026-10-02T09:30:00Z"]).unwrap();
     state(app, t1, "2026-10-01T09:00:00Z", "working", false);
     state(app, t1, "2026-10-01T10:00:00Z", "done", false);
-    board::log_event(app, t1, "agent", "question", "Should the form remember the email?").unwrap();
+    board::log_event(app, t1, "agent", "question", "Asked: Should the form remember the email?").unwrap();
     for text in [
         "Brought the conversation back for PR #7: fixing checks",
         "Picked up again after a restart",
@@ -140,7 +140,46 @@ fn numbers_kept_the_old_way_are_worked_out_again() {
     app.db.changed("DELETE FROM events", taskboardd::p![]).unwrap();
     let gv = &get(&app, "/quality", &[("project", "webapp")])["projects"][0]["goals"][0];
     assert_eq!((gv["review_rounds"].as_i64(), gv["added_late"].as_i64()), (Some(9), Some(1)), "{gv}");
-    assert!(gv["fingerprint"].as_str().unwrap().starts_with("v2:"), "{gv}");
+    assert!(gv["fingerprint"].as_str().unwrap().starts_with("v3:"), "{gv}");
+}
+
+#[test]
+fn numbers_kept_by_an_older_version_stay_once_the_events_are_gone() {
+    let (_d, app) = new_board();
+    let g = finished_goal(&app);
+    let key = format!("quality:G{g}");
+    let old = json!({"goal": format!("G{g}"), "finished_at": "2026-10-02T11:00:00Z", "fingerprint": "v2:2:2026-10-02T11:00:00Z", "tasks": 2, "added_late": 2, "review_rounds": 9, "questions": 4});
+    app.db.set_setting(&key, Some(&old.to_string())).unwrap();
+    app.db.changed("DELETE FROM events", taskboardd::p![]).unwrap();
+    let gv = &get(&app, "/quality", &[("project", "webapp")])["projects"][0]["goals"][0];
+    assert_eq!((gv["review_rounds"].as_i64(), gv["questions"].as_i64(), gv["added_late"].as_i64()), (Some(9), Some(4), Some(1)), "{gv}");
+    assert!(gv["fingerprint"].as_str().unwrap().starts_with("v3:"), "{gv}");
+}
+
+/// Only what a task asked the owner counts: usage limits, API errors, "Waiting for you" notices,
+/// a lost network and PR visits that stopped early are logged as questions too, but aren't ones.
+#[test]
+fn questions_count_only_what_a_task_asked() {
+    let (_d, app) = new_board();
+    let g = goal(&app, "webapp", "Ship search");
+    let t = task(&app, g, "webapp", "Search box");
+    app.db.update("tasks", &json!(t), fields!["started_at" => "2026-10-01T09:00:00Z"]).unwrap();
+    for text in [
+        "Asked: Index titles too?",
+        "Asked in its reply: Should the box keep the last search?",
+        "Asked you in its terminal: Which font?",
+        "Asked you on PR #12: Keep the old endpoint?",
+        "Hit a usage limit (You've hit your limit · resets 3pm). Claude Code carries on by itself once it resets",
+        "Waiting for you: Claude needs your permission to use Bash",
+        "Stopped on PR #12 before it was finished: rebase conflict",
+        "The Claude API failed (API Error: 500). Its turn stopped; type anything in the terminal to carry on",
+        "It lost its network connection over 6 hours ago and Midna has stopped waiting; type anything in the terminal to carry on",
+    ] {
+        board::log_event(&app, t, "agent", "question", text).unwrap();
+    }
+    finish(&app, t, "2026-10-01T10:00:00Z");
+    let gv = &get(&app, "/quality", &[("project", "webapp")])["projects"][0]["goals"][0];
+    assert_eq!(gv["questions"].as_i64(), Some(4), "{gv}");
 }
 
 #[test]

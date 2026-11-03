@@ -23,7 +23,7 @@ const BEFORE_DAYS: i64 = 180;
 const WITH_THE_GOAL_SECS: f64 = 5.0 * 60.0;
 
 /// Bumped when the numbers are counted differently, so kept ones are worked out again.
-const VERSION: &str = "v2";
+const VERSION: &str = "v3";
 
 fn setting_key(gid: i64) -> String {
     format!("quality:{}", rf("goal", gid))
@@ -107,6 +107,13 @@ pub fn fix_rounds(app: &App, id: i64) -> Result<i64> {
     Ok(n as i64)
 }
 
+/// The questions a task asked the owner: its `question` events that start "Asked" (in its reply, in
+/// its terminal, on its PR or through the board). The rest of that kind are stops, not questions:
+/// usage limits and API errors, "Waiting for you" notices and PR visits that stopped early.
+pub fn real_questions(app: &App, id: i64) -> Result<i64> {
+    count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'question' AND text LIKE 'Asked%'", id)
+}
+
 /// The numbers for one finished goal's tasks.
 pub fn work_out(app: &App, goal: &Row, tasks: &[Row]) -> Result<Value> {
     let finished = tasks.iter().filter_map(|t| t.s("finished_at")).max().map(|s| s.to_string());
@@ -119,7 +126,7 @@ pub fn work_out(app: &App, goal: &Row, tasks: &[Row]) -> Result<Value> {
             failed += 1;
         }
         rounds += fix_rounds(app, id)?;
-        questions += count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'question'", id)?;
+        questions += real_questions(app, id)?;
         if let Some(m) = t.i("human_min").filter(|m| *m > 0) {
             est += m as f64;
             work += work_min(app, id)?;
@@ -143,6 +150,13 @@ fn bare_fingerprint(tasks: &[Row]) -> String {
     format!("{}:{}", tasks.len(), tasks.iter().filter_map(|t| t.s("finished_at")).max().unwrap_or(""))
 }
 
+/// The kept numbers were for these tasks, whichever way they were counted.
+fn same_tasks(kept: &Value, tasks: &[Row]) -> bool {
+    let f = kept["fingerprint"].as_str().unwrap_or("");
+    let bare = f.strip_prefix('v').and_then(|r| r.split_once(':')).map_or(f, |(_, b)| b);
+    bare == bare_fingerprint(tasks)
+}
+
 /// The cleanup took the events behind the goal's numbers: none of its tasks has any left.
 fn events_gone(app: &App, tasks: &[Row]) -> Result<bool> {
     let ids = tasks.iter().map(|t| t.id().to_string()).collect::<Vec<_>>().join(",");
@@ -160,7 +174,7 @@ pub fn for_goal(app: &App, goal: &Row) -> Result<Option<Value>> {
         }
         // Counted the old way, and the events to count them again are gone: keep those numbers,
         // but the tasks added late come from the tasks alone, so count them again.
-        if v["fingerprint"] == bare_fingerprint(&tasks) && events_gone(app, &tasks)? {
+        if same_tasks(&v, &tasks) && events_gone(app, &tasks)? {
             v["added_late"] = json!(added_late(goal, &tasks).len());
             v["fingerprint"] = json!(fingerprint(&tasks));
             app.db.set_setting(&key, Some(&jdumps(&v)))?;
