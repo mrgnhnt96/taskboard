@@ -442,12 +442,34 @@ pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&st
     };
     let rec = crate::util::jloads_obj(t.s("pr_flow")).get("rec").cloned().filter(|r| !pr_side(r, "base").is_empty() && !pr_side(r, "branch").is_empty());
     let Some(rec) = rec else {
-        let base = crate::steps::real_base(app, t)?;
-        return Ok(dir.and_then(|d| branch_refusal(&app.cfg, &d, Some(&base), what)));
+        let bases = guard_bases(app, t)?;
+        return Ok(dir.and_then(|d| refusal(&app.cfg, adds_over(&app.cfg.comments, &d, &bases), "this branch", what)));
     };
     let repo = crate::projects::project_path(app, t.s("project"))?.or_else(|| t.s("repo_path").map(|s| s.to_string()));
     let dirs: Vec<String> = dir.into_iter().chain(repo).collect();
     Ok(refusal(&app.cfg, pr_adds(&app.cfg.comments, &dirs, &rec), "this PR", what))
+}
+
+/// The branches a task's branch may have forked from. A PR base (the unmerged parent's branch, else the
+/// one the task or its goal is set to) is the only one; without one, the base its slot started at, its
+/// goal's worktree base and the repo's default branch, nearest first when judged.
+fn guard_bases(app: &crate::app::App, t: &crate::util::Row) -> crate::util::Result<Vec<String>> {
+    if let Some(b) = crate::stack::base_branch(app, t)? {
+        return Ok(vec![b]);
+    }
+    if let Some(b) = crate::steps::chosen_base(app, t)? {
+        return Ok(vec![b]);
+    }
+    let slot = crate::board::task_context(t).s("worktree_base").filter(|b| *b != "HEAD").map(|b| b.to_string());
+    let goal = crate::board::find_goal(app, t.i("goal_id"))?.and_then(|g| g.s("worktree_base").map(|b| b.to_string()));
+    let default = crate::steps::real_base(app, t)?;
+    let mut out: Vec<String> = vec![];
+    for b in slot.into_iter().chain(goal).chain([default]).filter(|b| !b.is_empty()) {
+        if !out.contains(&b) {
+            out.push(b);
+        }
+    }
+    Ok(out)
 }
 
 struct Git(Option<std::path::PathBuf>);
@@ -510,17 +532,36 @@ fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
     git.run(dir, &args)
 }
 
-/// Where the branch at `dir` forked from `base` (the branch its PR goes into), else its default branch.
-fn fork_point(git: &Git, dir: &str, base: Option<&str>) -> Option<String> {
-    let mut bases = vec![];
-    if let Some(b) = base.filter(|b| !b.is_empty()) {
-        bases.extend([format!("origin/{b}"), b.to_string()]);
+/// Where the branch at `dir` forked from the nearest of `bases` (the branches its PR may go into),
+/// fetching one git doesn't have yet; else from its default branch.
+fn fork_point(git: &Git, dir: &str, bases: &[String]) -> Option<String> {
+    let forks: Vec<String> = bases.iter().filter(|b| !b.is_empty()).filter_map(|b| fork_from(git, dir, b)).collect();
+    let past = |f: &String| git.run(dir, &["rev-list", "--count", &format!("{f}..HEAD")]).and_then(|n| n.trim().parse::<u64>().ok()).unwrap_or(u64::MAX);
+    if let Some(f) = forks.iter().min_by_key(|f| past(f)) {
+        return Some(f.clone());
     }
+    let mut names = vec![];
     if let Some(h) = git.run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
-        bases.push(h.trim().to_string());
+        names.push(h.trim().to_string());
     }
-    bases.extend(["origin/main", "origin/master", "main", "master"].iter().map(|s| s.to_string()));
-    bases.into_iter().filter(|b| !b.is_empty()).find_map(|b| git.run(dir, &["merge-base", "HEAD", &b]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+    names.extend(["origin/main", "origin/master", "main", "master"].iter().map(|s| s.to_string()));
+    names.into_iter().filter(|b| !b.is_empty()).find_map(|b| merge_base(git, dir, &b))
+}
+
+fn merge_base(git: &Git, dir: &str, of: &str) -> Option<String> {
+    git.run(dir, &["merge-base", "HEAD", of]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Where HEAD forked from `base` (`release/x`, `origin/release/x` or a commit), fetching it from origin
+/// when git doesn't have it.
+fn fork_from(git: &Git, dir: &str, base: &str) -> Option<String> {
+    let name = base.strip_prefix("origin/").unwrap_or(base);
+    let names = [format!("origin/{name}"), name.to_string()];
+    let found = git.commit(dir, &names).or_else(|| {
+        git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", name], FETCH_SECS);
+        git.commit(dir, &names)
+    })?;
+    merge_base(git, dir, &found)
 }
 
 /// The comments a unified diff (`-U0`) adds, by file.
@@ -586,11 +627,16 @@ pub fn diff_adds(c: &CommentsConfig, diff: &str) -> Vec<Found> {
 /// The comments the branch at `dir` adds over `base` (the branch its PR goes into), else its default
 /// branch, committed or not.
 pub fn branch_adds(c: &CommentsConfig, dir: &str, base: Option<&str>) -> Vec<Found> {
+    adds_over(c, dir, &base.map(|b| b.to_string()).into_iter().collect::<Vec<_>>())
+}
+
+/// The comments the branch at `dir` adds over the nearest of `bases`, else its default branch.
+fn adds_over(c: &CommentsConfig, dir: &str, bases: &[String]) -> Vec<Found> {
     if !c.guard || dir.is_empty() || !Path::new(dir).is_dir() {
         return vec![];
     }
     let git = Git(crate::proc::which("git"));
-    let Some(base) = fork_point(&git, dir, base) else { return vec![] };
+    let Some(base) = fork_point(&git, dir, bases) else { return vec![] };
     let diff = git.run(dir, &["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", &base]).unwrap_or_default();
     diff_adds(c, &diff)
 }
