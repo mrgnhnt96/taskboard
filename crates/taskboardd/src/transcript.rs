@@ -561,6 +561,23 @@ pub fn last_turn(app: &App, s: &Row) -> Option<Turn> {
     turns_of(&lines(&p)).pop()
 }
 
+/// The command the owner is running now with Claude Code's `!` prefix in session `s`'s terminal.
+pub fn running_bang(app: &App, s: &Row) -> Option<String> {
+    bang_of(&lines(&session_path(app, s)?))
+}
+
+/// Claude Code writes the owner's `!` command (`<bash-input>…</bash-input>`) before it runs and its
+/// output after, so the command is running while its input is the last message. An agent's own shell
+/// call ends on its tool use instead, so it can't pass for one.
+fn bang_of(events: &[Value]) -> Option<String> {
+    let last = events.iter().rev().find(|e| {
+        matches!(e["type"].as_str(), Some("user" | "assistant")) && e["isSidechain"] != true && e["isMeta"] != true
+    })?;
+    let text = last["message"]["content"].as_str()?.trim();
+    let cmd = text.strip_prefix("<bash-input>")?.strip_suffix("</bash-input>")?.trim();
+    (!cmd.is_empty()).then(|| cmd.to_string())
+}
+
 /// The last turn of the transcript a hook named (its `transcript_path`), when it's one of Claude's.
 pub fn last_turn_at(root: &Path, path: Option<&str>) -> Option<Turn> {
     let p = std::fs::canonicalize(expand_home(path.filter(|p| !p.is_empty())?)).ok()?;
@@ -631,6 +648,20 @@ pub fn conversation_size(root: &Path, project_path: &str, claude_id: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_owners_running_bang_command() {
+        let user = |c: &str| json!({"type": "user", "message": {"content": c}});
+        let run = user("<bash-input> for t in T1 T2; do tb pr reviewed $t; done</bash-input>");
+        let blob = json!({"type": "api-request-blob", "message": {"content": [{"type": "text", "text": "x"}]}});
+        assert_eq!(bang_of(&[user("hi"), run.clone(), blob]).as_deref(), Some("for t in T1 T2; do tb pr reviewed $t; done"));
+        assert_eq!(bang_of(&[run.clone(), user("<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>")]), None);
+        let tool = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "tb pr reviewed T1"}}]}});
+        assert_eq!(bang_of(&[run.clone(), tool]), None);
+        let side = json!({"type": "user", "isSidechain": true, "message": {"content": "<bash-input>tb pr reviewed T9</bash-input>"}});
+        assert_eq!(bang_of(&[user("hi"), side]), None);
+        assert_eq!(bang_of(&[user("<bash-input>  </bash-input>")]), None);
+    }
 
     #[test]
     fn dashes_project_dirs() {

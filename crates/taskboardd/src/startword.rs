@@ -1574,10 +1574,19 @@ pub static CLOSES: Lazy<Kind> = Lazy::new(|| {
     let on = format!(r"(?:\b{CLOSE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_CLOSE})))");
     Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
 });
+/// The PRs a review statement covers without naming them: "all of them", "them all", "both", "all the
+/// open PRs". Each says "them" or "all", so it reads as [`Ask::Them`].
+const SET_PRS: &str = r"(?:them\s+all|all\s+of\s+(?:them|those|these)|all\s+(?:(?:of\s+)?(?:the|those|these|your|my)\s+)?(?:open\s+)?(?:prs|pull\s+requests)|both(?:\s+of\s+them)?|each\s+of\s+them|them|those|these)";
+/// The owner saying they've reviewed: "I've reviewed", "we just went over".
+const REVIEWED_STATEMENT: &str = r"\b(?:i|we)(?:[’']ve|\s+have)?\s+(?:(?:just|already|now|finally|also|fully)\s+)*(?:reviewed|looked\s+(?:over|through)|gone\s+(?:over|through)|went\s+(?:over|through)|read\s+through)";
 /// Marks of a task's PR as reviewed by the owner (`tb pr reviewed`), read with its PR named as the task
-/// ([`as_task_refs`]): "mark PR #194 reviewed", "mark it as reviewed", "mark T8 reviewed".
+/// ([`as_task_refs`]): "mark PR #194 reviewed", "mark it as reviewed", "mark T8 reviewed", "mark them all
+/// reviewed", or the owner saying so: "I've reviewed PRs #194, #196", "I reviewed it", "I've reviewed all
+/// of them".
 pub static REVIEWS: Lazy<Kind> = Lazy::new(|| {
-    let on = format!(r"(?:\bmark\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_PR}))\s+(?:as\s+)?reviewed)");
+    let on = format!(
+        r"(?:\bmark\s+(?:(?:the\s+)?(?:prs?|pull\s+requests?)\s+)?(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_PR})|(?P<unnamed4>{SET_PRS}))\s+(?:as\s+)?reviewed|{REVIEWED_STATEMENT}\s+(?:(?:the\s+)?(?:prs?|pull\s+requests?)\s+)?(?:{LISTED}(?P<named2>{NAMED})|(?P<unnamed2>{SET_PRS}|{UNNAMED_PR})))"
+    );
     Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
 });
 /// A PR named by its number: "PR #194", "the PR 194", "pull request 194", "#194".
@@ -1586,6 +1595,27 @@ static PR_REF_RE: Lazy<Regex> =
 /// The owner approving the PR ("approved", "I approve it", "lgtm").
 static APPROVED_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\b(?:approved|i\s+approve|approve\s+(?:it|this|that|the\s+pr)|lgtm|looks\s+good\s+to\s+me)\b").unwrap());
+
+/// A set of PRs named by their goal: "every PR in G23", "all the PRs in goal 23", "G23's PRs".
+static GOAL_PRS_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)(?:\b(?:every|each|all(?:\s+(?:of\s+)?the)?)\s+(?:open\s+)?(?:prs?|pull\s+requests?)\s+(?:in|of|for|under|from|on)\s+(?:the\s+)?",
+        r"(?:goal\s+#?(?P<n>\d+)|(?:goal\s+)?G(?P<g>\d+))|\b(?:all\s+(?:of\s+)?)?(?:goal\s+)?G(?P<p>\d+)[’']s\s+(?:open\s+)?(?:prs|pull\s+requests))\b"
+    ))
+    .unwrap()
+});
+/// A set of PRs said one at a time: "every PR", "each one".
+static EVERY_PR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:every|each)\s+(?:one|(?:open\s+)?(?:pr|pull\s+request))\b").unwrap());
+
+/// `text` with the PRs of goal `goal` (task `id`'s) named as the task, every other goal's PRs as `T0`,
+/// and "every PR" said as "all of them".
+fn as_set_refs(text: &str, id: i64, goal: Option<i64>) -> String {
+    let named = GOAL_PRS_RE.replace_all(text, |c: &regex::Captures| {
+        let g: Option<i64> = c.name("n").or(c.name("g")).or(c.name("p")).and_then(|m| m.as_str().parse().ok());
+        format!("T{}", if g.is_some() && g == goal { id } else { 0 })
+    });
+    EVERY_PR_RE.replace_all(&named, "all of them").into_owned()
+}
 
 /// The PR numbers `text` names.
 fn prs_in(text: &str) -> Vec<i64> {
@@ -1630,29 +1660,39 @@ pub struct MergeWord {
 /// agent's message just before it names this PR and no other, or, in the latest prompt, when the
 /// terminal's task is `id` (`own`) and that message names no PR.
 pub fn merge_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
-    pr_word_in(&MERGES, prompts, id, num, own)
+    pr_word_in(&MERGES, prompts, id, num, own, None)
 }
 
 /// Which prompt, newest first, is the word to close task `id`'s PR #`num` without merging it, read as
 /// [`merge_word_in`] reads a merge.
 pub fn close_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
-    pr_word_in(&CLOSES, prompts, id, num, own)
+    pr_word_in(&CLOSES, prompts, id, num, own, None)
 }
 
 /// Which prompt, newest first, is the owner's word that they've reviewed task `id`'s PR #`num`, read as
-/// [`merge_word_in`] reads a merge.
-pub fn reviewed_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
-    pr_word_in(&REVIEWS, prompts, id, num, own)
+/// [`merge_word_in`] reads a merge. It may cover a set: the PRs it lists, every PR in the task's goal
+/// (`goal`), or "all of them" when the agent's message just before it names this PR among others.
+pub fn reviewed_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool, goal: Option<i64>) -> Option<usize> {
+    pr_word_in(&REVIEWS, prompts, id, num, own, Some(goal))
 }
 
-fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
+/// `sets`: the word may cover a set of PRs, with the task's goal (see [`reviewed_word_in`]).
+fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: Option<Option<i64>>) -> Option<usize> {
     for (i, p) in prompts.iter().enumerate() {
         if p.boards() {
             continue;
         }
-        let r = read_of(k, &as_task_refs(&p.text, id, num));
+        let text = match sets {
+            Some(goal) => as_set_refs(&p.text, id, goal),
+            None => p.text.clone(),
+        };
+        let r = read_of(k, &as_task_refs(&text, id, num));
         let named = p.reply.as_deref().map(prs_in).unwrap_or_default();
-        let unnamed = |a: &Ask| *a == Ask::Unnamed && if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) };
+        let unnamed = |a: &Ask| match a {
+            Ask::Unnamed => if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) },
+            Ask::Them if sets.is_some() => if named.is_empty() { i == 0 && own } else { named.contains(&num) },
+            _ => false,
+        };
         match r.word_for(id, unnamed) {
             Some(true) if p.clipped => {}
             Some(true) => return Some(i),
@@ -1685,14 +1725,23 @@ pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
 
 /// The owner's word in terminal `sid` that they've reviewed task `id`'s PR #`num` ([`reviewed_word_in`]):
 /// the prompt.
+/// The owner's own `!` run of it counts too: the command.
 pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
     }
+    let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
+    if let Some(cmd) = bang.filter(|c| PR_REVIEWED_CMD_RE.is_match(c)) {
+        return Ok(Some(format!("! {cmd}")));
+    }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
-    Ok(reviewed_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
+    let goal = crate::board::get_task(app, id)?.i("goal_id");
+    Ok(reviewed_word_in(&prompts, id, num, own, goal).map(|i| prompts[i].text.clone()))
 }
+
+/// A shell command that runs `tb pr reviewed`.
+static PR_REVIEWED_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+reviewed\b").unwrap());
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
 /// "the goal" can mean.
@@ -3979,16 +4028,57 @@ mod tests {
     fn the_owners_word_marks_one_pr_reviewed() {
         let after = |reply: &str, text: &str| vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }];
         for yes in ["mark PR #194 reviewed", "mark #194 as reviewed", "please mark T95 reviewed", "looked at it, mark pr 194 reviewed"] {
-            assert_eq!(reviewed_word_in(&prompts(&[yes], None), 95, 194, false), Some(0), "{yes}");
+            assert_eq!(reviewed_word_in(&prompts(&[yes], None), 95, 194, false, None), Some(0), "{yes}");
         }
         for no in ["don't mark PR #194 reviewed", "should I mark PR #194 reviewed?", "mark PR #196 reviewed", "merge PR #194", "mark it reviewed once CI is green"] {
-            assert_eq!(reviewed_word_in(&prompts(&[no], None), 95, 194, false), None, "{no}");
+            assert_eq!(reviewed_word_in(&prompts(&[no], None), 95, 194, false, None), None, "{no}");
         }
-        assert_eq!(reviewed_word_in(&after("PR #194 is green.", "mark it reviewed"), 95, 194, false), Some(0));
-        assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, true), Some(0));
-        assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, false), None);
-        assert_eq!(reviewed_word_in(&prompts(&["[task-board:T95] mark PR #194 reviewed"], None), 95, 194, false), None);
+        assert_eq!(reviewed_word_in(&after("PR #194 is green.", "mark it reviewed"), 95, 194, false, None), Some(0));
+        assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, true, None), Some(0));
+        assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, false, None), None);
+        assert_eq!(reviewed_word_in(&prompts(&["[task-board:T95] mark PR #194 reviewed"], None), 95, 194, false, None), None);
         assert_eq!(merge_word_in(&prompts(&["mark PR #194 reviewed"], None), 95, 194, false), None, "a review is no merge");
     }
-}
 
+    #[test]
+    fn the_owners_word_marks_a_set_of_prs_reviewed() {
+        let after = |reply: &str, text: &str| vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }];
+        let word = |p: &[Prompt], goal: Option<i64>| reviewed_word_in(p, 95, 194, false, goal);
+        for yes in [
+            "I've reviewed PRs #194, #196",
+            "I've reviewed PRs #190, #194 and #196",
+            "I reviewed #194",
+            "ok, I have reviewed PR #194",
+            "we've just gone over pull request 194",
+            "I've reviewed T93 and T95",
+            "mark PRs #194 and #196 reviewed",
+        ] {
+            assert_eq!(word(&prompts(&[yes], None), None), Some(0), "{yes}");
+        }
+        for no in [
+            "I haven't reviewed PR #194",
+            "I have not reviewed PR #194",
+            "have I reviewed #194?",
+            "I don't think I've reviewed #194",
+            "I've reviewed PR #196",
+            "they reviewed PR #194",
+        ] {
+            assert_eq!(word(&prompts(&[no], None), None), None, "{no}");
+        }
+        for goal in ["I've reviewed every PR in G23", "I've reviewed all the PRs in goal 23", "mark all of G23's PRs reviewed"] {
+            assert_eq!(word(&prompts(&[goal], None), Some(23)), Some(0), "{goal}");
+            assert_eq!(word(&prompts(&[goal], None), Some(24)), None, "{goal}: another goal");
+            assert_eq!(word(&prompts(&[goal], None), None), None, "{goal}: no goal");
+        }
+        let listed = "PR #194 and PR #196 are green and waiting on your review.";
+        for set in ["I've reviewed all of them", "I've reviewed them all", "I've reviewed both", "I've reviewed every PR", "mark them all reviewed"] {
+            assert_eq!(word(&after(listed, set), None), Some(0), "{set}");
+            assert_eq!(word(&after("PR #196 and PR #197 are green.", set), None), None, "{set}: not this PR");
+            assert_eq!(word(&prompts(&[set], None), None), None, "{set}: nothing named");
+            assert_eq!(reviewed_word_in(&prompts(&[set], None), 95, 194, true, None), Some(0), "{set}: the terminal's own task");
+        }
+        assert_eq!(word(&after(listed, "I've reviewed it"), None), None, "one unnamed PR among two");
+        assert_eq!(word(&after("PR #194 is green.", "I've reviewed it"), None), Some(0));
+        assert_eq!(merge_word_in(&after(listed, "merge them all"), 95, 194, false), None, "only a review covers a set");
+    }
+}
