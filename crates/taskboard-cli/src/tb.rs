@@ -173,6 +173,10 @@ enum Cmd {
         /// Run the goal outside work hours, until they open (the board's Start now). Goals only
         #[arg(long, conflicts_with = "queue")]
         now: bool,
+        /// Start it at a set time instead, whatever the work hours: 5pm, 17:30, tomorrow 9am; off drops a schedule.
+        /// Only when the human said when in this conversation
+        #[arg(long, conflicts_with_all = ["queue", "now"])]
+        at: Option<String>,
     },
     /// This terminal's task
     Status {
@@ -3016,6 +3020,22 @@ fn out_play_waits(v: &Value) {
     for line in v["hours_wait"].as_str().into_iter().chain(v["waiting"].as_array().into_iter().flatten().filter_map(|w| w.as_str())) {
         out(&format!("{line}."));
     }
+}
+
+/// `tb start T8 --at 5pm` / `tb start G2 --at tomorrow 9am`, and `--at off` to drop it.
+fn schedule_start(c: &Ctx, task: &str, at: &str) -> Result<i32, String> {
+    let goal = task.trim().starts_with(['G', 'g']);
+    let r = if goal { goal_ref(task)? } else { task_ref(task)? };
+    if c.session.is_empty() {
+        return Err(format!("tb start --at only works in a Midna terminal, on a human's word there. A human can use Start at… on {r} on the board."));
+    }
+    let path = if goal { format!("/goals/{r}/run") } else { format!("/tasks/{r}/start") };
+    let v = c.call("POST", &path, Some(json!({"at": at, "via_session": c.session})))?;
+    match v["start_at"].as_str().filter(|s| !s.is_empty()) {
+        Some(when) => out(&format!("{r} starts {}, whatever the work hours.", taskboardd::hours::at_time(&taskboardd::hours::say_when(when)))),
+        None => out(&format!("{r} isn't scheduled any more.")),
+    }
+    Ok(0)
 }
 
 /// After `tb submit` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
@@ -5940,7 +5960,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Start { task, queue, now } => {
+        Cmd::Start { task, queue, now, at } => {
+            if let Some(at) = at {
+                return schedule_start(c, &task, &at);
+            }
             if task.trim().starts_with(['G', 'g']) {
                 let g = goal_ref(&task)?;
                 if queue {

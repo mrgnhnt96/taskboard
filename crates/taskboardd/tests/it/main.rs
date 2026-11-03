@@ -90,6 +90,7 @@ mod review;
 mod review_fixes;
 mod reviewers;
 mod same_pr;
+mod scheduled_start;
 mod setup_gaps;
 mod shared_branch;
 mod sleep;

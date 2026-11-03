@@ -27,6 +27,8 @@ mod waves;
 
 const START_MENU: &str = "goal-start";
 const WAIT_MENU: &str = "goal-wait";
+const AT_MENU: &str = "goal-start-at";
+const SCHED_MENU: &str = "goal-scheduled";
 const MISSES_MENU: &str = "goal-misses";
 /// How many open issues the Backlog section lists before "N more".
 const BACKLOG_SHOWN: usize = 5;
@@ -53,6 +55,9 @@ pub struct State {
     busy: HashSet<String>,
     /// The body's two lists and the notes fetched so far; started over for each goal.
     lists: lists::Lists,
+    /// Start at…'s time field while it shows, and what went wrong with the last try.
+    at_input: Option<kit::Input>,
+    at_err: Option<String>,
 }
 
 impl State {
@@ -226,6 +231,38 @@ pub fn opens_at(hours: &Value) -> (String, String) {
     (day, fmt::clock12(&l.format("%H:%M").to_string()))
 }
 
+/// When a goal scheduled to start does ("today at 5 PM", "tomorrow at 9 AM"), while it's ahead.
+pub fn scheduled_at(g: &Value) -> Option<String> {
+    let at = fmt::parse(s(g, "start_at"))?;
+    if at <= fmt::now() {
+        return None;
+    }
+    let l = fmt::local(at);
+    let today = fmt::local(fmt::now()).date_naive();
+    let day = if l.date_naive() == today {
+        "today".to_string()
+    } else if Some(l.date_naive()) == today.succ_opt() {
+        "tomorrow".to_string()
+    } else {
+        l.format("%A").to_string()
+    };
+    Some(format!("{day} at {}", fmt::clock12(&l.format("%H:%M").to_string())))
+}
+
+/// Start's menu: the after-hours choices (`start_menu_view`), with Start at… before Pause.
+pub fn start_menu_items(g: &Value, hours: &Value) -> Vec<(&'static str, String, String)> {
+    let mut out = if after_hours(hours) { start_menu_view(g, hours) } else { vec![] };
+    let at = out.iter().position(|(a, ..)| *a == "goal-pause").unwrap_or(out.len());
+    out.insert(at, ("goal-start-at", "Start at…".into(), "Pick a time; it starts then, whatever the work hours".into()));
+    out
+}
+
+/// The scheduled button's menu: (act, title, sub).
+pub fn sched_menu_view(hours: &Value) -> Vec<(&'static str, &'static str, &'static str)> {
+    let now = if after_hours(hours) { ("goal-run-now", "Start now", "Runs outside work hours until they open") } else { ("goal-run", "Start now", "Queue the planned tasks now") };
+    vec![now, ("goal-start-at", "Change the time", "Pick another time to start it"), ("goal-unschedule", "Cancel", "Drop the scheduled start")]
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunButton {
     /// goal-run, goal-pause, wait-menu or goal-plan-edit.
@@ -247,7 +284,14 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
     let paused = b(g, "paused");
     let mut out = Vec::new();
     let mut split = false;
-    if planned > 0 && after_hours(hours) {
+    if let (Some(when), true) = (scheduled_at(g), planned > 0) {
+        out.push(RunButton {
+            act: "sched-menu",
+            label: format!("Starts {when}"),
+            title: "The planned tasks start then, whatever the work hours".into(),
+            busy_label: "Sending…",
+        });
+    } else if planned > 0 && after_hours(hours) {
         split = true;
         let (day, at) = opens_at(hours);
         let later = format!("Start {day}");
@@ -906,6 +950,7 @@ fn open_project(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>)
 fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let (split, list) = run_buttons_view(g, &hours(m));
+    let planned = arr(g, "tasks").iter().any(|x| s(x, "status") == "planned");
     let mut row = div().flex().flex_none().items_center().gap(px(8.));
     for bt in list {
         let key = match bt.act {
@@ -919,7 +964,7 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
             "goal-run" => {
                 let main = kit::btn_primary(t, "goal-run", label).tooltip(kit::tip(bt.title.clone()));
                 let main = if is_busy { kit::disabled(main) } else { main.on_click(cx.listener(move |m, _, _, cx| run_goal(m, &gr2, false, cx))) };
-                if split {
+                if split || planned {
                     let on = t.on_accent;
                     div()
                         .flex()
@@ -931,7 +976,7 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
                                 .border_color(t.accent_fg)
                                 .px(px(8.))
                                 .text_color(on)
-                                .tooltip(kit::tip("Start now instead"))
+                                .tooltip(kit::tip(if split { "Start now or at a set time instead" } else { "Start at a set time instead" }))
                                 .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                                     let p = e.position();
                                     m.toggle_menu(START_MENU, point(p.x - px(240.), p.y + px(14.)), cx);
@@ -945,6 +990,19 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
             "goal-pause" => {
                 let b = kit::btn(t, "goal-pause", label).tooltip(kit::tip(bt.title.clone()));
                 if is_busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| set_paused(m, &gr2, true, cx))) }.into_any_element()
+            }
+            "sched-menu" => {
+                let is_busy = busy(m, &format!("goal-run-now::{gr}")) || busy(m, &format!("goal-run::{gr}")) || busy(m, &format!("goal-at::{gr}"));
+                let b = kit::btn(t, "goal-sched", if is_busy { bt.busy_label.to_string() } else { format!("{label} ▾") }).tooltip(kit::tip(bt.title.clone()));
+                if is_busy {
+                    kit::disabled(b)
+                } else {
+                    b.on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+                        let p = e.position();
+                        m.toggle_menu(SCHED_MENU, point(p.x - px(240.), p.y + px(14.)), cx);
+                    }))
+                }
+                .into_any_element()
             }
             "wait-menu" => {
                 // Busy while its Start now or Pause runs.
@@ -974,7 +1032,7 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
     let at = m.menu_open(START_MENU)?;
     let gr = fmt::ref_of(g, "G");
     let mut menu = kit::menu_box(t, 290.).id("goal-start-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    for (act, title, sub) in start_menu_view(g, &hours(m)) {
+    for (act, title, sub) in start_menu_items(g, &hours(m)) {
         let hover = t.panel_2;
         let gr = gr.clone();
         menu = menu.child(
@@ -990,10 +1048,12 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
                 .hover(move |d| d.bg(hover))
                 .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(title))
                 .child(div().text_size(px(12.)).text_color(t.muted).child(sub))
-                .on_click(cx.listener(move |m, _, _, cx| {
+                .on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
                     if act == "goal-pause" {
                         m.menu = None;
                         set_paused(m, &gr, true, cx)
+                    } else if act == "goal-start-at" {
+                        open_at_menu(m, e.position(), window, cx)
                     } else {
                         run_goal(m, &gr, act == "goal-run-now", cx)
                     }
@@ -1026,6 +1086,149 @@ fn wait_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                 .on_click(cx.listener(move |m, _, _, cx| {
                     m.menu = None;
                     if act == "goal-pause" { set_paused(m, &gr, true, cx) } else { run_goal(m, &gr, true, cx) }
+                })),
+        );
+    }
+    Some(kit::popover(at, menu))
+}
+
+/// Start at…: the time field opens focused under where it was picked.
+fn open_at_menu(m: &mut MainWindow, at: Point<Pixels>, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let input = kit::Input::with_text(cx, "5pm, tomorrow 9am", false, "");
+    window.focus(&input.focus, cx);
+    m.goal_page.at_input = Some(input);
+    m.goal_page.at_err = None;
+    m.menu = Some((AT_MENU.to_string(), point(at.x - px(240.), at.y + px(14.))));
+    cx.notify();
+}
+
+/// Schedule the goal at what's typed in Start at… (`off` drops the schedule).
+fn schedule_goal(m: &mut MainWindow, gr: &str, at: String, cx: &mut Context<MainWindow>) {
+    if at.trim().is_empty() {
+        m.goal_page.at_err = Some("Type when to start it, like 5pm or tomorrow 9am.".into());
+        cx.notify();
+        return;
+    }
+    let off = at == "off";
+    let (busy_key, gr2) = (format!("goal-at::{gr}"), gr.to_string());
+    if !m.goal_page.busy.insert(busy_key.clone()) {
+        return;
+    }
+    let b2 = busy_key.clone();
+    m.post_or(
+        format!("goals/{gr}/run"),
+        json!({"at": at}),
+        cx,
+        move |m, v, cx| {
+            m.goal_page.busy.remove(&busy_key);
+            m.goal_page.at_input = None;
+            m.menu = None;
+            let msg = if off { format!("{gr2} isn’t scheduled any more") } else { scheduled_at(&v).map(|w| format!("{gr2} starts {w}")).unwrap_or_else(|| "Scheduled".into()) };
+            m.toast(msg, false, cx);
+        },
+        move |m, e, cx| {
+            m.goal_page.busy.remove(&b2);
+            if off {
+                m.toast(e.message, true, cx);
+            } else {
+                m.goal_page.at_err = Some(e.message);
+                cx.notify();
+            }
+        },
+    );
+    cx.notify();
+}
+
+fn at_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let at = m.menu_open(AT_MENU)?;
+    let input = m.goal_page.at_input.as_ref()?;
+    let gr = fmt::ref_of(g, "G");
+    let is_busy = busy(m, &format!("goal-at::{gr}"));
+    let focus = input.focus.clone();
+    let field = div()
+        .id("goal-at-field")
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .items_center()
+        .h(px(36.))
+        .px(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(t.border_2)
+        .bg(t.card)
+        .text_size(px(14.))
+        .text_color(t.text)
+        .cursor_text()
+        .child(div().flex_1().min_w_0().overflow_hidden().child(input.field.clone()))
+        .on_click(move |_, window, cx| window.focus(&focus, cx))
+        .on_key_down(cx.listener({
+            let gr = gr.clone();
+            move |m, ev: &KeyDownEvent, window, cx| {
+                let Some(input) = m.goal_page.at_input.as_ref() else { return };
+                match input.on_key(ev, cx) {
+                    kit::KeyOutcome::Submit => {
+                        let text = input.text(cx);
+                        schedule_goal(m, &gr, text, cx);
+                    }
+                    kit::KeyOutcome::Cancel => {
+                        m.menu = None;
+                        m.goal_page.at_input = None;
+                        window.focus(&m.focus, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }
+        }));
+    let go = kit::btn_primary(t, "goal-at-go", if is_busy { "Scheduling…" } else { "Start at" });
+    let go = if is_busy {
+        kit::disabled(go)
+    } else {
+        let gr = gr.clone();
+        go.on_click(cx.listener(move |m, _, _, cx| {
+            let text = m.goal_page.at_input.as_ref().map(|i| i.text(cx)).unwrap_or_default();
+            schedule_goal(m, &gr, text, cx);
+        }))
+    };
+    let menu = kit::menu_box(t, 290.)
+        .id("goal-at-menu")
+        .p(px(10.))
+        .gap(px(8.))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(div().flex().items_center().gap(px(8.)).child(field).child(go))
+        .children(m.goal_page.at_err.clone().map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)));
+    Some(kit::popover(at, menu))
+}
+
+fn sched_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let at = m.menu_open(SCHED_MENU)?;
+    let gr = fmt::ref_of(g, "G");
+    let mut menu = kit::menu_box(t, 290.).id("goal-sched-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for (act, title, sub) in sched_menu_view(&hours(m)) {
+        let hover = t.panel_2;
+        let gr = gr.clone();
+        menu = menu.child(
+            div()
+                .id(act)
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(move |d| d.bg(hover))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(title))
+                .child(div().text_size(px(12.)).text_color(t.muted).child(sub))
+                .on_click(cx.listener(move |m, e: &ClickEvent, window, cx| match act {
+                    "goal-start-at" => open_at_menu(m, e.position(), window, cx),
+                    "goal-unschedule" => {
+                        m.menu = None;
+                        schedule_goal(m, &gr, "off".into(), cx)
+                    }
+                    _ => run_goal(m, &gr, act == "goal-run-now", cx),
                 })),
         );
     }
@@ -1380,7 +1583,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .children(review::section(m, &t, &g, cx)),
         )
         .child(body)
-        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(attached::menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)))
+        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(attached::menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)).children(at_menu(m, &t, &g, cx)).children(sched_menu(m, &t, &g, cx)))
         .into_any_element()
 }
 
@@ -1426,6 +1629,43 @@ mod tests {
     use crate::parity::{self, golden};
     // An explicit import beats the glob: `#[gpui_kit::test]` expands to `#[test]`, which must be std's.
     use ::core::prelude::v1::test;
+
+    fn minute_from_now(days: i64) -> String {
+        (fmt::local(fmt::now()) + chrono::Duration::days(days)).format("%Y-%m-%dT%H:%M").to_string()
+    }
+
+    #[test]
+    fn a_scheduled_goal_says_when_it_starts_in_place_of_start() {
+        let open = json!({"on": true, "open": true});
+        let g = json!({"start_at": minute_from_now(1), "tasks": [{"status": "planned"}]});
+        let (split, bs) = run_buttons_view(&g, &open);
+        assert!(!split);
+        assert_eq!(bs[0].act, "sched-menu");
+        assert!(bs[0].label.starts_with("Starts tomorrow at "), "{}", bs[0].label);
+        assert!(!bs.iter().any(|b| b.act == "goal-run"), "no second Start beside it");
+
+        let past = json!({"start_at": minute_from_now(-1), "tasks": [{"status": "planned"}]});
+        assert_eq!(run_buttons_view(&past, &open).1[0].act, "goal-run", "a time gone by shows Start again");
+    }
+
+    #[test]
+    fn start_offers_a_set_time_in_and_out_of_work_hours() {
+        let g = json!({"tasks": [{"status": "planned"}]});
+        let acts = |h: &Value| start_menu_items(&g, h).into_iter().map(|(a, ..)| a).collect::<Vec<_>>();
+        assert_eq!(acts(&json!({"on": true, "open": true})), vec!["goal-start-at"]);
+        let closed = json!({"on": true, "open": false, "next_open": minute_from_now(1)});
+        assert_eq!(acts(&closed), vec!["goal-run", "goal-run-now", "goal-start-at"]);
+        let waiting = json!({"tasks": [{"status": "planned"}, {"status": "queued"}]});
+        let acts: Vec<_> = start_menu_items(&waiting, &closed).into_iter().map(|(a, ..)| a).collect();
+        assert_eq!(acts, vec!["goal-run", "goal-run-now", "goal-start-at", "goal-pause"], "Start at… comes before Pause");
+    }
+
+    #[test]
+    fn the_scheduled_menu_starts_now_by_the_hours() {
+        let acts = |h: Value| sched_menu_view(&h).into_iter().map(|(a, ..)| a).collect::<Vec<_>>();
+        assert_eq!(acts(json!({"on": true, "open": true})), vec!["goal-run", "goal-start-at", "goal-unschedule"]);
+        assert_eq!(acts(json!({"on": true, "open": false})), vec!["goal-run-now", "goal-start-at", "goal-unschedule"]);
+    }
 
     #[test]
     fn pause_and_resume_show_while_prs_are_in_review() {
