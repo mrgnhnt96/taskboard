@@ -707,6 +707,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| crate::merged_note::tick(app))?;
     jira::run_pending(app)?;
     crate::qa::tick(app)?;
+    crate::plan_review_again::tick(app, now_ts())?;
     app.db.tx(|| crate::lines::tick(app))?;
     app.db.tx(|| crate::reports::lost_questions(app))?;
     auto_close_done(app)?;
