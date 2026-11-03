@@ -318,6 +318,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "blocks_why", "TEXT"),
     // The task whose PR a `pr` item holds: the filer's same-PR anchor, or the filer when it has none.
     ("issues", "holds_pr", "INT"),
+    // 1 while a `pr` item waits for the owner to approve or reject it (`[backlog] critical = "ask"`).
+    ("issues", "asks_owner", "INT DEFAULT 0"),
     // The model the task's terminal starts with (`tb task new --model`, `[models]`): `small`, `large`
     // or a model name; null for `[models] default`.
     ("tasks", "model", "TEXT"),

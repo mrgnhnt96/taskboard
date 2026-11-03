@@ -439,17 +439,186 @@ pub fn take_critical(app: &App, iid: i64, filer: &Row, who: &str) -> Result<Opti
         board::update_task(app, fix.id(), fields!["detail" => detail])?;
         board::log_event(app, fix.id(), who, "note", &format!("Added {}: {}", rf("issue", iid), b.st("title")))?;
         crate::api::issue_tasked(app, iid, fix.id(), who, &format!("Added to {rfix}, the pre-merge fix task for {ra}'s PR."))?;
-        format!("It holds {ra}'s PR and was added to {rfix}, its pre-merge fix task.")
+        if !asks(app) {
+            return Ok(Some(format!("It holds {ra}'s PR and was added to {rfix}, its pre-merge fix task.")));
+        }
+        if fix.s("status") == Some("queued") {
+            board::update_task(app, fix.id(), fields!["status" => "planned"])?;
+            board::log_event(app, fix.id(), board::BOARD, "status", &format!("Planned: {} approves {} first", app.cfg.owner, rf("issue", iid)))?;
+        }
+        ask_owner(app, iid, &a, fix.id())?;
+        format!("It holds {ra}'s PR and was added to {rfix}, its pre-merge fix task, which waits for {} to approve it.", app.cfg.owner)
     } else {
-        let rfix = make_fix(app, &b, &a, who)?;
-        format!("It holds {ra}'s PR until {rfix}, its pre-merge fix task, is done.")
+        let id = make_fix(app, &b, &a, who)?;
+        let rfix = rf("task", id);
+        if !asks(app) {
+            return Ok(Some(format!("It holds {ra}'s PR until {rfix}, its pre-merge fix task, is done.")));
+        }
+        ask_owner(app, iid, &a, id)?;
+        format!("It holds {ra}'s PR. {rfix}, its pre-merge fix task, waits for {} to approve it.", app.cfg.owner)
     };
     Ok(Some(text))
 }
 
+/// The alert a `pr` item raises while it waits for the owner to approve or reject it.
+pub const ASK_PREFIX: &str = "critical-ask:";
+
+pub fn ask_key(issue: i64) -> String {
+    format!("{ASK_PREFIX}{issue}")
+}
+
+/// Whether the owner approves each `pr` item before its fix task runs (`[backlog] critical`).
+fn asks(app: &App) -> bool {
+    !app.cfg.backlog.critical.trim().eq_ignore_ascii_case("auto")
+}
+
+/// Whether task `id` fixes an item that still waits for the owner, so nothing but the owner's answer
+/// queues it.
+pub fn awaits_owner(app: &App, id: i64) -> Result<bool> {
+    Ok(app.db.count("SELECT COUNT(*) FROM issues WHERE task_id = ? AND COALESCE(asks_owner, 0) = 1", p![id])? > 0)
+}
+
+/// Puts item `iid`, made part of fix task `fix` for `a`'s PR, on the owner's Needs you list to approve
+/// or reject. It stays there until they answer.
+fn ask_owner(app: &App, iid: i64, a: &Row, fix: i64) -> Result<()> {
+    app.db.update("issues", &json!(iid), fields!["asks_owner" => 1, "updated_at" => now_iso()])?;
+    let b = board::get_issue(app, iid)?;
+    let (rb, ra, rfix) = (rf("issue", iid), rf("task", a.id()), rf("task", fix));
+    let pr = a.i("pr_num").map(|n| format!("PR #{n}")).unwrap_or_else(|| "PR".into());
+    let why = b.s("blocks_why").filter(|w| !w.trim().is_empty()).unwrap_or(b.st("title").as_str()).trim().to_string();
+    let text = format!(
+        "{rb} holds {ra}'s {pr}: {}. Why: {why}. Approve it and {rfix} fixes it before the merge; reject it and it goes back to the backlog and stops holding the PR.",
+        b.st("title")
+    );
+    let action = |label: &str, n: u8, what: &str| {
+        let command = format!("tb needs answer {rb} --pick {n}");
+        crate::dispatch::AlertAction { label: label.into(), prompt: format!("Run `{command}` to {what}."), command }.json()
+    };
+    let fields = json!({
+        "title": format!("{rb} holds {ra}'s {pr}"),
+        "detail": why,
+        "project": a.v("project"),
+        "issue": rb,
+        "actions": [
+            action("Approve", 1, &format!("approve {rb}, so {rfix} fixes it before {ra}'s {pr} merges")),
+            action("Reject", 2, &format!("reject {rb}, so it goes back to the backlog and stops holding {ra}'s {pr}")),
+        ],
+    });
+    crate::dispatch::add_alert_keyed_with(app, &text, None, a.i("goal_id"), &ask_key(iid), fields)
+}
+
+/// `POST /backlog/:id/critical {approve}`: the owner's answer on a `pr` item that waits for them.
+/// Approving lets its fix task run: queued (in a goal, once the goal runs). Rejecting sends it back to the
+/// plain backlog, holding nothing, and takes it out of its fix task: an unstarted task left with nothing
+/// to fix goes, a started one stops sharing the PR. Either way the PR steps again. Gives back what it
+/// did and the task it deleted, if any.
+pub fn answer(app: &App, iid: i64, approve: bool, who: &str) -> Result<(Value, Option<i64>)> {
+    let b = board::get_issue(app, iid)?;
+    let rb = rf("issue", iid);
+    if !b.b("asks_owner") {
+        return err(409, format!("{rb} isn't waiting for approval."));
+    }
+    let fix = board::find_task(app, b.i("task_id"))?;
+    let ra = b.i("holds_pr").map(|a| rf("task", a)).unwrap_or_else(|| "its task".into());
+    crate::dispatch::clear_alert_key(app, &ask_key(iid))?;
+    let (text, gone) = if approve {
+        (approved(app, &b, fix.as_ref(), &ra, who)?, None)
+    } else {
+        rejected(app, &b, fix.as_ref(), &ra, who)?
+    };
+    if let Some(a) = b.i("holds_pr") {
+        restep(app, a)?;
+    }
+    Ok((json!({"ok": true, "text": text, "issue": rb, "task": fix.map(|t| rf("task", t.id()))}), gone))
+}
+
+fn approved(app: &App, b: &Row, fix: Option<&Row>, ra: &str, who: &str) -> Result<String> {
+    let rb = rf("issue", b.id());
+    app.db.update("issues", &json!(b.id()), fields!["asks_owner" => 0, "updated_at" => now_iso()])?;
+    board::add_issue_event(app, b.id(), who, "blocks", &format!("Approved: it holds {ra}'s PR until it's fixed."), None)?;
+    let Some(t) = fix else { return Ok(format!("Approved {rb}: it holds {ra}'s PR.")) };
+    let rfix = rf("task", t.id());
+    if t.s("status") != Some("planned") {
+        return Ok(format!("Approved {rb}: {rfix} fixes it before {ra}'s PR merges."));
+    }
+    if awaits_owner(app, t.id())? {
+        return Ok(format!("Approved {rb}. {rfix} still waits for the other items in it."));
+    }
+    if release(app, t, who)? {
+        return Ok(format!("Approved {rb}: {rfix} is queued to fix it before {ra}'s PR merges."));
+    }
+    Ok(format!("Approved {rb}: {rfix} runs with its goal, before {ra}'s PR merges."))
+}
+
+/// Planned fix task `t` no longer waits for the owner: queued outside a goal or in a running one,
+/// otherwise it stays planned until the goal runs. Whether it was queued.
+fn release(app: &App, t: &Row, who: &str) -> Result<bool> {
+    if t.s("status") != Some("planned") || awaits_owner(app, t.id())? {
+        return Ok(false);
+    }
+    let (status, why) = match t.i("goal_id") {
+        Some(g) => board::joining_status(app, g, false)?,
+        None => ("queued", "queued".to_string()),
+    };
+    if status != "queued" {
+        return Ok(false);
+    }
+    board::update_task(app, t.id(), fields!["status" => "queued"])?;
+    board::log_event(app, t.id(), who, "status", &format!("Approved, so {why}"))?;
+    Ok(true)
+}
+
+fn rejected(app: &App, b: &Row, fix: Option<&Row>, ra: &str, who: &str) -> Result<(String, Option<i64>)> {
+    let rb = rf("issue", b.id());
+    app.db.update(
+        "issues",
+        &json!(b.id()),
+        fields!["blocks" => crate::blocks::NONE, "holds_pr" => null, "asks_owner" => 0, "state" => "open", "task_id" => null, "updated_at" => now_iso()],
+    )?;
+    board::add_issue_event(app, b.id(), who, "blocks", &format!("Rejected: back in the backlog, and it no longer holds {ra}'s PR."), None)?;
+    let back = format!("Rejected {rb}: it's back in the backlog and no longer holds {ra}'s PR");
+    let Some(t) = fix else { return Ok((format!("{back}."), None)) };
+    let rfix = rf("task", t.id());
+    let left = app.db.q("SELECT id FROM issues WHERE task_id = ? ORDER BY id", p![t.id()])?;
+    if let Some(first) = left.first() {
+        let line = format!("- {rb} ");
+        let detail = t.st("detail");
+        let detail: Vec<&str> = detail.lines().filter(|l| !l.starts_with(&line)).collect();
+        let mut f = fields!["detail" => detail.join("\n")];
+        if t.i("from_issue_id") == Some(b.id()) {
+            f.extend(fields!["from_issue_id" => first.id()]);
+        }
+        board::update_task(app, t.id(), f)?;
+        board::log_event(app, t.id(), who, "note", &format!("Dropped {rb}: {} rejected it", app.cfg.owner))?;
+        release(app, &board::get_task(app, t.id())?, who)?;
+        return Ok((format!("{back}; {rfix} fixes the rest."), None));
+    }
+    let unstarted = matches!(t.s("status"), Some("planned") | Some("queued")) && t.s("started_at").is_none();
+    if unstarted {
+        crate::api::purge_tasks(app, &[t.id()])?;
+        if let Some(g) = t.i("goal_id") {
+            board::renumber_goal(app, g)?;
+        }
+        return Ok((format!("{back}; {rfix} had nothing else to fix, so it's gone."), Some(t.id())));
+    }
+    board::update_task(app, t.id(), fields!["from_issue_id" => null])?;
+    set(app, &board::get_task(app, t.id())?, &json!("none"), who)?;
+    board::log_event(app, t.id(), who, "note", &format!("{} rejected {rb}, its only item, after it started: it no longer shares {ra}'s PR", app.cfg.owner))?;
+    Ok((format!("{back}; {rfix} had started, so it no longer shares the PR."), None))
+}
+
+/// Task `id` is going: the items in it that waited for the owner don't any more.
+pub fn forget_asks(app: &App, id: i64) -> Result<()> {
+    for b in app.db.q("SELECT id FROM issues WHERE task_id = ? AND COALESCE(asks_owner, 0) = 1", p![id])? {
+        app.db.update("issues", &json!(b.id()), fields!["asks_owner" => 0])?;
+        crate::dispatch::clear_alert_key(app, &ask_key(b.id()))?;
+    }
+    Ok(())
+}
+
 /// The pre-merge fix task for `a`'s PR, made from item `b`: it shares the PR, in `a`'s goal, one wave
 /// after the group's last task.
-fn make_fix(app: &App, b: &Row, a: &Row, who: &str) -> Result<String> {
+fn make_fix(app: &App, b: &Row, a: &Row, who: &str) -> Result<i64> {
     let ra = rf("task", a.id());
     let detail = format!(
         "These backlog items hold {ra}'s PR: it can't merge until each is fixed on its branch. Read each one's report (tb backlog show) before changing anything.\n{}",
@@ -462,8 +631,14 @@ fn make_fix(app: &App, b: &Row, a: &Row, who: &str) -> Result<String> {
     body["latest"] = json!(format!("Holds {ra}'s PR: fixes what was found before it merges."));
     body["same_pr"] = json!(ra);
     let mut log = format!("Added to fix what holds {ra}'s PR ({})", rf("issue", b.id()));
+    if asks(app) {
+        body["status"] = json!("planned");
+    }
     if let Some(g) = a.i("goal_id") {
-        let (status, why) = board::joining_status(app, g, false)?;
+        let (status, why) = match asks(app) {
+            true => ("planned", format!("planned: {} approves it first", app.cfg.owner)),
+            false => board::joining_status(app, g, false)?,
+        };
         body["goal_id"] = json!(g);
         body["status"] = json!(status);
         if let Some(w) = tail(app, a, 0)?.i("wave") {
@@ -475,7 +650,7 @@ fn make_fix(app: &App, b: &Row, a: &Row, who: &str) -> Result<String> {
     let id = c["id"].as_i64().unwrap_or(0);
     let rfix = rf("task", id);
     crate::api::issue_tasked(app, b.id(), id, who, &format!("Made into {rfix}, the pre-merge fix task that shares {ra}'s PR."))?;
-    Ok(rfix)
+    Ok(id)
 }
 
 /// A `pr` item whose PR is already merged or closed (or that has no PR to hold) blocks the goal instead

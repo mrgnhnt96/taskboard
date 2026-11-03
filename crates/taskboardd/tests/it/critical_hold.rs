@@ -11,15 +11,17 @@ use taskboardd::config::Config;
 use taskboardd::util::{jloads_obj, now_iso, PrLink, Row, RowExt};
 use taskboardd::{board, dispatch, midna, prcmds, prflow, reports, samepr};
 
-struct Board {
-    app: Arc<App>,
-    dir: tempfile::TempDir,
-    goal: i64,
+pub struct Board {
+    pub app: Arc<App>,
+    pub dir: tempfile::TempDir,
+    pub goal: i64,
 }
 
-fn new_board_with(tweak: impl FnOnce(&mut Config)) -> Board {
+/// A board where items don't wait for the owner (`critical = "auto"`) unless `tweak` says so.
+pub fn new_board_with(tweak: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
+    cfg.backlog.critical = "auto".into();
     tweak(&mut cfg);
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
@@ -39,24 +41,24 @@ fn approved(num: i64, branch: &str) -> Value {
 }
 
 impl Board {
-    fn post(&self, path: &str, body: Value) -> Value {
+    pub fn post(&self, path: &str, body: Value) -> Value {
         api::dispatch(&self.app, "POST", path, &Query::new(), &body).unwrap_or_else(|e| panic!("POST {path}: {}", e.message))
     }
-    fn task(&self, title: &str, extra: Value) -> i64 {
+    pub fn task(&self, title: &str, extra: Value) -> i64 {
         let mut body = json!({"title": title, "detail": "Do it.", "project": "webapp", "goal_id": self.goal});
         for (k, v) in extra.as_object().unwrap() {
             body[k] = v.clone();
         }
         self.post("/tasks", body)["id"].as_i64().unwrap()
     }
-    fn row(&self, id: i64) -> Row {
+    pub fn row(&self, id: i64) -> Row {
         board::get_task(&self.app, id).unwrap()
     }
-    fn rec(&self, id: i64) -> Value {
+    pub fn rec(&self, id: i64) -> Value {
         jloads_obj(self.row(id).s("pr_flow")).get("rec").cloned().unwrap()
     }
     /// Gives task `id` an open, green, approved PR and steps it, so it's ready to merge.
-    fn link(&self, id: i64, num: i64, branch: &str) {
+    pub fn link(&self, id: i64, num: i64, branch: &str) {
         let pr = PrLink { host: "github".into(), repo: "acme/webapp".into(), num, url: format!("https://github.com/acme/webapp/pull/{num}") };
         let t = self.row(id);
         self.app.db.tx(|| prflow::link_pr(&self.app, &t, &pr, "test")).unwrap();
@@ -65,27 +67,27 @@ impl Board {
         prflow::step(&self.app, &self.row(id), &approved(num, branch)).unwrap();
     }
     /// Puts task `id` to work in terminal s1, the terminal `found` files from.
-    fn work(&self, id: i64) {
+    pub fn work(&self, id: i64) {
         midna::sync(&self.app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": self.dir.path().join("webapp").to_string_lossy(), "status": {"state": "working"}})], &[])
             .unwrap();
         self.app.db.x("UPDATE tasks SET session_id = NULL WHERE session_id = 's1'", taskboardd::p![]).unwrap();
         board::update_task(&self.app, id, vec![("status", json!("working")), ("session_id", json!("s1"))]).unwrap();
     }
-    fn found(&self, title: &str, why: &str) -> Value {
+    pub fn found(&self, title: &str, why: &str) -> Value {
         let body = json!({"event": "tb.found", "session": "s1", "title": title, "kind": "bug", "blocks": "pr", "blocks_why": why});
         reports::handle(&self.app, body, false).unwrap_or_else(|e| panic!("found: {}", e.message))
     }
-    fn issue(&self, v: &Value) -> Row {
+    pub fn issue(&self, v: &Value) -> Row {
         let id: i64 = v["issue"].as_str().unwrap()[1..].parse().unwrap();
         board::get_issue(&self.app, id).unwrap()
     }
-    fn alerts(&self) -> Vec<String> {
+    pub fn alerts(&self) -> Vec<String> {
         dispatch::alerts(&self.app).iter().filter_map(|a| a["text"].as_str().map(str::to_string)).collect()
     }
-    fn blockers(&self, id: i64) -> Vec<String> {
+    pub fn blockers(&self, id: i64) -> Vec<String> {
         prcmds::merge_blockers(&self.app, &self.row(id), &self.rec(id), false).unwrap()
     }
-    fn finish(&self, id: i64) {
+    pub fn finish(&self, id: i64) {
         board::update_task(&self.app, id, vec![("status", json!("done"))]).unwrap();
     }
 }

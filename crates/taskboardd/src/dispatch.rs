@@ -218,7 +218,12 @@ fn new_alert_id() -> String {
 /// pushed out by the 20-alert cap: a PR waiting on the owner's review (it clears once the PR is reviewed,
 /// `resolved`) or an urgent alert (it clears when what raised it clears it, or its task moves on).
 pub fn stays(a: &Value) -> bool {
-    a["review"] == true || a["urgent"] == true || quiet(a)
+    a["review"] == true || a["urgent"] == true || quiet(a) || asks_owner(a)
+}
+
+/// A `pr` item waiting for the owner to approve or reject it: it goes once they answer.
+pub fn asks_owner(a: &Value) -> bool {
+    a["key"].as_str().is_some_and(|k| k.starts_with(crate::samepr::ASK_PREFIX))
 }
 
 /// An alert that only shows in Needs you: it never notifies or joins the digest, since what raised it
