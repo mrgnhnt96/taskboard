@@ -36,6 +36,9 @@ pub const BUILT_IN: &str = "\
 - A sweep (rename, format pass, comment rewrite) limited to files the task already touches stays in the task, as its own commit. A sweep across many files is its own task.
 - A guard nothing else protects (a permission, auth or security check) is its own task, however small.
 - List the tasks in the order they should run; a task that needs an earlier one's code goes after it.
+- Trace the outcome: every clause of it maps to a task that proves it. An outcome about devices or platforms gets a verification task with those devices (a goal with none averaged 26.8 questions a task).
+- List prerequisites first. A human task for anything only the owner can do (a sign-in, an account), found before the work starts, not mid-run. Known failing tests go in the goal notes. Name what other systems must provide (a CORS setting, an API) and who does it.
+- When the work is rules (budgets, verdicts), the first task writes them down. When tasks hang on a decision or a baseline, plan up to it plus a re-plan task, not the whole goal: tasks planned behind an undecided first task get redone.
 - A separate task is a separate review, not a separate PR to main: every PR to main runs the full checks, and so does every push to it.
 - Small, related tasks share one stack: the smallest of them is the head, in the first wave, and each other one stacks on it (--stack-on) with --stack-merge head, so only the head's PR goes to main. Related means the same screen family, the same subsystem or the same kind of fix, even when the tasks don't need each other's code.
 - Fan out, don't chain: stack each sibling on the head, not on the sibling before it, so the siblings still run side by side.
