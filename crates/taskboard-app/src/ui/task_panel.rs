@@ -514,6 +514,11 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         "requeue" => run(m, a, tp("/requeue"), json!({}), |_, _| "Back in the queue".into(), cx),
         "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
+        // Only asks: the confirm merges it.
+        "pr-merge-now" => {
+            m.modal = Some(crate::ui::modals::Modal::finish(a.id.clone(), crate::ui::modals::Ask::Merge));
+            cx.notify();
+        }
         // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
         "bit-made" => run(m, a, format!("bits/{}/made", a.arg), json!({}), |_, _| String::new(), cx),
         "term-menu" => {

@@ -1681,12 +1681,39 @@ fn approves(text: &str) -> bool {
     })
 }
 
-/// The owner's word to merge one PR: the prompt, and whether it approves the PR too ("get it merged,
-/// approved"), which stands in for the approval the author's own account can't give.
+/// The owner saying to merge past what holds the PR: "merge it anyway", "regardless of the checks",
+/// "override the review", "ignore the changes requested", "as is", "even though checks are running".
+static OVERRIDES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)\b(?:anyways?|regardless|override|overriding|overridden|as[\s-]is|even\s+(?:though|if|with|while)|despite|in\s+spite\s+of|",
+        r"ignor(?:e|ing)|bypass(?:ing)?|force(?:d)?|past\s+(?:the\s+|its\s+|any\s+|every\s+|all\s+(?:the\s+)?)?(?:checks?|reviews?|reviewers?|gates?|holds?|changes|builds?))\b"
+    ))
+    .unwrap()
+});
+
+/// Whether `text` says to merge past what holds the PR ([`OVERRIDES_RE`]), in a clause that doesn't say
+/// no and a sentence that doesn't ask.
+fn overrides(text: &str) -> bool {
+    let own = owners_text(text);
+    SENTENCE_RE.captures_iter(&own).any(|c| {
+        let Some(s) = c.name("s").map(|m| m.as_str()) else { return false };
+        let asked = c.name("end").is_some_and(|m| m.as_str().contains('?'));
+        !asked
+            && OVERRIDES_RE.find_iter(s).any(|m| {
+                let from = clauses(s).into_iter().find(|(a, b)| *a <= m.start() && m.start() < *b).map_or(0, |(a, _)| a);
+                negs_in(&s[from..m.start()]).is_empty()
+            })
+    })
+}
+
+/// The owner's word to merge one PR: the prompt, whether it approves the PR too ("get it merged,
+/// approved"), which stands in for the approval the author's own account can't give, and whether it says
+/// to merge past every hold ("merge it anyway"), which lets `tb pr merge --override` through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeWord {
     pub text: String,
     pub approved: bool,
+    pub overrides: bool,
 }
 
 /// Which prompt, newest first, is the word to merge task `id`'s PR #`num`, read as [`word_in`] reads a
@@ -1745,11 +1772,15 @@ pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
         return Ok(None);
     }
     if let Some(cmd) = owners_bang(app, sid, &PR_MERGE_CMD_RE)? {
-        return Ok(Some(MergeWord { text: cmd, approved: false }));
+        let overrides = OVERRIDE_FLAG_RE.is_match(&cmd);
+        return Ok(Some(MergeWord { text: cmd, approved: false, overrides }));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
-    Ok(merge_word_in(&prompts, id, num, own).map(|i| MergeWord { text: prompts[i].text.clone(), approved: approves(&prompts[i].text) }))
+    Ok(merge_word_in(&prompts, id, num, own).map(|i| {
+        let text = &prompts[i].text;
+        MergeWord { text: text.clone(), approved: approves(text), overrides: overrides(text) }
+    }))
 }
 
 /// The owner's word in terminal `sid` to close task `id`'s PR #`num` ([`close_word_in`]): the prompt.
@@ -1847,6 +1878,8 @@ fn owners_bang(app: &App, sid: &str, cmd: &Regex) -> Result<Option<String>> {
 static PR_REVIEWED_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+reviewed\b").unwrap());
 /// A shell command that runs `tb pr merge`.
 static PR_MERGE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+merge\b").unwrap());
+/// `tb pr merge`'s override flag, in the owner's own run of it.
+static OVERRIDE_FLAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s--override\b").unwrap());
 /// A shell command that runs `tb pr close`.
 static PR_CLOSE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+close\b").unwrap());
 
@@ -4118,6 +4151,28 @@ mod tests {
         assert!(!approves("merge it, it isn't approved yet"));
         assert!(!approves("is it approved?"));
         assert!(approves("lgtm, merge it"));
+    }
+
+    #[test]
+    fn the_owners_word_to_merge_past_every_hold() {
+        // #876: still a word to merge, and one that overrides.
+        for ask in [
+            "merge 194 anyway",
+            "merge #194 regardless of the checks",
+            "override and merge PR 194",
+            "merge PR 194 as is",
+            "merge 194, ignore the changes requested",
+            "merge 194 even though checks are still running",
+            "merge 194 past the checks",
+            "force merge 194",
+            "merge 194 despite the review",
+        ] {
+            assert_eq!(merge_word_in(&prompts(&[ask], None), 95, 194, false), Some(0), "{ask}");
+            assert!(overrides(ask), "{ask}");
+        }
+        for no in ["merge 194", "merge 194, approved", "don't override, merge 194", "should I merge 194 anyway?", "merge 194 and don't ignore the review"] {
+            assert!(!overrides(no), "{no}");
+        }
     }
 
     #[test]

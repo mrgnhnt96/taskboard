@@ -869,6 +869,75 @@ fn the_owner_approved_override_keeps_the_conflict_changes_and_stack_checks() {
     assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
 }
 
+/// #876: a "changes requested" with its thread open, a check still running and an expected check that never posts.
+fn held_every_way() -> Record {
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("b", "changes")];
+    rec.checks = vec![check("build", "passed"), check("lint", "running")];
+    rec.threads = vec![thread("1", "b")];
+    rec.threads[0].author = "b".into();
+    rec
+}
+
+fn expects_e2e(c: &mut Config) {
+    c.pr.projects.insert("webapp".into(), PrProject { expected: Some(vec!["build".into(), "e2e".into()]), expected_wait_mins: Some(30.0), ..Default::default() });
+}
+
+#[test]
+fn the_owners_override_merges_past_changes_asked_for_and_checks_and_records_what_held_it() {
+    let b = board_with(expects_e2e);
+    let id = b.pr_task(BB);
+    let h = fake(&b, held_every_way());
+    poll(&b);
+    let url = format!("/tasks/T{id}/pr/merge");
+    let e = b.try_post(&url, json!({"owner_approved": "Old review"})).unwrap_err();
+    assert!(e.contains("B asked for changes") && e.contains("lint") && e.contains("e2e"), "{e}");
+    b.post(&url, json!({"override": true}));
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "merged");
+    assert!(logged(&b, id, "overrode the merge gates and merged PR #9 while"), "logged");
+    assert!(logged(&b, id, "B asked for changes"), "the gates open then");
+    let gates = b.flow(id)["owner_override"]["gates"].as_array().cloned().unwrap_or_default();
+    let gates: Vec<&str> = gates.iter().filter_map(|g| g.as_str()).collect();
+    assert!(gates.iter().any(|g| g.contains("asked for changes")), "{gates:?}");
+    assert!(gates.iter().any(|g| g.contains("still running: lint")), "{gates:?}");
+    assert!(gates.iter().any(|g| g.contains("e2e")), "{gates:?}");
+}
+
+#[test]
+fn an_agent_overrides_only_on_the_owners_word_to_merge_it_anyway() {
+    let b = board_with(|c| {
+        expects_e2e(c);
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task(BB);
+    let h = fake(&b, held_every_way());
+    poll(&b);
+    let merge = || b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "via_session": "s1", "override": true}));
+    b.report("hook.prompt", "s1", json!({"prompt": "merge PR #9"}));
+    let e = merge().unwrap_err();
+    assert!(e.contains("--override is") && e.contains("merge #9 anyway"), "{e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    b.report("hook.prompt", "s1", json!({"prompt": "merge #9 anyway, that review is stale"}));
+    merge().unwrap();
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert!(logged(&b, id, "(\"merge #9 anyway, that review is stale\")"), "the word kept with it");
+}
+
+#[test]
+fn the_owners_override_keeps_conflicts_and_the_stacks_order() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = held_every_way();
+    rec.mergeable = json!("CONFLICTING");
+    let h = fake(&b, rec);
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"override": true})).unwrap_err();
+    assert!(e.contains("it conflicts with its base branch main") && e.contains("an override doesn't merge past these"), "{e}");
+    assert!(!e.contains("asked for changes"), "the override passes the review: {e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert!(!logged(&b, id, "overrode the merge gates"), "nothing recorded for a refused merge");
+}
+
 #[test]
 fn the_owner_closes_a_pr_and_an_agent_only_on_their_word() {
     let b = board_with(|_| {});

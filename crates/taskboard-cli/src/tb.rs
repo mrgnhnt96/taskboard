@@ -2058,6 +2058,9 @@ enum PrCmd {
         /// The owner's override of the approval count, with why (an agent: only on their word to merge it)
         #[arg(long, value_name = "REASON")]
         owner_approved: Option<String>,
+        /// The owner's override: merge past changes asked for, checks running, failed or never posted, approvals, threads and merge steps (conflicts and the stack's order still hold; an agent: only on their word to merge it anyway)
+        #[arg(long = "override")]
+        force: bool,
     },
     /// Close it without merging (Bitbucket: decline), keeping its branch: only on the owner's word
     Close {
@@ -7113,7 +7116,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&pr_reviewers_line(&t, &v));
                 Ok(0)
             }
-            PrCmd::Merge { task, owner_approved } => {
+            PrCmd::Merge { task, owner_approved, force } => {
                 let t = c.pr_task(task)?;
                 if owner_approved.as_deref().is_some_and(|r| r.trim().is_empty()) {
                     return Err("--owner-approved needs a reason: why the approvals it has are enough.".into());
@@ -7121,6 +7124,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let mut b = json!({"agent": !c.session.is_empty(), "via_session": c.session});
                 if let Some(r) = owner_approved {
                     b["owner_approved"] = json!(r);
+                }
+                if force {
+                    b["override"] = json!(true);
                 }
                 c.call_progress("POST", &format!("/tasks/{t}/pr/merge"), Some(b))?;
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
