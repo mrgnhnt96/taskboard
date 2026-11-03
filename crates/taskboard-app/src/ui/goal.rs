@@ -46,9 +46,9 @@ pub struct State {
     note_filter: Option<&'static str>,
     /// The kind of file the Attached card narrows to.
     att_filter: attached::Filter,
-    // Kept across goals: the Attached card's folded waves and tasks (`w2`, `T5`) by goal, a
-    // request's result by group, and the requests running.
-    att_closed: HashMap<String, HashSet<String>>,
+    // Kept across goals: the wave the Attached card shows (`w2`, `all`) by goal, a request's
+    // result by group, and the requests running.
+    att_wave: HashMap<String, String>,
     notes: HashMap<String, (String, bool)>,
     busy: HashSet<String>,
     /// The body's two lists and the notes fetched so far; started over for each goal.
@@ -69,9 +69,9 @@ impl State {
         self.review_open = open.split(',').filter_map(|n| n.trim().parse::<usize>().ok()?.checked_sub(1)).collect();
         self.note_filter = ["Decision", "Finding", "Reference"].into_iter().find(|k| *k == notes);
         self.att_filter = attached::Filter::All;
-        // Dev: `TASKBOARD_GOAL_ATT_CLOSED=w1,T5` folds those waves and tasks in Attached (screenshots).
-        if let Ok(keys) = std::env::var("TASKBOARD_GOAL_ATT_CLOSED") {
-            self.att_closed.insert(goal.to_string(), keys.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect());
+        // Dev: `TASKBOARD_GOAL_ATT_WAVE=w1|all` shows that wave in Attached (screenshots).
+        if let Ok(key) = std::env::var("TASKBOARD_GOAL_ATT_WAVE") {
+            self.att_wave.insert(goal.to_string(), key);
         }
     }
 }
@@ -1361,7 +1361,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .children(review::section(m, &t, &g, cx)),
         )
         .child(body)
-        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)))
+        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(attached::menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)))
         .into_any_element()
 }
 

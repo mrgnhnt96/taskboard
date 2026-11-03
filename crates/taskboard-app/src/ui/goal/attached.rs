@@ -1,8 +1,16 @@
-//! The goal page's Attached card: the goal's own attachments, then every task's, grouped by wave
-//! and task. Waves and tasks fold (view state, kept per goal); chips narrow it to one kind of
-//! file; hovering an image or a video shows a larger preview.
+//! The goal page's Attached card: the goal's own attachments, then its tasks' files, one wave at a
+//! time. A wave menu picks the wave (it opens on the wave in progress, or on All waves), a kind menu
+//! narrows to one kind of file, and neither resets the other: each lists what the other leaves and
+//! disables the choices that hold nothing. Each task's ref and title head its files. Hovering an
+//! image or a video shows a larger preview.
 use super::*;
 use crate::ui::task_panel::{ATT_KINDS, att_file_type, att_icon, chevron};
+
+pub(super) const WAVE_MENU: &str = "goal-att-wave";
+pub(super) const KIND_MENU: &str = "goal-att-kind";
+
+/// The wave choice that shows every wave.
+pub(super) const ALL_WAVES: &str = "all";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Filter {
@@ -13,9 +21,9 @@ pub enum Filter {
     Docs,
 }
 
-const FILTERS: [(Filter, &str); 4] = [(Filter::All, "All"), (Filter::Evidence, "Evidence"), (Filter::Design, "Design"), (Filter::Docs, "Docs")];
+const FILTERS: [(Filter, &str); 4] = [(Filter::All, "All kinds"), (Filter::Evidence, "Evidence"), (Filter::Design, "Design"), (Filter::Docs, "Docs")];
 
-/// The chip an attachment's kind counts under; `other` only shows under All.
+/// The kind an attachment counts under; `other` only shows under All.
 fn bucket(kind: &str) -> Option<Filter> {
     match kind {
         "evidence" | "results" => Some(Filter::Evidence),
@@ -27,6 +35,22 @@ fn bucket(kind: &str) -> Option<Filter> {
 
 fn passes(filter: Filter, kind: &str) -> bool {
     filter == Filter::All || bucket(kind) == Some(filter)
+}
+
+/// How many of `kinds` each filter holds, in `FILTERS` order.
+fn tally<'a>(kinds: impl Iterator<Item = &'a str>) -> [usize; 4] {
+    let mut counts = [0; 4];
+    for k in kinds {
+        counts[0] += 1;
+        if let Some(b) = bucket(k) {
+            counts[FILTERS.iter().position(|(f, _)| *f == b).unwrap()] += 1;
+        }
+    }
+    counts
+}
+
+fn slot(filter: Filter) -> usize {
+    FILTERS.iter().position(|(f, _)| *f == filter).unwrap()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -58,12 +82,54 @@ pub struct TaskGroup {
     pub files: Vec<File>,
 }
 
+/// Where a wave stands, as the wave menu says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Done,
+    Now,
+    Held,
+    Failed,
+    Review,
+    Ahead,
+}
+
+impl Phase {
+    fn of(state: &str) -> Phase {
+        match state {
+            "done" => Phase::Done,
+            "running" => Phase::Now,
+            "held" => Phase::Held,
+            "failed" => Phase::Failed,
+            "stopped" => Phase::Review,
+            _ => Phase::Ahead,
+        }
+    }
+
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Phase::Done => Some("Done"),
+            Phase::Now => Some("Now"),
+            Phase::Held => Some("Held"),
+            Phase::Failed => Some("Failed"),
+            Phase::Review => Some("Your review"),
+            Phase::Ahead => None,
+        }
+    }
+
+    /// The wave the goal is on: the card opens on it.
+    fn current(self) -> bool {
+        matches!(self, Phase::Now | Phase::Held | Phase::Failed | Phase::Review)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaveGroup {
-    /// The fold key: `w2`, or `loose` for the tasks with no wave.
+    /// The menu's key: `w2`, or `loose` for the tasks with no wave.
     pub key: String,
     /// None when the goal has no waves: its tasks stand on their own.
     pub label: Option<String>,
+    pub phase: Phase,
+    /// Its tasks with files of the kind in force; none when the kind leaves it empty.
     pub tasks: Vec<TaskGroup>,
 }
 
@@ -75,24 +141,49 @@ impl WaveGroup {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rollup {
+    /// The goal's own files of the kind in force.
     pub goal: Vec<File>,
+    /// Every wave that holds a file of any kind, narrowed to the kind in force.
     pub waves: Vec<WaveGroup>,
-    /// Every attachment, whatever the filter.
+    /// The wave shown (`w2`), or None for every wave.
+    pub wave: Option<String>,
+    /// Every attachment, whatever the choices.
     pub total: usize,
-    /// How many each chip holds, in `FILTERS` order.
+    /// How many each kind holds in the goal's own files and the wave shown, in `FILTERS` order.
     pub counts: [usize; 4],
-    /// The filter in force: the one asked for, or All when it holds nothing.
+    /// The kind in force: the one asked for, or All when the wave shown holds none of it.
     pub filter: Filter,
+    /// The kind menu helps: some kind holds part of the goal's files, not all of them.
+    pub kinds: bool,
 }
 
 impl Rollup {
-    pub fn shown(&self) -> usize {
-        self.goal.len() + self.waves.iter().map(WaveGroup::count).sum::<usize>()
+    /// The waves listed: the one picked, or every wave that holds a file of the kind in force.
+    pub fn shown_waves(&self) -> Vec<&WaveGroup> {
+        match &self.wave {
+            Some(k) => self.waves.iter().filter(|w| &w.key == k).collect(),
+            None => self.waves.iter().filter(|w| w.count() > 0).collect(),
+        }
     }
 
-    /// Chips only help when some kind holds part of the list, not all of it.
-    pub fn chips(&self) -> bool {
-        self.counts[1..].iter().any(|&n| n > 0 && n < self.total)
+    pub fn shown(&self) -> usize {
+        self.goal.len() + self.shown_waves().iter().map(|w| w.count()).sum::<usize>()
+    }
+
+    /// The wave menu shows when there's more than one wave to choose.
+    pub fn picker(&self) -> bool {
+        self.waves.len() > 1
+    }
+
+    /// "15", or "4 of 15" while either choice narrows the list.
+    pub fn head_count(&self) -> String {
+        let n = self.shown();
+        if n == self.total { n.to_string() } else { format!("{n} of {}", self.total) }
+    }
+
+    /// The wave picker's label.
+    pub fn wave_label(&self) -> String {
+        self.wave.as_ref().and_then(|k| self.waves.iter().find(|w| &w.key == k)).and_then(|w| w.label.clone()).unwrap_or_else(|| "All waves".into())
     }
 }
 
@@ -121,90 +212,107 @@ fn file(a: &Value) -> File {
     }
 }
 
-/// The card's lists under `filter`: the goal's own files, then each wave's tasks that hold any.
-pub fn rollup(g: &Value, filter: Filter) -> Rollup {
+/// The card for goal `g` with the kind `filter` and the `wave` asked for (`w2`, `all`, or None
+/// for the default: the wave the goal is on, else every wave).
+pub fn rollup(g: &Value, filter: Filter, wave: Option<&str>) -> Rollup {
     let own = arr(g, "attachments");
     let on_tasks = arr(g, "task_attachments");
-    let kinds = own.iter().chain(on_tasks.iter()).map(|a| s(a, "kind"));
-    let mut counts = [0; 4];
-    for k in kinds {
-        counts[0] += 1;
-        if let Some(b) = bucket(k) {
-            counts[FILTERS.iter().position(|(f, _)| *f == b).unwrap()] += 1;
-        }
-    }
-    let filter = if counts[FILTERS.iter().position(|(f, _)| *f == filter).unwrap()] == 0 { Filter::All } else { filter };
-    let pick = |list: &[Value], r: Option<&str>| -> Vec<File> {
-        list.iter().filter(|a| fmt::opt_s(a, "task") == r && passes(filter, s(a, "kind"))).map(file).collect()
-    };
-    let goal = pick(own, None);
+    let total = own.len() + on_tasks.len();
+    let whole = tally(own.iter().chain(on_tasks.iter()).map(|a| s(a, "kind")));
+    let kinds = whole[1..].iter().any(|&n| n > 0 && n < total);
+    let own: Vec<&Value> = own.iter().filter(|a| fmt::opt_s(a, "task").is_none()).collect();
     let tasks = arr(g, "tasks");
-    let group = |t: &Value| -> Option<TaskGroup> {
+    // Each wave's tasks and their files, every kind.
+    let group = |t: &Value| -> Option<(TaskGroup, Vec<&Value>)> {
         let r = s(t, "ref");
-        let files = pick(on_tasks, Some(r));
-        (!files.is_empty()).then(|| TaskGroup { r: r.to_string(), title: s(t, "title").to_string(), files })
+        let atts: Vec<&Value> = on_tasks.iter().filter(|a| fmt::opt_s(a, "task") == Some(r)).collect();
+        (!atts.is_empty()).then(|| (TaskGroup { r: r.to_string(), title: s(t, "title").to_string(), files: vec![] }, atts))
     };
     let ws = arr(g, "waves");
-    let mut waves = vec![];
+    let mut all: Vec<(WaveGroup, Vec<(TaskGroup, Vec<&Value>)>)> = vec![];
     for w in ws {
         let n = i(w, "wave");
         let label = match fmt::opt_s(w, "name") {
             Some(name) => format!("Wave {n} · {name}"),
             None => format!("Wave {n}"),
         };
-        waves.push(WaveGroup { key: format!("w{n}"), label: Some(label), tasks: tasks.iter().filter(|t| t["wave"] == w["wave"]).filter_map(group).collect() });
+        let groups = tasks.iter().filter(|t| t["wave"] == w["wave"]).filter_map(group).collect();
+        all.push((WaveGroup { key: format!("w{n}"), label: Some(label), phase: Phase::of(s(w, "state")), tasks: vec![] }, groups));
     }
     let loose = tasks.iter().filter(|t| ws.is_empty() || t["wave"].is_null()).filter_map(group).collect();
-    waves.push(WaveGroup { key: "loose".into(), label: (!ws.is_empty()).then(|| "No wave".into()), tasks: loose });
-    waves.retain(|w| !w.tasks.is_empty());
-    Rollup { goal, waves, total: counts[0], counts, filter }
+    all.push((WaveGroup { key: "loose".into(), label: (!ws.is_empty()).then(|| "No wave".into()), phase: Phase::Ahead, tasks: vec![] }, loose));
+    all.retain(|(_, groups)| !groups.is_empty());
+
+    let wave = match wave {
+        _ if all.len() < 2 => None,
+        Some(ALL_WAVES) => None,
+        Some(k) if all.iter().any(|(w, _)| w.key == k) => Some(k.to_string()),
+        _ => all.iter().find(|(w, _)| w.phase.current()).map(|(w, _)| w.key.clone()),
+    };
+    let in_view = |w: &WaveGroup| wave.as_ref().is_none_or(|k| &w.key == k);
+    let counts = tally(own.iter().map(|a| s(a, "kind")).chain(all.iter().filter(|(w, _)| in_view(w)).flat_map(|(_, gs)| gs.iter().flat_map(|(_, atts)| atts.iter().map(|a| s(a, "kind"))))));
+    let filter = if counts[slot(filter)] == 0 { Filter::All } else { filter };
+    let keep = |atts: &[&Value]| -> Vec<File> { atts.iter().filter(|a| passes(filter, s(a, "kind"))).map(|a| file(a)).collect() };
+    let waves = all
+        .into_iter()
+        .map(|(mut w, groups)| {
+            w.tasks = groups.into_iter().map(|(mut tg, atts)| { tg.files = keep(&atts); tg }).filter(|tg| !tg.files.is_empty()).collect();
+            w
+        })
+        .collect();
+    Rollup { goal: keep(&own), waves, wave, total, counts, filter, kinds }
 }
 
 // ------------------------------------------------------------------ view
 
-fn chip(t: &Theme, id: String, label: String, on: bool) -> Stateful<Div> {
-    let hover = t.tint;
-    div()
-        .id(SharedString::from(id))
-        .flex_none()
-        .px(px(9.))
-        .py(px(3.))
-        .rounded_full()
-        .border_1()
-        .text_size(px(12.))
-        .cursor_pointer()
-        .when(on, |d| d.bg(t.accent_soft).border_color(t.accent_line).text_color(t.accent_fg).font_weight(FontWeight::MEDIUM))
-        .when(!on, |d| d.bg(t.card).border_color(t.border).text_color(t.text_2).hover(move |s| s.bg(hover)))
-        .child(label)
-}
-
-/// A fold's header row: chevron, what it is, its count on the right; the whole row toggles.
-fn toggle(t: &Theme, gr: &str, key: &str, open: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+/// A text button that opens one of the card's menus where it was clicked.
+fn menu_btn(t: &Theme, id: &'static str, menu: &'static str, label: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let tint = t.tint;
-    let (gr, k) = (gr.to_string(), key.to_string());
     div()
-        .id(SharedString::from(format!("goal-att-fold-{key}")))
+        .id(id)
         .flex()
+        .flex_none()
         .items_center()
-        .gap(px(6.))
-        .mx(px(-6.))
+        .gap(px(4.))
         .px(px(6.))
-        .py(px(4.))
+        .h(px(24.))
         .rounded(px(6.))
+        .text_size(px(12.))
+        .text_color(t.text_2)
         .cursor_pointer()
         .hover(move |s| s.bg(tint))
-        .child(chevron(open, t.muted))
-        .on_click(cx.listener(move |m, _, _, cx| {
-            let shut = m.goal_page.att_closed.entry(gr.clone()).or_default();
-            if !shut.remove(&k) {
-                shut.insert(k.clone());
-            }
-            cx.notify();
+        .child(label)
+        .child(chevron(true, t.muted))
+        .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+            let p = e.position();
+            m.toggle_menu(menu, point(p.x - px(150.), p.y + px(14.)), cx);
         }))
 }
 
-fn count(t: &Theme, n: usize) -> Div {
-    div().ml_auto().flex_none().pl(px(8.)).text_size(px(12.)).text_color(t.muted).child(n.to_string())
+/// The wave picker: the wave shown, full width, opening the wave menu.
+fn wave_btn(t: &Theme, label: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let tint = t.tint;
+    div()
+        .id("goal-att-wave-btn")
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .min_w_0()
+        .mx(px(-6.))
+        .px(px(6.))
+        .h(px(30.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(t.border)
+        .cursor_pointer()
+        .hover(move |s| s.bg(tint))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(label.clone()))
+        .child(chevron(true, t.muted))
+        .tooltip(kit::tip(label))
+        .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+            let p = e.position();
+            m.toggle_menu(WAVE_MENU, point(p.x - px(150.), p.y + px(16.)), cx);
+        }))
 }
 
 fn file_row(t: &Theme, f: &File, id: String) -> Stateful<Div> {
@@ -219,7 +327,7 @@ fn file_row(t: &Theme, f: &File, id: String) -> Stateful<Div> {
         .min_w_0()
         .mx(px(-6.))
         .px(px(6.))
-        .py(px(3.))
+        .h(px(28.))
         .rounded(px(6.))
         .text_size(px(13.))
         .hover(move |s| s.bg(tint))
@@ -241,80 +349,141 @@ fn file_row(t: &Theme, f: &File, id: String) -> Stateful<Div> {
 }
 
 fn files(t: &Theme, list: &[File], key: &str) -> Div {
-    div().flex().flex_col().gap(px(2.)).children(list.iter().enumerate().map(|(ix, f)| file_row(t, f, format!("goal-att-{key}-{ix}"))))
+    div().flex().flex_col().children(list.iter().enumerate().map(|(ix, f)| file_row(t, f, format!("goal-att-{key}-{ix}"))))
 }
 
-/// How many list items the Attached section takes: its head (the count, chips and the goal's own
-/// files) and one per wave group; none when nothing's attached.
+/// A task's ref and title over its files; the label opens the task.
+fn task_group(t: &Theme, tg: &TaskGroup, cx: &mut Context<MainWindow>) -> Div {
+    let tint = t.tint;
+    let r = tg.r.clone();
+    let label = div()
+        .id(SharedString::from(format!("goal-att-task-{}", tg.r)))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .min_w_0()
+        .mx(px(-6.))
+        .px(px(6.))
+        .h(px(24.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(tint))
+        .child(div().flex_none().text_size(px(11.)).font_family(t.mono_font.clone()).text_color(t.muted).child(tg.r.clone()))
+        .child(div().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(t.text_2).child(tg.title.clone()))
+        .tooltip(kit::tip(format!("{} {}", tg.r, tg.title)))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)));
+    div().flex().flex_col().min_w_0().child(label).child(files(t, &tg.files, &tg.r).pl(px(12.)))
+}
+
+/// How many list items the Attached section takes: its head (the count, the menus and the goal's
+/// own files) and one per wave listed; none when nothing's attached.
 pub(super) fn parts(r: &Rollup) -> usize {
-    if r.total == 0 { 0 } else { 1 + r.waves.len() }
+    if r.total == 0 { 0 } else { 1 + r.shown_waves().len() }
 }
 
 /// Piece `k` of the Attached section (`parts`) of goal `g`, rolled up as `r`: 0 is its head, then
-/// each wave group.
-pub(super) fn attached_piece(m: &MainWindow, t: &Theme, g: &Value, r: &Rollup, k: usize, cx: &mut Context<MainWindow>) -> Div {
-    let last = k == r.waves.len();
-    let gr = s(g, "ref").to_string();
-    let shut = m.goal_page.att_closed.get(&gr).cloned().unwrap_or_default();
-    let mut out = div().flex().flex_col().gap(px(10.));
-    let Some(w) = k.checked_sub(1).and_then(|k| r.waves.get(k)) else {
-        if r.chips() {
-            let mut row = div().flex().flex_wrap().gap(px(6.));
-            for (ix, (f, label)) in FILTERS.iter().enumerate() {
-                let n = r.counts[ix];
-                if n == 0 {
-                    continue;
-                }
-                let f = *f;
-                row = row.child(chip(t, format!("goal-att-chip-{ix}"), format!("{label} {n}"), r.filter == f).on_click(cx.listener(move |m, _, _, cx| {
-                    m.goal_page.att_filter = f;
-                    cx.notify();
-                })));
-            }
-            out = out.child(row);
+/// each wave listed.
+pub(super) fn attached_piece(t: &Theme, r: &Rollup, k: usize, cx: &mut Context<MainWindow>) -> Div {
+    let shown = r.shown_waves();
+    let last = k == shown.len();
+    let Some(w) = k.checked_sub(1).and_then(|k| shown.get(k)) else {
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(side_head(t, "Attached", Some(r.head_count())).flex_1())
+            .when(r.kinds, |d| d.child(menu_btn(t, "goal-att-kind-btn", KIND_MENU, FILTERS[slot(r.filter)].1.to_string(), cx)));
+        let mut out = div().flex().flex_col().gap(px(10.));
+        if r.picker() {
+            out = out.child(wave_btn(t, r.wave_label(), cx));
         }
         if !r.goal.is_empty() {
             let label = div().pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.muted).child("GOAL");
             out = out.child(div().flex().flex_col().gap(px(4.)).child(label).child(files(t, &r.goal, "goal")));
         }
-        let n = if r.filter == Filter::All { r.total.to_string() } else { format!("{} of {}", r.shown(), r.total) };
-        return side_piece(t, true, last, 0., side_head(t, "Attached", Some(n)).pb(px(8.))).child(out);
+        return side_piece(t, true, last, 0., head.pb(px(8.))).child(out);
     };
-    let open = !shut.contains(&w.key);
-    let mut tasks = div().flex().flex_col().gap(px(6.));
-    for tg in &w.tasks {
-        let topen = !shut.contains(&tg.r);
-        let r2 = tg.r.clone();
-        let head = toggle(t, &gr, &tg.r, topen, cx)
-            .child(
-                div()
-                    .id(SharedString::from(format!("goal-att-ref-{}", tg.r)))
-                    .flex_none()
-                    .text_size(px(11.))
-                    .font_family(t.mono_font.clone())
-                    .text_color(t.muted)
-                    .cursor_pointer()
-                    .hover(|s| s.underline())
-                    .child(tg.r.clone())
-                    .on_click(cx.listener(move |m, _, _, cx| {
-                        cx.stop_propagation();
-                        m.open_task(r2.clone(), cx);
-                    })),
-            )
-            .child(div().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(t.text_2).child(tg.title.clone()))
-            .child(count(t, tg.files.len()));
-        tasks = tasks.child(div().flex().flex_col().gap(px(2.)).child(head).when(topen, |d| d.child(files(t, &tg.files, &tg.r).pl(px(16.)))));
-    }
-    let body = match &w.label {
-        Some(label) => {
-            let head = toggle(t, &gr, &w.key, open, cx).child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(label.clone())).child(count(t, w.count()));
-            div().flex().flex_col().gap(px(6.)).pt(px(10.)).border_t_1().border_color(t.divider).child(head).when(open, |d| d.child(tasks.pl(px(18.))))
+    let tasks = div().flex().flex_col().gap(px(12.)).children(w.tasks.iter().map(|tg| task_group(t, tg, cx)));
+    // Under All waves each wave says which it is; one wave picked is named by the picker.
+    let body = match (&r.wave, &w.label) {
+        (None, Some(label)) => {
+            let head = div()
+                .flex()
+                .items_baseline()
+                .gap(px(6.))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(label.clone()))
+                .child(div().text_size(px(12.)).text_color(t.muted).child(w.count().to_string()));
+            div().flex().flex_col().gap(px(8.)).pt(px(10.)).border_t_1().border_color(t.divider).child(head).child(tasks)
         }
-        None => tasks,
+        _ => tasks,
     };
-    // The head's column kept a 10px gap before its first group, none when it had nothing under it.
-    let gap = if k == 1 && !r.chips() && r.goal.is_empty() { 0. } else { 10. };
-    side_piece(t, false, last, gap, body)
+    side_piece(t, false, last, 10., body)
+}
+
+/// One choice in the card's menus: its label, a note (a wave's phase), its count; dimmed and
+/// inert when it holds nothing.
+fn pick_row(t: &Theme, id: String, label: String, note: Option<&'static str>, n: usize, on: bool) -> Stateful<Div> {
+    let hover = t.panel_2;
+    let off = n == 0 && !on;
+    div()
+        .id(SharedString::from(id))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .h(px(30.))
+        .px(px(10.))
+        .rounded(px(6.))
+        .text_size(px(13.))
+        .text_color(if on { t.accent_fg } else { t.text })
+        .when(on, |d| d.bg(t.accent_soft))
+        .when(off, |d| d.opacity(0.45))
+        .when(!off, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
+        .child(div().flex_1().min_w_0().truncate().child(label))
+        .children(note.map(|x| div().flex_none().text_size(px(12.)).text_color(t.muted).child(x)))
+        .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(n.to_string()))
+}
+
+/// The card's open menu, if one is: the waves or the kinds.
+pub(super) fn menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let gr = s(g, "ref").to_string();
+    let r = || rollup(g, m.goal_page.att_filter, m.goal_page.att_wave.get(&gr).map(String::as_str));
+    if let Some(at) = m.menu_open(WAVE_MENU) {
+        let r = r();
+        let every = r.waves.iter().map(WaveGroup::count).sum::<usize>();
+        let pick = |key: String| {
+            let gr = gr.clone();
+            cx.listener(move |m: &mut MainWindow, _: &ClickEvent, _: &mut Window, cx: &mut Context<MainWindow>| {
+                m.goal_page.att_wave.insert(gr.clone(), key.clone());
+                m.menu = None;
+                cx.notify();
+            })
+        };
+        let mut rows = vec![pick_row(t, "goal-att-wave-all".into(), "All waves".into(), None, every, r.wave.is_none()).on_click(pick(ALL_WAVES.into())).into_any_element()];
+        for w in &r.waves {
+            let row = pick_row(t, format!("goal-att-wave-{}", w.key), w.label.clone().unwrap_or_default(), w.phase.label(), w.count(), r.wave.as_ref() == Some(&w.key));
+            rows.push(if w.count() > 0 { row.on_click(pick(w.key.clone())).into_any_element() } else { row.into_any_element() });
+        }
+        let list = div().id("goal-att-wave-list").flex().flex_col().max_h(px(360.)).overflow_y_scroll().children(rows);
+        let menu = kit::menu_box(t, 300.).id("goal-att-wave-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(list);
+        return Some(kit::popover(at, menu));
+    }
+    let at = m.menu_open(KIND_MENU)?;
+    let r = r();
+    let mut menu = kit::menu_box(t, 200.).id("goal-att-kind-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for (ix, (f, label)) in FILTERS.iter().enumerate() {
+        let (f, n) = (*f, r.counts[ix]);
+        let row = pick_row(t, format!("goal-att-kind-{ix}"), (*label).into(), None, n, r.filter == f);
+        menu = menu.child(if n > 0 {
+            row.on_click(cx.listener(move |m, _, _, cx| {
+                m.goal_page.att_filter = f;
+                m.menu = None;
+                cx.notify();
+            }))
+        } else {
+            row
+        });
+    }
+    Some(kit::popover(at, menu))
 }
 
 // ------------------------------------------------------------------ hover card
@@ -411,18 +580,19 @@ mod tests {
             json!({"ref": "T3", "title": "Counts", "wave": 2}),
             json!({"ref": "T4", "title": "Loose", "wave": null}),
         ];
-        let waves = json!([{"wave": 1, "name": "Grouping"}, {"wave": 2}]);
+        let waves = json!([{"wave": 1, "name": "Grouping", "state": "done"}, {"wave": 2, "state": "running"}]);
         json!({"ref": "G1", "attachments": own, "task_attachments": on_tasks, "waves": waves, "tasks": tasks})
     }
 
     fn shape(r: &Rollup) -> Vec<(Option<String>, usize, Vec<(String, usize)>)> {
-        r.waves.iter().map(|w| (w.label.clone(), w.count(), w.tasks.iter().map(|t| (t.r.clone(), t.files.len())).collect())).collect()
+        r.shown_waves().iter().map(|w| (w.label.clone(), w.count(), w.tasks.iter().map(|t| (t.r.clone(), t.files.len())).collect())).collect()
     }
 
     #[test]
-    fn groups_by_wave_then_task_and_skips_empty_ones() {
-        let r = rollup(&goal(), Filter::All);
+    fn every_wave_with_a_file_is_a_choice_and_empty_tasks_have_no_group() {
+        let r = rollup(&goal(), Filter::All, Some(ALL_WAVES));
         assert_eq!(r.goal.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["Concepts", "Rules"]);
+        assert_eq!(r.waves.iter().map(|w| w.key.as_str()).collect::<Vec<_>>(), ["w1", "w2", "loose"]);
         assert_eq!(
             shape(&r),
             vec![
@@ -432,45 +602,72 @@ mod tests {
             ],
             "T2 has nothing attached, so it has no group"
         );
-        assert_eq!((r.total, r.shown(), r.counts), (6, 6, [6, 3, 1, 1]));
-        assert!(r.chips());
+        assert_eq!((r.total, r.shown(), r.counts, r.head_count()), (6, 6, [6, 3, 1, 1], "6".into()));
+        assert!(r.kinds && r.picker());
+        assert_eq!(r.wave_label(), "All waves");
     }
 
     #[test]
-    fn a_filter_narrows_every_group_and_drops_the_ones_it_empties() {
-        let r = rollup(&goal(), Filter::Evidence);
+    fn it_opens_on_the_wave_the_goal_is_on() {
+        let r = rollup(&goal(), Filter::All, None);
+        assert_eq!(r.wave.as_deref(), Some("w2"), "wave 2 is running");
+        assert_eq!(shape(&r), vec![(Some("Wave 2".into()), 1, vec![("T3".into(), 1)])]);
+        assert_eq!((r.wave_label().as_str(), r.head_count().as_str()), ("Wave 2", "3 of 6"), "the goal's own two files and wave 2's one");
+        assert_eq!(r.waves[0].phase.label(), Some("Done"));
+        let mut idle = goal();
+        idle["waves"] = json!([{"wave": 1, "name": "Grouping", "state": "done"}, {"wave": 2, "state": "waiting"}]);
+        assert_eq!(rollup(&idle, Filter::All, None).wave, None, "no wave running: every wave");
+    }
+
+    #[test]
+    fn a_wave_picked_stays_picked_and_the_kinds_count_within_it() {
+        let r = rollup(&goal(), Filter::All, Some("w1"));
+        assert_eq!(r.wave.as_deref(), Some("w1"));
+        assert_eq!(r.counts, [4, 2, 1, 1], "the goal's design and doc, and wave 1's two evidence files");
+        let r = rollup(&goal(), Filter::Evidence, Some("w2"));
+        assert_eq!((r.wave.as_deref(), r.filter), (Some("w2"), Filter::Evidence), "neither choice resets the other");
+        assert_eq!(shape(&r), vec![(Some("Wave 2".into()), 1, vec![("T3".into(), 1)])]);
+        assert_eq!(r.head_count(), "1 of 6");
+        assert_eq!(rollup(&goal(), Filter::All, Some("w9")).wave.as_deref(), Some("w2"), "a wave that's gone falls back to the default");
+    }
+
+    #[test]
+    fn a_kind_narrows_every_wave_and_the_menu_dims_the_waves_it_empties() {
+        let r = rollup(&goal(), Filter::Docs, Some(ALL_WAVES));
+        assert_eq!((r.goal.len(), r.shown_waves().len()), (1, 0));
+        assert_eq!(r.waves.iter().map(WaveGroup::count).collect::<Vec<_>>(), [0, 0, 0], "listed, with nothing to show");
+        assert_eq!(r.head_count(), "1 of 6");
+        let r = rollup(&goal(), Filter::Evidence, Some(ALL_WAVES));
         assert!(r.goal.is_empty());
         assert_eq!(shape(&r), vec![(Some("Wave 1 · Grouping".into()), 2, vec![("T1".into(), 2)]), (Some("Wave 2".into()), 1, vec![("T3".into(), 1)])]);
-        assert_eq!((r.total, r.shown()), (6, 3));
-        let d = rollup(&goal(), Filter::Docs);
-        assert_eq!((d.goal.len(), d.waves.len()), (1, 0));
     }
 
     #[test]
-    fn a_filter_that_holds_nothing_falls_back_to_all() {
+    fn a_kind_the_shown_files_dont_hold_falls_back_to_all() {
         let mut g = goal();
         g["attachments"] = json!([]);
-        let r = rollup(&g, Filter::Design);
+        let r = rollup(&g, Filter::Design, Some(ALL_WAVES));
         assert_eq!((r.filter, r.shown()), (Filter::All, 4));
     }
 
     #[test]
-    fn without_waves_tasks_stand_on_their_own_and_one_kind_needs_no_chips() {
+    fn without_waves_tasks_stand_on_their_own_with_no_picker_and_one_kind_needs_no_menu() {
         let g = json!({
             "attachments": [],
             "task_attachments": [att("evidence", "Shot", "~/a.png", Some("T1"))],
             "waves": [],
             "tasks": [{"ref": "T1", "title": "One", "wave": null}],
         });
-        let r = rollup(&g, Filter::All);
+        let r = rollup(&g, Filter::All, None);
         assert_eq!(shape(&r), vec![(None, 1, vec![("T1".into(), 1)])]);
-        assert!(!r.chips(), "every file is evidence");
-        assert_eq!(rollup(&json!({"attachments": [], "task_attachments": [], "tasks": [], "waves": []}), Filter::All).total, 0);
+        assert!(!r.kinds, "every file is evidence");
+        assert!(!r.picker());
+        assert_eq!(rollup(&json!({"attachments": [], "task_attachments": [], "tasks": [], "waves": []}), Filter::All, None).total, 0);
     }
 
     #[test]
     fn images_and_videos_get_a_preview_with_the_file_name() {
-        let r = rollup(&goal(), Filter::All);
+        let r = rollup(&goal(), Filter::All, Some(ALL_WAVES));
         let t1 = &r.waves[0].tasks[0].files;
         assert!(matches!(&t1[0].preview, Some(Preview::Image(p)) if p.ends_with("/before.png") && !p.starts_with('~')));
         assert_eq!((t1[0].icon, t1[0].detail.as_str()), ("image", "before.png"));

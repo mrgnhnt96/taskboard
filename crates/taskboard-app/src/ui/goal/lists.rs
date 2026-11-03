@@ -35,13 +35,14 @@ struct View {
     devices_open: bool,
     backlog_view: bool,
     att_filter: attached::Filter,
+    att_wave: HashMap<String, String>,
     notes_rev: u64,
 }
 
 impl View {
     fn of(m: &MainWindow) -> View {
         let p = &m.goal_page;
-        View { notes_open: p.notes_open, note_filter: p.note_filter, devices_open: p.devices_open, backlog_view: p.backlog_view, att_filter: p.att_filter, notes_rev: p.lists.cache.rev }
+        View { notes_open: p.notes_open, note_filter: p.note_filter, devices_open: p.devices_open, backlog_view: p.backlog_view, att_filter: p.att_filter, att_wave: p.att_wave.clone(), notes_rev: p.lists.cache.rev }
     }
 }
 
@@ -217,11 +218,13 @@ fn build(m: &mut MainWindow, g: &Rc<Value>, total: usize, view: View) {
             }
         }
     }
-    let rollup = attached::rollup(g, m.goal_page.att_filter);
+    let rollup = attached::rollup(g, m.goal_page.att_filter, m.goal_page.att_wave.get(s(g, "ref")).map(String::as_str));
     let att = attached::parts(&rollup);
+    // The choices are in the keys so a new choice measures the pieces again.
+    let choice = format!("{}:{:?}", rollup.wave.as_deref().unwrap_or(attached::ALL_WAVES), rollup.filter);
     for k in 0..att {
         ai.push(AItem::Att(k));
-        ak.push(format!("att:{k}:{att}"));
+        ak.push(format!("att:{k}:{att}:{choice}"));
     }
     if g["devices"].is_object() {
         ai.push(AItem::Devices);
@@ -338,7 +341,7 @@ fn aside_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Ma
             note_piece(&t, &shown[k], k, last)
         }
         AItem::NotesMore => notes_more(&t, !l.notes.shown.is_empty()),
-        AItem::Att(k) => attached::attached_piece(m, &t, &g, &l.attached.clone(), k, cx),
+        AItem::Att(k) => attached::attached_piece(&t, &l.attached.clone(), k, cx),
         AItem::Devices => pool::devices_aside(m, &t, &g, cx).unwrap_or_else(div),
         AItem::Bits => pool::bits_aside(&t, &g).unwrap_or_else(div),
         AItem::BacklogHead => backlog_head(&t, l.issues.len()),
