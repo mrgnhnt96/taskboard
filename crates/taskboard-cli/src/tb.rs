@@ -170,6 +170,11 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// The task's handoff in full, with nothing shortened to fit. Only reads
+    Handoff {
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// This terminal's task, its line and a PR it's visiting, as JSON. Only reads: safe to poll from a status bar
     Peek {
         /// Print Midna status-bar segments instead (`[]` when there's nothing to show)
@@ -5870,6 +5875,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Err(_) if midna => out("[]"),
                 Err(e) => return Err(e),
             }
+            Ok(0)
+        }
+        Cmd::Handoff { t } => {
+            let path = match t.task {
+                Some(x) => format!("/handoff?task={}", task_ref(&x)?),
+                None => format!("/handoff?session={}", c.session),
+            };
+            out(c.call("GET", &path, None)?["text"].as_str().unwrap_or(""));
             Ok(0)
         }
         Cmd::Status { t } => {

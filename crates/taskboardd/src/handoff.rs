@@ -583,85 +583,120 @@ fn footer(app: &App) -> Option<String> {
     }
 }
 
-/// Joins the parts and the tail, cutting parts from the last one back (each down to 80 characters) until
-/// it fits. The first part and the `kept` ones (by index: the device lines, whose start and stop commands
-/// are no use cut short) are never cut; when even that doesn't fit, they're all that's left.
-fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>, kept: &[usize]) -> String {
-    let all = |p: &[String]| p.iter().chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n\n");
-    let text = all(&parts);
-    let len = text.chars().count();
-    if len <= LIMIT {
-        return text;
-    }
-    let mut over = len as i64 - LIMIT as i64;
-    for i in (1..parts.len()).rev() {
-        if over <= 0 {
+/// How a handoff section may give way when the handoff runs past [`LIMIT`].
+#[derive(Clone, Copy, PartialEq)]
+enum Fit {
+    /// What the agent acts on before anything else: never shortened.
+    Whole,
+    /// Reference the agent can read when it needs it: its first line and a pointer to `tb handoff`.
+    Pointer,
+    /// The work itself: shortened only when the pointers aren't enough, and then with a pointer too.
+    Clip,
+}
+
+struct Part {
+    text: String,
+    fit: Fit,
+}
+
+fn parts(texts: Vec<String>, fit: Fit) -> Vec<Part> {
+    texts.into_iter().map(|text| Part { text, fit }).collect()
+}
+
+const POINTER_HEAD: usize = 160;
+const CLIP_FLOOR: usize = 400;
+
+fn shortened(text: &str, keep: usize, tb: &str) -> String {
+    format!("{} [Shortened to fit. {tb} handoff prints it in full.]", clip(text, keep))
+}
+
+fn pointer(text: &str, tb: &str) -> String {
+    shortened(&one_line(text.lines().next().unwrap_or(""), POINTER_HEAD), POINTER_HEAD, tb)
+}
+
+/// Joins the parts and the tail. Past [`LIMIT`], reference parts give way to a pointer to `tb handoff`
+/// from the last one back, then the work itself is shortened (with the same pointer) to the room left.
+/// Must-act parts and the tail are never cut, so a handoff that still runs long is sent long.
+fn fit_to_limit(mut parts: Vec<Part>, tail: Vec<String>, tb: &str) -> String {
+    let all = |p: &[Part]| p.iter().map(|p| p.text.clone()).chain(tail.iter().cloned()).collect::<Vec<_>>().join("\n\n");
+    let over = |p: &[Part]| all(p).chars().count() as i64 - LIMIT as i64;
+    for i in (0..parts.len()).rev() {
+        if over(&parts) <= 0 {
             break;
         }
-        if kept.contains(&i) {
-            continue;
-        }
-        let n = parts[i].chars().count() as i64;
-        let cut = (n - over - 1).max(80) as usize;
-        if (cut as i64) < n {
-            parts[i] = clip(&parts[i], cut);
-            over -= n - parts[i].chars().count() as i64;
+        if parts[i].fit == Fit::Pointer {
+            let short = pointer(&parts[i].text, tb);
+            if short.chars().count() < parts[i].text.chars().count() {
+                parts[i].text = short;
+            }
         }
     }
-    let text = all(&parts);
-    if text.chars().count() > LIMIT {
-        let first: Vec<String> = parts.iter().enumerate().filter(|(i, _)| *i == 0 || kept.contains(i)).map(|(_, p)| p.clone()).collect();
-        return all(&first);
+    for i in (0..parts.len()).rev() {
+        let o = over(&parts);
+        if o <= 0 {
+            break;
+        }
+        if parts[i].fit == Fit::Clip {
+            let n = parts[i].text.chars().count() as i64;
+            let keep = (n - o - 60).max(CLIP_FLOOR as i64) as usize;
+            if (keep as i64) < n {
+                parts[i].text = shortened(&parts[i].text, keep, tb);
+            }
+        }
     }
-    text
+    all(&parts)
 }
 
 pub fn build(app: &App, task_id: i64) -> Result<String> {
-    build_with(app, task_id, false)
+    build_with(app, task_id, false, true)
 }
 
 /// The handoff a task starts with: it has started, though `started_at` is set only once a
 /// terminal takes it, so the devices line says none were free rather than that they come later.
 pub fn build_starting(app: &App, task_id: i64) -> Result<String> {
-    build_with(app, task_id, true)
+    build_with(app, task_id, true, true)
 }
 
-fn build_with(app: &App, task_id: i64, starting: bool) -> Result<String> {
+/// The handoff with nothing shortened, for `tb handoff`: where a shortened section points.
+pub fn build_full(app: &App, task_id: i64) -> Result<String> {
+    build_with(app, task_id, false, false)
+}
+
+fn build_with(app: &App, task_id: i64, starting: bool, fit: bool) -> Result<String> {
     let t = board::get_task(app, task_id)?;
     let ctx = board::task_context(&t);
     let g = board::find_goal(app, t.i("goal_id"))?;
     let tb = board::tb_cmd(app);
     let w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-    let mut parts = vec![first_line(&t)];
-    parts.extend(goal_and_notes(app, g.as_ref())?);
-    parts.extend(crate::lessons::handoff_block(app, &t)?);
-    parts.extend(also_goals(app, &t)?);
-    parts.extend(wave_section(app, &t, g.as_ref())?);
-    parts.extend(setup_block(app, &t, g.as_ref())?);
-    // The devices lent to it, early and never cut, so a long handoff keeps how to start and stop them.
-    let mut kept = vec![];
-    for line in crate::devices::handoff_lines(app, &t, starting)? {
-        kept.push(parts.len());
-        parts.push(line);
-    }
-    parts.extend(branch_and_last_commit(&w));
-    parts.extend(checkpoint_and_answers(app, &t, &ctx));
-    parts.extend(attachments_block(app, &t, g.as_ref())?);
-    parts.extend(backlog_origin(app, &t)?);
-    parts.extend(goal_open_issues(app, &t, g.as_ref())?);
+    let mut ps = parts(vec![first_line(&t)], Fit::Whole);
+    ps.extend(parts(goal_and_notes(app, g.as_ref())?, Fit::Pointer));
+    ps.extend(parts(crate::lessons::handoff_block(app, &t)?, Fit::Pointer));
+    ps.extend(parts(also_goals(app, &t)?, Fit::Pointer));
+    ps.extend(parts(wave_section(app, &t, g.as_ref())?, Fit::Pointer));
+    ps.extend(parts(setup_block(app, &t, g.as_ref())?, Fit::Whole));
+    // The devices lent to it, early and whole, so a long handoff keeps how to start and stop them.
+    ps.extend(parts(crate::devices::handoff_lines(app, &t, starting)?, Fit::Whole));
+    ps.extend(parts(branch_and_last_commit(&w), Fit::Whole));
+    ps.extend(parts(checkpoint_and_answers(app, &t, &ctx), Fit::Whole));
+    ps.extend(parts(attachments_block(app, &t, g.as_ref())?, Fit::Pointer));
+    ps.extend(parts(backlog_origin(app, &t)?, Fit::Pointer));
+    ps.extend(parts(goal_open_issues(app, &t, g.as_ref())?, Fit::Pointer));
     if let Some(d) = t.s("detail").filter(|d| !d.trim().is_empty()) {
-        parts.push(format!("What to do:\n{}", d.trim()));
+        ps.extend(parts(vec![format!("What to do:\n{}", d.trim())], Fit::Clip));
     }
-    parts.extend(other_tasks(app, &t)?);
-    parts.extend(worktree_and_lock_lines(app, &t, &ctx)?);
-    parts.extend(crate::comments::rule_line(&app.cfg));
-    parts.extend(crate::bits::handoff_lines(app, &t)?);
+    ps.extend(parts(other_tasks(app, &t)?, Fit::Pointer));
+    ps.extend(parts(worktree_and_lock_lines(app, &t, &ctx)?, Fit::Whole));
+    ps.extend(parts(crate::comments::rule_line(&app.cfg).into_iter().collect(), Fit::Whole));
+    ps.extend(parts(crate::bits::handoff_lines(app, &t)?, Fit::Whole));
     let mut tail = vec![pr_block(app, &t, &tb)?];
     tail.extend(crate::jira::handoff_block(app, &t)?);
     tail.push(report_block(app, &tb));
     tail.extend(footer(app));
     tail.push(CLOSING.to_string());
-    Ok(fit_to_limit(parts, tail, &kept))
+    if !fit {
+        return Ok(ps.into_iter().map(|p| p.text).chain(tail).collect::<Vec<_>>().join("\n\n"));
+    }
+    Ok(fit_to_limit(ps, tail, &tb))
 }
 
 /// What a fresh conversation about a done task's PR needs to know.
