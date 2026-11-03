@@ -661,9 +661,10 @@ impl View {
                 let measures: [(&'static str, &str, fn(f64) -> String); 5] = [
                     ("Added after planning", "late_share", |x| format!("{}%", (x * 100.0).round() as i64)),
                     ("Failed or retried", "failed_share", |x| format!("{}%", (x * 100.0).round() as i64)),
-                    ("Review rounds a task", "rounds_per_task", |x| format!("{x:.1}")),
+                    ("Fix rounds a task", "rounds_per_task", |x| format!("{x:.1}")),
                     ("Questions a task", "questions_per_task", |x| format!("{x:.1}")),
-                    ("Time against estimate", "actual_vs_estimate", |x| format!("{x:.1}×")),
+                    // Two decimals under 1: agents take a small share of the estimate, and 0.04× isn't 0.0×.
+                    ("Time against estimate", "actual_vs_estimate", |x| if x < 1.0 { format!("{x:.2}×") } else { format!("{x:.1}×") }),
                 ];
                 let stats = measures
                     .into_iter()
@@ -1767,7 +1768,7 @@ mod tests {
         assert_eq!(p[0].stats[0], ("Added after planning", "25%".to_string(), "was 40%".to_string(), Some(true)));
         assert_eq!(p[0].stats[1].3, Some(false), "more failed than before");
         assert_eq!(p[0].stats[2].3, None, "the same as before");
-        assert_eq!(p[0].stats[4], ("Time against estimate", "0.4×".to_string(), String::new(), None));
+        assert_eq!(p[0].stats[4], ("Time against estimate", "0.42×".to_string(), String::new(), None));
         assert_eq!(p[1].size, "1 goal · 1 task");
         assert_eq!(p[1].stats.len(), 4, "no estimate, no time line");
         assert!(View::of(&sample()).unwrap().planning.is_empty());

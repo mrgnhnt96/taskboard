@@ -47,10 +47,12 @@ fn state(app: &App, t: i64, at: &str, status: &str, failed: bool) {
     app.db.insert("task_states", fields!["task_id" => t, "at" => at, "status" => status, "failed" => failed as i64]).unwrap();
 }
 
-/// G1 in webapp: T1 planned (started three times, two hours estimated, one hour worked, a review
-/// round, a PR fix cycle and a question), T2 added after the work started.
+/// G1 in webapp: T1 planned (started three times, two hours estimated, one hour worked, a failed
+/// review step, a PR visit to fix its checks and a question; a passed step and its rebase and merge
+/// visits found nothing to fix), T2 added after the work started.
 fn finished_goal(app: &App) -> i64 {
     let g = goal(app, "webapp", "Ship login");
+    app.db.update("goals", &json!(g), fields!["created_at" => "2026-09-30T08:00:00Z"]).unwrap();
     let t1 = task(app, g, "webapp", "Login form");
     app.db.update("tasks", &json!(t1), fields!["created_at" => "2026-09-30T09:00:00Z", "started_at" => "2026-10-01T09:00:00Z", "start_tries" => 3, "human_min" => 120]).unwrap();
     let t2 = task(app, g, "webapp", "Session cookie");
@@ -58,9 +60,18 @@ fn finished_goal(app: &App) -> i64 {
     state(app, t1, "2026-10-01T09:00:00Z", "working", false);
     state(app, t1, "2026-10-01T10:00:00Z", "done", false);
     board::log_event(app, t1, "agent", "question", "Should the form remember the email?").unwrap();
-    board::log_event(app, t1, "board", "handoff", "Brought the conversation back for PR #7: checks failed").unwrap();
-    board::log_event(app, t1, "board", "handoff", "Picked up again after a restart").unwrap();
-    app.db.insert("events", fields!["task_id" => t1, "at" => "2026-10-01T10:00:00Z", "who" => "board", "kind" => "step", "data" => "{}"]).unwrap();
+    for text in [
+        "Brought the conversation back for PR #7: fixing checks",
+        "Picked up again after a restart",
+        "Brought the conversation back for PR #7: rebasing",
+        "Starting a fresh conversation on sonnet for PR #7: ready to merge",
+        "Brought the conversation back for PR #7: ready to merge",
+    ] {
+        board::log_event(app, t1, "board", "handoff", text).unwrap();
+    }
+    for data in [json!({"name": "Review", "ok": false}), json!({"name": "Review", "ok": true})] {
+        app.db.insert("events", fields!["task_id" => t1, "at" => "2026-10-01T10:00:00Z", "who" => "board", "kind" => "step", "data" => data.to_string()]).unwrap();
+    }
     finish(app, t1, "2026-10-01T10:00:00Z");
     finish(app, t2, "2026-10-02T11:00:00Z");
     g
@@ -79,13 +90,57 @@ fn a_finished_goal_has_plan_quality_numbers() {
     let gv = &p["goals"][0];
     assert_eq!(gv["goal"], format!("G{g}"));
     assert_eq!((gv["tasks"].as_i64(), gv["added_late"].as_i64(), gv["failed"].as_i64()), (Some(2), Some(1), Some(1)), "{gv}");
-    assert_eq!((gv["review_rounds"].as_i64(), gv["questions"].as_i64()), (Some(2), Some(1)), "{gv}");
+    assert_eq!((gv["review_rounds"].as_i64(), gv["questions"].as_i64()), (Some(2), Some(1)), "the checks fix and the failed step: {gv}");
     assert_eq!((gv["est_min"].as_f64(), gv["work_min"].as_f64()), (Some(120.0), Some(60.0)), "{gv}");
     let t = &p["total"];
     assert_eq!((t["late_share"].as_f64(), t["rounds_per_task"].as_f64(), t["actual_vs_estimate"].as_f64()), (Some(0.5), Some(1.0), Some(0.5)), "{t}");
     assert_eq!(p["months"][0]["month"], "2026-10");
     assert!(app.db.get_setting(&format!("quality:G{g}")).unwrap().is_some(), "kept so it outlasts the events");
     assert!(get(&app, "/quality", &[("project", "api")])["projects"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn tasks_made_with_the_goal_or_planned_by_its_design_are_not_late() {
+    let (_d, app) = new_board();
+    let g = goal(&app, "webapp", "Ship billing");
+    app.db.update("goals", &json!(g), fields!["created_at" => "2026-10-05T09:00:00Z"]).unwrap();
+    let mk = |title: &str, made: &str, started: &str, done: &str| {
+        let t = task(&app, g, "webapp", title);
+        app.db.update("tasks", &json!(t), fields!["created_at" => made, "started_at" => started]).unwrap();
+        finish(&app, t, done);
+        t
+    };
+    mk("Planned", "2026-10-05T09:00:00Z", "2026-10-05T09:01:00Z", "2026-10-05T09:20:00Z");
+    mk("Made with the goal", "2026-10-05T09:03:00Z", "2026-10-05T09:30:00Z", "2026-10-05T09:40:00Z");
+    let design = mk("Design", "2026-10-05T09:00:00Z", "2026-10-05T09:10:00Z", "2026-10-05T10:00:00Z");
+    app.db.update("tasks", &json!(design), fields!["kind" => "design"]).unwrap();
+    mk("While designing", "2026-10-05T09:30:00Z", "2026-10-05T10:30:00Z", "2026-10-05T11:00:00Z");
+    mk("Right after the design", "2026-10-05T10:20:00Z", "2026-10-05T10:40:00Z", "2026-10-05T11:00:00Z");
+    let late = mk("After the build began", "2026-10-05T11:00:00Z", "2026-10-05T11:10:00Z", "2026-10-05T11:30:00Z");
+    let v = get(&app, "/quality", &[("project", "webapp")]);
+    assert_eq!(v["projects"][0]["goals"][0]["added_late"], 1, "{v}");
+    let d = retro::dossier(&app, g).unwrap();
+    let marked: Vec<&str> = d.lines().filter(|l| l.ends_with("added after the goal started")).collect();
+    assert_eq!(marked.len(), 1, "{d}");
+    assert!(marked[0].starts_with(&format!("T{late} ")), "{d}");
+}
+
+#[test]
+fn numbers_kept_the_old_way_are_worked_out_again() {
+    let (_d, app) = new_board();
+    let g = finished_goal(&app);
+    let key = format!("quality:G{g}");
+    let old = json!({"goal": format!("G{g}"), "finished_at": "2026-10-02T11:00:00Z", "fingerprint": "2:2026-10-02T11:00:00Z", "tasks": 2, "added_late": 2, "review_rounds": 9});
+    app.db.set_setting(&key, Some(&old.to_string())).unwrap();
+    let gv = &get(&app, "/quality", &[("project", "webapp")])["projects"][0]["goals"][0];
+    assert_eq!((gv["review_rounds"].as_i64(), gv["added_late"].as_i64()), (Some(2), Some(1)), "counted again from the events: {gv}");
+
+    // Once the cleanup took the events, only what the tasks still show is counted again.
+    app.db.set_setting(&key, Some(&old.to_string())).unwrap();
+    app.db.changed("DELETE FROM events", taskboardd::p![]).unwrap();
+    let gv = &get(&app, "/quality", &[("project", "webapp")])["projects"][0]["goals"][0];
+    assert_eq!((gv["review_rounds"].as_i64(), gv["added_late"].as_i64()), (Some(9), Some(1)), "{gv}");
+    assert!(gv["fingerprint"].as_str().unwrap().starts_with("v2:"), "{gv}");
 }
 
 #[test]

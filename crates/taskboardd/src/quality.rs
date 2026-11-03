@@ -1,6 +1,7 @@
 //! How well goals were planned, per project and over time. A finished goal is the unit: how many of
-//! its tasks were added after its work started, how many failed or had to be started again, how
-//! many review rounds (review steps and PR fix cycles) and questions each task took, and the agent
+//! its tasks were added after its work started (not counting ones made with the goal or planned by
+//! one of its design tasks), how many failed or had to be started again, how many review rounds
+//! that found something to fix (see [`fix_rounds`]) and questions each task took, and the agent
 //! time its tasks took against the time a developer was estimated to take. A goal's numbers are
 //! worked out once it finishes and kept (setting `quality:G<n>`), so they outlive the cleanup of
 //! the events behind them; `tb quality` shows them by month, the Days page the last 30 days.
@@ -17,6 +18,12 @@ use crate::{board, p};
 /// The Days page compares the 30 days up to the day shown with this many days before them.
 const RECENT_DAYS: i64 = 30;
 const BEFORE_DAYS: i64 = 180;
+
+/// Tasks made this soon after their goal are part of its plan, even when work had already started.
+const WITH_THE_GOAL_SECS: f64 = 5.0 * 60.0;
+
+/// Bumped when the numbers are counted differently, so kept ones are worked out again.
+const VERSION: &str = "v2";
 
 fn setting_key(gid: i64) -> String {
     format!("quality:{}", rf("goal", gid))
@@ -50,22 +57,68 @@ fn work_min(app: &App, id: i64) -> Result<f64> {
     Ok(sum / 60.0)
 }
 
+fn at(t: &Row, k: &str) -> Option<f64> {
+    t.s(k).and_then(parse_iso)
+}
+
+/// The goal's tasks its plan didn't have: made after its first task started. A task made with the
+/// goal (within [`WITH_THE_GOAL_SECS`] after it) is part of the plan, and so is one made while a design
+/// task in the goal was planning the work: from the design's start until the first other task
+/// started after it finished.
+pub fn added_late(goal: &Row, tasks: &[Row]) -> Vec<i64> {
+    let Some(started) = tasks.iter().filter_map(|t| at(t, "started_at")).reduce(f64::min) else { return vec![] };
+    let goal_made = at(goal, "created_at");
+    let is_design = |t: &Row| t.s("kind") == Some(crate::design::KIND);
+    let windows: Vec<(f64, f64)> = tasks
+        .iter()
+        .filter(|d| is_design(d))
+        .filter_map(|d| {
+            let from = at(d, "started_at")?;
+            let done = at(d, "finished_at").unwrap_or(f64::INFINITY);
+            let next = tasks.iter().filter(|t| !is_design(t)).filter_map(|t| at(t, "started_at")).filter(|s| *s >= done).reduce(f64::min);
+            Some((from, next.unwrap_or(f64::INFINITY)))
+        })
+        .collect();
+    tasks
+        .iter()
+        .filter(|t| {
+            let Some(made) = at(t, "created_at") else { return false };
+            made > started
+                && !goal_made.is_some_and(|g| made >= g && made <= g + WITH_THE_GOAL_SECS)
+                && !windows.iter().any(|(from, to)| made >= *from && made <= *to)
+        })
+        .map(|t| t.id())
+        .collect()
+}
+
+/// The review rounds a task took that found something to fix: PR visits to fix failing checks or
+/// address review comments, steps that didn't pass, and code review rounds with a finding triaged
+/// to fix. Visits to rebase or merge, and rounds that passed, aren't counted: every PR's merge
+/// visit used to count as two rounds, which kept the number at 2.0 a task.
+pub fn fix_rounds(app: &App, id: i64) -> Result<i64> {
+    let visits: Vec<String> = ["fix", "comments"].iter().map(|p| format!(": {}", crate::prflow::label(p).to_lowercase())).collect();
+    let handoffs = app.db.q("SELECT text FROM events WHERE task_id = ? AND kind = 'handoff' AND text LIKE 'Brought the conversation back for PR #%'", p![id])?;
+    let mut n = handoffs.iter().filter(|e| visits.iter().any(|v| e.st("text").ends_with(v.as_str()))).count();
+    n += crate::steps::rounds(app, id)?.iter().filter(|r| !r.passed).count();
+    n += crate::code_review::rounds(app, id)?
+        .iter()
+        .filter(|r| r["triage"].as_object().is_some_and(|o| o.values().any(|t| t["outcome"] == "fix")))
+        .count();
+    Ok(n as i64)
+}
+
 /// The numbers for one finished goal's tasks.
 pub fn work_out(app: &App, goal: &Row, tasks: &[Row]) -> Result<Value> {
-    let started = tasks.iter().filter_map(|t| t.s("started_at")).min().map(|s| s.to_string());
     let finished = tasks.iter().filter_map(|t| t.s("finished_at")).max().map(|s| s.to_string());
-    let (mut late, mut failed, mut rounds, mut questions, mut est, mut work) = (0, 0, 0, 0, 0.0, 0.0);
+    let late = added_late(goal, tasks).len();
+    let (mut failed, mut rounds, mut questions, mut est, mut work) = (0, 0, 0, 0.0, 0.0);
     for t in tasks {
         let id = t.id();
-        if started.as_deref().is_some_and(|s| t.s("created_at").is_some_and(|c| c > s)) {
-            late += 1;
-        }
         let failed_runs = count(app, "SELECT COUNT(*) FROM task_states WHERE task_id = ? AND failed = 1", id)?;
         if failed_runs > 0 || t.i0("start_tries") > 1 {
             failed += 1;
         }
-        rounds += count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'step'", id)?;
-        rounds += count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'handoff' AND text LIKE '%for PR #%'", id)?;
+        rounds += fix_rounds(app, id)?;
         questions += count(app, "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'question'", id)?;
         if let Some(m) = t.i("human_min").filter(|m| *m > 0) {
             est += m as f64;
@@ -80,17 +133,37 @@ pub fn work_out(app: &App, goal: &Row, tasks: &[Row]) -> Result<Value> {
     }))
 }
 
-/// Changes when the goal gets another task or one finishes again, so kept numbers are worked out afresh.
+/// Changes when the goal gets another task or one finishes again, or the numbers are counted
+/// differently, so kept numbers are worked out afresh.
 fn fingerprint(tasks: &[Row]) -> String {
+    format!("{VERSION}:{}", bare_fingerprint(tasks))
+}
+
+fn bare_fingerprint(tasks: &[Row]) -> String {
     format!("{}:{}", tasks.len(), tasks.iter().filter_map(|t| t.s("finished_at")).max().unwrap_or(""))
+}
+
+/// The cleanup took the events behind the goal's numbers: none of its tasks has any left.
+fn events_gone(app: &App, tasks: &[Row]) -> Result<bool> {
+    let ids = tasks.iter().map(|t| t.id().to_string()).collect::<Vec<_>>().join(",");
+    Ok(app.db.val(&format!("SELECT COUNT(*) FROM events WHERE task_id IN ({ids})"), p![])?.as_i64().unwrap_or(0) == 0)
 }
 
 /// A finished goal's numbers: the kept ones while they still fit its tasks, else worked out and kept.
 pub fn for_goal(app: &App, goal: &Row) -> Result<Option<Value>> {
     let Some(tasks) = finished_tasks(app, goal.id())? else { return Ok(None) };
     let key = setting_key(goal.id());
-    if let Some(v) = app.db.get_setting(&key)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+    let kept = app.db.get_setting(&key)?.and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    if let Some(mut v) = kept {
         if v["fingerprint"] == fingerprint(&tasks) {
+            return Ok(Some(v));
+        }
+        // Counted the old way, and the events to count them again are gone: keep those numbers,
+        // but the tasks added late come from the tasks alone, so count them again.
+        if v["fingerprint"] == bare_fingerprint(&tasks) && events_gone(app, &tasks)? {
+            v["added_late"] = json!(added_late(goal, &tasks).len());
+            v["fingerprint"] = json!(fingerprint(&tasks));
+            app.db.set_setting(&key, Some(&jdumps(&v)))?;
             return Ok(Some(v));
         }
     }
@@ -131,7 +204,7 @@ pub fn sum(goals: &[&Value]) -> Value {
         "review_rounds": n("review_rounds"), "questions": n("questions"), "est_min": est, "work_min": work,
         "late_share": per(n("added_late")), "failed_share": per(n("failed")),
         "rounds_per_task": per(n("review_rounds")), "questions_per_task": per(n("questions")),
-        "actual_vs_estimate": if est > 0.0 { Some((work / est * 100.0).round() / 100.0) } else { None },
+        "actual_vs_estimate": if est > 0.0 { Some((work / est * 1000.0).round() / 1000.0) } else { None },
     })
 }
 

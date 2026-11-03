@@ -419,7 +419,7 @@ enum Cmd {
         #[arg(long)]
         accept: bool,
     },
-    /// How well goals were planned: tasks added late, failed or retried, review rounds, questions and time against the estimate, by month
+    /// How well goals were planned: tasks added late, failed or retried, review rounds that found something to fix, questions and time against the estimate, by month
     Quality {
         /// The project (this terminal's when left out)
         #[arg(long)]
@@ -3136,8 +3136,9 @@ fn per_task(v: &Value) -> String {
     v.as_f64().map(|x| format!("{x:.1}")).unwrap_or_else(|| "–".into())
 }
 
+/// A ratio: two decimals under 1, so agents' small share of the estimate (0.04×) doesn't read 0.0×.
 fn times(v: &Value) -> String {
-    v.as_f64().map(|x| format!("{x:.1}×")).unwrap_or_else(|| "–".into())
+    v.as_f64().map(|x| if x < 1.0 { format!("{x:.2}×") } else { format!("{x:.1}×") }).unwrap_or_else(|| "–".into())
 }
 
 /// One line of plan-quality numbers (a month's, a project's or a goal's).
@@ -3148,7 +3149,7 @@ fn quality_line(head: &str, v: &Value) -> String {
     let est = n("est_min");
     let goals = v["goals"].as_i64().map(|g| format!("{g} goal{}, ", if g == 1 { "" } else { "s" })).unwrap_or_default();
     format!(
-        "{head}  {goals}{tasks} task{}  added late {}  failed/retried {}  review rounds {}/task  questions {}/task  time vs estimate {}",
+        "{head}  {goals}{tasks} task{}  added late {}  failed/retried {}  fix rounds {}/task  questions {}/task  time vs estimate {}",
         if tasks == 1.0 { "" } else { "s" },
         share(&rate("added_late")),
         share(&rate("failed")),
