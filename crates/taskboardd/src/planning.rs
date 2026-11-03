@@ -15,7 +15,7 @@ use crate::jira::config_file;
 use crate::util::{str_list, Result, Row, RowExt};
 
 /// `[planning]` in config.toml.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct PlanningConfig {
     /// A markdown file of how this board slices goals into tasks, in place of the built-in rules.
@@ -24,6 +24,17 @@ pub struct PlanningConfig {
     /// `[planning.projects]`: project name → its own file, in place of the board's. Not named:
     /// `planning/<project>.md` in the board's folder, when it's there with something in it.
     pub projects: BTreeMap<String, String>,
+    /// Review each new plan against its goal's outcome before it runs (`plan_review.rs`).
+    pub review: bool,
+    /// The model that reviews plans: `small` or `large` through `[models]`, or a model name.
+    /// Empty: `[backlog] model`.
+    pub review_model: String,
+}
+
+impl Default for PlanningConfig {
+    fn default() -> Self {
+        Self { guide: String::new(), projects: BTreeMap::new(), review: true, review_model: "small".into() }
+    }
 }
 
 /// The rules a planner follows when no file of the owner's says otherwise.

@@ -286,6 +286,12 @@ default_effort = ""                  # tasks that name a model: "" for Claude's 
 pr_visit = "sonnet"                  # PR visits that don't change code (merge, ask for reviews); "" for the task's model
 fresh_pr_visits = true               # those visits start a fresh, short conversation instead of resuming the task's
 
+# How goals get planned. After tb goal new (with tasks) and each tb propose, Claude reads the plan
+# against the goal's outcome and lists what it misses (tb goal review G<n>); it never holds the goal up.
+[planning]
+review = true                        # false: no plan reviews
+review_model = "small"               # small or large (through [models]), a model name, or "" for [backlog] model
+
 # Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
 # so many worktree agents don't each cold-build the project with every core at once.
 [builds]

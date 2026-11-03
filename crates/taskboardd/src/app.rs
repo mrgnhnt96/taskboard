@@ -70,6 +70,9 @@ pub struct Shared {
     pub digging: HashSet<i64>,
     /// The ideas Claude is planning into goals now (`idea_plan.rs`).
     pub idea_planning: HashSet<i64>,
+    /// The goals whose plans Claude is reviewing now, and those changed since (`plan_review.rs`).
+    pub plan_reviewing: HashSet<i64>,
+    pub plan_review_again: HashSet<i64>,
     /// The latest wave plan asked for on the Backlog page (`GET /backlog/plan`).
     pub plan: Option<serde_json::Value>,
     pub plan_seq: i64,

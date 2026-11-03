@@ -490,6 +490,7 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
             "task_attachments": task_attachments,
             "bits": crate::bits::goal_card(app, id)?,
             "devices": crate::devices::goal_card(app, id)?,
+            "plan_review": crate::plan_review::card(app, id)?,
         }),
     ))
 }

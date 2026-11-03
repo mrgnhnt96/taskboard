@@ -2879,6 +2879,7 @@ fn on_propose(r: &mut Report) -> Result<Value> {
         return err(400, "Name at least one task with a title: --task \"title::what to do\".");
     }
     note_made(r, &created)?;
+    crate::plan_review::queue(r.app, g.id(), "the plan changed", &r.name());
     Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})))
 }
 
@@ -2899,6 +2900,9 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     }
     let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, "planned", &mut warnings)?;
     note_made(r, &created)?;
+    if !created.is_empty() {
+        crate::plan_review::queue(r.app, gid, "new plan", &r.name());
+    }
     Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created, "warnings": warnings})))
 }
 

@@ -1360,6 +1360,13 @@ enum GoalCmd {
     },
     /// The goal, its tasks and why each queued one waits
     Show { goal: String },
+    /// What the latest review of the goal's plan against its outcome found
+    Review {
+        goal: String,
+        /// Review the plan again now
+        #[arg(long)]
+        again: bool,
+    },
     /// Change a goal
     Set {
         goal: String,
@@ -4989,6 +4996,47 @@ fn goal_lines(g: &Value) -> Vec<String> {
             lines.push(format!("  {} {}", b["ref"].as_str().unwrap_or(""), b["title"].as_str().unwrap_or("")));
         }
     }
+    lines.extend(plan_review_lines(&g["plan_review"], false));
+    lines
+}
+
+fn finding_kind(kind: &str) -> &str {
+    match kind {
+        "outcome_unproven" => "Outcome not proven",
+        "owner_prereq" => "Needs the owner",
+        "past_decision" => "Past an open decision",
+        "overlap" => "Overlaps another goal",
+        "lesson_ignored" => "Goes against a lesson",
+        other => other,
+    }
+}
+
+/// A goal's latest plan review (`plan_review` of `GET /goals/:id`); with `full`, each finding's detail too.
+fn plan_review_lines(r: &Value, full: bool) -> Vec<String> {
+    if !r.is_object() {
+        return vec![];
+    }
+    let when = |k: &str| r[k].as_str().map(local_when).unwrap_or_default();
+    let why = r["reason"].as_str().map(|w| format!(", {w}")).unwrap_or_default();
+    let findings = r["findings"].as_array().cloned().unwrap_or_default();
+    let mut lines = vec![match r["state"].as_str().unwrap_or("") {
+        "running" => format!("Plan review: running since {}{why}.", when("started_at")),
+        "skipped" => format!("Plan review skipped ({}{why}): {}.", when("finished_at"), r["skipped"].as_str().unwrap_or("")),
+        "failed" => format!("Plan review failed ({}{why}): {}", when("finished_at"), r["error"].as_str().unwrap_or("")),
+        _ if findings.is_empty() => format!("Plan review ({}{why}): nothing found.", when("finished_at")),
+        _ => format!("Plan review ({}{why}): {} found:", when("finished_at"), findings.len()),
+    }];
+    for f in &findings {
+        let about: Vec<&str> = ["tasks", "refs"].iter().flat_map(|k| f[*k].as_array().into_iter().flatten().filter_map(Value::as_str)).collect();
+        let about = if about.is_empty() { String::new() } else { format!(" · {}", about.join(", ")) };
+        lines.push(format!("  - {}: {}{about}", finding_kind(f["kind"].as_str().unwrap_or("")), f["short"].as_str().unwrap_or("")));
+        if let Some(d) = f["detail"].as_str().filter(|d| full && !d.is_empty()) {
+            lines.push(format!("    {d}"));
+        }
+    }
+    if r["again"] == true {
+        lines.push("  The plan changed while it ran: it runs again once it's done.".into());
+    }
     lines
 }
 
@@ -6134,6 +6182,18 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         print_warnings(&v);
                         c.midna_pin(v["goal"].as_str().unwrap_or(""), v["name"].as_str().unwrap_or(""));
                     }
+                }
+                Ok(0)
+            }
+            GoalCmd::Review { goal, again } => {
+                let path = format!("/goals/{}/review", goal_ref(&goal)?);
+                let v = if again { c.call("POST", &path, Some(json!({"who": c.who()})))? } else { c.call("GET", &path, None)? };
+                let lines = plan_review_lines(&v["review"], true);
+                if lines.is_empty() {
+                    out(&format!("{}'s plan hasn't been reviewed: tb goal review {} --again reviews it.", v["goal"].as_str().unwrap_or(""), v["goal"].as_str().unwrap_or("")));
+                }
+                for l in lines {
+                    out(&l);
                 }
                 Ok(0)
             }
@@ -8060,6 +8120,25 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plan_review_shows_its_findings_with_a_12_hour_time() {
+        let at = "2026-11-03T21:05:00Z";
+        let when = local_when(at);
+        assert!(when.ends_with("AM") || when.ends_with("PM"), "{when}");
+        let r = json!({"state": "done", "reason": "new plan", "finished_at": at, "again": true, "findings": [
+            {"kind": "owner_prereq", "short": "No task for the store sign-in", "detail": "Add a human task first.", "tasks": ["T4"], "refs": ["G7"]},
+        ]});
+        assert_eq!(plan_review_lines(&r, false), vec![
+            format!("Plan review ({when}, new plan): 1 found:"),
+            "  - Needs the owner: No task for the store sign-in · T4, G7".to_string(),
+            "  The plan changed while it ran: it runs again once it's done.".to_string(),
+        ]);
+        assert_eq!(plan_review_lines(&r, true)[2], "    Add a human task first.");
+        let skipped = json!({"state": "skipped", "reason": "the plan changed", "finished_at": at, "skipped": "the usage is used up"});
+        assert_eq!(plan_review_lines(&skipped, false), vec![format!("Plan review skipped ({when}, the plan changed): the usage is used up.")]);
+        assert!(plan_review_lines(&Value::Null, false).is_empty());
+    }
 
     #[test]
     fn usage_prints_the_weekly_window_and_todays_share() {
