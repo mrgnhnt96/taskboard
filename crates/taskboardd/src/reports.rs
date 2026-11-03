@@ -531,7 +531,7 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
         let handed_over = prompt.contains("You are picking up") || prompt.trim_end().ends_with("] continue");
         let free = mine.as_ref().map(|m| Some(m.id()) == t.as_ref().map(|t| t.id())).unwrap_or(true) || handed_over;
         if let Some(t) = &t {
-            if t.s("status") == Some("done") && prflow::waking(app, t)? {
+            if t.s("status") == Some("done") && (prflow::waking(app, t)? || prflow::visit_terminal(app, t, r.sid().unwrap_or(""))?) {
                 prflow::picked_up(app, t, r.sid().unwrap_or(""), &r.name())?;
                 prflow::resumed(app, &board::get_task(app, t.id())?)?;
                 r.set_session_status("working")?;
@@ -2047,7 +2047,7 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
 
 fn on_done(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
-    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let Some(t) = r.task()?.or(prflow::visited_by(r.app, r.sid().unwrap_or(""))?) else { return Ok(ok(None, None)) };
     if board::handed_in(&t) {
         return Ok(ok(Some(&t), None));
     }
@@ -2530,7 +2530,16 @@ fn on_take(r: &mut Report) -> Result<Value> {
     }
     let t = board::get_task(app, need_ref(&r.body["task"], "task")?)?;
     let Some(sid) = r.sid.clone() else { return err(400, "tb take only works inside a Midna terminal.") };
-    let reopening = t.s("status") == Some("done") && board::pr_still_open(&t);
+    if prflow::visit_terminal(app, &t, &sid)? {
+        prflow::picked_up(app, &t, &sid, &r.name())?;
+        let tr = rf("task", t.id());
+        let text = format!(
+            "{tr} is already submitted, and this terminal is its PR #{} visit: it stays done. Finish here with tb pr wait {tr}.",
+            t.i0("pr_num")
+        );
+        return Ok(ok(Some(&board::get_task(app, t.id())?), Some(text)));
+    }
+    let reopening =t.s("status") == Some("done") && board::pr_still_open(&t);
     let already = t.s("session_id") == Some(sid.as_str()) && matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost");
     if !already {
         let how = if reopening { format!("Taken back for PR #{}", t.i0("pr_num")) } else { "Taken".into() };
