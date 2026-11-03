@@ -180,6 +180,40 @@ fn a_follow_up_that_cant_wake_yet_is_sent_once_it_can() {
     assert_eq!(follow(), 0, "and only once");
 }
 
+/// The follow-up visit's prompt after a task this PR builds on moved from h1 to h2. The base task's
+/// terminal last worked detached, so its recorded branch is `HEAD`.
+fn moved_prompt(stacked: bool, base_pr: Value, own_rec: Value) -> String {
+    let b = board();
+    let id = b.pr_task();
+    b.add_session("s1", "idle");
+    let base = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Base", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let ctx = json!({"where": {"branch": "HEAD"}}).to_string();
+    b.app.db.x("UPDATE tasks SET status = 'done', context = ?, pr_flow = ? WHERE id = ?", p![ctx, json!({"head": "h1", "rec": base_pr}).to_string(), base]).unwrap();
+    let column = if stacked { "pr_after" } else { "waits_for" };
+    let wanted = if stacked { json!(base) } else { json!([base]) };
+    b.app.db.x(&format!("UPDATE tasks SET {column} = ?, pr_flow = ? WHERE id = ?"), p![wanted.to_string(), json!({"rec": own_rec}).to_string(), id]).unwrap();
+    let follow = || b.app.db.tx(|| waitsfor::follow_ups(&b.app)).unwrap();
+    assert_eq!(follow(), 0);
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.head', 'h2') WHERE id = ?", p![base]).unwrap();
+    assert_eq!(follow(), 1);
+    let job = b.app.db.q("SELECT * FROM jobs WHERE purpose = 'pr' ORDER BY id DESC", p![]).unwrap().remove(0);
+    board::job_args(&job).st("prompt")
+}
+
+#[test]
+fn a_stacked_pr_is_told_to_rebase_onto_its_base_branch_when_the_parent_moves() {
+    let prompt = moved_prompt(true, json!({}), json!({"base": "feat/parent", "branch": "feat/child"}));
+    assert!(prompt.contains("git rebase --onto origin/feat/parent h1 <your branch>"), "{prompt}");
+    assert!(!prompt.contains("origin/HEAD"), "{prompt}");
+}
+
+#[test]
+fn a_moved_dependency_is_named_by_its_pr_branch_not_a_detached_head() {
+    let prompt = moved_prompt(false, json!({"branch": "feat/base"}), json!({"base": "main", "branch": "feat/child"}));
+    assert!(prompt.contains("git rebase --onto origin/feat/base h1 <your branch>"), "{prompt}");
+    assert!(!prompt.contains("origin/HEAD"), "{prompt}");
+}
+
 #[test]
 fn a_merge_visit_while_pr_builds_are_stopped_is_told_to_ignore_the_checks_not_that_they_are_green() {
     let b = board();

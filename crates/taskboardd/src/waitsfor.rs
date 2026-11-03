@@ -455,8 +455,24 @@ pub fn branch_of(t: &Row) -> Option<String> {
         .get("where")
         .and_then(|w| w.get("branch"))
         .and_then(|b| b.as_str())
-        .filter(|b| !b.is_empty())
+        .filter(|b| real_branch(b))
         .map(|b| b.to_string())
+}
+
+/// A branch name, not a detached checkout's `HEAD`.
+fn real_branch(b: &str) -> bool {
+    !b.is_empty() && b != "HEAD"
+}
+
+/// What to replay onto when `other` moves: a stacked PR's own base (the branch it merges into), else
+/// `other`'s branch.
+fn moved_onto(t: &Row, other: &Row) -> Option<String> {
+    let stacked_base = || {
+        (crate::stack::parent_id(t) == Some(other.id()))
+            .then(|| jloads_obj(t.s("pr_flow")).get("rec").and_then(|r| r["base"].as_str()).map(|b| b.to_string()))
+            .flatten()
+    };
+    stacked_base().filter(|b| real_branch(b)).or_else(|| crate::stack::branch(other).filter(|b| real_branch(b)))
 }
 
 fn git_head(path: Option<&str>, branch: Option<&str>) -> Option<String> {
@@ -702,7 +718,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
             if *before == now || (now["head"].is_null() && now["merged"] == false) {
                 continue;
             }
-            notes.push(follow_line(app, &other, before, &now)?);
+            notes.push(follow_line(app, &t, &other, before, &now)?);
             changes.insert(key, now);
         }
         if changes.is_empty() {
@@ -743,8 +759,8 @@ pub fn follow_ups(app: &App) -> Result<i64> {
     Ok(sent)
 }
 
-fn follow_line(app: &App, other: &Row, before: &Value, now: &Value) -> Result<String> {
-    let branch = branch_of(other).unwrap_or_else(|| "its branch".into());
+fn follow_line(app: &App, t: &Row, other: &Row, before: &Value, now: &Value) -> Result<String> {
+    let branch = moved_onto(t, other).unwrap_or_else(|| "<its branch>".into());
     let old: String = before["head"].as_str().unwrap_or("").chars().take(12).collect();
     let old = if old.is_empty() { "<its old last commit>".to_string() } else { old };
     let lbl = label(app, other)?;
