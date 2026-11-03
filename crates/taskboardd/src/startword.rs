@@ -1622,6 +1622,41 @@ fn prs_in(text: &str) -> Vec<i64> {
     PR_REF_RE.captures_iter(text).filter_map(|c| c.get(1).or(c.get(2))?.as_str().parse().ok()).collect()
 }
 
+/// PR numbers said bare right after a PR word, as a list: "merge 17346", "merge 17346 and 17342", "close
+/// PRs 17346, 17342", "I've reviewed 194". A number that counts something ("merge 2 more", "merge 3 PRs")
+/// is no PR. The plural word goes, so the list reads as the PRs it names ("merge PRs #1 and #2").
+static BARE_PRS_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)(?P<lead>(?:\b(?:{MERGE_VERB}|{CLOSE_VERB}|mark|get)|{REVIEWED_STATEMENT})\s+)(?P<noun>(?:the\s+)?(?:prs?|pull\s+requests?)\s+)?(?P<list>#?\d+(?:\s*,?\s*(?:and\s+|&\s*|\+\s*)?#?\d+)*)\b(?P<after>\s+[a-z]+)?"
+    ))
+    .unwrap()
+});
+/// Words after a number that make it a count, not a PR ("merge 2 more", "close 3 terminals"): a unit,
+/// or a plural that isn't one of the few words that end in an s ("merge 194 as is", "close 194, thanks").
+static COUNT_WORD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s+(?:(?:pr|pull|more|of|other|time|minute|min|hour|hr|day|week|second|sec|am|pm)s?|(?:[a-z]{2,}s))$").unwrap()
+});
+/// Words that end in an s and count nothing.
+static NOT_COUNT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s+(?:as|is|was|has|its|yes|thanks|pls|plus|always|anyways?|regardless|unless|besides|perhaps)$").unwrap());
+static NUM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"#?(\d+)").unwrap());
+static PLURAL_PRS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:prs|pull\s+requests)\b").unwrap());
+
+/// `text` with the PR numbers said bare ([`BARE_PRS_RE`]) written as "#17346", so they read as PRs.
+fn bare_prs_as_refs(text: &str) -> String {
+    BARE_PRS_RE
+        .replace_all(text, |c: &regex::Captures| {
+            let after = c.name("after").map_or("", |m| m.as_str());
+            if COUNT_WORD_RE.is_match(after) && !NOT_COUNT_RE.is_match(after) {
+                return c[0].to_string();
+            }
+            let noun = c.name("noun").map_or("", |m| m.as_str());
+            let noun = if PLURAL_PRS_RE.is_match(noun) { "" } else { noun };
+            format!("{}{noun}{}{after}", &c["lead"], NUM_RE.replace_all(&c["list"], "#$1"))
+        })
+        .into_owned()
+}
+
 /// `text` with PR #`num` named as task `id`, and every other PR as `T0`, a task that isn't one.
 fn as_task_refs(text: &str, id: i64, num: i64) -> String {
     PR_REF_RE
@@ -1686,7 +1721,7 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
             Some(goal) => as_set_refs(&p.text, id, goal),
             None => p.text.clone(),
         };
-        let r = read_of(k, &as_task_refs(&text, id, num));
+        let r = read_of(k, &as_task_refs(&bare_prs_as_refs(&text), id, num));
         let named = p.reply.as_deref().map(prs_in).unwrap_or_default();
         let unnamed = |a: &Ask| match a {
             Ask::Unnamed => if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) },
@@ -1704,9 +1739,13 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
 }
 
 /// The owner's word in terminal `sid` to merge task `id`'s PR #`num`, if there's one ([`merge_word_in`]).
+/// The owner's own `!` run of it counts too: the command.
 pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<MergeWord>> {
     if sid.is_empty() {
         return Ok(None);
+    }
+    if let Some(cmd) = owners_bang(app, sid, &PR_MERGE_CMD_RE)? {
+        return Ok(Some(MergeWord { text: cmd, approved: false }));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
@@ -1714,9 +1753,13 @@ pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
 }
 
 /// The owner's word in terminal `sid` to close task `id`'s PR #`num` ([`close_word_in`]): the prompt.
+/// The owner's own `!` run of it counts too: the command.
 pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
+    }
+    if let Some(cmd) = owners_bang(app, sid, &PR_CLOSE_CMD_RE)? {
+        return Ok(Some(cmd));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
@@ -1784,9 +1827,8 @@ pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<O
     if sid.is_empty() {
         return Ok(None);
     }
-    let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
-    if let Some(cmd) = bang.filter(|c| PR_REVIEWED_CMD_RE.is_match(c)) {
-        return Ok(Some(format!("! {cmd}")));
+    if let Some(cmd) = owners_bang(app, sid, &PR_REVIEWED_CMD_RE)? {
+        return Ok(Some(cmd));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
@@ -1794,8 +1836,19 @@ pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<O
     Ok(reviewed_word_in(&prompts, id, num, own, goal).map(|i| prompts[i].text.clone()))
 }
 
+/// The command the owner is running now with Claude Code's `!` prefix in terminal `sid`, as "! <cmd>",
+/// when it's one `cmd` matches: their own run of a `tb pr` command is their word for it.
+fn owners_bang(app: &App, sid: &str, cmd: &Regex) -> Result<Option<String>> {
+    let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
+    Ok(bang.filter(|c| cmd.is_match(c)).map(|c| format!("! {c}")))
+}
+
 /// A shell command that runs `tb pr reviewed`.
 static PR_REVIEWED_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+reviewed\b").unwrap());
+/// A shell command that runs `tb pr merge`.
+static PR_MERGE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+merge\b").unwrap());
+/// A shell command that runs `tb pr close`.
+static PR_CLOSE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+close\b").unwrap());
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
 /// "the goal" can mean.
@@ -4045,6 +4098,13 @@ mod tests {
         for no in ["don't merge it", "merge it once CI is green", "should I merge it?", "merge PR #200", "merge it tomorrow", "merge it. jk", "the PR merged", "rebase it"] {
             assert_eq!(merge_word_in(&after(linked, no), 95, 194, false), None, "{no}");
         }
+        // #875: bare PR numbers, in a terminal with no task.
+        for ask in ["Merge 194 and merge 17342", "merge 17342 and merge 194", "merge 194 and 17342", "merge PRs 17342, 194", "merge PRs #17342 and #194", "merge 17342, 194", "get 194 merged", "merge #17342 and 194"] {
+            assert_eq!(merge_word_in(&prompts(&[ask], None), 95, 194, false), Some(0), "{ask}");
+        }
+        for no in ["merge 17342", "merge 194 minutes from now", "merge 194 PRs", "don't merge 194", "rebase 194", "merge it in 194"] {
+            assert_eq!(merge_word_in(&prompts(&[no], None), 95, 194, false), None, "{no}");
+        }
         // "It" with no PR to mean: the terminal's own task, and only that.
         assert_eq!(merge_word_in(&prompts(&["merge it"], None), 95, 194, true), Some(0));
         assert_eq!(merge_word_in(&prompts(&["merge it"], None), 95, 194, false), None);
@@ -4076,6 +4136,8 @@ mod tests {
         assert_eq!(close_word_in(&prompts(&["close the PR"], None), 95, 194, false), None);
         assert_eq!(close_word_in(&prompts(&["[task-board:T95] close PR #194"], None), 95, 194, false), None);
         assert_eq!(merge_word_in(&prompts(&["close PR #194"], None), 95, 194, false), None, "a close is no merge");
+        assert_eq!(close_word_in(&prompts(&["close 194 and 17342"], None), 95, 194, false), Some(0), "bare numbers");
+        assert_eq!(close_word_in(&prompts(&["close 3 terminals"], None), 95, 3, false), None);
     }
 
     #[test]
@@ -4125,6 +4187,9 @@ mod tests {
         assert_eq!(reviewed_word_in(&prompts(&["mark it reviewed"], None), 95, 194, false, None), None);
         assert_eq!(reviewed_word_in(&prompts(&["[task-board:T95] mark PR #194 reviewed"], None), 95, 194, false, None), None);
         assert_eq!(merge_word_in(&prompts(&["mark PR #194 reviewed"], None), 95, 194, false), None, "a review is no merge");
+        for bare in ["mark 194 reviewed", "I've reviewed 194 and 17342"] {
+            assert_eq!(reviewed_word_in(&prompts(&[bare], None), 95, 194, false, None), Some(0), "{bare}");
+        }
     }
 
     #[test]
