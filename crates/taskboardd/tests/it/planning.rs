@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::{board, planning};
+use taskboardd::{board, midna, planning, reports};
 
 fn board_with(f: impl FnOnce(&mut Config, &std::path::Path)) -> (tempfile::TempDir, std::sync::Arc<App>) {
     let dir = tempfile::tempdir().unwrap();
@@ -59,6 +59,57 @@ fn the_built_in_rules_plan_stacks_for_ci_cost() {
                 "fold it into a related stack", "Push once per review round", "only when it conflicts or right before it merges", "tb planning names it"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
     }
+}
+
+#[test]
+fn the_built_in_rules_weigh_the_cost_of_each_extra_pr() {
+    for bit in ["Each cut has a cost", "only when each side is worth its own review", "being able to name the seam isn't enough",
+                "Size has two limits", "one person can read the whole diff", "folds into that neighbour",
+                "limited to files the task already touches stays in the task, as its own commit", "A sweep across many files is its own task",
+                "A guard nothing else protects", "is its own task, however small", "The upper limit is for the whole stack"] {
+        assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
+    }
+}
+
+/// Proposes `tasks` for goal `g` from a terminal in the webapp checkout: (the tasks made, the plan check's warnings).
+fn propose(app: &App, dir: &std::path::Path, g: i64, tasks: Value) -> (Vec<String>, Vec<String>) {
+    midna::sync(app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": dir.join("webapp").to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
+    let b = json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"), "tasks": tasks});
+    let r = reports::handle(app, b, false).unwrap_or_else(|e| panic!("propose: {}", e.message));
+    let strs = |v: &Value| v.as_array().cloned().unwrap_or_default().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    (strs(&r["created"]), strs(&r["warnings"]))
+}
+
+fn task(title: &str, detail: &str, files: &[&str]) -> Value {
+    json!({"title": title, "detail": detail, "wave": 1, "files": files})
+}
+
+const LONG: &str = "Rework how the list loads its rows.\nPage them from the daemon and keep the scroll position across reloads.";
+
+#[test]
+fn the_plan_check_warns_when_many_of_a_goals_prs_look_tiny() {
+    let (d, app) = board_with(|_, _| {});
+    api::dispatch(&app, "POST", "/projects/webapp", &Query::new(), &json!({"pr_flow": "on"})).unwrap();
+    let g = api::dispatch(&app, "POST", "/goals", &Query::new(), &json!({"name": "Tidy the list", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let tiny = |w: &[String]| w.iter().find(|w| w.contains("each look like a tiny PR")).cloned();
+
+    let (mut made, w) = propose(&app, d.path(), g, json!([task("Pin the dep", "Bump serde to 1.0.200.", &[]), task("Fix the typo", "Spell 'recieve' right in the header.", &[])]));
+    assert_eq!(tiny(&w), None, "two is fine: {w:?}");
+    let (big, w) = propose(&app, d.path(), g, json!([task("Rework loading", LONG, &["src/list/load.rs", "src/list/page.rs"])]));
+    assert_eq!(tiny(&w), None, "a long detail over two files isn't tiny: {w:?}");
+
+    let (beside, w) = propose(&app, d.path(), g, json!([task("Keep the scroll", LONG, &["src/list/scroll.rs"])]));
+    made.extend(beside);
+    let line = tiny(&w).unwrap_or_else(|| panic!("a third: one file in the folder a sibling's files are in: {w:?}"));
+    assert_eq!(line, format!(
+        "{} each look like a tiny PR (a one-line detail, or one file beside a sibling's), and every PR takes a human review and an agent review round: \
+         fold each into the neighbour it only makes sense next to, unless it's a guard nothing else protects.",
+        made.join(", ")
+    ));
+    assert!(!line.contains(&big[0]), "the long two-file task isn't one of them: {line}");
+
+    let (lone, w) = propose(&app, d.path(), g, json!([task("Show the count", LONG, &["docs/count.md"])]));
+    assert_eq!(tiny(&w).as_deref(), Some(line.as_str()), "one file no sibling's sits beside isn't tiny ({}): {w:?}", lone[0]);
 }
 
 #[test]

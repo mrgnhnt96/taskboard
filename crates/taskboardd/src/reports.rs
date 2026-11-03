@@ -2858,7 +2858,8 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     }
     if !created.is_empty() {
         let g = board::get_goal(r.app, g.id())?;
-        for w in crate::worklane::plan_warnings(r.app, &g)?.into_iter().chain(crate::stack::plan_warnings(r.app, &g)?) {
+        let plan = [crate::worklane::plan_warnings(r.app, &g)?, crate::stack::plan_warnings(r.app, &g)?, crate::planning::tiny_prs_warnings(r.app, &g)?];
+        for w in plan.into_iter().flatten() {
             if !warnings.contains(&w) {
                 warnings.push(w);
             }
