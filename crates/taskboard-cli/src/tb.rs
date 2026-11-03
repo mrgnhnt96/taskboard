@@ -2058,7 +2058,7 @@ enum PrCmd {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Record the owner's review, so reviewers can be asked: only the owner, or an agent on their word
+    /// Record the owner's review, so reviewers can be asked: only the owner, or an agent on their word (a no-op when owner review is off)
     Reviewed { task: Option<String> },
     /// A failed check isn't this PR's fault: clear it for this push, with proof
     NotOurs {
@@ -7105,6 +7105,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             PrCmd::Reviewed { task } => {
                 let t = c.pr_task(task)?;
                 let v = c.call("POST", &format!("/tasks/{t}/pr/reviewed"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
+        if v["not_needed"].as_bool() == Some(true) {
+            let owner = v["owner"].as_str().unwrap_or("The owner");
+            out(&format!("{owner}'s review isn't needed on {t}'s PR: owner review is off for its project, so the board marks it reviewed itself. Nothing to do."));
+            return Ok(0);
+        }
                 let stage = v["pr"]["stage"]["label"].as_str().filter(|l| !l.is_empty());
                 out(&match stage {
                     Some(l) => format!("Marked {t}'s PR reviewed. Stage: {l}."),

@@ -335,7 +335,14 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             let t = tid(id)?;
             // The owner's review is their word: the app's button, or `tb pr reviewed` from the owner (or an
             // agent on the owner's word in its terminal).
-            let who = if from_app(query) { app.cfg.owner.clone() } else { crate::prcmds::reviewed_by(app, t, body)? };
+            let who = if from_app(query) {
+                app.cfg.owner.clone()
+            } else {
+                match crate::prcmds::reviewed_by(app, t, body)? {
+                    Some(who) => who,
+                    None => return crate::prcmds::review_not_needed(app, t),
+                }
+            };
             app.db.tx(|| {
                 let row = board::get_task(app, t)?;
                 prflow::merge_flow(app, t, fields!["reviewed" => now_iso()])?;

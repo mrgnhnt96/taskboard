@@ -913,18 +913,39 @@ pub fn close(app: &App, id: i64, body: &Value) -> Result<Value> {
 }
 
 /// Who marks task `id`'s PR reviewed with `tb pr reviewed`: the owner, or an agent on the owner's word
-/// in its terminal ("mark PR #9 reviewed"). An agent without that word is refused.
-pub fn reviewed_by(app: &App, id: i64, body: &Value) -> Result<String> {
+/// in its terminal ("mark PR #9 reviewed", "I've reviewed every PR in G3", or the owner's own `!` run of
+/// it). None: the owner's review is off for the task's project, so an agent's mark isn't needed (the
+/// board marks it for them). An agent without the word is refused, told what wording counts.
+pub fn reviewed_by(app: &App, id: i64, body: &Value) -> Result<Option<String>> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
     if !as_bool(body.get("agent"), false) {
-        return Ok(app.cfg.owner.clone());
+        return Ok(Some(app.cfg.owner.clone()));
+    }
+    if !prflow::owner_review_on(app, t.s("project")) {
+        return Ok(None);
     }
     let via = body_str(body, "via_session");
     if crate::startword::owners_reviewed_word(app, &via, id, pr.num)?.is_none() {
-        return err(403, format!("Only {} marks a PR reviewed, and they haven't told you in this terminal that they've reviewed PR #{}. Ask them, or they can use Mark reviewed on its task page.", app.cfg.owner, pr.num));
+        let set = t.i("goal_id").map(|g| format!(", or \"I've reviewed every PR in {}\"", rf("goal", g))).unwrap_or_default();
+        return err(
+            403,
+            format!(
+                "Only {owner} marks a PR reviewed, and they haven't told you in this terminal that they've reviewed PR #{num}. Ask them to say so here in words that name it (\"I've reviewed PR #{num}\", \"mark PR #{num} reviewed\"{set}), or to run `! tb pr reviewed {task}` themselves, or to use Mark reviewed on its task page.",
+                owner = app.cfg.owner,
+                num = pr.num,
+                task = rf("task", id),
+            ),
+        );
     }
-    Ok(format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)))
+    Ok(Some(format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))))
+}
+
+/// The answer to an agent's `tb pr reviewed` when the owner's review is off for task `id`'s project:
+/// nothing is marked, and the board marks it reviewed itself once it's green.
+pub fn review_not_needed(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    Ok(json!({"task": rf("task", id), "not_needed": true, "owner": app.cfg.owner, "pr": board::pr_card(app, &t)}))
 }
 
 /// The host refused a merge because the PR conflicts with its base (GitHub: "the merge commit cannot be
@@ -1404,5 +1425,34 @@ mod tests {
         assert!(is_link("https://ci.example.com/build/1"));
         assert!(!is_link("see build 1"));
         assert!(!is_link("https://a b"));
+    }
+
+    fn board_with_pr(owner_review: bool) -> (tempfile::TempDir, std::sync::Arc<App>, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.pr.owner_review = Some(owner_review);
+        let app = App::for_tests(cfg);
+        app.db.x("INSERT INTO goals(id, name) VALUES(23, 'Issues')", crate::p![]).unwrap();
+        let id = app
+            .db
+            .x("INSERT INTO tasks(title, status, project, goal_id, pr_num, pr_repo, pr_host) VALUES('Fix', 'done', 'web', 23, 194, 'me/web', 'github')", crate::p![])
+            .unwrap();
+        (dir, app, id)
+    }
+
+    #[test]
+    fn an_agents_reviewed_mark_is_a_no_op_when_owner_review_is_off() {
+        let agent = json!({"agent": true, "via_session": "s1"});
+        let (_dir, app, id) = board_with_pr(false);
+        assert_eq!(reviewed_by(&app, id, &agent).unwrap(), None);
+        let v = review_not_needed(&app, id).unwrap();
+        assert_eq!((v["not_needed"].as_bool(), v["owner"].as_str()), (Some(true), Some("Sam")));
+        assert_eq!(reviewed_by(&app, id, &json!({"agent": false})).unwrap().as_deref(), Some("Sam"), "the owner's own mark still counts");
+
+        let (_dir, app, id) = board_with_pr(true);
+        let e = reviewed_by(&app, id, &agent).unwrap_err();
+        assert_eq!(e.status, 403);
+        assert!(e.message.contains("\"I've reviewed every PR in G23\""), "{}", e.message);
+        assert!(e.message.contains(&format!("`! tb pr reviewed T{id}`")), "{}", e.message);
     }
 }
