@@ -73,6 +73,7 @@ mod project_terminals;
 mod prplan;
 mod qa;
 mod quality;
+mod rebase_visit;
 mod release_tags;
 mod releases;
 mod reply_questions;

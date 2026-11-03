@@ -398,6 +398,23 @@ pub fn waking(app: &App, t: &Row) -> Result<bool> {
     Ok(live_job(app, t)?.is_some() || (WAKE.contains(&t.s("pr_phase").unwrap_or("")) && flow(t).contains_key("woke")))
 }
 
+/// A done task's open PR whose visit is `sid`'s: the board opened that terminal for its last PR visit
+/// (a rebase follow-up's job is done before its prompt arrives), or the visit already picked it up.
+pub fn visit_terminal(app: &App, t: &Row, sid: &str) -> Result<bool> {
+    if sid.is_empty() || t.s("status") != Some("done") || !board::pr_still_open(t) {
+        return Ok(false);
+    }
+    if flow(t).s("session") == Some(sid) {
+        return Ok(true);
+    }
+    let opened = app.db.val(
+        "SELECT json_extract(target, '$.session') FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'pr' \
+         ORDER BY id DESC LIMIT 1",
+        p![t.id()],
+    )?;
+    Ok(opened.as_str() == Some(sid))
+}
+
 pub fn visited_by(app: &App, sid: &str) -> Result<Option<Row>> {
     if sid.is_empty() {
         return Ok(None);
