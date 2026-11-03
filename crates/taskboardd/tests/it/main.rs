@@ -21,6 +21,7 @@ mod code_review;
 mod comment_guard_base;
 mod comment_guard_pr;
 mod compact_resume;
+mod critical_approve;
 mod critical_hold;
 mod cross_project_waits;
 mod days;

@@ -187,6 +187,10 @@ pub struct BacklogAi {
     /// How many items holding a PR a goal makes into pre-merge fix tasks; past it each goes to the
     /// owner's Needs you list instead, still holding the PR.
     pub critical_max: i64,
+    /// `ask`: the owner approves each item that holds a PR from the Needs you list before its fix task
+    /// can run (the PR holds meanwhile), and rejecting one sends it back to the plain backlog. `auto`:
+    /// the fix task runs at once.
+    pub critical: String,
 }
 
 impl BacklogAi {
@@ -198,7 +202,7 @@ impl BacklogAi {
 
 impl Default for BacklogAi {
     fn default() -> Self {
-        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0, critical_max: 3 }
+        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0, critical_max: 3, critical: "ask".into() }
     }
 }
 
