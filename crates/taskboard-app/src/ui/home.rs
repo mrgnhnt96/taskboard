@@ -1135,6 +1135,17 @@ mod tests {
     }
 
     #[test]
+    fn working_time_counts_from_the_current_pickup() {
+        let ago = |m: i64| (chrono::Utc::now() - chrono::Duration::minutes(m)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        // Picked up yesterday, waited overnight, picked up again 3 minutes ago (#877).
+        let c = card(json!({"latest": "Running cargo test", "started_at": ago(18 * 60 + 16), "picked_up_at": ago(3)}));
+        assert_eq!(tile_vm(&c).line, "Running cargo test · 3m");
+        assert_eq!(crate::ui::status::row(&c).age, "3m");
+        // A board that doesn't send picked_up_at counts from the first pickup.
+        assert_eq!(tile_vm(&card(json!({"started_at": ago(5)}))).line, "Running 5m");
+    }
+
+    #[test]
     fn tiles_say_what_each_task_is_doing() {
         assert_eq!(tile_vm(&card(json!({"latest": "Running cargo test"}))).status, "Working");
         assert_eq!(tile_vm(&card(json!({"latest": "Running cargo test"}))).line, "Running cargo test");

@@ -403,6 +403,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("no_pr".into(), t.v("no_pr"));
         // The commit its work landed in outside its PR (`declined.rs`).
         o.insert("landed".into(), t.v("landed"));
+        // When this run began, which the Working time counts from; the first pickup on an older task.
+        o.insert("picked_up_at".into(), opt_str(t.s("picked_up_at").or(t.s("started_at"))));
         // Whether Focus shows a terminal or opens a new one.
         o.insert("terminal_open".into(), json!(live_session(app, t)?.is_some()));
         o.insert("no_evidence".into(), t.v("no_evidence"));
@@ -1462,12 +1464,14 @@ pub fn jira_keep_in_step(app: &App, t: &Row, target_status: Option<&str>, commen
 pub fn set_working(app: &App, t: &Row, who: &str, text: Option<&str>) -> Result<()> {
     let was = t.st("status");
     let started = t.s("started_at").map(|s| s.to_string()).unwrap_or_else(now_iso);
-    update_task(
-        app,
-        t.id(),
-        fields!["status" => "working", "needs_reason" => null, "question" => null, "answered_at" => null,
-                "lost" => 0, "start_tries" => 0, "retry_at" => null, "started_at" => started],
-    )?;
+    let mut f = fields!["status" => "working", "needs_reason" => null, "question" => null, "answered_at" => null,
+                        "lost" => 0, "start_tries" => 0, "retry_at" => null, "started_at" => started];
+    // A run starts over when it comes back from waiting (queued) or from done; an answered question
+    // carries the run on.
+    if !matches!(was.as_str(), "working" | "needs") {
+        f.push(("picked_up_at", json!(now_iso())));
+    }
+    update_task(app, t.id(), f)?;
     if let Some(text) = text {
         log_event(app, t.id(), who, "status", text)?;
     }
@@ -1522,6 +1526,10 @@ pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&s
     let mut f = fields!["session_id" => sid, "session_name" => name, "start_job" => null, "lost" => 0];
     if !already {
         f.push(("latest", json!(format!("{how} in {name}."))));
+    }
+    // Picked up in a new terminal after its last one was lost: a fresh run, though it never left needs.
+    if t.b("lost") {
+        f.push(("picked_up_at", json!(now_iso())));
     }
     if let Some(c) = claude.filter(|c| !c.is_empty()) {
         f.push(("claude_session_id", json!(c)));

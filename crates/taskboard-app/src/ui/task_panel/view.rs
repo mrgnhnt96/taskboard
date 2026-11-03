@@ -1388,7 +1388,7 @@ fn now_node(c: &Ctx, t: &Value) -> Node {
         let (sub, at) = match opt_s(t, "updated_at").filter(|_| asked) {
             Some(at) => {
                 let mut sub = vec![format!("Asked {}", fmt::ago(at))];
-                sub.extend(Some(fmt::span_between(s(t, "started_at"), at)).filter(|x| !x.is_empty()).map(|x| format!("after {x} of work")));
+                sub.extend(Some(fmt::span_between(fmt::run_start(t), at)).filter(|x| !x.is_empty()).map(|x| format!("after {x} of work")));
                 (sub.join(", "), fmt::hhmm(at))
             }
             None => (String::new(), String::new()),
