@@ -525,6 +525,24 @@ pub(crate) fn start_retry_at(t: &Value) -> Option<&str> {
 }
 
 /// `startsByHand`.
+/// When a task scheduled to start does ("at 5pm", "tomorrow at 9am"), while it waits for it.
+pub fn scheduled_at(t: &Value) -> Option<String> {
+    let at = fmt::parse(s(t, "start_at"))?;
+    if at <= fmt::now() || !matches!(s(t, "status"), "queued") {
+        return None;
+    }
+    let l = fmt::local(at);
+    let today = fmt::local(fmt::now()).date_naive();
+    let clock = fmt::clock12(&l.format("%H:%M").to_string());
+    Some(if l.date_naive() == today {
+        format!("at {clock}")
+    } else if Some(l.date_naive()) == today.succ_opt() {
+        format!("tomorrow at {clock}")
+    } else {
+        format!("{} at {clock}", l.format("%A"))
+    })
+}
+
 fn starts_by_hand(t: &Value) -> bool {
     matches!(s(t, "status"), "queued" | "planned") && obj(t, "goal").is_none() && !b(t, "starting") && start_retry_at(t).is_none()
 }
@@ -1420,14 +1438,37 @@ fn now_node(c: &Ctx, t: &Value) -> Node {
         out.push(el(K::Box(BoxTone::Info), vec![txt(label, St::BoxLabel), txt(when, St::Plain)]));
     }
 
-    if starts_by_hand(t) {
-        let mut st = vec![el(
-            K::Row,
-            vec![
-                c.btn("Start", Act::new("start", "new", &r, &act), Look::PrimaryWide, false, None),
-                c.btn("Start when the repo’s free", Act::new("start", "queue", &r, &act), Look::SoftWide, false, None),
-            ],
-        )];
+    if let Some(at) = scheduled_at(t) {
+        let mut st = vec![
+            el(K::Box(BoxTone::Info), vec![txt(format!("Starts {at}"), St::BoxLabel), txt("Whatever the work hours.", St::Plain)]),
+            el(
+                K::Row,
+                vec![
+                    c.btn("Start now", Act::new("start", "new", &r, &act), Look::PrimaryWide, false, None),
+                    c.btn("Cancel", Act::new("schedule", "off", &r, &act), Look::SoftWide, false, Some("Drop the scheduled start")),
+                ],
+            ),
+        ];
+        st.extend(c.note(&act));
+        out.push(el(K::Stack, st));
+    } else if starts_by_hand(t) {
+        let k = format!("start_at:{r}");
+        let mut st = vec![
+            el(
+                K::Row,
+                vec![
+                    c.btn("Start", Act::new("start", "new", &r, &act), Look::PrimaryWide, false, None),
+                    c.btn("Start when the repo’s free", Act::new("start", "queue", &r, &act), Look::SoftWide, false, None),
+                ],
+            ),
+            el(
+                K::Row,
+                vec![
+                    Node::Field { value: c.draft(&k), key: k, placeholder: "5pm, tomorrow 9am", multi: false, mono: false },
+                    c.btn("Start at", Act::new("schedule", "", &r, &act), Look::Soft, false, Some("Start it then, whatever the work hours")),
+                ],
+            ),
+        ];
         st.extend(c.note(&act));
         if let Some(w) = opt_s(t, "waiting") {
             st.push(txt(format!("Not starting yet: {w}. Start runs it now anyway."), St::WarnHelp));

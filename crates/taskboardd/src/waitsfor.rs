@@ -385,6 +385,9 @@ pub fn waits_for_start(app: &App, t: &Row) -> Result<bool> {
 
 /// The line a queued card shows when something holds it back.
 pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
+    if crate::scheduled::waiting(t) {
+        return Ok(json!(crate::scheduled::line(&t.st("start_at"))));
+    }
     if t.i("start_job").is_some() {
         let pending = board::live_start_job(app, t)?.filter(|j| j.s("state") == Some("pending"));
         let hold = match pending {

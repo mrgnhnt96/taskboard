@@ -95,6 +95,7 @@ pub mod retro;
 pub mod reviewers;
 pub mod runner;
 pub mod runmark;
+pub mod scheduled;
 pub mod screen;
 pub mod seed;
 pub mod server;

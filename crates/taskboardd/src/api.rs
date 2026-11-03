@@ -1555,6 +1555,18 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     // and only the app's own request is that; any other caller with no terminal is no one's word.
     let t = board::get_task(app, id)?;
     let via = body_str(body, "via_session");
+    let at = body_str(body, "at");
+    if !at.is_empty() {
+        return schedule_start(app, &rf("task", id), query, &via, &at, |by| {
+            if crate::scheduled::is_off(&at) {
+                app.db.tx(|| crate::scheduled::unschedule_task(app, id, by))?;
+            } else {
+                let when = crate::scheduled::parse_at(&at, &hours::now_local())?;
+                app.db.tx(|| crate::scheduled::schedule_task(app, id, &when, by))?;
+            }
+            task_detail(app, id)
+        });
+    }
     let started = if via.is_empty() {
         if !from_app(query) {
             return err(
@@ -1587,6 +1599,31 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
     launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
+}
+
+/// A start at a set time (`at`: `5pm`, `tomorrow 9am`, or `off` to drop it) for `what`: the owner's from
+/// the app, or on their word in terminal `via` (`startword::schedule_word`). A refused one asks no one:
+/// the notification's Start would start it now.
+fn schedule_start(app: &App, what: &str, query: &Query, via: &str, at: &str, apply: impl FnOnce(&str) -> Result<Value>) -> Result<Value> {
+    let verb = if crate::scheduled::is_off(at) { "Unscheduled" } else { "Scheduled" };
+    let by = if via.is_empty() {
+        if !from_app(query) {
+            return err(403, format!("Only a human can schedule {what}: {} can use Start at… on the board, or tell an agent in a terminal when to start it.", app.cfg.owner));
+        }
+        format!("{verb} in the UI")
+    } else {
+        if crate::startword::schedule_word(app, via, what)?.is_none() {
+            log_miss(app, what, via)?;
+            return err(
+                403,
+                format!("Only a human can schedule {what}: nobody in this terminal's conversation named it with a time to start. {} can use Start at… on the board, or tell you when to start it.", app.cfg.owner),
+            );
+        }
+        format!("{verb} by {} via {}", app.cfg.owner, board::session_name(app, Some(via), None))
+    };
+    let d = apply(&by)?;
+    alerts::drop_start_ask(app, what)?;
+    Ok(d)
 }
 
 /// How many refused starts the board keeps for `tb words misses`.
@@ -1661,6 +1698,14 @@ pub fn run_goal_from_notification(app: &App, id: i64, now: bool) -> Result<Value
     Ok(d)
 }
 
+/// A goal's scheduled run (`scheduled::tick`): the board's Start now, so it runs outside the work hours too.
+pub fn run_goal_on_schedule(app: &App, id: i64) -> Result<Value> {
+    let query: Query = [(FROM.to_string(), "app".to_string())].into_iter().collect();
+    let d = run_goal(app, id, &query, &json!({"now": true}))?;
+    app.db.tx(|| board::add_goal_note(app, id, "decision", "Started on schedule", None, false, None))?;
+    Ok(d)
+}
+
 /// Starts task `id` once it may: `started` is the line logged for who started it, `via` the terminal whose word
 /// it was (empty for the owner's own Start).
 fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &str, via: &str) -> Result<Value> {
@@ -1703,6 +1748,7 @@ fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &st
             board::log_event(app, id, board::OWNER, "status", &format!("Taken out of {name}'s line"))?;
         }
         let sid = session_id.map(|s| s.to_string());
+        crate::scheduled::started(app, id)?;
         board::update_task(
             app,
             id,
@@ -2678,6 +2724,19 @@ fn goal_plan(app: &App, id: i64, body: &Value) -> Result<Value> {
 }
 
 fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
+    let at = body_str(body, "at");
+    if !at.is_empty() {
+        board::get_goal(app, id)?;
+        return schedule_start(app, &rf("goal", id), query, &body_str(body, "via_session"), &at, |by| {
+            if crate::scheduled::is_off(&at) {
+                app.db.tx(|| crate::scheduled::unschedule_goal(app, id, by))?;
+            } else {
+                let when = crate::scheduled::parse_at(&at, &hours::now_local())?;
+                app.db.tx(|| crate::scheduled::schedule_goal(app, id, &when, by))?;
+            }
+            goal_detail(app, id)
+        });
+    }
     let now = as_bool(body.get("now"), false);
     // From `tb start G2` or `tb goal set G2 --run` in a terminal: only on a human's word there, as for a
     // task. The board's Run sends no terminal, and only the app's own request is that; any other caller
@@ -2726,6 +2785,9 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         let until = if now { hours::until_open(app) } else { None };
         if until.is_some() || (!now && has(g.s("hours_until"))) {
             app.db.update("goals", &json!(id), fields!["hours_until" => until])?;
+        }
+        if has(g.s("start_at")) {
+            app.db.update("goals", &json!(id), fields!["start_at" => null])?;
         }
         let n = crate::chain::queue_planned(app, id, &who, "Queued with the rest of the goal", "Queued again with the rest of the goal")?;
         let r = resume_parked(app, id, &who)?;

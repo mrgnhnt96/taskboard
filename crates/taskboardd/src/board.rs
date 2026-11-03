@@ -418,6 +418,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         // The branch its PR is set to go into instead of the repo's default (a backport's).
         o.insert("pr_base".into(), t.v("pr_base"));
         o.insert("start_retry_at".into(), start_retry_at(t, &status));
+        o.insert("start_at".into(), t.v("start_at"));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
@@ -996,7 +997,7 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
     let stopped = crate::waves::stopped_line(order.waves()?);
     let mut d = json!({
         "id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "outcome": g.v("outcome"),
-        "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"),
+        "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"), "start_at": crate::scheduled::goal_card(g),
         "project": g.v("project"), "projects": goal_projects(app, g)?, "area": g.v("area"), "repo_path": g.v("repo_path"),
         "epic_key": g.v("epic_key"), "epic_status": g.v("epic_status"),
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),

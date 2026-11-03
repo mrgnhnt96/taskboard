@@ -1504,6 +1504,42 @@ fn item_of(app: &App, id: i64) -> Result<Option<ItemTask>> {
     Ok(item.map(|item| ItemTask { item, task: id }))
 }
 
+/// The owner's word in terminal `sid` to schedule `what` (`T8`, `G2`) for a set time: their latest
+/// typed prompt that says a time ("start T8 at 5pm", "do it tomorrow 9am") and names it, or comes just
+/// before the conversation made it. A schedule only puts a start off, so this reads less than a start.
+pub fn schedule_word(app: &App, sid: &str, what: &str) -> Result<Option<String>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    let rows = app.db.q(
+        "SELECT id, kind, COALESCE(full, text) AS text, data FROM session_events WHERE session_id = ? AND kind IN ('prompt', ?)
+           AND id > COALESCE((SELECT MAX(id) FROM session_events WHERE session_id = ? AND kind = 'start'), 0)
+         ORDER BY id DESC LIMIT 200",
+        p![sid, MADE, sid],
+    )?;
+    let made_id = what.strip_prefix('T').unwrap_or(what);
+    let named = Regex::new(&format!(r"(?i)\b{}\b", regex::escape(what))).unwrap();
+    let mut made_after = false;
+    for r in &rows {
+        if r.s("kind") == Some(MADE) {
+            made_after |= r.s("data") == Some(made_id) || r.s("data") == Some(what);
+            continue;
+        }
+        if r.s("data") == Some(BOARD_PROMPT) {
+            continue;
+        }
+        let text = r.st("text");
+        if MARKER_RE.is_match(&text) {
+            continue;
+        }
+        if !defers_in(&text).is_empty() && (named.is_match(&text) || made_after) {
+            return Ok(Some(text));
+        }
+        made_after = false;
+    }
+    Ok(None)
+}
+
 /// The prompt a human typed in terminal `sid`, since its Claude conversation began, that asks for task
 /// `id` to start, if there's one and no later prompt takes it back. When `id` is the terminal's own task,
 /// "start it" can mean it ([`word_in_own`]). A task made from a backlog item may be named by the item's ref.

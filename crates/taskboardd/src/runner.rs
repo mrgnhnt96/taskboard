@@ -382,7 +382,9 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             continue;
         }
         let g = board::find_goal(app, t.i("goal_id"))?;
-        if !in_hours && !hours::goal_open(app, g.as_ref()) {
+        // A start at a set time waits for it, then runs whatever the hours and its waves say.
+        let due = crate::scheduled::due(&t);
+        if crate::scheduled::waiting(&t) || (!due && !in_hours && !hours::goal_open(app, g.as_ref())) {
             continue;
         }
         if t.s("retry_at").map(|r| r > now_iso().as_str()).unwrap_or(false) {
@@ -394,7 +396,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         if starting(app, t.id())? {
             continue;
         }
-        if let Some(g) = &g {
+        if let Some(g) = g.as_ref().filter(|_| !due) {
             if goal_blocker(app, &t, g)?.is_some() {
                 continue;
             }
@@ -442,6 +444,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
                 return Ok(false);
             }
             let t = board::get_task(app, tid)?;
+            crate::scheduled::started(app, tid)?;
             if waitsfor::parked(&t).is_some() {
                 start_parked(app, &t)?;
             } else {
@@ -726,6 +729,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::relevance::tick(app)?;
     crate::tidy::tick(app)?;
     dispatch::start_answers(app)?;
+    crate::scheduled::tick(app)?;
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;

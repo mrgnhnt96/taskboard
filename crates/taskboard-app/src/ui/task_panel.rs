@@ -452,6 +452,25 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             let body = json!({"mode": a.arg});
             run(m, a, tp("/start"), body, |m, _| sent(m), cx);
         }
+        "schedule" => {
+            let k = format!("start_at:{id}");
+            let at = if a.arg == "off" { "off".to_string() } else { ui(|u| u.drafts.get(&k).cloned().unwrap_or_default()).trim().to_string() };
+            if at.is_empty() {
+                set_note(&a.grp, "Type when to start it, like 5pm or tomorrow 9am.", true, cx);
+                return;
+            }
+            let off = at == "off";
+            run(m, a, tp("/start"), json!({"at": at}), move |_, v| {
+                ui(|u| u.drafts.remove(&k));
+                if off {
+                    return "Unscheduled".into();
+                }
+                match view::scheduled_at(v) {
+                    Some(at) => format!("Starts {at}"),
+                    None => "Scheduled".into(),
+                }
+            }, cx);
+        }
         "queue-planned" => run(m, a, tp(""), json!({"status": "queued"}), |_, _| "Queued".into(), cx),
         "answer" => {
             let k = format!("answer:{id}");

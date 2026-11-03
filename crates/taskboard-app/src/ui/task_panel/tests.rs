@@ -64,11 +64,20 @@ fn tree(i: &Value) -> view::Node {
     view::panel(&c)
 }
 
+/// The panel less what left the web board on purpose: the Start at row (a start at a set time).
+fn web_parts(n: view::Node) -> view::Node {
+    let start_at = |n: &view::Node| matches!(n, view::Node::El { kids, .. } if kids.iter().any(|k| matches!(k, view::Node::Field { key, .. } if key.starts_with("start_at:"))));
+    match n {
+        view::Node::El { k, tip, kids } => view::Node::El { k, tip, kids: kids.into_iter().filter(|x| !start_at(x)).map(web_parts).collect() },
+        other => other,
+    }
+}
+
 fn check_part(part: &str, f: impl Fn(&view::Node) -> Value) {
     let g = golden("task").only("panel");
     let mut bad = Vec::new();
     for c in &g.cases {
-        let got = f(&tree(&c["input"]));
+        let got = f(&web_parts(tree(&c["input"])));
         if got != c["expect"][part] {
             bad.push(format!("  {}:\n    web {}\n    app {}", c["name"].as_str().unwrap_or("?"), c["expect"][part], got));
         }
@@ -177,6 +186,27 @@ fn a_start_waiting_on_its_retry_can_try_again_now() {
     let task = json!({"ref": "T5", "id": 5, "status": "queued", "start_retry_at": at});
     let acts = view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})));
     assert_eq!(acts.iter().filter(|a| a.starts_with("start:")).collect::<Vec<_>>(), ["start:new"], "{acts:?}");
+}
+
+#[::core::prelude::v1::test]
+fn a_task_started_by_hand_can_start_at_a_set_time() {
+    let task = json!({"ref": "T5", "id": 5, "status": "queued"});
+    let n = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    assert!(view::acts(&n).iter().any(|a| a == "schedule"), "{:?}", view::acts(&n));
+    assert!(json!(view::text(&n)).to_string().contains("Start at"));
+}
+
+#[::core::prelude::v1::test]
+fn a_scheduled_task_says_when_with_start_now_and_cancel() {
+    let at = (crate::fmt::local(crate::fmt::now()) + chrono::Duration::days(1)).format("%Y-%m-%dT%H:%M").to_string();
+    let goal = json!({"ref": "G1", "title": "Checkout"});
+    for task in [json!({"ref": "T5", "id": 5, "status": "queued", "start_at": at}), json!({"ref": "T5", "id": 5, "status": "queued", "start_at": at, "goal": goal})] {
+        let n = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+        let (text, acts) = (json!(view::text(&n)).to_string(), view::acts(&n));
+        assert!(text.contains("Starts tomorrow at ") && text.contains("Whatever the work hours."), "{text}");
+        assert!(acts.iter().any(|a| a == "start:new") && acts.iter().any(|a| a == "schedule:off"), "{acts:?}");
+        assert!(!acts.iter().any(|a| a == "schedule" || a == "start:queue"), "{acts:?}");
+    }
 }
 
 #[::core::prelude::v1::test]

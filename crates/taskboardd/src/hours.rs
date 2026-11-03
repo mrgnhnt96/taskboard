@@ -247,7 +247,7 @@ pub fn set_until(app: &App, v: &str) -> Result<Option<Extra>> {
 }
 
 /// The next time after `now` that it's `v` (`6am`), or tomorrow's with a `tomorrow` prefix.
-fn next_time(now: &NaiveDateTime, v: &str) -> Result<NaiveDateTime> {
+pub fn next_time(now: &NaiveDateTime, v: &str) -> Result<NaiveDateTime> {
     let s = v.trim().to_lowercase();
     let (tomorrow, t) = match s.strip_prefix("tomorrow") {
         Some(rest) => (true, rest.trim()),
