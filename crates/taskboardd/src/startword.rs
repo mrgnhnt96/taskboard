@@ -1723,6 +1723,60 @@ pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     Ok(close_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
 }
 
+const MOVE_VERB: &str = r"(?:move|send|shift|transfer|put|push|hand\s+off|carry\s+on\s+with|continue|resume|start|run|open|take)";
+/// The task a move ask doesn't name: "it", "this", "the task", "your current task".
+const UNNAMED_MOVE: &str = r"(?:(?:the|this|that|your|my|our|its)\s+(?:current\s+)?(?:task|one|work)|it|this|that)";
+/// Where a move sends the task: a terminal of its own ("to a new tab", "into its own terminal", "over to
+/// another session"), or out of this one ("out of this terminal", "off this tab").
+const MOVE_TO: &str = concat!(
+    r"(?:\s+(?:over|off|out|across))?\s+(?:",
+    r"(?:(?:in)?to|on(?:to)?|in|over\s+to)\s+(?:(?:a|an|the|its|their|his|her)\s+)?",
+    r"(?:own|new|another|different|separate|fresh|other|second|brand[\s-]new)(?:\s+(?:own|new|separate|fresh|different))?",
+    r"\s+(?:midna\s+)?(?:tab|terminal|session|window|pane)",
+    r"|(?:out\s+of|off(?:\s+of)?|away\s+from)\s+(?:this|the|my|your)\s+(?:midna\s+)?(?:tab|terminal|session|window|pane))"
+);
+/// Moves of the task a terminal is on to a terminal of its own (`tb move`): "move T8 to a new tab",
+/// "send it to another terminal", "take this task out of this terminal".
+pub static MOVES: Lazy<Kind> = Lazy::new(|| {
+    let on = format!(r"(?:\b{MOVE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_MOVE})){MOVE_TO})");
+    Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
+});
+
+/// Which prompt, newest first, is the word to move task `id` to a terminal of its own: one that names it,
+/// or, in the latest prompt, one that doesn't when the terminal's task is `id` (`own`).
+pub fn move_word_in(prompts: &[Prompt], id: i64, own: bool) -> Option<usize> {
+    for (i, p) in prompts.iter().enumerate() {
+        if p.boards() {
+            continue;
+        }
+        match read_of(&MOVES, &p.text).word_for(id, |a| matches!(a, Ask::Unnamed) && i == 0 && own) {
+            Some(true) if p.clipped => {}
+            Some(true) => return Some(i),
+            Some(false) => return None,
+            None => {}
+        }
+    }
+    None
+}
+
+/// The owner's word in terminal `sid` to move task `id` to a terminal of its own ([`move_word_in`]): the
+/// prompt, or the owner's own `!` run of `tb move`.
+pub fn owners_move_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
+    if let Some(cmd) = bang.filter(|c| MOVE_CMD_RE.is_match(c)) {
+        return Ok(Some(format!("! {cmd}")));
+    }
+    let prompts = prompts_of(app, sid, None)?;
+    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    Ok(move_word_in(&prompts, id, own).map(|i| prompts[i].text.clone()))
+}
+
+/// A shell command that runs `tb move`.
+static MOVE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\btb\s+move\b").unwrap());
+
 /// The owner's word in terminal `sid` that they've reviewed task `id`'s PR #`num` ([`reviewed_word_in`]):
 /// the prompt.
 /// The owner's own `!` run of it counts too: the command.
@@ -4022,6 +4076,39 @@ mod tests {
         assert_eq!(close_word_in(&prompts(&["close the PR"], None), 95, 194, false), None);
         assert_eq!(close_word_in(&prompts(&["[task-board:T95] close PR #194"], None), 95, 194, false), None);
         assert_eq!(merge_word_in(&prompts(&["close PR #194"], None), 95, 194, false), None, "a close is no merge");
+    }
+
+    #[test]
+    fn the_owners_word_moves_a_task_to_its_own_terminal() {
+        for yes in [
+            "move T8 to a new tab",
+            "move T8 into its own terminal",
+            "please send T8 to another terminal, I need this one",
+            "put task T8 in a new tab",
+            "take T8 out of this terminal",
+            "start T8 in a separate tab",
+        ] {
+            assert_eq!(move_word_in(&prompts(&[yes], None), 8, false), Some(0), "{yes}");
+        }
+        for no in [
+            "don't move T8 to a new tab",
+            "should I move T8 to a new tab?",
+            "move T9 to a new tab",
+            "move T8 to the next wave",
+            "open a new tab",
+            "move T8 to a new tab tomorrow",
+        ] {
+            assert_eq!(move_word_in(&prompts(&[no], None), 8, false), None, "{no}");
+        }
+        // Unnamed, only the terminal's own task, and only in the latest prompt.
+        for yes in ["move this to its own tab", "can you move it to a new terminal", "send the task to another tab", "move your current task out of this tab"] {
+            assert_eq!(move_word_in(&prompts(&[yes], None), 8, true), Some(0), "{yes}");
+            assert_eq!(move_word_in(&prompts(&[yes], None), 8, false), None, "{yes}");
+        }
+        assert_eq!(move_word_in(&prompts(&["looks good", "move it to a new tab"], None), 8, true), None);
+        assert_eq!(move_word_in(&prompts(&["looks good", "move T8 to a new tab"], None), 8, false), Some(1));
+        assert_eq!(move_word_in(&prompts(&["[task-board:T8] move T8 to a new tab"], None), 8, false), None);
+        assert_eq!(word_in(&prompts(&["move T8 to a new tab"], None), 8), None, "a move is no start");
     }
 
     #[test]

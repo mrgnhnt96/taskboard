@@ -499,3 +499,42 @@ fn a_failed_task_handed_in_later_is_submitted_or_done_and_its_terminal_stays_put
     b.report("tb.done", "s2", json!({"task": t3, "summary": "Again."}));
     assert_eq!(b.task(&t3)["summary"], "Not needed.");
 }
+
+#[test]
+fn the_owners_word_moves_this_terminals_task_to_a_terminal_of_its_own() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    let slot = b.dir.path().join("webapp/.claude/worktrees/slot-1").to_string_lossy().to_string();
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    std::fs::create_dir_all(&slot).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q", &slot]).status().unwrap().success());
+    b.app.db.insert("worktree_slots", fields!["repo" => repo, "n" => 1, "path" => slot.clone(), "task_id" => id(&t1)]).unwrap();
+    b.report("tb.checkpoint", "s1", json!({"done": ["Header markup"], "next": ["Header styles"]}));
+
+    let why = b.try_report("tb.move", "s1", json!({})).unwrap_err();
+    assert!(why.contains("haven't told you to move"), "{why}");
+    b.report("hook.prompt", "s1", json!({"prompt": "should I move it to a new tab?"}));
+    assert!(b.try_report("tb.move", "s1", json!({})).is_err(), "a question isn't the word");
+    assert!(!runner::starting(&b.app, id(&t1)).unwrap());
+
+    b.add_session("s2");
+    b.report("hook.prompt", "s2", json!({"prompt": format!("move {t1} to a new tab")}));
+    let why = b.try_report("tb.move", "s2", json!({"task": t1})).unwrap_err();
+    assert!(why.contains("isn't the task this terminal is on"), "another terminal can't move it: {why}");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "move this task to its own tab, I need this one for something else"}));
+    let out = b.report("tb.move", "s1", json!({}));
+    let said = out["context"].as_str().unwrap();
+    assert!(said.contains("This terminal is on no task now") && said.contains(&slot), "{said}");
+
+    assert!(board::task_for_session(&b.app, Some("s1")).unwrap().is_none());
+    let card = board::get_task(&b.app, id(&t1)).unwrap();
+    assert_eq!(card.s("session_id"), None);
+    assert!(runner::starting(&b.app, id(&t1)).unwrap(), "it starts in a new terminal");
+    let job = b.app.db.q1("SELECT * FROM jobs WHERE task_id = ? AND purpose = 'start'", p![id(&t1)]).unwrap().unwrap();
+    let args = board::job_args(&job);
+    assert_eq!(args.st("cwd"), slot, "in the slot it holds");
+    assert!(args.st("prompt").contains("Header styles"), "with its checkpoint: {}", args.st("prompt"));
+    let held = b.app.db.count("SELECT COUNT(*) FROM worktree_slots WHERE task_id = ?", p![id(&t1)]).unwrap();
+    assert_eq!(held, 1, "the slot stays the task's");
+}

@@ -148,6 +148,9 @@ enum Cmd {
     Take { task: String },
     /// Switch this terminal to a task in its line; the one it's on waits here to resume
     Switch { task: String },
+    /// Move the task this terminal is on to a new terminal of its own, only when the human told you to in
+    /// this conversation; its checkpoints, notes and slot go with it and this terminal is left on no task
+    Move { task: Option<String> },
     /// This terminal's line: the tasks waiting their turn here
     Line {
         #[command(subcommand)]
@@ -2759,7 +2762,11 @@ impl Ctx {
 
     /// Posts a report that only asks: never spooled, since a replay would mark the terminal active for nothing.
     fn ask(&self, event: &str) -> Result<Value, String> {
-        match client::request(&self.cfg, "POST", "/report", Some(&self.body(event, json!({}), None)), TB_TIMEOUT) {
+        self.ask_with(event, json!({}))
+    }
+
+    fn ask_with(&self, event: &str, fields: Value) -> Result<Value, String> {
+        match client::request(&self.cfg, "POST", "/report", Some(&self.body(event, fields, None)), TB_TIMEOUT) {
             Ok(v) => Ok(v),
             Err(CallError::Refused(m)) => Err(m),
             Err(CallError::Unreachable(_)) => Err("The board isn't reachable.".into()),
@@ -5804,6 +5811,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 None => out(SAVED),
                 Some(v) => out(v["context"].as_str().unwrap_or(&format!("Switched to {r}."))),
             }
+            Ok(0)
+        }
+        Cmd::Move { task } => {
+            let fields = match task {
+                Some(t) => json!({"task": task_ref(&t)?}),
+                None => json!({}),
+            };
+            let v = c.ask_with("tb.move", fields)?;
+            out(v["context"].as_str().unwrap_or("Moved it to a terminal of its own."));
             Ok(0)
         }
         Cmd::Line { action } => {
