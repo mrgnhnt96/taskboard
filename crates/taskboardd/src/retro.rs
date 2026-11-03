@@ -1,9 +1,9 @@
 //! A finished goal's retrospective: a headless Claude reads what the goal planned against what
 //! happened (tasks added late, failed and retried tasks, review findings, the owner's questions,
-//! QA comments, issues its tasks found, PR fix cycles) and suggests lessons with the refs they came
-//! from. A lesson already on the board is confirmed instead of written twice; the owner keeps or
-//! retires each suggestion. Runs once on its own when a goal finishes, and again with
-//! `tb lesson retro G<n>`.
+//! QA comments, issues its tasks found, review rounds that found something to fix) and suggests
+//! lessons with the refs they came from. A lesson already on the board is confirmed instead of
+//! written twice; the owner keeps or retires each suggestion. Runs once on its own when a goal
+//! finishes, and again with `tb lesson retro G<n>`.
 
 use serde_json::{json, Value};
 
@@ -124,11 +124,11 @@ pub fn dossier(app: &App, gid: i64) -> Result<String> {
             out.push(format!("- {}: {}", n.st("kind"), one_line(&n.st("text"), 300)));
         }
     }
-    let planned_by = tasks.iter().filter_map(|t| t.s("started_at")).min().map(|s| s.to_string());
+    let late = crate::quality::added_late(&goal, &tasks);
     out.push(String::new());
     out.push("TASKS".into());
     for t in &tasks {
-        out.push(task_block(app, t, planned_by.as_deref())?);
+        out.push(task_block(app, t, late.contains(&t.id()))?);
     }
     let ids: Vec<i64> = tasks.iter().map(|t| t.id()).collect();
     let found = found_issues(app, &ids)?;
@@ -170,11 +170,11 @@ pub fn dossier(app: &App, gid: i64) -> Result<String> {
     Ok(out.join("\n"))
 }
 
-fn task_block(app: &App, t: &Row, planned_by: Option<&str>) -> Result<String> {
+fn task_block(app: &App, t: &Row, late: bool) -> Result<String> {
     let id = t.id();
     let outcome = if t.b("failed") { "FAILED" } else { t.s("status").unwrap_or("?") };
     let mut head = format!("{} wave {} [{}]: {}", rf("task", id), t.i0("wave"), outcome, one_line(&t.st("title"), 200));
-    if planned_by.is_some_and(|p| t.s("created_at").is_some_and(|c| c > p)) {
+    if late {
         head.push_str(" — added after the goal started");
     }
     let mut lines = vec![head];
@@ -209,18 +209,14 @@ fn task_block(app: &App, t: &Row, planned_by: Option<&str>) -> Result<String> {
     if let Some(s) = t.s("summary").filter(|s| !s.trim().is_empty()) {
         lines.push(format!("  Summary: {}", one_line(s, 400)));
     }
-    let events = app.db.q("SELECT kind, text FROM events WHERE task_id = ? AND kind IN ('question', 'answer', 'handoff') ORDER BY id", p![id])?;
-    let mut fixes = 0;
+    let events = app.db.q("SELECT kind, text FROM events WHERE task_id = ? AND kind IN ('question', 'answer') ORDER BY id", p![id])?;
     for e in &events {
-        match e.s("kind") {
-            Some("question") => lines.push(format!("  Asked: {}", one_line(&e.st("text"), 300))),
-            Some("answer") => lines.push(format!("  {}", one_line(&e.st("text"), 300))),
-            Some("handoff") if e.st("text").contains("for PR #") => fixes += 1,
-            _ => {}
-        }
+        let prefix = if e.s("kind") == Some("question") { "Asked: " } else { "" };
+        lines.push(format!("  {prefix}{}", one_line(&e.st("text"), 300)));
     }
+    let fixes = crate::quality::fix_rounds(app, id)?;
     if fixes > 0 {
-        lines.push(format!("  PR fix cycles: {fixes}"));
+        lines.push(format!("  Review rounds that found something to fix: {fixes}"));
     }
     for r in crate::steps::rounds(app, id)?.iter().filter(|r| !r.passed) {
         let name = r.data["name"].as_str().unwrap_or(&r.key);

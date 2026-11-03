@@ -29,7 +29,7 @@ fn goal(app: &App) -> (i64, i64, i64) {
     app.db.update("tasks", &json!(t2), fields!["created_at" => "2026-10-02T09:00:00"]).unwrap();
     board::log_event(app, t1, "agent", "question", "Should the form remember the email?").unwrap();
     board::log_event(app, t1, "owner", "answer", "Answered: yes").unwrap();
-    board::log_event(app, t1, "board", "handoff", "Brought the conversation back for PR #7: checks failed").unwrap();
+    board::log_event(app, t1, "board", "handoff", "Brought the conversation back for PR #7: fixing checks").unwrap();
     app.db.insert(
         "events",
         fields!["task_id" => t1, "at" => "2026-10-01T10:00:00", "who" => "board", "kind" => "step",
@@ -53,7 +53,7 @@ fn the_dossier_shows_plan_against_what_happened() {
         "~120 min",
         "Asked: Should the form remember the email?",
         "Answered: yes",
-        "PR fix cycles: 1",
+        "Review rounds that found something to fix: 2",
         "Password logged in plain text (high)",
         "T2 wave",
         "added after the goal started",
