@@ -224,3 +224,49 @@ fn work_a_task_records_as_done_or_proves_itself_is_not_a_gap() {
         "a clause a task proves with its own results isn't unproven: {args}"
     );
 }
+
+#[test]
+fn every_item_of_a_source_the_outcome_points_at_reaches_claude() {
+    let b = board();
+    let g = b.report("tb.goal", json!({"name": "Budget review", "project": "webapp", "outcome": "The app matches the Nov 1 review and B900 is closed"}))
+        ["goal"].as_str().unwrap().to_string();
+    let review = b.dir.path().join("review.csv");
+    std::fs::write(&review, "item,decision\n1,Pay Southwest first\n2,Tithing comes first from every paycheck\n3,Link X Money once\n").unwrap();
+    b.report("tb.attach", json!({"goal": g, "url": review.to_string_lossy(), "title": "Nov 1 review", "kind": "doc"}));
+    b.app
+        .db
+        .x(
+            "INSERT INTO issues(id, project, kind, title, detail, state) VALUES (900, 'webapp', 'bug', 'Frozen month loses income', 'Income sorted late gets no tithing', 'open')",
+            taskboardd::p![],
+        )
+        .unwrap();
+    b.calls();
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay order::pay Southwest first"]}));
+
+    let args = b.calls();
+    assert!(args.contains("--tools\nRead,Grep,Glob\n"), "no link, so no WebFetch: {args}");
+    assert!(args.contains("List every item it asks for") && args.contains("not only the ones the tasks name"), "the rule: {args}");
+    assert!(args.contains("Nov 1 review") && args.contains("| 2,Tithing comes first from every paycheck") && args.contains("| 3,Link X Money once"),
+        "the attached review's items are inlined: {args}");
+    assert!(args.contains("B900 [open] bug: Frozen month loses income") && args.contains("Income sorted late gets no tithing"),
+        "the backlog issue the outcome names: {args}");
+
+    b.answer(json!({"findings": [{"kind": "outcome_unproven", "short": "Review item 3 (X Money) has no task", "detail": "", "tasks": [], "refs": ["B900", "B901"]}]}));
+    b.try_post(&format!("/goals/{g}/review"), json!({})).unwrap();
+    let review = &b.get(&format!("/goals/{g}/review"))["review"];
+    assert_eq!(review["findings"][0]["refs"], json!(["B900"]), "a named issue may be a finding's ref: {review}");
+}
+
+#[test]
+fn a_linked_source_lets_claude_open_it() {
+    let b = board();
+    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in https://github.com/acme/webapp/pull/7#pullrequestreview-1 is fixed"}))
+        ["goal"].as_str().unwrap().to_string();
+    b.report("tb.attach", json!({"goal": g, "url": "https://claude.ai/artifact/abc", "title": "Screens", "kind": "design"}));
+    b.calls();
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Fix::fix the review's points"]}));
+    let args = b.calls();
+    assert!(args.contains("--tools\nRead,Grep,Glob,WebFetch\n"), "the outcome's link can be opened: {args}");
+    assert!(args.contains("Open a source's link with WebFetch"), "{args}");
+    assert!(args.contains("design: Screens https://claude.ai/artifact/abc") && args.contains("the board can't open"), "an artifact is judged by its title: {args}");
+}
