@@ -117,17 +117,23 @@ pub fn span(m: i64) -> String {
     }
 }
 
-/// "running 2h 5m" from a task's `started_at`.
+/// When a task's current run began: its last pickup (`picked_up_at`), so time spent waiting
+/// between runs doesn't count; its first (`started_at`) from a board that doesn't send it.
+pub fn run_start(t: &Value) -> &str {
+    opt_s(t, "picked_up_at").filter(|x| !x.is_empty()).unwrap_or_else(|| s(t, "started_at"))
+}
+
+/// "running 2h 5m" since the current run began (`run_start`).
 pub fn running_for(t: &Value) -> String {
-    match minutes_since(s(t, "started_at")) {
+    match minutes_since(run_start(t)) {
         Some(m) if m >= 0 => format!("running {}", span(m)),
         _ => String::new(),
     }
 }
 
-/// How long it's run since it started: "12m", "2h 5m"; "" before it started.
+/// How long the current run has gone: "12m", "2h 5m"; "" before it started.
 pub fn run_span(t: &Value) -> String {
-    match minutes_since(s(t, "started_at")) {
+    match minutes_since(run_start(t)) {
         Some(m) if m >= 0 => span(m),
         _ => String::new(),
     }

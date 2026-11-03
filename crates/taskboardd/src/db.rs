@@ -336,6 +336,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The commit a done task's work landed in on the main branch outside its PR (`tb task set
     // --landed`, `declined.rs`), so a declined PR's waiters count it as merged; null when it didn't.
     ("tasks", "landed", "TEXT"),
+    // When the current run began: the last pickup out of queued or done, or into a new terminal after
+    // a lost one (`board::set_working`, `board::claim`). `started_at` stays the first pickup. Null on
+    // a task from before it, which reads `started_at`.
+    ("tasks", "picked_up_at", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
