@@ -603,15 +603,38 @@ pub fn ask_held_rereviews(app: &App) -> Result<()> {
 /// Why the PR can't merge right now (empty: it can). Checks the record as just read. `owner_approved`: the
 /// owner's word to merge it approves it too, which stands in for the approvals it needs.
 pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> Result<Vec<String>> {
+    Ok(merge_gates(app, t, rec, owner_approved)?.into_iter().map(|g| g.why).collect())
+}
+
+/// One thing that holds the merge. `overridable`: the owner's override (`tb pr merge --override`, or
+/// Merge now in the app) merges past it (#876); the rest (a PR that isn't open, conflicts, the stack's
+/// order) would merge the wrong thing or fail on the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gate {
+    pub why: String,
+    pub overridable: bool,
+}
+
+impl Gate {
+    fn hard(why: String) -> Self {
+        Gate { why, overridable: false }
+    }
+    fn soft(why: String) -> Self {
+        Gate { why, overridable: true }
+    }
+}
+
+/// What holds the merge, as [`merge_blockers`] reads it, each marked whether the owner's override passes it.
+pub fn merge_gates(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> Result<Vec<Gate>> {
     let f = flow(t);
     let mut out = vec![];
     let state = rec["state"].as_str().unwrap_or("OPEN").to_uppercase();
     if state != "OPEN" {
-        out.push(format!("it's {}", state.to_lowercase()));
+        out.push(Gate::hard(format!("it's {}", state.to_lowercase())));
         return Ok(out);
     }
     if prflow::conflicting(&f, rec) {
-        out.push(format!("it conflicts with its base branch {}: rebase onto it and push first", rec["base"].as_str().unwrap_or("main")));
+        out.push(Gate::hard(format!("it conflicts with its base branch {}: rebase onto it and push first", rec["base"].as_str().unwrap_or("main"))));
     }
     // A failure holds the merge unless the owner's hook skipped it; `tb pr skip-checks` doesn't cover one.
     // A build the board stopped isn't a failure (`prflow::failing`): it reads as failed on the host. While
@@ -619,17 +642,17 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
     let builds_stopped = crate::prbuilds::stopped(app);
     let failing = prflow::failing(app, &f, rec);
     if !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
-        out.push(format!("checks failed: {}", failing.join(", ")));
+        out.push(Gate::soft(format!("checks failed: {}", failing.join(", "))));
     }
     if !builds_stopped && prflow::checks_skipped(&f, rec).is_none() {
         let checks = rec["checks"].as_array().cloned().unwrap_or_default();
         let running = running_checks(t, rec);
         if !running.is_empty() {
-            out.push(format!("checks are still running: {}", running.join(", ")));
+            out.push(Gate::soft(format!("checks are still running: {}", running.join(", "))));
         }
         let stopped: Vec<String> = checks.iter().filter(|c| c["state"] == "stopped").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
         if !stopped.is_empty() {
-            out.push(format!("builds were stopped: {} (run them again, or tb pr skip-checks)", stopped.join(", ")));
+            out.push(Gate::soft(format!("builds were stopped: {} (run them again, or tb pr skip-checks)", stopped.join(", "))));
         }
         // The same rule as the stage (`prflow::checks_waiting`): once the wait is over, an expected check
         // that never posted doesn't hold the merge; only failed ones do.
@@ -640,10 +663,10 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
                 } else {
                     "expected checks haven't posted"
                 };
-                out.push(format!("{what}: {} (it waits up to {} min for them)", missing.join(", "), prflow::missing_wait_mins(app, t, rec)));
+                out.push(Gate::soft(format!("{what}: {} (it waits up to {} min for them)", missing.join(", "), prflow::missing_wait_mins(app, t, rec))));
             }
             None if checks.is_empty() && !prflow::no_checks_wait_over(app, &f, rec) => {
-                out.push(format!("no checks have posted on this push yet (waits up to {} min)", app.cfg.pr.no_checks_after_mins));
+                out.push(Gate::soft(format!("no checks have posted on this push yet (waits up to {} min)", app.cfg.pr.no_checks_after_mins)));
             }
             _ => {}
         }
@@ -652,36 +675,36 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         let review = prflow::review_of(&f, rec);
         if review.changes {
             let who: Vec<String> = review.requesters.iter().map(|(u, n)| if n.is_empty() { u.clone() } else { n.clone() }).collect();
-            out.push(if who.is_empty() { "a reviewer asked for changes".into() } else { format!("{} asked for changes", who.join(", ")) });
+            out.push(Gate::soft(if who.is_empty() { "a reviewer asked for changes".into() } else { format!("{} asked for changes", who.join(", ")) }));
         } else if !owner_approved {
-            out.extend(approvals_short(app, t, rec));
+            out.extend(approvals_short(app, t, rec).map(Gate::soft));
         }
     }
     let open = prflow::open_threads(&f, rec);
     let tasks = open.iter().filter(|x| x["kind"] == "task").count() as i64;
     let threads = open.len() as i64 - tasks;
     if threads > 0 {
-        out.push(format!("{} open", plural(threads, "thread")));
+        out.push(Gate::soft(format!("{} open", plural(threads, "thread"))));
     }
     if tasks > 0 {
-        out.push(format!("{} open", plural(tasks, "PR task")));
+        out.push(Gate::soft(format!("{} open", plural(tasks, "PR task"))));
     }
     if let Some(e) = rec["tasks_error"].as_str() {
-        out.push(format!("couldn't read its PR tasks ({e})"));
+        out.push(Gate::soft(format!("couldn't read its PR tasks ({e})")));
     }
     // A head-merge PR merges into its parent's unmerged branch: that's where it goes, not a hold.
     if !crate::stack::head(t) {
         if let Some(b) = stacked_base(app, t, rec)? {
-            out.push(b);
+            out.push(Gate::hard(b));
         }
     }
     if let Some(h) = crate::stack::stack_hold(app, t)? {
-        out.push(h);
+        out.push(Gate::hard(h));
     }
     // Merge steps (`before = "merge"`) hold only the merge, judged on the PR's head.
     let steps = prflow::merge_steps_left(app, t, rec);
     if !steps.is_empty() {
-        out.push(format!("its merge steps haven't passed on its head: {}", crate::steps::names(&steps)));
+        out.push(Gate::soft(format!("its merge steps haven't passed on its head: {}", crate::steps::names(&steps))));
     }
     Ok(out)
 }
@@ -822,13 +845,30 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
             format!("--owner-approved is {}'s override, and they haven't told you to merge this PR in this terminal. Ask them.", app.cfg.owner),
         );
     }
+    // `--override` (or Merge now in the app): the owner merging past every hold an override can pass
+    // (#876). From an agent it needs their word in its terminal to merge this PR past what holds it.
+    let forced = as_bool(body.get("override"), false);
+    if forced && agent && !word.as_ref().is_some_and(|w| w.overrides) {
+        let pr = linked.as_ref().map_or(0, |p| p.num);
+        return err(
+            403,
+            format!(
+                "--override is {owner}'s, and they haven't told you in this terminal to merge PR #{pr} past what holds it. Ask them to say so (\"merge #{pr} anyway\"), or to run ! tb pr merge {t} --override themselves.",
+                owner = app.cfg.owner,
+                t = rf("task", id)
+            ),
+        );
+    }
     let pr = pr_of(&before)?;
     let (t, rec) = fresh(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "merge", e))?;
     let site = prhost::limit::label(&pr.host);
     progress::stage(&format!("Read PR #{} from {site}", pr.num));
     // What the override stands in for, kept for the task's log once the merge goes through.
-    let overridden = if override_why.is_empty() { None } else { approvals_short(app, &t, &rec) };
-    let blockers = merge_blockers(app, &t, &rec, !override_why.is_empty() || word.as_ref().is_some_and(|w| w.approved))?;
+    let overridden = if override_why.is_empty() || forced { None } else { approvals_short(app, &t, &rec) };
+    let gates = merge_gates(app, &t, &rec, !forced && (!override_why.is_empty() || word.as_ref().is_some_and(|w| w.approved)))?;
+    let (passed, held): (Vec<Gate>, Vec<Gate>) = gates.into_iter().partition(|g| forced && g.overridable);
+    let passed: Vec<String> = passed.into_iter().map(|g| g.why).collect();
+    let blockers: Vec<String> = held.into_iter().map(|g| g.why).collect();
     if !blockers.is_empty() {
         let running = running_checks(&t, &rec);
         if !running.is_empty() {
@@ -836,13 +876,14 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         let why = blockers.join("; ");
         prflow::note_merge_refused(app, id, &rec, &why)?;
-        return err(409, format!("PR #{} can't merge yet: {why}.", pr.num));
+        let past = if forced { " (an override doesn't merge past these)" } else { "" };
+        return err(409, format!("PR #{} can't merge yet: {why}{past}.", pr.num));
     }
     if let Some(carried) = carried_prs(app, &t, &pr)? {
         prflow::note_merge_refused(app, id, &rec, &carried)?;
         return err(409, format!("PR #{} can't merge yet: {carried}.", pr.num));
     }
-    progress::stage("Nothing blocks the merge");
+    progress::stage(if passed.is_empty() { "Nothing blocks the merge" } else { "Merging past what holds it, on the owner's override" });
     // The merge deletes this PR's branch, and a host may close a PR that goes into a deleted branch: move
     // the PRs stacked on it onto its base first.
     move_stacked_off(app, &t, &rec, pr.num)?;
@@ -871,11 +912,24 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         if let Some(short) = &overridden {
             board::log_event(app, id, &who, "status", &format!("Merged PR #{} on {}'s approval although {short}: {override_why}", pr.num, app.cfg.owner))?;
         }
+        if !passed.is_empty() {
+            note_override(app, id, &who, pr.num, &passed, word.as_ref().map(|w| w.text.as_str()))?;
+        }
         prflow::mark_merged(app, &board::get_task(app, id)?, &who)
     })?;
     crate::reports::give_back_slot(app, id);
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
+}
+
+/// Records on task `id` that the owner merged PR #`num` past `gates`, what held it then: in its log and
+/// in its PR's flow (`owner_override`).
+fn note_override(app: &App, id: i64, who: &str, num: i64, gates: &[String], word: Option<&str>) -> Result<()> {
+    let said = word.map(|w| format!(" (\"{}\")", one_line(w, 200))).unwrap_or_default();
+    let msg = format!("{} overrode the merge gates and merged PR #{num} while {}{said}", app.cfg.owner, gates.join("; "));
+    board::log_event(app, id, who, "status", &msg)?;
+    prflow::merge_flow(app, id, fields!["owner_override" => json!({"at": now_iso(), "by": who, "gates": gates, "word": word})])?;
+    Ok(())
 }
 
 /// `tb pr close [--reason]`: closes the task's PR without merging it (Bitbucket declines it), keeping

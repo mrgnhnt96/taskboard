@@ -83,7 +83,7 @@ fn a_link_menus_mark_done_only_asks_until_confirmed(cx: &mut TestAppContext) {
     redraw(w, cx);
     w.update(cx, |m, _, _| {
         assert!(matches!(&m.panel, Some(crate::app::Panel::Task { r, .. }) if r == "T2"), "its panel opens under the confirm");
-        assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.r == "T2" && !f.cancel));
+        assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.r == "T2" && f.ask == Ask::Done));
         assert_eq!(finish_note(m), None);
     })
     .unwrap();
@@ -114,7 +114,7 @@ fn cancel_task_fails_it_as_the_owner(cx: &mut TestAppContext) {
     let (w, rec) = parity::window(cx);
     w.update(cx, |m, _, cx| m.open_link("taskboard://task/T2?do=cancel", cx)).unwrap();
     parity::settle(cx);
-    w.update(cx, |m, _, _| assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.cancel))).unwrap();
+    w.update(cx, |m, _, _| assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.ask == Ask::Cancel))).unwrap();
     w.update(cx, |m, _, cx| confirm_finish(m, cx)).unwrap();
     parity::settle(cx);
     assert_eq!(rec.last("tasks/T2/fail"), Some(json!({"reason": "Cancelled by you"})));
@@ -136,7 +136,29 @@ fn a_task_finished_meanwhile_gets_a_note_not_a_post(cx: &mut TestAppContext) {
     // Opened on one that's already done, the dialog says so from the start.
     w.update(cx, |m, _, cx| m.open_link("taskboard://task/T1?do=cancel", cx)).unwrap();
     redraw(w, cx);
-    w.update(cx, |m, _, _| assert_eq!(super::shown_task(m, "T1").and_then(super::already).as_deref(), Some("T1 is already done."))).unwrap();
+    w.update(cx, |m, _, _| assert_eq!(super::shown_task(m, "T1").and_then(|t| super::already(t, Ask::Cancel)).as_deref(), Some("T1 is already done."))).unwrap();
+}
+
+#[test]
+fn merge_asks_only_while_the_pr_is_open() {
+    let t = |pr: Value| json!({"ref": "T4", "status": "done", "pr": pr});
+    assert_eq!(super::already(&t(Value::Null), Ask::Merge).as_deref(), Some("T4 has no PR."));
+    assert_eq!(super::already(&t(json!({"num": 9, "state": "OPEN"})), Ask::Merge), None, "a done task's open PR can still merge");
+    assert_eq!(super::already(&t(json!({"num": 9, "state": "MERGED"})), Ask::Merge).as_deref(), Some("PR #9 already merged."));
+    assert_eq!(super::already(&t(json!({"num": 9, "state": "CLOSED"})), Ask::Merge).as_deref(), Some("PR #9 isn't open."));
+}
+
+#[gpui_kit::test]
+fn merge_without_a_pr_gets_a_note_not_a_post(cx: &mut TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    w.update(cx, |m, _, cx| {
+        m.modal = Some(Modal::finish("T2".into(), Ask::Merge));
+        confirm_finish(m, cx);
+    })
+    .unwrap();
+    parity::settle(cx);
+    assert!(rec.posts().is_empty());
+    w.update(cx, |m, _, _| assert_eq!(finish_note(m).as_deref(), Some("T2 has no PR."))).unwrap();
 }
 
 #[gpui_kit::test]

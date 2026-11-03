@@ -682,6 +682,29 @@ fn reviewed_button_tells_the_board(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[::core::prelude::v1::test]
+fn merge_now_shows_only_on_an_open_pr() {
+    for (state, shown) in [("OPEN", true), ("MERGED", false), ("CLOSED", false)] {
+        let mut task = awaiting_review(false);
+        task["pr"]["state"] = json!(state);
+        let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
+        assert_eq!(view::acts(&tree).iter().any(|a| a.starts_with("pr-merge-now")), shown, "{state}: {:?}", view::acts(&tree));
+    }
+}
+
+#[gpui_kit::test]
+fn merge_now_asks_before_it_merges(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    open(cx, &w, "T1");
+    w.update(cx, |m, _, cx| act(m, &Act::new("pr-merge-now", "", "T1", "merge:T1"), cx)).unwrap();
+    settle(cx);
+    w.update(cx, |m, _, _| {
+        assert!(matches!(&m.modal, Some(crate::ui::modals::Modal::Finish(f)) if f.r == "T1" && f.ask == crate::ui::modals::Ask::Merge));
+    })
+    .unwrap();
+    assert!(rec.posts().is_empty(), "nothing merges before the confirm");
+}
+
+#[::core::prelude::v1::test]
 fn a_failure_cleared_as_not_ours_shows_its_reason_and_proof() {
     let mut task = awaiting_review(false);
     task["pr"]["stage"]["not_ours"] = json!({"title": "Flaky login e2e", "reason": "The base branch fails it on its last five builds.",

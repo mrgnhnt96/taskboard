@@ -2320,6 +2320,15 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
         body.push(el(K::Row, vec![c.btn("I reviewed it", Act::new("pr-reviewed", "", &r, &grp), Look::SoftSmall, false, Some("Tell the board you've looked at this PR"))]));
         body.extend(c.note(&grp));
     }
+    // The owner's override: merges past whatever holds it once they confirm (only conflicts and the
+    // stack's order still stop it).
+    if pr_open(p) && !matches!(merge.st, StepSt::Done | StepSt::Fail) {
+        let r = rf(t, "T");
+        let grp = format!("merge:{r}");
+        let go = c.btn("Merge now ›", Act::new("pr-merge-now", "", &r, &grp), Look::Link, false, Some("Merge this PR now, past its checks and reviews"));
+        body.push(el(K::Row, vec![go]));
+        body.extend(c.note(&grp));
+    }
 
     let merge_st = match merge.st {
         StepSt::Todo => TlSt::Todo,

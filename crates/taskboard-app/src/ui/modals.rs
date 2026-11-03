@@ -1,6 +1,6 @@
 //! The dialog over the main window: the alerts list (read-only; esc or Close closes it, and it
 //! closes by itself once nothing needs you), the New idea form (`ui::ideas`), and the confirm for a
-//! link menu's Mark done / Cancel task…. Tasks, goals and issues are made and changed through
+//! link menu's Mark done / Cancel task… and the PR's Merge now. Tasks, goals and issues are made and changed through
 //! Claude (`tb`), never typed in here.
 use crate::app::{CloseOverlay, MainWindow, alert_row};
 use crate::fmt::arr;
@@ -19,21 +19,30 @@ pub enum Modal {
     /// The Ideas page's New idea form (`ui::ideas::form`).
     NewIdea,
     /// A terminal link menu's Mark done or Cancel task… (`taskboard://task/T6?do=done|cancel`).
-    /// The menu skips Midna's approval, so nothing happens until the owner confirms here.
+    /// The menu skips Midna's approval, so nothing happens until the owner confirms here. Also the
+    /// PR's Merge now, the owner's override.
     Finish(Finish),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Done,
+    Cancel,
+    /// Merge the task's PR past whatever holds it (`tb pr merge --override`).
+    Merge,
 }
 
 pub struct Finish {
     pub r: String,
-    pub cancel: bool,
+    pub ask: Ask,
     /// Why it can't go ahead: it's already done, or the board refused.
     pub note: Option<String>,
     pub busy: bool,
 }
 
 impl Modal {
-    pub fn finish(r: String, cancel: bool) -> Modal {
-        Modal::Finish(Finish { r, cancel, note: None, busy: false })
+    pub fn finish(r: String, ask: Ask) -> Modal {
+        Modal::Finish(Finish { r, ask, note: None, busy: false })
     }
 }
 
@@ -192,9 +201,22 @@ fn shown_task<'a>(m: &'a MainWindow, r: &str) -> Option<&'a serde_json::Value> {
     m.data.task.as_ref().filter(|t| t["ref"].as_str() == Some(r))
 }
 
-/// Why a task that's no longer open can't be marked done or cancelled.
-fn already(t: &serde_json::Value) -> Option<String> {
+/// Why a task that's no longer open can't be marked done or cancelled, or its PR merged.
+fn already(t: &serde_json::Value, ask: Ask) -> Option<String> {
     let r = t["ref"].as_str().unwrap_or("It");
+    if ask == Ask::Merge {
+        let p = &t["pr"];
+        let state = p["state"].as_str().unwrap_or("OPEN").to_uppercase();
+        return if p["num"].is_null() {
+            Some(format!("{r} has no PR."))
+        } else if state == "MERGED" {
+            Some(format!("PR #{} already merged.", p["num"]))
+        } else if state != "OPEN" {
+            Some(format!("PR #{} isn't open.", p["num"]))
+        } else {
+            None
+        };
+    }
     if t["failed"] == true {
         Some(format!("{r} already failed."))
     } else if t["status"] == "done" {
@@ -207,14 +229,22 @@ fn already(t: &serde_json::Value) -> Option<String> {
 fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -> AnyElement {
     let shown = shown_task(m, &f.r).or(m.data.task_card.as_ref().filter(|c| c["ref"].as_str() == Some(f.r.as_str())));
     let name = shown.and_then(|v| v["title"].as_str()).unwrap_or("").to_string();
-    let note = f.note.clone().or_else(|| shown_task(m, &f.r).and_then(already));
-    let title = if f.cancel { format!("Cancel {}?", f.r) } else { format!("Mark {} done?", f.r) };
-    let go = match (f.cancel, f.busy) {
-        (true, false) => kit::btn_danger(t, "finish-go", "Cancel task"),
-        (true, true) => kit::btn_danger(t, "finish-go", "Cancelling…").opacity(0.6),
-        (false, false) => kit::btn_primary(t, "finish-go", "Mark done"),
-        (false, true) => kit::btn_primary(t, "finish-go", "Marking done…").opacity(0.6),
+    let note = f.note.clone().or_else(|| shown_task(m, &f.r).and_then(|t| already(t, f.ask)));
+    let pr = shown.and_then(|v| v["pr"]["num"].as_i64()).map(|n| format!("PR #{n}")).unwrap_or_else(|| "its PR".into());
+    let title = match f.ask {
+        Ask::Cancel => format!("Cancel {}?", f.r),
+        Ask::Done => format!("Mark {} done?", f.r),
+        Ask::Merge => format!("Merge {pr} now?"),
     };
+    let go = match (f.ask, f.busy) {
+        (Ask::Cancel, false) => kit::btn_danger(t, "finish-go", "Cancel task"),
+        (Ask::Cancel, true) => kit::btn_danger(t, "finish-go", "Cancelling…").opacity(0.6),
+        (Ask::Done, false) => kit::btn_primary(t, "finish-go", "Mark done"),
+        (Ask::Done, true) => kit::btn_primary(t, "finish-go", "Marking done…").opacity(0.6),
+        (Ask::Merge, false) => kit::btn_danger(t, "finish-go", "Merge now"),
+        (Ask::Merge, true) => kit::btn_danger(t, "finish-go", "Merging…").opacity(0.6),
+    };
+
     let go = (!f.busy && note.is_none()).then(|| go.on_click(cx.listener(|m, _, _, cx| confirm_finish(m, cx))));
     kit::modal_box(t, 440.)
         .child(head(t, title, cx))
@@ -242,20 +272,20 @@ pub fn confirm_finish(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
     f.busy = true;
     f.note = None;
-    let (r, cancel, backend) = (f.r.clone(), f.cancel, m.backend.clone());
+    let (r, ask, backend) = (f.r.clone(), f.ask, m.backend.clone());
     cx.spawn(async move |this, cx| {
         let task = r.clone();
         let answer = cx
             .background_executor()
             .spawn(async move {
                 let t = backend.get(&format!("tasks/{task}"), &[]).map_err(|e| e.message)?;
-                if let Some(note) = already(&t) {
+                if let Some(note) = already(&t, ask) {
                     return Err(note);
                 }
-                let (path, body) = if cancel {
-                    (format!("tasks/{task}/fail"), serde_json::json!({"reason": "Cancelled by you"}))
-                } else {
-                    (format!("tasks/{task}/done"), serde_json::json!({}))
+                let (path, body) = match ask {
+                    Ask::Cancel => (format!("tasks/{task}/fail"), serde_json::json!({"reason": "Cancelled by you"})),
+                    Ask::Done => (format!("tasks/{task}/done"), serde_json::json!({})),
+                    Ask::Merge => (format!("tasks/{task}/pr/merge"), serde_json::json!({"override": true})),
                 };
                 backend.post(&path, body).map_err(|e| e.message)
             })
@@ -268,7 +298,12 @@ pub fn confirm_finish(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             match answer {
                 Ok(_) => {
                     m.modal = None;
-                    m.toast(if cancel { format!("Cancelled {r}") } else { format!("Marked {r} done") }, false, cx);
+                    let said = match ask {
+                        Ask::Cancel => format!("Cancelled {r}"),
+                        Ask::Done => format!("Marked {r} done"),
+                        Ask::Merge => format!("Merged {r}'s PR"),
+                    };
+                    m.toast(said, false, cx);
                 }
                 Err(note) => {
                     f.busy = false;

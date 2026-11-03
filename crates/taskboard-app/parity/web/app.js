@@ -1205,9 +1205,11 @@ function prNodes(t) {
   const sts = steps.map(x => x.st);
   const st = sts.includes('fail') ? 'fail' : sts.includes('ask') ? 'warn' : sts.every(x => x === 'done') ? 'done' : sts.every(x => x === 'todo') ? 'todo' : 'now';
   const merge = mergeStep(p);
+  const mergeNow = prOpen(p) && merge.st !== 'done' && merge.st !== 'fail'
+    ? `<div class="row"><button type="button" class="btn link" data-act="pr-merge-now" data-id="${esc(t.ref)}" title="Merge this PR now, past its checks and reviews">Merge now ›</button></div>` : '';
   return [
     tlNode('done', tlHead('Pull request'), head),
-    tlNode(st, tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${steps.map(stepHtml).join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>${prBar(t, p)}`),
+    tlNode(st, tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${steps.map(stepHtml).join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>${prBar(t, p)}${mergeNow}`),
     tlNode(merge.st === 'todo' ? 'todo' : merge.st === 'done' ? 'done' : merge.st === 'fail' ? 'fail' : 'now', tlHead(merge.st === 'fail' ? 'Closed without merging' : merge.st === 'done' ? 'Merged' : 'Pending merge', merge.st === 'done' || merge.st === 'fail' ? '' : merge.sub || '')),
   ];
 }

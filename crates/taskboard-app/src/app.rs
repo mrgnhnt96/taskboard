@@ -651,12 +651,12 @@ impl MainWindow {
             ("task", r) if !r.is_empty() => {
                 self.open_task(r.to_uppercase(), cx);
                 // A link menu's Mark done / Cancel task…: only asks; the dialog does it.
-                if let Some(cancel) = match param("do") {
-                    Some("done") => Some(false),
-                    Some("cancel") => Some(true),
+                if let Some(ask) = match param("do") {
+                    Some("done") => Some(ui::modals::Ask::Done),
+                    Some("cancel") => Some(ui::modals::Ask::Cancel),
                     _ => None,
                 } {
-                    self.modal = Some(ui::modals::Modal::finish(r.to_uppercase(), cancel));
+                    self.modal = Some(ui::modals::Modal::finish(r.to_uppercase(), ask));
                     cx.notify();
                 }
             }

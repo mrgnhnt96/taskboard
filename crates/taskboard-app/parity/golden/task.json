@@ -6996,16 +6996,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Not asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Not asked Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -7143,16 +7145,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks None Review Approved Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks None Review Approved Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -7290,16 +7294,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Changes asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Changes asked Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -7437,16 +7443,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Waiting Review Not asked Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Waiting Review Not asked Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -7589,16 +7597,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -7741,10 +7751,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Fix starting Review Waiting Fixing checks Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Fix starting Review Waiting Fixing checks Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
@@ -7752,6 +7763,7 @@
         "titles": [
           "Project · /tmp/webapp",
           "Waiting for its terminal to open",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -7894,10 +7906,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Being fixed Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Being fixed Review Waiting Fixing checks Terminal › Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
@@ -7905,6 +7918,7 @@
         "titles": [
           "Project · /tmp/webapp",
           "Open the terminal doing this",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -8050,12 +8064,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor stopped on the PR Tests still fail on CI only. Send answer Focus in Midna Pending merge Checks and review Checks Fix stopped Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor stopped on the PR Tests still fail on CI only. Send answer Focus in Midna Pending merge Checks and review Checks Fix stopped Review Waiting Fixing checks Terminal › Merge now › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "answer",
           "focus",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
@@ -8063,6 +8078,7 @@
         "titles": [
           "Project · /tmp/webapp",
           "Its terminal stopped before it was finished",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": [
@@ -8210,12 +8226,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor asks you about the PR Should I rename the helper as the reviewer asks? Send answer Focus in Midna Pending merge Checks and review Checks Passed Review New comments Answering comments Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review PR visitor asks you about the PR Should I rename the helper as the reviewer asks? Send answer Focus in Midna Pending merge Checks and review Checks Passed Review New comments Answering comments Terminal › Merge now › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "answer",
           "focus",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
@@ -8223,6 +8240,7 @@
         "titles": [
           "Project · /tmp/webapp",
           "Its terminal stopped before it was finished",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": [
@@ -8367,16 +8385,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Waiting Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -8519,10 +8539,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Merging Checks and review Checks Passed Review Approved Merging Terminal › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Merging Checks and review Checks Passed Review Approved Merging Terminal › Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
@@ -8530,6 +8551,7 @@
         "titles": [
           "Project · /tmp/webapp",
           "Open the terminal doing this",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -8672,16 +8694,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Awaiting re-review Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Passed Review Awaiting re-review Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -9118,16 +9142,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Merge now › Pull request #42 Passkey sign-in webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
-          "Project · /tmp/webapp"
+          "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews"
         ],
         "values": []
       }
@@ -9264,16 +9290,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Pull request #42 webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Pending merge Checks and review Checks Running Review Waiting Merge now › Pull request #42 webapp Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": []
@@ -9396,10 +9424,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks Failed Review Waiting Pull request #42 Passkey sign-in webapp Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Pending merge Checks and review Checks Failed Review Waiting Merge now › Pull request #42 Passkey sign-in webapp Working 2h 5m · updated 4m ago Focus in Midna Started In T7 Sign in with a passkey 12:55 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
+          "pr-merge-now",
           "focus",
           "term-menu",
           "tab:what",
@@ -9408,6 +9437,7 @@
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request",
           "Terminal actions"
         ],
@@ -9539,12 +9569,13 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Its terminal stopped on the PR Stuck. Send answer Focus in Midna Pending merge Checks and review Checks Running Review Waiting Fixing checks Terminal › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
+        "text": "T7 Sign in with a passkey webapp Its terminal stopped on the PR Stuck. Send answer Focus in Midna Pending merge Checks and review Checks Running Review Waiting Fixing checks Terminal › Merge now › Pull request #42 Passkey sign-in webapp Waiting on you Done 2:30 PM Login ceremony is in. Started In T7 Sign in with a passkey 12:30 PM What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "answer",
           "focus",
+          "pr-merge-now",
           "tab:what",
           "tab:context",
           "tab:log"
@@ -9552,6 +9583,7 @@
         "titles": [
           "Project · /tmp/webapp",
           "Its terminal stopped before it was finished",
+          "Merge this PR now, past its checks and reviews",
           "Open the pull request"
         ],
         "values": [
