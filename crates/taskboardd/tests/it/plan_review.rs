@@ -10,6 +10,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::reports;
+use taskboardd::util::{iso, now_iso, now_ts};
 
 struct Board {
     app: Arc<App>,
@@ -112,6 +113,11 @@ fn a_new_goal_is_reviewed_once_and_its_findings_kept_on_the_goal() {
     let args = b.calls();
     assert!(args.contains("--tools\nRead,Grep,Glob\n"), "read-only tools: {args}");
     assert!(!args.contains("Bash") && !args.contains("Edit"), "{args}");
+    assert!(args.contains("--max-turns\n30\n") && args.contains("--max-budget-usd\n2.00\n"), "room to read the checkout: {args}");
+    assert!(args.contains("Check the plan against the checkout before you answer"), "reads before it reports: {args}");
+    let schema = args.split("--json-schema\n").nth(1).and_then(|s| s.lines().next()).unwrap_or_default();
+    let schema: Value = serde_json::from_str(schema).unwrap_or_else(|e| panic!("{e}: {args}"));
+    assert_eq!(schema["required"], json!(["checked", "findings"]), "the checks it made are asked for: {schema}");
     assert!(args.contains("Done when: Every screen follows the system theme"), "the outcome: {args}");
     assert!(args.contains("Colors") && args.contains("pick the dark palette") && args.contains("Toggle"), "the tasks: {args}");
     assert_eq!(b.rounds(&g), 1);
@@ -128,6 +134,17 @@ fn a_new_goal_is_reviewed_once_and_its_findings_kept_on_the_goal() {
 
     let shown = &b.get(&format!("/goals/{g}"))["plan_review"];
     assert_eq!(shown["findings"], review["findings"], "goal detail carries the same review");
+}
+
+#[test]
+fn a_review_that_runs_out_of_turns_says_so() {
+    let b = board();
+    std::fs::write(b.dir.path().join("answer.json"), json!({"subtype": "error_max_turns", "num_turns": 31}).to_string()).unwrap();
+    let g = b.goal_new();
+
+    let review = &b.get(&format!("/goals/{g}/review"))["review"];
+    assert_eq!(review["state"], "failed", "{review}");
+    assert!(review["error"].as_str().unwrap_or_default().contains("ran out of turns (31)"), "{review}");
 }
 
 #[test]
@@ -206,4 +223,203 @@ fn a_goal_with_no_tasks_has_no_plan_to_review() {
     let (status, msg) = b.try_post(&format!("/goals/{g}/review"), json!({})).unwrap_err();
     assert_eq!(status, 409);
     assert!(msg.contains("no tasks yet"), "{msg}");
+}
+
+#[test]
+fn work_a_task_records_as_done_or_proves_itself_is_not_a_gap() {
+    let b = board();
+    b.report(
+        "tb.goal",
+        json!({"name": "Store sync", "project": "webapp", "outcome": "Every store page loads under a second, with timings attached",
+               "tasks": ["Sync::call the store API with the key Morgan already made; attach the page timings as results"]}),
+    );
+    let args = b.calls();
+    assert!(args.contains("with the key Morgan already made"), "the task's record of the done step reaches Claude: {args}");
+    assert!(args.contains("record as already done") && args.contains("isn't one."), "a done human step isn't an owner prerequisite: {args}");
+    assert!(
+        args.contains("attaching its own results") && args.contains("don't ask for a separate task to prove it"),
+        "a clause a task proves with its own results isn't unproven: {args}"
+    );
+}
+
+#[test]
+fn every_item_of_a_source_the_outcome_points_at_reaches_claude() {
+    let b = board();
+    let g = b.report("tb.goal", json!({"name": "Budget review", "project": "webapp", "outcome": "The app matches the Nov 1 review and B900 is closed"}))
+        ["goal"].as_str().unwrap().to_string();
+    let review = b.dir.path().join("review.csv");
+    std::fs::write(&review, "item,decision\n1,Pay Southwest first\n2,Tithing comes first from every paycheck\n3,Link X Money once\n").unwrap();
+    b.report("tb.attach", json!({"goal": g, "url": review.to_string_lossy(), "title": "Nov 1 review", "kind": "doc"}));
+    b.app
+        .db
+        .x(
+            "INSERT INTO issues(id, project, kind, title, detail, state) VALUES (900, 'webapp', 'bug', 'Frozen month loses income', 'Income sorted late gets no tithing', 'open')",
+            taskboardd::p![],
+        )
+        .unwrap();
+    b.calls();
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay order::pay Southwest first"]}));
+
+    let args = b.calls();
+    assert!(args.contains("--tools\nRead,Grep,Glob\n"), "no link, so no WebFetch: {args}");
+    assert!(args.contains("List every item it asks for") && args.contains("not only the ones the tasks name"), "the rule: {args}");
+    assert!(args.contains("Nov 1 review") && args.contains("| 2,Tithing comes first from every paycheck") && args.contains("| 3,Link X Money once"),
+        "the attached review's items are inlined: {args}");
+    assert!(args.contains("B900 [open] bug: Frozen month loses income") && args.contains("Income sorted late gets no tithing"),
+        "the backlog issue the outcome names: {args}");
+
+    b.answer(json!({"findings": [{"kind": "outcome_unproven", "short": "Review item 3 (X Money) has no task", "detail": "", "tasks": [], "refs": ["B900", "B901"]}]}));
+    b.try_post(&format!("/goals/{g}/review"), json!({})).unwrap();
+    let review = &b.get(&format!("/goals/{g}/review"))["review"];
+    assert_eq!(review["findings"][0]["refs"], json!(["B900"]), "a named issue may be a finding's ref: {review}");
+}
+
+#[test]
+fn a_linked_source_lets_claude_open_it() {
+    let b = board();
+    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in https://github.com/acme/webapp/pull/7#pullrequestreview-1 is fixed"}))
+        ["goal"].as_str().unwrap().to_string();
+    b.report("tb.attach", json!({"goal": g, "url": "https://claude.ai/artifact/abc", "title": "Screens", "kind": "design"}));
+    b.calls();
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Fix::fix the review's points"]}));
+    let args = b.calls();
+    assert!(args.contains("--tools\nRead,Grep,Glob,WebFetch\n"), "the outcome's link can be opened: {args}");
+    assert!(args.contains("Open a source's link with WebFetch"), "{args}");
+    assert!(args.contains("design: Screens https://claude.ai/artifact/abc") && args.contains("the board can't open"), "an artifact is judged by its title: {args}");
+}
+
+// ------------------------------------------------------------------ reviewing a running goal again
+
+impl Board {
+    fn gid(goal: &str) -> i64 {
+        goal.trim_start_matches('G').parse().unwrap()
+    }
+    /// The goal as `tb start G<n>` leaves it: run, its tasks queued.
+    fn run(&self, goal: &str) {
+        let id = Self::gid(goal);
+        self.app.db.x("UPDATE goals SET ran_at = ? WHERE id = ?", taskboardd::p![now_iso(), id]).unwrap();
+        self.app.db.x("UPDATE tasks SET status = 'queued' WHERE goal_id = ?", taskboardd::p![id]).unwrap();
+        let before = iso(now_ts() - 60.0);
+        self.app.db.x("UPDATE plan_reviews SET started_at = ?, finished_at = ? WHERE goal_id = ?", taskboardd::p![before, before, id]).unwrap();
+    }
+    fn add(&self, goal: &str, tasks: &[&str]) {
+        self.report("tb.propose", json!({"goal": goal, "tasks": tasks}));
+    }
+    /// The board's tick, `secs` from now.
+    fn tick_in(&self, secs: f64) -> Vec<i64> {
+        taskboardd::plan_review_again::tick(&self.app, now_ts() + secs).unwrap()
+    }
+    fn finish(&self, task: &str) {
+        let id: i64 = task.trim_start_matches('T').parse().unwrap();
+        self.app.db.x("UPDATE tasks SET status = 'done', finished_at = ? WHERE id = ?", taskboardd::p![now_iso(), id]).unwrap();
+    }
+    fn latest(&self, goal: &str) -> Value {
+        self.get(&format!("/goals/{goal}/review"))["review"].clone()
+    }
+}
+
+const QUIET: f64 = taskboardd::plan_review_again::QUIET_SECS + 5.0;
+
+#[test]
+fn one_task_joining_a_running_goal_is_not_reviewed_again_two_are() {
+    let b = board();
+    let g = b.goal_new();
+    b.run(&g);
+    b.calls();
+    b.add(&g, &["Remember::keep the toggle's choice"]);
+    assert!(b.tick_in(QUIET).is_empty(), "one task is too small to look again");
+    assert_eq!(b.rounds(&g), 1);
+    assert!(b.calls().is_empty(), "claude never ran");
+
+    b.add(&g, &["Sync::sync the choice across devices"]);
+    assert_eq!(b.tick_in(QUIET), vec![Board::gid(&g)], "the second task makes two since the last round");
+    assert_eq!(b.rounds(&g), 2);
+    let args = b.calls();
+    assert!(args.contains("keep the toggle's choice") && args.contains("sync the choice across devices"), "both new tasks: {args}");
+    let review = b.latest(&g);
+    assert_eq!(review["reason"], "2 tasks joined the running goal", "{review}");
+    assert_eq!(review["source"], "board");
+    assert_eq!(review["round"], 2);
+}
+
+#[test]
+fn tasks_joining_a_running_goal_wait_for_quiet_and_run_once() {
+    let b = board();
+    let g = b.goal_new();
+    b.run(&g);
+    b.calls();
+    b.add(&g, &["Remember::keep the toggle's choice", "Sync::sync the choice across devices"]);
+    assert_eq!(b.rounds(&g), 1, "proposing to a running goal leaves it to the tick");
+    assert!(b.tick_in(0.0).is_empty(), "still settling");
+    assert!(b.tick_in(QUIET - 30.0).is_empty(), "still settling");
+    assert_eq!(b.tick_in(QUIET).len(), 1);
+    assert!(b.tick_in(QUIET * 2.0).is_empty(), "one change, one round");
+    assert_eq!(b.rounds(&g), 2);
+}
+
+#[test]
+fn a_decision_task_finishing_reviews_the_plan_again() {
+    let b = board();
+    let g = b.goal_new();
+    b.add(&g, &["Decide the palette::pick between the two palettes"]);
+    assert_eq!(b.rounds(&g), 2, "a goal that isn't running is reviewed on each propose");
+    b.run(&g);
+    b.calls();
+
+    b.finish(&b.task_ref(&g, "Toggle"));
+    assert!(b.tick_in(QUIET).is_empty(), "an ordinary task finishing changes nothing");
+
+    let decide = b.task_ref(&g, "Decide the palette");
+    b.finish(&decide);
+    assert!(b.tick_in(0.0).is_empty(), "still settling");
+    assert_eq!(b.tick_in(QUIET).len(), 1);
+    assert!(!b.calls().is_empty(), "claude ran");
+    assert_eq!(b.latest(&g)["reason"], json!(format!("{decide} settled a decision")));
+    assert!(b.tick_in(QUIET * 2.0).is_empty(), "one change, one round");
+    assert_eq!(b.rounds(&g), 3);
+}
+
+#[test]
+fn a_goal_that_isnt_running_is_left_to_its_proposes() {
+    let b = board();
+    let g = b.goal_new();
+    b.add(&g, &["Remember::keep the toggle's choice", "Sync::sync the choice across devices"]);
+    assert_eq!(b.rounds(&g), 2);
+    assert!(b.tick_in(QUIET).is_empty());
+    assert_eq!(b.rounds(&g), 2);
+}
+
+#[test]
+fn while_the_review_cant_run_the_board_waits_without_a_round() {
+    let b = board();
+    let g = b.goal_new();
+    b.run(&g);
+    b.calls();
+    b.add(&g, &["Remember::keep the toggle's choice", "Sync::sync the choice across devices"]);
+    let resets = iso(now_ts() + 3600.0);
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 100, "resets_at": resets}}));
+    assert!(b.tick_in(QUIET).is_empty());
+    assert_eq!(b.rounds(&g), 1, "no skipped round each tick");
+    let next = iso(now_ts() + 5.0 * 3600.0);
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 3, "resets_at": next}}));
+    assert_eq!(b.tick_in(QUIET).len(), 1, "it runs once the usage is back");
+    assert_eq!(b.rounds(&g), 2);
+}
+
+#[test]
+fn earlier_rounds_keep_what_they_found() {
+    let b = board();
+    b.answer(json!({"findings": [{"kind": "owner_prereq", "short": "No task for the store sign-in", "detail": "", "tasks": [], "refs": []}]}));
+    let g = b.goal_new();
+    b.answer(json!({"findings": []}));
+    b.try_post(&format!("/goals/{g}/review"), json!({})).unwrap();
+
+    let v = b.get(&format!("/goals/{g}/review"));
+    assert_eq!(v["review"]["round"], 2);
+    assert_eq!(v["review"]["findings"], json!([]));
+    let earlier = v["earlier"].as_array().unwrap();
+    assert_eq!(earlier.len(), 1, "{v}");
+    assert_eq!(earlier[0]["round"], 1);
+    assert_eq!(earlier[0]["reason"], "new plan");
+    assert_eq!(earlier[0]["findings"][0]["short"], "No task for the store sign-in");
 }

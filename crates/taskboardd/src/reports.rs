@@ -2879,7 +2879,10 @@ fn on_propose(r: &mut Report) -> Result<Value> {
         return err(400, "Name at least one task with a title: --task \"title::what to do\".");
     }
     note_made(r, &created)?;
-    crate::plan_review::queue(r.app, g.id(), "the plan changed", &r.name());
+    // A running goal is reviewed again by the board's tick, once enough has joined and it's quiet.
+    if !board::goal_running(r.app, g.id())? {
+        crate::plan_review::queue(r.app, g.id(), "the plan changed", &r.name());
+    }
     Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})))
 }
 

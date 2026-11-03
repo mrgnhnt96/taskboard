@@ -5026,12 +5026,16 @@ fn plan_review_lines(r: &Value, full: bool) -> Vec<String> {
     let when = |k: &str| r[k].as_str().map(local_when).unwrap_or_default();
     let why = r["reason"].as_str().map(|w| format!(", {w}")).unwrap_or_default();
     let findings = r["findings"].as_array().cloned().unwrap_or_default();
+    let name = match r["round"].as_i64() {
+        Some(n) if n > 1 => format!("Plan review round {n}"),
+        _ => "Plan review".to_string(),
+    };
     let mut lines = vec![match r["state"].as_str().unwrap_or("") {
-        "running" => format!("Plan review: running since {}{why}.", when("started_at")),
-        "skipped" => format!("Plan review skipped ({}{why}): {}.", when("finished_at"), r["skipped"].as_str().unwrap_or("")),
-        "failed" => format!("Plan review failed ({}{why}): {}", when("finished_at"), r["error"].as_str().unwrap_or("")),
-        _ if findings.is_empty() => format!("Plan review ({}{why}): nothing found.", when("finished_at")),
-        _ => format!("Plan review ({}{why}): {} found:", when("finished_at"), findings.len()),
+        "running" => format!("{name}: running since {}{why}.", when("started_at")),
+        "skipped" => format!("{name} skipped ({}{why}): {}.", when("finished_at"), r["skipped"].as_str().unwrap_or("")),
+        "failed" => format!("{name} failed ({}{why}): {}", when("finished_at"), r["error"].as_str().unwrap_or("")),
+        _ if findings.is_empty() => format!("{name} ({}{why}): nothing found.", when("finished_at")),
+        _ => format!("{name} ({}{why}): {} found:", when("finished_at"), findings.len()),
     }];
     for f in &findings {
         let about: Vec<&str> = ["tasks", "refs"].iter().flat_map(|k| f[*k].as_array().into_iter().flatten().filter_map(Value::as_str)).collect();
@@ -6195,7 +6199,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             GoalCmd::Review { goal, again } => {
                 let path = format!("/goals/{}/review", goal_ref(&goal)?);
                 let v = if again { c.call("POST", &path, Some(json!({"who": c.who()})))? } else { c.call("GET", &path, None)? };
-                let lines = plan_review_lines(&v["review"], true);
+                let mut lines = plan_review_lines(&v["review"], true);
+                for r in v["earlier"].as_array().into_iter().flatten() {
+                    let mut earlier = plan_review_lines(r, false);
+                    if let (Some(first), Some(1)) = (earlier.first_mut(), r["round"].as_i64()) {
+                        *first = first.replacen("Plan review", "Plan review round 1", 1);
+                    }
+                    lines.extend(earlier);
+                }
                 if lines.is_empty() {
                     out(&format!("{}'s plan hasn't been reviewed: tb goal review {} --again reviews it.", v["goal"].as_str().unwrap_or(""), v["goal"].as_str().unwrap_or("")));
                 }
@@ -8151,6 +8162,8 @@ mod tests {
         let skipped = json!({"state": "skipped", "reason": "the plan changed", "finished_at": at, "skipped": "the usage is used up"});
         assert_eq!(plan_review_lines(&skipped, false), vec![format!("Plan review skipped ({when}, the plan changed): the usage is used up.")]);
         assert!(plan_review_lines(&Value::Null, false).is_empty());
+        let second = json!({"round": 2, "state": "done", "reason": "2 tasks joined the running goal", "finished_at": at, "findings": []});
+        assert_eq!(plan_review_lines(&second, false), vec![format!("Plan review round 2 ({when}, 2 tasks joined the running goal): nothing found.")]);
     }
 
     #[test]
