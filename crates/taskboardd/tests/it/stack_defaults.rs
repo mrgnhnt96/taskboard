@@ -160,6 +160,59 @@ fn the_plan_check_warns_when_an_area_opens_many_prs_to_main() {
 }
 
 #[test]
+fn the_plan_check_warns_on_chained_stacks_not_on_fans() {
+    let b = new_board();
+    let g = b.goal();
+    let head = b.task("Head", json!({"goal_id": g, "wave": 1}));
+    let a = b.task("A", json!({"goal_id": g, "wave": 2, "stack_on": format!("T{head}"), "stack_merge": "head"}));
+    let c = b.task("C", json!({"goal_id": g, "wave": 2, "stack_on": format!("T{head}"), "stack_merge": "head"}));
+    let w = b.propose(g, json!(["Extra::x"]));
+    assert!(!w.iter().any(|w| w.contains("chain")), "a head with several children is a fan: {w:?}");
+
+    let d = b.task("D", json!({"goal_id": g, "wave": 3, "stack_on": format!("T{a}"), "stack_merge": "head"}));
+    let w = b.propose(g, json!(["Extra::x"]));
+    let line = w.iter().find(|w| w.contains("chain")).unwrap_or_else(|| panic!("{w:?}"));
+    assert!(line.starts_with(&format!("T{d} stacks on a sibling")), "{line}");
+    assert!(line.contains(&format!("on the head T{head}")) && line.contains(&format!("--stack-on T{head}")), "{line}");
+    assert!(!line.contains(&format!("T{c}")), "{line}");
+
+    let other = b.goal();
+    let elsewhere = b.task("Elsewhere", json!({"goal_id": other, "wave": 1}));
+    let mid = b.task("Mid", json!({"goal_id": other, "wave": 2, "stack_on": format!("T{elsewhere}"), "stack_merge": "head"}));
+    let _ = b.task("Cross", json!({"goal_id": g, "wave": 4, "stack_on": format!("T{mid}"), "stack_merge": "head"}));
+    let w = b.propose(g, json!(["Extra::x"]));
+    assert_eq!(w.iter().filter(|w| w.contains("chain")).count(), 1, "a stack into another goal isn't a chain here: {w:?}");
+}
+
+#[test]
+fn the_plan_check_warns_on_four_single_task_waves_in_a_row() {
+    let b = new_board();
+    let g = b.goal();
+    for w in 1..=3 {
+        b.task(&format!("Step {w}"), json!({"goal_id": g, "wave": w}));
+    }
+    let w = b.propose(g, json!(["Extra::x"]));
+    assert!(!w.iter().any(|w| w.contains("hold one task each")), "three is fine: {w:?}");
+    let t4 = b.task("Step 4", json!({"goal_id": g, "wave": 4}));
+    let w = b.propose(g, json!(["Extra::x"]));
+    let line = w.iter().find(|w| w.contains("hold one task each")).unwrap_or_else(|| panic!("{w:?}"));
+    assert!(line.starts_with("Waves 1 to 4 hold one task each") && line.contains(&format!("T{t4}")) && line.contains("Merge the waves"), "{line}");
+
+    let g2 = b.goal();
+    for w in [1, 2] {
+        b.task(&format!("Early {w}"), json!({"goal_id": g2, "wave": w}));
+    }
+    b.task("Wide a", json!({"goal_id": g2, "wave": 3}));
+    b.task("Wide b", json!({"goal_id": g2, "wave": 3}));
+    for w in [4, 5] {
+        b.task(&format!("Late {w}"), json!({"goal_id": g2, "wave": w}));
+    }
+    b.task("Post", json!({"goal_id": g2}));
+    let w = b.propose(g2, json!(["Extra::x"]));
+    assert!(!w.iter().any(|w| w.contains("hold one task each")), "a wide wave breaks the run, and no-wave tasks don't count: {w:?}");
+}
+
+#[test]
 fn a_stacked_pr_into_another_base_on_the_host_raises_an_alert_once() {
     let b = new_board();
     let parent = b.task("Add the endpoint", json!({}));

@@ -95,7 +95,89 @@ pub fn plan_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
         ));
     }
     out.extend(main_prs_warnings(app, &tasks)?);
+    out.extend(chain_warnings(app, g, &tasks)?);
+    out.extend(single_wave_run_warnings(&tasks));
     Ok(out)
+}
+
+/// A goal with this many waves in a row holding one task each makes the plan check suggest merging them.
+const SINGLE_TASK_WAVE_RUN: usize = 4;
+
+/// A stack that's a chain (T1→T2→T3) runs one task at a time and puts the PRs in a line; siblings that
+/// all stack on the head (T1) can run side by side. Warns on each task stacked on a sibling that itself
+/// stacks on another task in the same goal. Stacks into other goals are ignored.
+fn chain_warnings(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<String>> {
+    let all = board::goal_tasks(app, g.id())?;
+    let parent_in_goal = |id: i64| -> Option<i64> {
+        let t = all.iter().find(|t| t.id() == id)?;
+        parent_id(t).filter(|p| all.iter().any(|a| a.id() == *p))
+    };
+    let mut by_head: std::collections::BTreeMap<i64, Vec<i64>> = Default::default();
+    for t in tasks {
+        let Some(parent) = parent_id(t).filter(|p| all.iter().any(|a| a.id() == *p)) else { continue };
+        if parent_in_goal(parent).is_none() {
+            continue;
+        }
+        let mut head = parent;
+        let mut seen = vec![t.id()];
+        while let Some(up) = parent_in_goal(head) {
+            if seen.contains(&up) {
+                break;
+            }
+            seen.push(head);
+            head = up;
+        }
+        by_head.entry(head).or_default().push(t.id());
+    }
+    Ok(by_head
+        .into_iter()
+        .map(|(head, ids)| {
+            let refs: Vec<String> = ids.iter().map(|n| rf("task", *n)).collect();
+            let (verb, they) = if refs.len() == 1 { ("stacks", "it") } else { ("stack", "they") };
+            format!(
+                "{} {verb} on a sibling that itself stacks on another task, a chain that runs one PR at a time. Stack {they} on the head {} instead, so the siblings can run side by side (tb task set {} --stack-on T{head}).",
+                refs.join(", "),
+                rf("task", head),
+                refs[0]
+            )
+        })
+        .collect())
+}
+
+/// Four or more waves in a row with one task each is a plan that runs single file: say so. Tasks with
+/// no wave number (Post) don't count.
+fn single_wave_run_warnings(tasks: &[Row]) -> Vec<String> {
+    let mut waves: std::collections::BTreeMap<i64, Vec<i64>> = Default::default();
+    for t in tasks {
+        if let Some(w) = t.i("wave").filter(|w| *w > 0) {
+            waves.entry(w).or_default().push(t.id());
+        }
+    }
+    let mut out = vec![];
+    let mut run: Vec<(i64, i64)> = vec![];
+    let flush = |run: &mut Vec<(i64, i64)>, out: &mut Vec<String>| {
+        if run.len() >= SINGLE_TASK_WAVE_RUN {
+            let refs: Vec<String> = run.iter().map(|(_, id)| rf("task", *id)).collect();
+            out.push(format!(
+                "Waves {} to {} hold one task each ({}), so they run one after another. Merge the waves so the tasks that don't depend on each other run together, or drop the waves.",
+                run[0].0,
+                run[run.len() - 1].0,
+                refs.join(", ")
+            ));
+        }
+        run.clear();
+    };
+    for (w, ids) in waves {
+        let continues = run.last().is_some_and(|(prev, _)| *prev + 1 == w);
+        if ids.len() != 1 || !continues {
+            flush(&mut run, &mut out);
+        }
+        if ids.len() == 1 {
+            run.push((w, ids[0]));
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 /// How many of a goal's PRs to the main branch in one area make the plan check suggest a stack.
