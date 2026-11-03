@@ -22,6 +22,7 @@ use std::rc::Rc;
 mod attached;
 mod lists;
 mod pool;
+mod review;
 mod waves;
 
 const START_MENU: &str = "goal-start";
@@ -40,6 +41,8 @@ pub struct State {
     notes_open: bool,
     /// The Devices section is expanded; folded by default.
     devices_open: bool,
+    /// The Plan review findings showing their detail, by their place in the review.
+    review_open: HashSet<usize>,
     note_filter: Option<&'static str>,
     /// The kind of file the Attached card narrows to.
     att_filter: attached::Filter,
@@ -61,6 +64,9 @@ impl State {
         let notes = std::env::var("TASKBOARD_GOAL_NOTES").unwrap_or_default();
         self.notes_open = !notes.is_empty();
         self.devices_open = false;
+        // Dev: `TASKBOARD_GOAL_REVIEW_OPEN=1,3` shows those Plan review findings' detail (screenshots).
+        let open = std::env::var("TASKBOARD_GOAL_REVIEW_OPEN").unwrap_or_default();
+        self.review_open = open.split(',').filter_map(|n| n.trim().parse::<usize>().ok()?.checked_sub(1)).collect();
         self.note_filter = ["Decision", "Finding", "Reference"].into_iter().find(|k| *k == notes);
         self.att_filter = attached::Filter::All;
         // Dev: `TASKBOARD_GOAL_ATT_CLOSED=w1,T5` folds those waves and tasks in Attached (screenshots).
@@ -1351,7 +1357,8 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .px(px(36.))
                 .child(crumbs(&t, &g, cx))
                 .child(header(m, &t, &g, loaded, cx))
-                .children(gate(m, &t, &g, cx)),
+                .children(gate(m, &t, &g, cx))
+                .children(review::section(m, &t, &g, cx)),
         )
         .child(body)
         .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)))

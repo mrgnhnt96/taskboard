@@ -206,6 +206,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_RELEASES").is_ok() {
             seed_releases(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_PLAN_REVIEW").is_ok() {
+            seed_plan_review(&board);
+        }
         Fake { board, dir }
     }
 }
@@ -304,6 +307,30 @@ fn seed_sessions(board: &Board) {
             let _ = board.db.x("UPDATE tasks SET session_id = ?, session_name = ? WHERE id = ?", taskboardd::p![id, name, t]);
         }
     }
+}
+
+/// Dev (`TASKBOARD_FAKE_PLAN_REVIEW=1`): a finished review of the passkeys goal's plan (G1) with
+/// four findings, for the goal page's Plan review.
+fn seed_plan_review(board: &Board) {
+    let at = taskboardd::util::iso(taskboardd::util::now_ts() - 3600.0);
+    let findings = json!([
+        {"kind": "outcome_unproven", "short": "Nothing shows a passkey sign-in working on Safari",
+         "detail": "The outcome says users can sign in **on web**, but T2 only tests Chrome. Add an end-to-end check on Safari and Firefox, or narrow the outcome.",
+         "tasks": ["T2"], "refs": []},
+        {"kind": "owner_prereq", "short": "The relying-party domain needs a DNS record only the owner can add",
+         "detail": "WebAuthn needs `webauthn.example.com` to resolve before T2 can be tested end to end. Add a human task for the DNS record ahead of wave 2.",
+         "tasks": ["T2"], "refs": []},
+        {"kind": "past_decision", "short": "Settings page is planned past the open question on removing the last passkey",
+         "detail": "T3 builds the remove flow while its question about a password re-check is still open.",
+         "tasks": ["T3"], "refs": []},
+        {"kind": "overlap", "short": "Session middleware work also runs in another goal",
+         "detail": "", "tasks": ["T2"], "refs": ["G2"]},
+    ]);
+    let _ = board.db.insert(
+        "plan_reviews",
+        taskboardd::fields!["goal_id" => 1, "reason" => "new", "source" => "Alex", "model" => "small", "started_at" => at.clone(),
+                            "finished_at" => at, "findings" => findings.to_string()],
+    );
 }
 
 /// Dev (`TASKBOARD_FAKE_RELEASES=1`): releases on for both projects, two months of webapp releases
