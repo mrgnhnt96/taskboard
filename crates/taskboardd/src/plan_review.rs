@@ -59,7 +59,7 @@ const WEB_TOOLS: [&str; 1] = ["WebFetch"];
 pub const LOST: &str = "the board stopped before Claude answered";
 
 /// Why a review can't run now; None when it can.
-fn held(app: &App) -> Option<&'static str> {
+pub(crate) fn held(app: &App) -> Option<&'static str> {
     if !app.cfg.planning.review {
         return Some("plan review is off ([planning] review in config.toml)");
     }
@@ -103,11 +103,12 @@ fn try_queue(app: &App, gid: i64, reason: &str, source: &str) -> Result<()> {
             return Ok(());
         }
     }
+    let upto = crate::plan_review_again::upto(app, gid)?;
     if let Some(why) = held(app) {
         let now = now_iso();
         app.db.insert(
             "plan_reviews",
-            fields!["goal_id" => gid, "reason" => reason, "source" => source, "started_at" => now, "finished_at" => now, "skipped" => why],
+            fields!["goal_id" => gid, "reason" => reason, "source" => source, "started_at" => now, "finished_at" => now, "skipped" => why, "upto" => upto],
         )?;
         return Ok(());
     }
@@ -118,7 +119,7 @@ fn try_queue(app: &App, gid: i64, reason: &str, source: &str) -> Result<()> {
     let model = model(app);
     let round = app.db.insert(
         "plan_reviews",
-        fields!["goal_id" => gid, "reason" => reason, "source" => source, "model" => model, "started_at" => now_iso()],
+        fields!["goal_id" => gid, "reason" => reason, "source" => source, "model" => model, "started_at" => now_iso(), "upto" => upto],
     );
     let round = match round {
         Ok(r) => r,
@@ -190,13 +191,23 @@ fn settle_lost(app: &App, gid: i64) -> Result<()> {
     Ok(())
 }
 
-/// The goal's latest review for the API: its state (running, done, failed or skipped), why it ran,
-/// when, and what it found. Null when the goal was never reviewed.
+/// Earlier rounds `GET /goals/:ref/review` lists under the latest one.
+const EARLIER_MAX: i64 = 10;
+
+/// The goal's latest review for the API: its round, its state (running, done, failed or skipped), why it
+/// ran, when, and what it found. Null when the goal was never reviewed.
 pub fn card(app: &App, gid: i64) -> Result<Value> {
     settle_lost(app, gid)?;
     let Some(r) = app.db.q1("SELECT * FROM plan_reviews WHERE goal_id = ? ORDER BY id DESC LIMIT 1", p![gid])? else {
         return Ok(Value::Null);
     };
+    let rounds = app.db.count("SELECT COUNT(*) FROM plan_reviews WHERE goal_id = ?", p![gid])?;
+    let mut card = round_card(&r, rounds);
+    card["again"] = json!(app.shared.lock().plan_review_again.contains(&gid));
+    Ok(card)
+}
+
+fn round_card(r: &Row, round: i64) -> Value {
     let state = if r.s("finished_at").is_none() {
         "running"
     } else if r.s("skipped").is_some() {
@@ -207,18 +218,22 @@ pub fn card(app: &App, gid: i64) -> Result<Value> {
         "done"
     };
     let findings = r.s("findings").and_then(|f| serde_json::from_str::<Value>(f).ok()).filter(Value::is_array).unwrap_or(json!([]));
-    let again = app.shared.lock().plan_review_again.contains(&gid);
-    Ok(json!({
-        "id": r.id(), "goal": rf("goal", gid), "state": state, "reason": r.v("reason"), "source": r.v("source"),
+    json!({
+        "id": r.id(), "goal": rf("goal", r.i0("goal_id")), "round": round, "state": state, "reason": r.v("reason"), "source": r.v("source"),
         "model": r.v("model"), "sha": r.v("sha"), "started_at": r.v("started_at"), "finished_at": r.v("finished_at"),
-        "skipped": r.v("skipped"), "error": r.v("error"), "findings": findings, "again": again,
-    }))
+        "skipped": r.v("skipped"), "error": r.v("error"), "findings": findings, "again": false,
+    })
 }
 
-/// `GET /goals/:ref/review`: the goal's latest plan review.
+/// `GET /goals/:ref/review`: the goal's latest plan review, and the rounds before it newest first, each
+/// with what it found then.
 pub fn show(app: &App, gid: i64) -> Result<Value> {
     board::get_goal(app, gid)?;
-    Ok(json!({"goal": rf("goal", gid), "review": card(app, gid)?}))
+    let review = card(app, gid)?;
+    let latest = review["round"].as_i64().unwrap_or(0);
+    let rows = app.db.q("SELECT * FROM plan_reviews WHERE goal_id = ? ORDER BY id DESC LIMIT ? OFFSET 1", p![gid, EARLIER_MAX])?;
+    let earlier: Vec<Value> = rows.iter().zip(1..).map(|(r, back)| round_card(r, latest - back)).collect();
+    Ok(json!({"goal": rf("goal", gid), "review": review, "earlier": earlier}))
 }
 
 /// `POST /goals/:ref/review`: review the plan again now. 409 when it can't run; while one runs, that one.

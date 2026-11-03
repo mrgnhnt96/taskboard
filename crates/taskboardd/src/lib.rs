@@ -66,6 +66,7 @@ pub mod midna;
 pub mod ops;
 pub mod picker;
 pub mod plan_review;
+pub mod plan_review_again;
 pub mod planning;
 pub mod prcmds;
 pub mod presence;
