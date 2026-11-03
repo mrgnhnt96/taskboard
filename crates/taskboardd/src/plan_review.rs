@@ -3,7 +3,10 @@
 //! stacks), the project's checkout, its planning rules and kept planning lessons, and the project's other
 //! open goals, and says where the plan misses: outcome clauses no task proves, things only the owner can
 //! do with no human task for them, tasks planned past an undecided decision, overlap with other goals,
-//! and lessons the plan goes against. It never sees the planner's conversation.
+//! and lessons the plan goes against. It never sees the planner's conversation. When the outcome points
+//! at a source the plan must match (a review, a doc, a design, a list of issues), it reads that source
+//! (the goal's attachments, with local text files inlined, the backlog issues named, links through
+//! WebFetch) and flags each of its items no task covers.
 //!
 //! The review is advice: nothing waits for it. Each run is a row of `plan_reviews`, kept with the commit
 //! it read; the latest one is the goal's review. A run that can't start (the review is off, Claude isn't
@@ -13,6 +16,8 @@
 
 use std::collections::HashSet;
 
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -36,6 +41,14 @@ const DETAIL_MAX: usize = 1_200;
 const TASK_DETAIL_MAX: usize = 1_500;
 const OTHER_GOALS_MAX: usize = 15;
 const OTHER_TASKS_MAX: usize = 12;
+const SOURCE_ATTACH_MAX: usize = 12;
+const SOURCE_ISSUES_MAX: usize = 30;
+/// A local text file attached as a source is read when it's at most this big, and inlined clipped.
+const SOURCE_FILE_BYTES: u64 = 512 * 1024;
+const SOURCE_TEXT_MAX: usize = 12_000;
+const SOURCES_TEXT_MAX: usize = 30_000;
+/// Opens a source's link; given only when the goal points at one.
+const WEB_TOOLS: [&str; 1] = ["WebFetch"];
 pub const LOST: &str = "the board stopped before Claude answered";
 
 /// Why a review can't run now; None when it can.
@@ -132,8 +145,10 @@ fn run(app: &App, gid: i64, round: i64, model: &str) -> std::result::Result<Valu
     if let Some(s) = &sha {
         app.db.update("plan_reviews", &json!(round), fields!["sha" => s.as_str()]).map_err(|e| e.message)?;
     }
-    let (prompt, known) = prompt(app, &g, sha.as_deref(), repo.is_some()).map_err(|e| e.message)?;
-    triage::ask_model(app, model, prompt, schema(), repo.as_deref(), &[], TIMEOUT_SECS).and_then(|v| checked(&v, &known))
+    let src = sources(app, &g).map_err(|e| e.message)?;
+    let (prompt, known) = prompt(app, &g, sha.as_deref(), repo.is_some(), &src).map_err(|e| e.message)?;
+    let extra: &[&str] = if src.web { &WEB_TOOLS } else { &[] };
+    triage::ask_model(app, model, prompt, schema(), repo.as_deref(), extra, TIMEOUT_SECS).and_then(|v| checked(&v, &known))
 }
 
 fn finish(app: &App, gid: i64, round: i64, answer: std::result::Result<Value, String>) -> Result<()> {
@@ -280,8 +295,116 @@ fn other_goals(app: &App, g: &Row) -> Result<(Vec<String>, HashSet<String>)> {
     Ok((lines, known))
 }
 
+/// What the goal points at that the plan must match, beyond its own text: its attachments (and its
+/// tasks' designs, proposals and docs), the backlog issues its outcome, TLDR or notes name, and whether
+/// any of it is a link Claude may open.
+struct Sources {
+    block: Option<String>,
+    issues: HashSet<String>,
+    web: bool,
+}
+
+static ISSUE_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[Bb](\d+)\b").unwrap());
+static LINK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"https?://[^\s<>()\[\]"'`]+"#).unwrap());
+
+/// A link WebFetch can open: not a claude.ai artifact, whose page needs a sign-in.
+fn openable(url: &str) -> bool {
+    let l = url.to_ascii_lowercase();
+    (l.starts_with("http://") || l.starts_with("https://")) && !l.starts_with("https://claude.ai/")
+}
+
+/// A local text file's contents, clipped to `room`; None for a link, a folder, a binary or a big file.
+fn file_text(url: &str, room: usize) -> Option<String> {
+    if room == 0 || url.contains("://") {
+        return None;
+    }
+    let path = expand_home(url);
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > SOURCE_FILE_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(std::fs::read(&path).ok()?).ok()?;
+    let text = text.trim();
+    (!text.is_empty() && !text.contains('\0')).then(|| clip(text, SOURCE_TEXT_MAX.min(room)))
+}
+
+fn attachment_lines(app: &App, g: &Row, tasks: &[Row]) -> Result<(Vec<String>, bool)> {
+    let mut atts: Vec<Value> = board::attachments(app, None, Some(g.id()))?
+        .into_iter()
+        .filter(|a| !matches!(a["kind"].as_str(), Some("evidence" | "results")))
+        .collect();
+    for t in tasks {
+        atts.extend(
+            board::attachments(app, Some(t.id()), None)?
+                .into_iter()
+                .filter(|a| matches!(a["kind"].as_str(), Some("design" | "proposal" | "doc"))),
+        );
+    }
+    let mut lines = vec![];
+    let mut web = false;
+    let mut room = SOURCES_TEXT_MAX;
+    for a in atts.iter().take(SOURCE_ATTACH_MAX) {
+        let url = a["url"].as_str().unwrap_or("");
+        let on = a["task"].as_str().map(|t| format!(" (on {t})")).unwrap_or_default();
+        let mut line = format!("- {}{on}: {} {url}", a["kind"].as_str().unwrap_or("other"), a["title"].as_str().unwrap_or(""));
+        if let Some(s) = a["summary"].as_str() {
+            line.push_str(&format!(" — {s}"));
+        }
+        if openable(url) {
+            web = true;
+        } else if url.contains("://") {
+            line.push_str("\n  (a claude.ai artifact the board can't open: go by its title and summary)");
+        } else if let Some(text) = file_text(url, room) {
+            room = room.saturating_sub(text.chars().count());
+            line.push_str(&format!("\n  Its contents:\n{}", text.lines().map(|l| format!("  | {l}")).collect::<Vec<_>>().join("\n")));
+        }
+        lines.push(line);
+    }
+    if atts.len() > SOURCE_ATTACH_MAX {
+        lines.push(format!("- {} more attached on the goal page.", atts.len() - SOURCE_ATTACH_MAX));
+    }
+    Ok((lines, web))
+}
+
+/// The goal's sources (see [`Sources`]).
+fn sources(app: &App, g: &Row) -> Result<Sources> {
+    let tasks = board::goal_tasks(app, g.id())?;
+    let notes = board::goal_notes(app, g.id())?;
+    let mut text = vec![g.st("outcome"), g.st("tldr")];
+    text.extend(notes.iter().map(|n| n.st("text")));
+    let text = text.join("\n");
+    let (mut lines, mut web) = attachment_lines(app, g, &tasks)?;
+    web |= LINK_RE.find_iter(&text).any(|m| openable(m.as_str()));
+    let mut issues = HashSet::new();
+    let mut issue_lines = vec![];
+    for c in ISSUE_REF_RE.captures_iter(&text) {
+        let Ok(id) = c[1].parse::<i64>() else { continue };
+        let r = rf("issue", id);
+        if issues.contains(&r) || issues.len() == SOURCE_ISSUES_MAX {
+            continue;
+        }
+        let Some(b) = board::find_issue(app, Some(id))? else { continue };
+        let mut line = format!("- {r} [{}] {}: {}", b.st("state"), b.st("kind"), one_line(&b.st("title"), 200));
+        if let Some(d) = b.s("detail").filter(|d| !d.trim().is_empty()) {
+            line.push_str(&format!("\n  {}", one_line(d, 600)));
+        }
+        issue_lines.push(line);
+        issues.insert(r);
+    }
+    lines.extend(issue_lines);
+    let block = (!lines.is_empty() || web).then(|| {
+        let mut b = vec!["Sources the goal points at (attachments and the backlog issues it names):".to_string()];
+        b.extend(lines);
+        if web {
+            b.push("Open a source's link with WebFetch to read it.".into());
+        }
+        b.join("\n")
+    });
+    Ok(Sources { block, issues, web })
+}
+
 /// The prompt, and the refs it shows (the only ones a finding may name).
-fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool) -> Result<(String, Known)> {
+fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool, src: &Sources) -> Result<(String, Known)> {
     let owner = &app.cfg.owner;
     let me = rf("goal", g.id());
     let project = g.st("project");
@@ -306,9 +429,17 @@ fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool) -> Result<(String, 
          earlier task settles it, or nothing does), so it would likely be redone once it is.\n\
          - overlap: a task that does what one of the other open goals below does or plans to.\n\
          - lesson_ignored: a planning rule or kept lesson below that the plan goes against.\n\
+         When the outcome, TLDR or notes point at a source the plan must match (a review, a doc, a design, a spec, \
+         a list of issues), read that source in full: it's attached or linked under Sources below, named there as \
+         backlog issues, written in the goal notes, or a file in the checkout. List every item it asks for (each \
+         decision, fix, screen or issue), not only the ones the tasks name, and check each against the tasks. An \
+         item no task covers, and the goal notes don't settle or set aside, is an outcome_unproven finding: name \
+         the item and where it is in the source. A source you can't read (not attached, or a link or artifact that \
+         won't open) is one outcome_unproven finding naming it and asking for its items where the review can read \
+         them (attached, or in the goal notes); don't guess its items.\n\
          A finding's short is a glance, {SHORT_MAX} characters at most; its detail gives the evidence and what to \
-         change in the plan. tasks lists this goal's task refs it's about; refs lists the other goals and lessons it's \
-         about (only refs shown below). Don't flag what the goal notes already settle, don't restate the plan, and \
+         change in the plan. tasks lists this goal's task refs it's about; refs lists the other goals, backlog issues and \
+         lessons it's about (only refs shown below). Don't flag what the goal notes already settle, don't restate the plan, and \
          don't suggest wording or style. A plan with nothing wrong gets an empty list."
     )];
     let mut goal = vec![format!("Goal {me}: {}", g.st("name"))];
@@ -329,7 +460,11 @@ fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool) -> Result<(String, 
     let about = format!("{}\n{}\n{}", g.st("name"), g.st("outcome"), tasks.iter().map(|t| t.st("title")).collect::<Vec<_>>().join("\n"));
     let rules = planning::block(app, Some(&project), &about);
     parts.push(rules.clone());
+    if let Some(b) = &src.block {
+        parts.push(b.clone());
+    }
     let (others, mut refs) = other_goals(app, g)?;
+    refs.extend(src.issues.iter().cloned());
     if !others.is_empty() {
         parts.push(format!("The project's other open goals:\n{}", others.join("\n")));
     }
