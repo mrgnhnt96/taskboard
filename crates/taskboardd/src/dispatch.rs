@@ -501,10 +501,12 @@ pub fn handle_response(app: &App, alert_id: &str, response: &Value) -> Result<bo
 /// Handles the notification responses Midna has reported since the last tick.
 fn take_responses(app: &App) -> Result<()> {
     let inbox = app.shared.lock().notify_inbox.clone();
-    // A start ask's answer waits for `start_answers`, which runs outside the tick's transaction.
+    // A start or grant ask's answer waits for `start_answers` or `start_grants::answers`, which run outside
+    // the tick's transaction.
     let got: Vec<(String, Value)> = {
         let mut i = inbox.lock();
-        let (asks, got) = std::mem::take(&mut *i).into_iter().partition(|(id, _)| id.starts_with("start:"));
+        let (asks, got) =
+            std::mem::take(&mut *i).into_iter().partition(|(id, _)| id.starts_with("start:") || id.starts_with(crate::start_grants::KEY_PREFIX));
         *i = asks;
         got
     };
@@ -772,9 +774,11 @@ fn tend_waiters(app: &App) {
     let waiters = app.shared.lock().alert_waiters.clone();
     let rows = alerts(app);
     let asks = start_asks(app);
+    let grant_asks = crate::start_grants::asks(app);
     let digest_at = digest::showing_since(app).filter(|_| digest::on(app));
     waiters.lock().retain(|id, _| match id.strip_prefix("start:") {
         Some(g) => asks.iter().any(|a| a["group"] == g),
+        None if id.starts_with(crate::start_grants::KEY_PREFIX) => grant_asks.iter().any(|a| crate::start_grants::key(a) == *id),
         None if id == digest::KEY => digest_at.is_some(),
         None => rows.iter().any(|a| a["id"].as_str() == Some(id.as_str())),
     });
@@ -795,6 +799,10 @@ fn tend_waiters(app: &App) {
     for a in &asks {
         let (Some(g), Some(at)) = (a["group"].as_str(), a["notified_at"].as_str()) else { continue };
         up.push((start_key(g), at.to_string(), start_notification_id(g)));
+    }
+    for a in &grant_asks {
+        let Some(at) = a["notified_at"].as_str() else { continue };
+        up.push((crate::start_grants::key(a), at.to_string(), crate::start_grants::notification_id(a)));
     }
     for (id, at, nid) in up {
         if let Some(w) = Waiter::start(waiters.clone(), &id, &at, &nid) {

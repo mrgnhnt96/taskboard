@@ -5,10 +5,12 @@
 //! Which trigger opened a terminal comes from Midna's `session.opened` event (`actor: {kind: "trigger",
 //! name}`), which an agent can't write, never from a prompt or a terminal's name. A grant names one
 //! trigger by its Midna id too: one with the same name that an agent added later isn't it. Only the
-//! owner sets a grant (the app, or their own `!` run of the command); anyone may take one away.
+//! owner sets a grant: in the app, or with Grant on the notification the board sends when a terminal asks for
+//! one (`tb start-grant add` there, theirs or an agent's). Anyone may take one away.
+//!
+//! Their own `!` run of the command can't be told from an agent's from inside it: Claude Code writes the
+//! `!` input to the transcript only after the command ends, and its shell looks like one a Monitor starts.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -21,9 +23,6 @@ CREATE TABLE IF NOT EXISTS start_grants(
   id INTEGER PRIMARY KEY, trigger TEXT NOT NULL, trigger_id TEXT NOT NULL, project TEXT, by TEXT, at TEXT, removed_at TEXT);
 CREATE TABLE IF NOT EXISTS trigger_opened(session_id TEXT PRIMARY KEY, trigger TEXT NOT NULL, at TEXT);
 "#;
-
-/// The owner's own `! tb start-grant add …` run.
-pub static ADD_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bstart-grant\s+add\b").unwrap());
 
 /// Notes that Midna's trigger `trigger` opened terminal `sid`.
 pub fn note_opened(app: &App, sid: &str, trigger: &str) -> Result<()> {
@@ -132,4 +131,116 @@ pub fn honored(app: &App, sid: &str, t: &Row) -> Result<Option<String>> {
         return Ok(None);
     };
     Ok(Some(format!("Started on {}'s standing grant S{} for trigger '{trigger}'", app.cfg.owner, g.id())))
+}
+
+/// What a grant ask goes by among the alert waiters and the notification inbox: `grant:3`.
+pub const KEY_PREFIX: &str = "grant:";
+
+/// The grants terminals asked for that the owner hasn't answered: `{n, trigger, project, session_id,
+/// notified_at}`.
+pub fn asks(app: &App) -> Vec<Value> {
+    jloads_arr(app.db.get_setting("grant_asks").ok().flatten().as_deref())
+}
+
+fn keep_asks(app: &App, rows: &[Value]) -> Result<()> {
+    for gone in asks(app).iter().filter(|a| !rows.iter().any(|r| r["n"] == a["n"])) {
+        crate::dispatch::withdraw_id(app, &notification_id(gone));
+    }
+    app.db.set_setting("grant_asks", Some(&jdumps(&Value::Array(rows.to_vec()))))
+}
+
+/// The waiter and inbox key of ask `a`.
+pub fn key(a: &Value) -> String {
+    format!("{KEY_PREFIX}{}", a["n"])
+}
+
+/// The id of ask `a`'s notification in Midna: `taskboard-grant-3`.
+pub fn notification_id(a: &Value) -> String {
+    format!("taskboard-grant-{}", a["n"])
+}
+
+/// A terminal's `tb start-grant add` (`via`: the terminal): asks the owner with a notification whose Grant
+/// adds it. The trigger has to be one Midna has. A new ask for the same trigger and project replaces the old.
+pub fn ask(app: &App, via: &str, body: &Value) -> Result<Value> {
+    let name = body_str(body, "trigger");
+    if name.trim().is_empty() {
+        return err(400, "Name the Midna trigger whose terminals may start the tasks they make (--trigger).");
+    }
+    the_trigger(app, &name).map_err(|m| ApiError::new(400, format!("No grant: {m}.")))?;
+    let project = Some(body_str(body, "project")).filter(|p| !p.is_empty());
+    let mut rows = asks(app);
+    let n = rows.iter().filter_map(|a| a["n"].as_i64()).max().unwrap_or(0) + 1;
+    rows.retain(|a| !(a["trigger"] == name.as_str() && a["project"].as_str() == project.as_deref()));
+    let a = json!({"n": n, "trigger": name, "project": project, "session_id": via, "notified_at": now_iso()});
+    rows.push(a.clone());
+    keep_asks(app, &rows)?;
+    let owner = &app.cfg.owner;
+    if !(app.cfg.notify && app.cfg.runner) {
+        return err(403, format!("Only {owner} can grant a standing start, and the board's notifications are off, so it couldn't ask them."));
+    }
+    notify(app, &a);
+    Ok(json!({"asked": true, "line": format!("Asked {owner} in a notification: trigger '{name}' gets its grant when they tap Grant. It isn't granted yet; don't run this again or ask them.")}))
+}
+
+fn notify(app: &App, a: &Value) {
+    let scope = a["project"].as_str().map(|p| format!(" in {p}")).unwrap_or_default();
+    let who = crate::board::session_name(app, a["session_id"].as_str(), None);
+    let params = json!({
+        "title": format!("Grant trigger '{}' a standing start?", a["trigger"].as_str().unwrap_or("")),
+        "body": format!("Terminals it opens may start the tasks they make{scope}.\nAsked in {who}"),
+        "category": "board", "sound": true, "id": notification_id(a), "actions": ["Grant", "Not now"],
+    });
+    let (midna, inbox, waiters) = {
+        let sh = app.shared.lock();
+        (app.cfg.midna.clone(), sh.notify_inbox.clone(), sh.alert_waiters.clone())
+    };
+    let (k, nid, sent_at) = (key(a), notification_id(a), a["notified_at"].as_str().unwrap_or("").to_string());
+    std::thread::spawn(move || {
+        if crate::midna::notify_send(&midna, &params).is_err() {
+            return;
+        }
+        if let Some(w) = crate::dispatch::Waiter::start(waiters, &k, &sent_at, &nid) {
+            w.listen(&midna, &inbox);
+        }
+    });
+}
+
+/// Acts on the owner's answers to grant asks, outside a transaction (adding one asks Midna for the trigger):
+/// Grant adds the grant, Not now or a dismissal drops the ask, a click leaves it. Only an ask the board keeps,
+/// and its latest notification, counts.
+pub fn answers(app: &App) -> Result<()> {
+    let inbox = app.shared.lock().notify_inbox.clone();
+    let got: Vec<(String, Value)> = {
+        let mut i = inbox.lock();
+        let (got, rest) = std::mem::take(&mut *i).into_iter().partition(|(id, _)| id.starts_with(KEY_PREFIX));
+        *i = rest;
+        got
+    };
+    for (k, r) in got {
+        answer(app, &k, &r)?;
+    }
+    Ok(())
+}
+
+pub fn answer(app: &App, k: &str, response: &Value) -> Result<()> {
+    let r = response.get("response").filter(|r| r.is_object()).unwrap_or(response);
+    let rows = asks(app);
+    let Some(a) = rows.iter().find(|a| key(a) == k).cloned() else { return Ok(()) };
+    if response.get("sent_at").and_then(|x| x.as_str()).is_some_and(|at| a["notified_at"].as_str() != Some(at)) {
+        return Ok(());
+    }
+    let grant = match (r["kind"].as_str(), r["action"].as_str()) {
+        (Some("action"), Some("Grant")) => true,
+        (Some("action"), Some("Not now")) | (Some("dismissed"), _) => false,
+        _ => return Ok(()),
+    };
+    keep_asks(app, &rows.into_iter().filter(|x| key(x) != k).collect::<Vec<_>>())?;
+    if !grant {
+        return Ok(());
+    }
+    let by = format!("{} from a notification", app.cfg.owner);
+    if let Err(e) = add(app, &by, &json!({"trigger": a["trigger"], "project": a["project"]})) {
+        crate::dispatch::notify(app, &format!("Trigger '{}' wasn't granted: {}", a["trigger"].as_str().unwrap_or(""), e.message), "");
+    }
+    Ok(())
 }

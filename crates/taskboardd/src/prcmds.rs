@@ -853,9 +853,8 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         return err(
             403,
             format!(
-                "--override is {owner}'s, and they haven't told you in this terminal to merge PR #{pr} past what holds it. Ask them to say so (\"merge #{pr} anyway\"), or to run ! tb pr merge {t} --override themselves.",
+                "--override is {owner}'s, and they haven't told you in this terminal to merge PR #{pr} past what holds it. Ask them to say so (\"merge #{pr} anyway\"), or to use Merge now in the app.",
                 owner = app.cfg.owner,
-                t = rf("task", id)
             ),
         );
     }
@@ -992,10 +991,9 @@ pub fn reviewed_by(app: &App, id: i64, body: &Value) -> Result<Option<String>> {
         return err(
             403,
             format!(
-                "Only {owner} marks a PR reviewed, and they haven't told you in this terminal that they've reviewed PR #{num}. Ask them to say so here in words that name it (\"I've reviewed PR #{num}\", \"mark PR #{num} reviewed\"{set}), or to run `! tb pr reviewed {task}` themselves, or to use Mark reviewed on its task page.",
+                "Only {owner} marks a PR reviewed, and they haven't told you in this terminal that they've reviewed PR #{num}. Ask them to say so here in words that name it (\"I've reviewed PR #{num}\", \"mark PR #{num} reviewed\"{set}), or to use Mark reviewed on its task page.",
                 owner = app.cfg.owner,
                 num = pr.num,
-                task = rf("task", id),
             ),
         );
     }
@@ -1514,6 +1512,6 @@ mod tests {
         let e = reviewed_by(&app, id, &agent).unwrap_err();
         assert_eq!(e.status, 403);
         assert!(e.message.contains("\"I've reviewed every PR in G23\""), "{}", e.message);
-        assert!(e.message.contains(&format!("`! tb pr reviewed T{id}`")), "{}", e.message);
+        assert!(!e.message.contains("! tb"), "no `!` run to suggest: {}", e.message);
     }
 }

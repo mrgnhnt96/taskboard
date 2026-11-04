@@ -1614,24 +1614,14 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
 }
 
-/// A standing start grant (`tb start-grant add`): only the owner's, from the app or their own `!` run of
-/// the command in a terminal. What an agent types, or a prompt says, never sets one.
+/// A standing start grant (`tb start-grant add`): only the owner's. From the app it's added; from a terminal
+/// the board asks them with a notification, whose Grant adds it (`start_grants::ask`). What an agent types,
+/// or a prompt says, never sets one.
 fn start_grant_add(app: &App, query: &Query, body: &Value) -> Result<Value> {
-    let via = body_str(body, "via_session");
-    let by = if from_app(query) {
-        "the app".to_string()
-    } else if !via.is_empty() && crate::startword::owners_bang(app, &via, &crate::start_grants::ADD_CMD_RE)?.is_some() {
-        format!("{}'s own run in {}", app.cfg.owner, board::session_name(app, Some(&via), None))
-    } else {
-        return err(
-            403,
-            format!(
-                "Only {} can grant a standing start: they run it themselves (! tb start-grant add --trigger \"<name>\") or set it in the app.",
-                app.cfg.owner
-            ),
-        );
-    };
-    crate::start_grants::add(app, &by, body)
+    if from_app(query) {
+        return crate::start_grants::add(app, "the app", body);
+    }
+    crate::start_grants::ask(app, &body_str(body, "via_session"), body)
 }
 
 /// A start at a set time (`at`: `5pm`, `tomorrow 9am`, or `off` to drop it) for `what`: the owner's from

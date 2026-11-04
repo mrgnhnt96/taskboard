@@ -10,7 +10,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{board, midna, reports};
+use taskboardd::{board, midna, reports, start_grants};
 
 struct Board {
     app: Arc<App>,
@@ -23,6 +23,7 @@ const NIGHTLY: &str = r#"[{"id": "t_1", "name": "Nightly triage", "created_by": 
 fn board() -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
+    (cfg.notify, cfg.runner) = (true, true);
     let exe = dir.path().join("midna");
     let triggers = dir.path().join("triggers.json");
     std::fs::write(&triggers, NIGHTLY).unwrap();
@@ -74,13 +75,19 @@ impl Board {
     fn set_triggers(&self, json: &str) {
         std::fs::write(self.dir.path().join("triggers.json"), json).unwrap();
     }
-    /// The owner running `cmd` with Claude Code's `!` prefix in terminal s1.
-    fn owner_runs(&self, cmd: &str) {
-        self.report("hook.prompt", json!({"prompt": "hi"}));
-        let dir = self.app.cfg.claude_projects.join("-webapp");
-        std::fs::create_dir_all(&dir).unwrap();
-        let lines = [json!({"type": "user", "message": {"content": "hi"}}), json!({"type": "user", "message": {"content": format!("<bash-input>{cmd}</bash-input>")}})];
-        std::fs::write(dir.join("c-s1.jsonl"), lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    /// The board's ask for a grant, as `tb start-grant add` in terminal s1 makes it.
+    fn ask(&self, body: Value) -> Result<Value, (u16, String)> {
+        let mut body = body;
+        body["via_session"] = json!("s1");
+        self.post("/start-grants", &Query::new(), body)
+    }
+    /// The owner's pick on grant ask `a`'s notification.
+    fn answer(&self, a: &Value, kind: &str, action: &str) {
+        let r = json!({"response": {"kind": kind, "action": action}, "sent_at": a["notified_at"]});
+        start_grants::answer(&self.app, &start_grants::key(a), &r).unwrap();
+    }
+    fn grants(&self) -> usize {
+        api::dispatch(&self.app, "GET", "/start-grants", &Query::new(), &json!({})).unwrap()["grants"].as_array().unwrap().len()
     }
 }
 
@@ -153,18 +160,59 @@ fn a_removed_grant_stops_starting() {
 #[test]
 fn only_the_owner_sets_a_grant() {
     let b = board();
-    let agent = |prompt: &str| {
-        b.report("hook.prompt", json!({"prompt": prompt}));
-        b.post("/start-grants", &Query::new(), json!({"trigger": "Nightly triage", "via_session": "s1"}))
-    };
-    let (code, msg) = agent("yes, add a standing start grant for Nightly triage").unwrap_err();
-    assert_eq!(code, 403, "a typed word is no grant: {msg}");
-    assert_eq!(b.post("/start-grants", &Query::new(), json!({"trigger": "Nightly triage"})).unwrap_err().0, 403);
+    b.report("hook.prompt", json!({"prompt": "yes, add a standing start grant for Nightly triage"}));
+    let v = b.ask(json!({"trigger": "Nightly triage"})).unwrap();
+    assert_eq!(v["asked"], true);
+    assert!(v["line"].as_str().unwrap().contains("isn't granted yet"), "{v}");
+    assert_eq!(b.grants(), 0, "a typed word, or the command run in a terminal, is no grant");
+    assert_eq!(b.post("/start-grants", &Query::new(), json!({"trigger": "Nightly triage"})).unwrap().get("asked"), Some(&json!(true)));
+    assert_eq!(b.grants(), 0);
+}
 
-    b.owner_runs("tb start-grant add --trigger \"Nightly triage\"");
-    b.post("/start-grants", &Query::new(), json!({"trigger": "Nightly triage", "via_session": "s1"})).unwrap();
+/// #913: the owner's own `!` run can't be told from an agent's, so a terminal's `tb start-grant add` asks
+/// them in a notification, and its Grant sets the grant.
+#[test]
+fn the_notifications_grant_sets_it_and_not_now_drops_the_ask() {
+    let b = board();
+    b.ask(json!({"trigger": "Nightly triage", "project": "webapp"})).unwrap();
+    let asks = start_grants::asks(&b.app);
+    assert_eq!(asks.len(), 1);
+    b.answer(&asks[0], "clicked", "");
+    assert_eq!((b.grants(), start_grants::asks(&b.app).len()), (0, 1), "a click opens it and leaves the ask");
+    b.answer(&asks[0], "action", "Grant");
+    assert_eq!((b.grants(), start_grants::asks(&b.app).len()), (1, 0));
     let list = api::dispatch(&b.app, "GET", "/start-grants", &Query::new(), &json!({})).unwrap();
-    assert_eq!(list["grants"].as_array().unwrap().len(), 1);
+    assert_eq!(list["grants"][0]["project"], "webapp");
+    assert_eq!(list["grants"][0]["by"], "Sam from a notification");
+
+    b.ask(json!({"trigger": "Nightly triage"})).unwrap();
+    let a = start_grants::asks(&b.app)[0].clone();
+    b.answer(&a, "action", "Not now");
+    assert_eq!((b.grants(), start_grants::asks(&b.app).len()), (1, 0));
+}
+
+#[test]
+fn only_the_latest_notification_of_an_ask_counts() {
+    let b = board();
+    b.ask(json!({"trigger": "Nightly triage"})).unwrap();
+    let old = start_grants::asks(&b.app)[0].clone();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    b.ask(json!({"trigger": "Nightly triage"})).unwrap();
+    let asks = start_grants::asks(&b.app);
+    assert_eq!(asks.len(), 1, "the new ask replaces the old one");
+    b.answer(&old, "action", "Grant");
+    assert_eq!(b.grants(), 0, "a tap on the replaced notification");
+    let mut stale = asks[0].clone();
+    stale["notified_at"] = json!("2026-01-01T00:00:00Z");
+    b.answer(&stale, "action", "Grant");
+    assert_eq!(b.grants(), 0, "an older send of the same ask");
+}
+
+#[test]
+fn an_ask_names_a_trigger_midna_has() {
+    let b = board();
+    assert_eq!(b.ask(json!({"trigger": "Weekly"})).unwrap_err().0, 400);
+    assert!(start_grants::asks(&b.app).is_empty());
 }
 
 #[test]
