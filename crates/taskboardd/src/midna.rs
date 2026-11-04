@@ -1248,7 +1248,8 @@ pub fn send_panels(app: &App) {
 /// How far back the first look at Midna's event log reaches (the board keeps its place after that).
 const CLOSED_LOOKBACK_SECS: f64 = 60.0;
 
-/// Applies Midna's `session.closed` events: who closed each terminal.
+/// Applies Midna's `session.closed` events (who closed each terminal) and `session.opened` ones from a
+/// trigger (which trigger opened it, for the owner's standing start grants).
 pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
     let mut last = app.db.get_setting("midna_event_seq")?.and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     app.db.tx(|| {
@@ -1256,6 +1257,12 @@ pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
             let seq = e["seq"].as_u64().unwrap_or(0);
             last = last.max(seq);
             let (Some(sid), Some(by)) = (e["session_id"].as_str(), e["actor"]["kind"].as_str()) else { continue };
+            if e["kind"] == "session.opened" {
+                if let Some(trigger) = e["actor"]["name"].as_str().filter(|n| by == "trigger" && !n.is_empty()) {
+                    crate::start_grants::note_opened(app, sid, trigger)?;
+                }
+                continue;
+            }
             if e["kind"] != "session.closed" || age_secs(e["at"].as_str()).is_none_or(|a| a > CLOSED_LOOKBACK_SECS) {
                 continue;
             }
@@ -1272,7 +1279,7 @@ static CLOSED_FAILED: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None
 /// that then goes missing just ends for an unknown reason.
 fn read_closed(app: &App) {
     let since = app.db.get_setting("midna_event_seq").ok().flatten().and_then(|s| s.parse::<u64>().ok());
-    match call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed"]}}), 10.0) {
+    match call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed", "session.opened"]}}), 10.0) {
         Ok(events) => {
             *CLOSED_FAILED.lock().unwrap_or_else(|e| e.into_inner()) = None;
             if let Err(e) = closed_events(app, events.as_array().map(|a| a.as_slice()).unwrap_or(&[])) {
