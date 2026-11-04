@@ -1147,7 +1147,7 @@ struct Wants {
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
     /// The ⌘K palette's query, for its tasks and backlog issues (`GET /search?palette=1`).
-    palette: Option<String>,
+    palette: Option<ui::search::Ask>,
     /// The Projects page: the picked project, for its open tasks outside any goal.
     loose: Option<String>,
     /// The Review page: the list, and the picked review (`None`: the newest).
@@ -1179,7 +1179,7 @@ struct Got {
     days: Option<Answer>,
     home: Option<Value>,
     today: Option<Value>,
-    palette: Option<(String, Value)>,
+    palette: Option<(ui::search::Ask, Value)>,
     loose: Option<(String, Answer)>,
     reviews: Option<Answer>,
     review: Option<(i64, Answer)>,

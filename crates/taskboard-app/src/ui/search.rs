@@ -1,5 +1,7 @@
 //! Search (⌘K and the sidebar's search box): a palette over the page that finds tasks, goals,
-//! backlog issues and terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
+//! backlog issues, attachments and terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
+//! Opened on a goal's page it searches that goal alone (its tasks' detail and summary too); ⌫ in
+//! the empty field, or the chip's ×, widens it to everything.
 use crate::app::MainWindow;
 use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
@@ -27,17 +29,33 @@ pub struct State {
     /// The highlighted result, counted down the whole list.
     pub sel: usize,
     scroll: ScrollHandle,
-    /// What the board last answered: the query and how many tasks and issues match it in all.
-    found: Option<(String, usize, usize)>,
+    /// What the board last answered: the ask and how many tasks, issues and attachments match it in all.
+    found: Option<(Ask, usize, usize, usize)>,
+    /// The attachments the board found for it, best first.
+    atts: Option<Value>,
     /// The ask waiting for typing to pause; the next key drops it and waits again.
     soon: Option<Task<()>>,
+    /// The goal searched alone, when ⌘K opened on its page.
+    pub scope: Option<Scope>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scope {
+    pub id: i64,
+    /// G12.
+    pub r: String,
+    pub name: String,
+}
+
+/// What's asked of the board: the query and the goal it's kept to.
+pub type Ask = (String, Option<i64>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
     Tasks,
     Goals,
     Backlog,
+    Attachments,
     Terminals,
 }
 
@@ -47,6 +65,7 @@ impl Kind {
             Kind::Tasks => "Tasks",
             Kind::Goals => "Goals",
             Kind::Backlog => "Backlog",
+            Kind::Attachments => "Attachments",
             Kind::Terminals => "Terminals",
         }
     }
@@ -57,6 +76,8 @@ pub enum Target {
     Task(String),
     Goal(String),
     Issue(String),
+    /// Its link or file path.
+    Attachment(String),
     Terminal(String),
 }
 
@@ -66,6 +87,8 @@ pub enum Dot {
     Goal,
     /// A backlog issue: filled while it's open.
     Issue { open: bool },
+    /// An attachment, tinted by its kind.
+    Attachment(&'static str),
     Idle,
 }
 
@@ -115,6 +138,9 @@ struct Item {
     /// (ref, name) of its goal.
     goal: Option<(String, String)>,
     wave: Option<i64>,
+    /// Its detail and summary, searched within a goal.
+    detail: String,
+    summary: String,
     /// Still to do: not done, and not failed once finished (a lost terminal can still be restarted).
     open: bool,
     row: status::Row,
@@ -134,6 +160,8 @@ fn items(v: &Value) -> Vec<Item> {
                 project: s(c, "project").to_string(),
                 goal: g.is_object().then(|| (fmt::ref_of(g, "G"), s(g, "name").to_string())),
                 wave: c["wave"].as_i64(),
+                detail: s(c, "detail").to_string(),
+                summary: s(c, "summary").to_string(),
                 open,
                 row,
             }
@@ -141,7 +169,9 @@ fn items(v: &Value) -> Vec<Item> {
         .collect()
 }
 
-fn task_hits(tasks: &Value, w: &[String]) -> Vec<Hit> {
+/// Within a goal (`scoped`) a task's other words are its detail and summary, as the board scores
+/// them: the goal's name would match every task.
+fn task_hits(tasks: &Value, w: &[String], scoped: bool) -> Vec<Hit> {
     let items = items(tasks);
     // With nothing typed: the tasks still to do, those that need you first.
     let items: Vec<Item> = if w.is_empty() { items.into_iter().filter(|it| it.open).collect() } else { items };
@@ -149,7 +179,8 @@ fn task_hits(tasks: &Value, w: &[String]) -> Vec<Hit> {
         .into_iter()
         .map(|it| {
             let g = it.goal.as_ref().map(|(r, n)| (r.as_str(), n.as_str()));
-            let m = score(&it.r, &it.title, &[&it.project, g.map(|g| g.1).unwrap_or("")], w);
+            let other: [&str; 2] = if scoped { [&it.detail, &it.summary] } else { [&it.project, g.map(|g| g.1).unwrap_or("")] };
+            let m = score(&it.r, &it.title, &other, w);
             (it, m)
         })
         .collect();
@@ -157,6 +188,7 @@ fn task_hits(tasks: &Value, w: &[String]) -> Vec<Hit> {
         .into_iter()
         .map(|(it, hl)| {
             let place = match (&it.goal, it.wave) {
+                (Some(_), Some(n)) if scoped => format!("wave {n}"),
                 (Some((g, _)), Some(n)) => format!("{g} · wave {n}"),
                 (Some((g, _)), None) => g.clone(),
                 (None, _) => it.project.clone(),
@@ -212,6 +244,40 @@ fn backlog_hits(backlog: &Value, w: &[String]) -> Vec<Hit> {
             Hit { target: Target::Issue(r.clone()), r, title: s(b, "title").to_string(), hl, place, dot: Dot::Issue { open: state.is_none() } }
         })
         .collect()
+}
+
+/// Attachments only once something is typed, as the board ranked them. Kept to a goal, the goal's
+/// own say only their kind; a task's say whose.
+fn attachment_hits(atts: &Value, w: &[String], scoped: bool) -> Vec<Hit> {
+    if w.is_empty() {
+        return vec![];
+    }
+    let rows = atts
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|a| (a, score("", s(a, "title"), &[s(a, "summary"), s(a, "kind"), s(a, "url")], w)))
+        .collect();
+    rank(rows, w, |a| (0, -i(a, "id")))
+        .into_iter()
+        .map(|(a, hl)| {
+            let kind = capitalized(s(a, "kind"));
+            let place = match (opt_s(a, "task"), opt_s(a, "goal")) {
+                (Some(t), _) => format!("{t} · {kind}"),
+                (None, Some(g)) if !scoped => format!("{g} · {kind}"),
+                _ => kind,
+            };
+            let kind = taskboardd::board::ATTACH_KINDS.iter().find(|k| **k == s(a, "kind")).copied().unwrap_or("other");
+            Hit { target: Target::Attachment(s(a, "url").to_string()), r: String::new(), title: s(a, "title").to_string(), hl, place, dot: Dot::Attachment(kind) }
+        })
+        .collect()
+}
+
+/// "design" → "Design".
+fn capitalized(w: &str) -> String {
+    let mut c = w.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn terminal_status(x: &Value) -> (u8, Dot, String) {
@@ -277,12 +343,15 @@ fn terminal_title(x: &Value) -> String {
 }
 
 /// The results for `q`: tasks, goals, backlog issues, then terminals, leaving out the kinds with none.
-pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<&Value>, sessions: Option<&Value>) -> Vec<Group> {
+/// Kept to a goal (`scoped`): its tasks, issues and attachments alone, as the board sent them.
+pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<&Value>, atts: Option<&Value>, sessions: Option<&Value>, scoped: bool) -> Vec<Group> {
     let w = words(q);
+    let (goals, sessions) = if scoped { (&[][..], None) } else { (goals, sessions) };
     [
-        group(Kind::Tasks, tasks.map(|v| task_hits(v, &w)).unwrap_or_default()),
+        group(Kind::Tasks, tasks.map(|v| task_hits(v, &w, scoped)).unwrap_or_default()),
         group(Kind::Goals, goal_hits(goals, &w)),
         group(Kind::Backlog, backlog.map(|v| backlog_hits(v, &w)).unwrap_or_default()),
+        group(Kind::Attachments, atts.map(|v| attachment_hits(v, &w, scoped)).unwrap_or_default()),
         group(Kind::Terminals, sessions.map(|v| terminal_hits(v, &w)).unwrap_or_default()),
     ]
     .into_iter()
@@ -292,13 +361,16 @@ pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<
 
 fn current(m: &MainWindow, cx: &App) -> Vec<Group> {
     let q = m.search.input.as_ref().map(|i| i.text(cx)).unwrap_or_default();
-    let mut groups = results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.data.sessions.as_deref());
+    let scoped = m.search.scope.is_some();
+    let mut groups = results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.search.atts.as_ref(), m.data.sessions.as_deref(), scoped);
     // The board sent the best few: its counts are the whole.
-    if let Some((_, tasks, issues)) = m.search.found.as_ref().filter(|f| f.0 == q) {
+    let asked = (q, m.search.scope.as_ref().map(|s| s.id));
+    if let Some((_, tasks, issues, atts)) = m.search.found.as_ref().filter(|f| f.0 == asked) {
         for g in &mut groups {
             match g.kind {
                 Kind::Tasks => g.total = g.total.max(*tasks),
                 Kind::Backlog => g.total = g.total.max(*issues),
+                Kind::Attachments => g.total = g.total.max(*atts),
                 _ => {}
             }
         }
@@ -306,23 +378,28 @@ fn current(m: &MainWindow, cx: &App) -> Vec<Group> {
     groups
 }
 
-/// The query to ask the board about while the palette is open.
-pub fn query(m: &MainWindow, cx: &App) -> Option<String> {
-    m.search.input.as_ref().filter(|_| is_open(m)).map(|i| i.text(cx))
+/// What to ask the board about while the palette is open: what's typed, and the goal it's kept to.
+pub fn query(m: &MainWindow, cx: &App) -> Option<Ask> {
+    m.search.input.as_ref().filter(|_| is_open(m)).map(|i| (i.text(cx), m.search.scope.as_ref().map(|s| s.id)))
 }
 
-/// `GET /search?palette=1`: the best tasks and backlog issues for `q`, and how many match.
-pub fn ask(be: &dyn crate::backend::Backend, q: &str) -> Result<Value, String> {
-    be.get("search", &[("palette", "1".into()), ("q", q.to_string()), ("limit", WINDOW.to_string())]).map_err(|e| e.message)
+/// `GET /search?palette=1`: the best tasks and backlog issues for the ask, and how many match.
+pub fn ask(be: &dyn crate::backend::Backend, (q, goal): &Ask) -> Result<Value, String> {
+    let mut args = vec![("palette", "1".to_string()), ("q", q.to_string()), ("limit", WINDOW.to_string())];
+    if let Some(g) = goal {
+        args.push(("goal", g.to_string()));
+    }
+    be.get("search", &args).map_err(|e| e.message)
 }
 
-/// Keep the board's answer for `q` if it's still what's typed.
-pub fn land(m: &mut MainWindow, q: &str, v: Value, cx: &App) {
-    if query(m, cx).as_deref() != Some(q) {
+/// Keep the board's answer for `a` if it's still what's typed, in the same goal.
+pub fn land(m: &mut MainWindow, a: &Ask, v: Value, cx: &App) {
+    if query(m, cx).as_ref() != Some(a) {
         return;
     }
     let total = |k: &str| v[k].as_u64().unwrap_or(0) as usize;
-    m.search.found = Some((q.to_string(), total("tasks_total"), total("issues_total")));
+    m.search.found = Some((a.clone(), total("tasks_total"), total("issues_total"), total("attachments_total")));
+    m.search.atts = Some(v["attachments"].clone());
     m.data.tasks = Some(serde_json::json!({"tasks": v["tasks"]}));
     m.data.backlog = Some(serde_json::json!({"issues": v["issues"]}));
 }
@@ -365,7 +442,8 @@ pub fn is_open(m: &MainWindow) -> bool {
 /// ⌘K: open the palette with an empty query (again: back to the field).
 pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     if !is_open(m) {
-        let input = kit::Input::new(cx, "Search tasks, goals, backlog and terminals", false);
+        let scope = goal_scope(m);
+        let input = kit::Input::new(cx, placeholder(scope.is_some()), false);
         cx.subscribe(&input.field, |m: &mut MainWindow, _, _: &FieldChanged, cx| {
             m.search.sel = 0;
             m.search.scroll.scroll_to_item(0);
@@ -373,7 +451,7 @@ pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
             cx.notify();
         })
         .detach();
-        m.search = State { input: Some(input), ..Default::default() };
+        m.search = State { input: Some(input), scope, ..Default::default() };
         m.set_modal(Some(Modal::Search), window, cx);
         // The terminal list loads with the palette, the tasks and issues for what's typed.
         m.refresh(cx);
@@ -382,6 +460,38 @@ pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
     if let Some(i) = &m.search.input {
         window.focus(&i.focus, cx);
     }
+}
+
+fn placeholder(scoped: bool) -> &'static str {
+    if scoped { "Search this goal’s tasks, backlog and attachments" } else { "Search tasks, goals, backlog, attachments and terminals" }
+}
+
+/// The goal whose page is showing, to keep the palette to.
+fn goal_scope(m: &MainWindow) -> Option<Scope> {
+    let crate::app::Page::Goal(r) = &m.page else { return None };
+    let id = r.trim_start_matches(['G', 'g']).parse().ok()?;
+    let same = |g: &&Value| fmt::ref_of(g, "G") == *r;
+    let name = m.data.goals.iter().find(same).or(m.data.goal.as_deref().filter(same)).map(|g| s(g, "name").to_string()).unwrap_or_default();
+    Some(Scope { id, r: r.clone(), name })
+}
+
+/// Search everything again, keeping what's typed.
+fn widen(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if m.search.scope.take().is_none() {
+        return;
+    }
+    if let Some(i) = &m.search.input {
+        i.field.update(cx, |f, _| f.placeholder = placeholder(false).into());
+    }
+    m.search.sel = 0;
+    m.search.scroll.scroll_to_item(0);
+    // The goal's tasks aren't the board's best for everything: drop them and ask again.
+    m.data.tasks = None;
+    m.data.backlog = None;
+    m.search.atts = None;
+    m.refresh(cx);
+    fetch(m, cx);
+    cx.notify();
 }
 
 pub fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
@@ -395,6 +505,7 @@ fn go(m: &mut MainWindow, target: Target, window: &mut Window, cx: &mut Context<
         Target::Task(r) => m.open_task(r, cx),
         Target::Goal(r) => crate::ui::goal::open(m, &r, false, cx),
         Target::Issue(r) => m.open_issue(r, cx),
+        Target::Attachment(url) => crate::ui::goal::open_attachment(&url, cx),
         Target::Terminal(id) => m.show_in_midna(&id, cx),
     }
 }
@@ -423,6 +534,15 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
             }
         }
         _ => {}
+    }
+}
+
+/// ⌫ in the empty field, before the field takes it: search everything, not just the goal.
+fn on_key_capture(m: &mut MainWindow, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<MainWindow>) {
+    let empty = m.search.input.as_ref().is_some_and(|i| i.text(cx).is_empty());
+    if ev.keystroke.key == "backspace" && m.search.scope.is_some() && empty {
+        cx.stop_propagation();
+        widen(m, cx);
     }
 }
 
@@ -462,6 +582,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .cursor_text()
         .on_click(move |_, window, cx| window.focus(&focus, cx))
         .child(kit::glyph(kit::Glyph::Search, 18., t.muted))
+        .when_some(m.search.scope.clone(), |d, sc| d.child(scope_chip(&t, &sc, cx)))
         .child(div().flex_1().min_w_0().child(field));
 
     let mut list = div().id("search-results").flex().flex_col().min_h_0().overflow_y_scroll().track_scroll(&m.search.scroll).pb(px(8.));
@@ -487,6 +608,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     let dialog = kit::modal_box(&t, 640.)
         .min_h_0()
         .max_h(relative(1.))
+        .capture_key_down(cx.listener(on_key_capture))
         .on_key_down(cx.listener(on_key))
         .child(head)
         .when(!groups.is_empty(), |d| d.child(div().h(px(1.)).flex_none().bg(t.divider)).child(list))
@@ -508,11 +630,50 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     .into_any_element()
 }
 
+/// The goal the palette is kept to; its × searches everything.
+fn scope_chip(t: &Theme, sc: &Scope, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let label = if sc.name.is_empty() { sc.r.clone() } else { format!("{} · {}", sc.r, sc.name) };
+    div()
+        .id("search-scope")
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .max_w(px(260.))
+        .h(px(26.))
+        .pl(px(8.))
+        .pr(px(4.))
+        .rounded(px(6.))
+        .bg(t.seg)
+        .text_size(px(13.))
+        .text_color(t.text)
+        .child(div().flex_none().size(px(8.)).rounded(px(2.)).bg(t.goal))
+        .child(div().min_w_0().truncate().child(label))
+        .child(
+            div()
+                .id("search-scope-x")
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(18.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|s| s.bg(t.border_2))
+                .child(kit::glyph(kit::Glyph::X, 10., t.muted))
+                .on_click(cx.listener(|m, _, _, cx| {
+                    cx.stop_propagation();
+                    widen(m, cx);
+                })),
+        )
+}
+
 fn result_row(t: &Theme, h: &Hit, ix: usize, selected: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let dot = match h.dot {
         Dot::Status(st) => kit::dot(st.colors(t).2, 8.),
         Dot::Goal => div().flex_none().size(px(8.)).rounded(px(2.)).bg(t.goal),
         Dot::Issue { open } => kit::dot(if open { t.backlog_dot } else { t.border_2 }, 8.),
+        Dot::Attachment(kind) => div().flex_none().size(px(8.)).rounded(px(2.)).bg(crate::ui::task_panel::att_tint(t, kind).0),
         Dot::Idle => kit::dot(t.border_2, 8.),
     };
     let mark = HighlightStyle { background_color: Some(t.mark), color: Some(t.mark_fg), ..Default::default() };
@@ -597,7 +758,7 @@ mod tests {
     #[test]
     fn groups_tasks_goals_then_terminals_with_their_counts() {
         let (tasks, goals, sessions) = sample();
-        let g = results("pass", Some(&tasks), &goals, None, Some(&sessions));
+        let g = results("pass", Some(&tasks), &goals, None, None, Some(&sessions), false);
         assert_eq!(g.iter().map(|g| (g.kind, g.total)).collect::<Vec<_>>(), vec![(Kind::Tasks, 2), (Kind::Goals, 1), (Kind::Terminals, 1)]);
         // Both are a word inside the title; the one still to do comes first.
         assert_eq!(titles(&g[0]), vec!["Settings page: manage passkeys", "Sign in with a passkey"]);
@@ -615,7 +776,7 @@ mod tests {
     #[test]
     fn a_ref_finds_its_task_first() {
         let (tasks, goals, sessions) = sample();
-        let g = results("t3", Some(&tasks), &goals, None, Some(&sessions));
+        let g = results("t3", Some(&tasks), &goals, None, None, Some(&sessions), false);
         assert_eq!(g[0].hits[0].r, "T3");
         assert_eq!(g[0].total, 1);
     }
@@ -623,7 +784,7 @@ mod tests {
     #[test]
     fn nothing_typed_shows_open_tasks_pinned_goals_and_every_terminal() {
         let (tasks, goals, sessions) = sample();
-        let g = results("", Some(&tasks), &goals, Some(&backlog()), Some(&sessions));
+        let g = results("", Some(&tasks), &goals, Some(&backlog()), None, Some(&sessions), false);
         assert_eq!(titles(&g[0]), vec!["Fix the API shell", "Settings page: manage passkeys"]);
         assert_eq!(g[1].total, 1);
         // The one that needs you first; an idle one says for how long.
@@ -635,9 +796,9 @@ mod tests {
     #[test]
     fn no_match_leaves_out_the_kind_and_lists_load_late() {
         let (tasks, goals, _) = sample();
-        let g = results("shell", Some(&tasks), &goals, None, None);
+        let g = results("shell", Some(&tasks), &goals, None, None, None, false);
         assert_eq!(g.iter().map(|g| g.kind).collect::<Vec<_>>(), vec![Kind::Tasks]);
-        assert!(results("zzz", Some(&tasks), &goals, None, None).is_empty());
+        assert!(results("zzz", Some(&tasks), &goals, None, None, None, false).is_empty());
     }
 
     fn backlog() -> Value {
@@ -650,7 +811,7 @@ mod tests {
     #[test]
     fn backlog_issues_open_first_and_open_their_panel() {
         let (tasks, goals, sessions) = sample();
-        let g = results("passkey", Some(&tasks), &goals, Some(&backlog()), Some(&sessions));
+        let g = results("passkey", Some(&tasks), &goals, Some(&backlog()), None, Some(&sessions), false);
         assert_eq!(g.iter().map(|g| g.kind).collect::<Vec<_>>(), vec![Kind::Tasks, Kind::Goals, Kind::Backlog, Kind::Terminals]);
         let b = &g[2];
         // Title matches before the one found in its detail; of those, the open one first.
@@ -659,13 +820,30 @@ mod tests {
         assert_eq!(b.hits[0].place, "Bug · G3");
         assert_eq!((b.hits[1].place.as_str(), b.hits[1].dot), ("Won’t do", Dot::Issue { open: false }));
         assert_eq!(b.hits[2].place, "Follow-up · api");
-        assert_eq!(results("b6", None, &[], Some(&backlog()), None)[0].hits[0].r, "B6");
+        assert_eq!(results("b6", None, &[], Some(&backlog()), None, None, false)[0].hits[0].r, "B6");
+    }
+
+    #[test]
+    fn attachments_say_whose_they_are_and_open_their_link() {
+        let atts = json!([
+            {"id": 9, "title": "Passkey mockups", "kind": "design", "url": "https://x.test/m", "task": null, "goal": "G3"},
+            {"id": 8, "title": "Spec", "summary": "How passkeys sync", "kind": "doc", "url": "/tmp/spec.md", "task": "T2", "goal": null},
+        ]);
+        let g = results("passkey", None, &[], None, Some(&atts), None, false);
+        assert_eq!(g[0].kind, Kind::Attachments);
+        assert_eq!(titles(&g[0]), vec!["Passkey mockups", "Spec"], "a title match first");
+        assert_eq!((g[0].hits[0].place.as_str(), g[0].hits[0].dot), ("G3 · Design", Dot::Attachment("design")));
+        assert_eq!(g[0].hits[1].place, "T2 · Doc");
+        assert_eq!(g[0].hits[1].target, Target::Attachment("/tmp/spec.md".into()));
+        let scoped = results("passkey", None, &[], None, Some(&atts), None, true);
+        assert_eq!(scoped[0].hits[0].place, "Design", "the goal's own, within it");
+        assert!(results("", None, &[], None, Some(&atts), None, false).is_empty(), "none until something's typed");
     }
 
     #[test]
     fn a_group_shows_a_few_and_counts_all() {
         let many: Vec<Value> = (1..=9).map(|n| json!({"id": n, "title": format!("Task {n}"), "status": "queued"})).collect();
-        let g = results("task", Some(&json!({"tasks": many})), &[], None, None);
+        let g = results("task", Some(&json!({"tasks": many})), &[], None, None, None, false);
         assert_eq!((g[0].total, g[0].hits.len()), (9, PER_GROUP));
         assert_eq!(row_child(&g, 0), 1);
         assert_eq!(row_child(&g, 5), 6);
@@ -686,7 +864,7 @@ mod tests {
         cx.executor().advance_clock(PAUSE);
         crate::parity::settle(cx);
         assert_eq!(rec.take_gets(), ["search"], "one ask, for search alone");
-        w.update(cx, |m, _, _| assert_eq!(m.search.found.as_ref().map(|f| f.0.as_str()), Some("sig"))).unwrap();
+        w.update(cx, |m, _, _| assert_eq!(m.search.found.as_ref().map(|f| f.0.0.as_str()), Some("sig"))).unwrap();
     }
 
     #[gpui_kit::test]
@@ -697,9 +875,36 @@ mod tests {
         cx.executor().advance_clock(PAUSE);
         crate::parity::settle(cx);
         w.update(cx, |m, _, cx| {
-            land(m, "si", json!({"tasks": [], "issues": [], "tasks_total": 0, "issues_total": 0}), cx);
-            assert_eq!(m.search.found.as_ref().map(|f| f.0.as_str()), Some("sig"));
+            land(m, &("si".into(), None), json!({"tasks": [], "issues": [], "tasks_total": 0, "issues_total": 0}), cx);
+            assert_eq!(m.search.found.as_ref().map(|f| f.0.0.as_str()), Some("sig"));
             assert!(m.data.tasks.as_ref().is_some_and(|t| t["tasks"].as_array().is_some_and(|a| !a.is_empty())), "the answer for sig stays");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn on_a_goal_page_it_searches_that_goal_until_widened(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _) = crate::parity::window(cx);
+        crate::parity::settle(cx);
+        w.update(cx, |m, _, cx| m.go(crate::app::Page::Goal("G1".into()), cx)).unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |m, window, cx| open(m, window, cx)).unwrap();
+        crate::parity::settle(cx);
+        let kinds = |m: &MainWindow, cx: &App| current(m, cx).iter().map(|g| g.kind).collect::<Vec<_>>();
+        w.update(cx, |m, _, cx| {
+            assert_eq!(m.search.scope.as_ref().map(|s| s.r.as_str()), Some("G1"));
+            assert!(!m.search.scope.as_ref().unwrap().name.is_empty(), "the chip names the goal");
+            let tasks = arr(m.data.tasks.as_ref().unwrap(), "tasks").to_vec();
+            assert!(!tasks.is_empty() && tasks.iter().all(|t| fmt::ref_of(&t["goal"], "G") == "G1"), "only G1's tasks");
+            assert!(!kinds(m, cx).contains(&Kind::Goals) && !kinds(m, cx).contains(&Kind::Terminals));
+        })
+        .unwrap();
+        cx.simulate_keystrokes(w.into(), "backspace");
+        crate::parity::settle(cx);
+        w.update(cx, |m, _, cx| {
+            assert!(m.search.scope.is_none(), "⌫ in the empty field searches everything");
+            assert!(kinds(m, cx).contains(&Kind::Goals));
+            assert!(arr(m.data.tasks.as_ref().unwrap(), "tasks").iter().any(|t| fmt::ref_of(&t["goal"], "G") != "G1"));
         })
         .unwrap();
     }

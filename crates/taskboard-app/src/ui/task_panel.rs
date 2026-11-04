@@ -2615,7 +2615,7 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
 }
 
 /// An attachment kind's icon colour and tile.
-fn att_tint(t: &Theme, kind: &str) -> (Hsla, Hsla) {
+pub fn att_tint(t: &Theme, kind: &str) -> (Hsla, Hsla) {
     match kind {
         "design" => (t.warn, t.warn_soft),
         "proposal" => (t.goal, t.goal_soft),

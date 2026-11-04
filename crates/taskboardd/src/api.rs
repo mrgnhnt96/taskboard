@@ -2976,12 +2976,13 @@ pub fn attachment_file(app: &App, id: &str) -> Result<std::path::PathBuf> {
 /// `GET /search?q=…`: tasks, backlog issues, goals and goal notes matching the words, best first.
 /// The project defaults to the caller's (from `cwd`); `project=all` searches every one. `kind` is
 /// task, backlog (or issue), goal or note; `open=1` keeps only what's still open. With `palette=1`
-/// it's the app's search palette instead: see [`crate::palette::find`].
+/// it's the app's search palette instead (`goal=<id>` keeps one goal's): see [`crate::palette::find`].
 fn search(app: &App, query: &Query) -> Result<Value> {
     let text = q(query, "q", "");
     if q(query, "palette", "") == "1" {
         let limit = q(query, "limit", "30").parse::<usize>().unwrap_or(30).clamp(1, Paging::MAX);
-        return crate::palette::find(app, text, limit);
+        let goal = q(query, "goal", "").trim_start_matches(['G', 'g']).parse::<i64>().ok();
+        return crate::palette::find(app, text, limit, goal);
     }
     if crate::relevance::fts_query(text).is_none() {
         return err(400, "Say what to search for: a few words.");

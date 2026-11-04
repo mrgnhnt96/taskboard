@@ -531,7 +531,7 @@ fn att_has_href(a: &Value) -> bool {
     att_web(a) || s(a, "url").starts_with('~') || s(a, "url").starts_with('/')
 }
 
-fn open_attachment(url: &str, cx: &mut App) {
+pub fn open_attachment(url: &str, cx: &mut App) {
     if url.starts_with("http://") || url.starts_with("https://") {
         cx.open_url(url);
     } else {

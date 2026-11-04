@@ -124,13 +124,24 @@ fn best<T>(mut found: Vec<((u8, u8, i64), T)>, limit: usize) -> (Vec<T>, usize) 
 /// `GET /search?palette=1&q=…&limit=…`: the best `limit` tasks and backlog issues for the palette,
 /// as `GET /tasks` and `GET /backlog` send them, with how many of each match. With nothing typed:
 /// the tasks still to do and no issues.
-pub fn find(app: &App, q: &str, limit: usize) -> Result<Value> {
+///
+/// With `goal` (`&goal=<id>`, ⌘K on a goal's page) only that goal's tasks and issues, and a task's
+/// words are its title, detail and summary: the goal's name would match every one of them. Its
+/// tasks then carry their `detail` so the app can mark the same matches.
+///
+/// Attachments too, once something is typed: the goal's and its tasks' (else every one), by their
+/// title, then their summary, kind and link; each says whose it is (`task` or `goal`, a ref).
+pub fn find(app: &App, q: &str, limit: usize, goal_id: Option<i64>) -> Result<Value> {
     let w = words(q);
+    let in_goal = |id: Option<i64>| goal_id.is_none() || id == goal_id;
     let goals: HashMap<i64, String> = app.db.q("SELECT id, name FROM goals", p![])?.iter().map(|g| (g.id(), g.st("name"))).collect();
     let goal = |id: Option<i64>| id.and_then(|g| goals.get(&g)).map(String::as_str).unwrap_or("");
 
     let mut tasks = vec![];
     for t in app.db.q("SELECT * FROM tasks", p![])? {
+        if !in_goal(t.i("goal_id")) {
+            continue;
+        }
         let open = t.s("status") != Some("done");
         let sc = if w.is_empty() {
             if !open {
@@ -138,8 +149,9 @@ pub fn find(app: &App, q: &str, limit: usize) -> Result<Value> {
             }
             0
         } else {
-            let other = [t.s("project").unwrap_or(""), goal(t.i("goal_id"))];
-            match score(&rf("task", t.id()), t.s("title").unwrap_or(""), &other, &w) {
+            let s = |k| t.s(k).unwrap_or("");
+            let other = if goal_id.is_some() { [s("detail"), s("summary")] } else { [s("project"), goal(t.i("goal_id"))] };
+            match score(&rf("task", t.id()), s("title"), &other, &w) {
                 Some((sc, _)) => sc,
                 None => continue,
             }
@@ -151,6 +163,9 @@ pub fn find(app: &App, q: &str, limit: usize) -> Result<Value> {
     let mut issues = vec![];
     if !w.is_empty() {
         for b in app.db.q("SELECT * FROM issues", p![])? {
+            if !in_goal(b.i("goal_id")) {
+                continue;
+            }
             let other = [b.s("project").unwrap_or(""), goal(b.i("goal_id")), b.s("area").unwrap_or(""), b.s("detail").unwrap_or(""), b.s("said").unwrap_or("")];
             if let Some((sc, _)) = score(&rf("issue", b.id()), b.s("title").unwrap_or(""), &other, &w) {
                 issues.push(((sc, issue_closed(&b) as u8, -b.id()), b));
@@ -159,7 +174,37 @@ pub fn find(app: &App, q: &str, limit: usize) -> Result<Value> {
     }
     let (issues, issues_total) = best(issues, limit);
 
-    let tasks: Result<Vec<Value>> = tasks.iter().map(|t| board::task_card(app, t)).collect();
+    let mut atts = vec![];
+    if !w.is_empty() {
+        let goal_of: HashMap<i64, Option<i64>> = app.db.q("SELECT id, goal_id FROM tasks", p![])?.iter().map(|t| (t.id(), t.i("goal_id"))).collect();
+        for a in app.db.q("SELECT * FROM attachments WHERE removed_at IS NULL", p![])? {
+            let task = a.i("task_id");
+            if !in_goal(task.map(|t| goal_of.get(&t).copied().flatten()).unwrap_or(a.i("goal_id"))) {
+                continue;
+            }
+            let s = |k| a.s(k).unwrap_or("");
+            if let Some((sc, _)) = score("", s("title"), &[s("summary"), s("kind"), s("url")], &w) {
+                atts.push(((sc, 0, -a.id()), a));
+            }
+        }
+    }
+    let (atts, atts_total) = best(atts, limit);
+    let atts: Vec<Value> = atts
+        .iter()
+        .map(|a| {
+            json!({"id": a.id(), "title": a.v("title"), "summary": a.v("summary"), "kind": a.v("kind"), "url": a.v("url"),
+                   "task": rf_opt("task", a.i("task_id")), "goal": rf_opt("goal", a.i("goal_id"))})
+        })
+        .collect();
+
+    let mut cards_t = vec![];
+    for t in &tasks {
+        let mut c = board::task_card(app, t)?;
+        if goal_id.is_some() {
+            c["detail"] = t.v("detail");
+        }
+        cards_t.push(c);
+    }
     let mut cards = vec![];
     for b in &issues {
         let mut d = board::issue_card(app, b)?;
@@ -167,7 +212,7 @@ pub fn find(app: &App, q: &str, limit: usize) -> Result<Value> {
         d["detail"] = b.v("detail");
         cards.push(d);
     }
-    Ok(json!({"tasks": tasks?, "tasks_total": tasks_total, "issues": cards, "issues_total": issues_total}))
+    Ok(json!({"tasks": cards_t, "tasks_total": tasks_total, "issues": cards, "issues_total": issues_total, "attachments": atts, "attachments_total": atts_total}))
 }
 
 #[cfg(test)]
@@ -181,7 +226,14 @@ mod tests {
     }
 
     fn search(app: &App, q: &str, limit: &str) -> Value {
-        let q: crate::api::Query = [("palette", "1"), ("q", q), ("limit", limit)].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        search_in(app, q, limit, None)
+    }
+
+    fn search_in(app: &App, q: &str, limit: &str, goal: Option<i64>) -> Value {
+        let mut q: crate::api::Query = [("palette", "1"), ("q", q), ("limit", limit)].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        if let Some(g) = goal {
+            q.insert("goal".into(), g.to_string());
+        }
         crate::api::dispatch(app, "GET", "/search", &q, &json!({})).unwrap()
     }
 
@@ -234,5 +286,46 @@ mod tests {
         assert_eq!(none["tasks_total"], 202, "nothing typed: the open tasks");
         assert_eq!(refs(&none, "tasks")[0], format!("T{needs}"), "the one that needs you first");
         assert_eq!(none["issues_total"], 0);
+    }
+
+    #[test]
+    fn a_goal_keeps_its_own_and_finds_words_in_their_detail() {
+        let (_d, app) = board();
+        let g = app.db.insert("goals", crate::fields!["name" => "Passkeys", "project" => "webapp"]).unwrap();
+        let other = app.db.insert("goals", crate::fields!["name" => "Billing", "project" => "webapp"]).unwrap();
+        let mine = app.db.insert("tasks", crate::fields!["title" => "Settings page", "detail" => "List each passkey with a rename", "project" => "webapp", "status" => "queued", "goal_id" => g]).unwrap();
+        let named = app.db.insert("tasks", crate::fields!["title" => "Rename flow", "project" => "webapp", "status" => "done", "summary" => "Shipped behind a flag", "goal_id" => g]).unwrap();
+        app.db.insert("tasks", crate::fields!["title" => "Rename the invoice", "project" => "webapp", "status" => "queued", "goal_id" => other]).unwrap();
+        app.db.insert("tasks", crate::fields!["title" => "Rename loose", "project" => "webapp", "status" => "queued"]).unwrap();
+        let b = app.db.insert("issues", crate::fields!["project" => "webapp", "kind" => "bug", "title" => "Rename loses focus", "state" => "open", "goal_id" => g]).unwrap();
+        app.db.insert("issues", crate::fields!["project" => "webapp", "kind" => "bug", "title" => "Rename the plan", "state" => "open"]).unwrap();
+
+        let v = search_in(&app, "rename", "6", Some(g));
+        // The title match first, then the one found in its detail; nothing from another goal.
+        assert_eq!(refs(&v, "tasks"), [format!("T{named}"), format!("T{mine}")]);
+        assert_eq!(v["tasks_total"], 2);
+        assert_eq!(v["tasks"][1]["detail"], "List each passkey with a rename");
+        assert_eq!(refs(&v, "issues"), [format!("B{b}")]);
+        assert_eq!(refs(&search_in(&app, "flag", "6", Some(g)), "tasks"), [format!("T{named}")], "its summary too");
+        assert_eq!(search_in(&app, "passkeys", "6", Some(g))["tasks_total"], 0, "the goal's own name matches none");
+        assert_eq!(search_in(&app, "", "6", Some(g))["tasks_total"], 1, "nothing typed: its open tasks");
+        assert_eq!(search(&app, "rename", "6")["tasks_total"], 3, "unscoped: every goal, no detail");
+
+        let on_goal = |task: Option<i64>, goal: Option<i64>, title: &str, summary: &str, url: &str| {
+            app.db.insert("attachments", crate::fields!["task_id" => task, "goal_id" => goal, "kind" => "design", "title" => title, "summary" => summary, "url" => url]).unwrap()
+        };
+        let a1 = on_goal(None, Some(g), "Rename mockups", "", "https://example.com/a");
+        let a2 = on_goal(Some(mine), None, "Settings spec", "How rename works", "/tmp/spec.md");
+        on_goal(None, Some(other), "Rename invoices", "", "https://example.com/b");
+        let gone = on_goal(None, Some(g), "Rename old", "", "https://example.com/c");
+        app.db.x("UPDATE attachments SET removed_at = 'x' WHERE id = ?", crate::p![gone]).unwrap();
+        let v = search_in(&app, "rename", "6", Some(g));
+        let ids: Vec<i64> = v["attachments"].as_array().unwrap().iter().map(|a| a["id"].as_i64().unwrap()).collect();
+        assert_eq!(ids, [a1, a2], "the goal's and its tasks', title matches first; not another goal's or a removed one");
+        assert_eq!(v["attachments"][1]["task"], format!("T{mine}"));
+        assert_eq!(v["attachments"][0]["goal"], format!("G{g}"));
+        assert_eq!(search_in(&app, "spec.md", "6", Some(g))["attachments_total"], 1, "its link too");
+        assert_eq!(search(&app, "rename", "6")["attachments_total"], 3, "unscoped: every one still attached");
+        assert_eq!(search_in(&app, "", "6", Some(g))["attachments_total"], 0, "none until something's typed");
     }
 }
