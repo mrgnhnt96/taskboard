@@ -1453,6 +1453,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         let edited = f.iter().any(|(k, _)| matches!(*k, "title" | "detail" | "meta"));
         let moved_text = moved_to.as_deref().map(|p| crate::reproject::moved_text(&t, p));
         board::update_task(app, id, f)?;
+        if (has_key("title") || has_key("detail")) && !has_key("ships_pr") && !has_key("kind") {
+            crate::no_pr_words::apply(app, id, &who)?;
+        }
         if let Some(text) = &moved_text {
             crate::reproject::leave_old(app, &t)?;
             board::log_event(app, id, &who, "status", text)?;

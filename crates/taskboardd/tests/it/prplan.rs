@@ -941,3 +941,94 @@ fn done_at_the_ask_stage_only_comments() {
     b.report("tb.done", json!({"summary": "Fixed it", "pr": "https://github.com/acme/webapp/pull/9"})).unwrap();
     assert_eq!(statuses(&b, id2).last().map(String::as_str), Some("In Code Review"));
 }
+
+// ------------------------------------------------------------------ #908 a task that says it ends without a PR
+
+const LINT: &str = "[[steps]]\nname = \"Lint\"\nprompt = \"Run the linter\"\n";
+
+fn ticket_asks(b: &Board, id: i64) -> usize {
+    jira_jobs(b, id).iter().filter(|a| a["op"] == "create").count()
+}
+
+fn says_no_pr(b: &Board, id: i64) {
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(h.contains("This task ends without a PR"), "{h}");
+    assert!(!h.contains("--pr-body"), "no PR rules: {h}");
+    assert!(!h.contains("Before you open the PR"), "no PR-stage steps: {h}");
+    assert_eq!(ticket_asks(b, id), 0, "no ticket");
+    assert_eq!(b.row(id).i("jira_none"), Some(1));
+    let log: Vec<String> = b.card(id)["log"].as_array().unwrap().iter().map(|e| e["text"].as_str().unwrap_or("").to_string()).collect();
+    assert!(log.iter().any(|l| l.starts_with("Ends without a PR and no ticket") && l.ends_with(&format!("tb task set T{id} --pr yes"))), "{log:?}");
+}
+
+fn says_pr(b: &Board, id: i64) {
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(!h.contains("This task ends without a PR"), "{h}");
+    assert!(h.contains("--pr-body"), "{h}");
+    assert!(h.contains("Before you open the PR"), "{h}");
+}
+
+fn no_pr_board() -> Board {
+    new_board_with(LINT, |c| {
+        c.jira.site = "acme.atlassian.net".into();
+        c.jira.project = "ABC".into();
+    })
+}
+
+#[test]
+fn a_task_that_says_no_pr_gets_a_no_pr_handoff() {
+    let b = no_pr_board();
+    let a = b.task("Time the cold start", json!({"detail": "Measure only; no product code, no PR.", "jira": "create"}));
+    assert_eq!(b.card(a)["ships_pr"], false);
+    says_no_pr(&b, a);
+    let m = b.task("Count the slow queries", json!({"detail": "Measurement only, then report.", "jira": "create"}));
+    says_no_pr(&b, m);
+
+    let e = b.task("Look into the cold start", json!({}));
+    says_pr(&b, e);
+    b.post(&format!("/tasks/T{e}"), json!({"detail": "Investigate it (no PR)."}));
+    says_no_pr(&b, e);
+
+    let linked = b.task("Time the warm start", json!({"detail": "Measure only.", "jira": {"mode": "link", "key": "ABC-4"}}));
+    assert_eq!(b.row(linked).i("ships_pr"), Some(0));
+    assert_eq!(b.row(linked).s("jira_key"), Some("ABC-4"), "a ticket the owner linked stays");
+}
+
+#[test]
+fn pr_words_that_mean_something_else_keep_the_pr() {
+    let b = no_pr_board();
+    for detail in ["Open no duplicate PR for it.", "No PR yet, so open one.", "We want no new PRs on the old branch."] {
+        let id = b.task("Fix the tab bar", json!({"detail": detail}));
+        assert_eq!(b.row(id).i("ships_pr"), None, "{detail}");
+        says_pr(&b, id);
+    }
+}
+
+#[test]
+fn the_owners_pr_yes_wins_over_the_words() {
+    let b = no_pr_board();
+    let id = b.task("Time the cold start", json!({"detail": "Measure only, no PR.", "ships_pr": true}));
+    assert_eq!(b.row(id).i("ships_pr"), Some(1));
+    says_pr(&b, id);
+
+    let later = b.task("Count the slow queries", json!({"detail": "Measure only."}));
+    assert_eq!(b.row(later).i("ships_pr"), Some(0));
+    b.post(&format!("/tasks/T{later}"), json!({"ships_pr": true}));
+    b.post(&format!("/tasks/T{later}"), json!({"detail": "Measure only, no PR, and say how slow."}));
+    assert_eq!(b.row(later).i("ships_pr"), Some(1), "an edit after --pr yes keeps the PR");
+    says_pr(&b, later);
+}
+
+#[test]
+fn a_no_pr_task_isnt_told_to_name_its_dependency_in_a_pr() {
+    let b = new_board();
+    let dep = b.task("Add the endpoint", json!({}));
+    board::update_task(&b.app, dep, vec![("status", json!("done"))]).unwrap();
+    let with = b.task("Use the endpoint", json!({"waits_for": format!("T{dep}")}));
+    let without = b.task("Time the endpoint", json!({"detail": "Measure only.", "waits_for": format!("T{dep}")}));
+    let line = "Say in the PR description that it needs that PR first.";
+    assert!(handoff::build(&b.app, with).unwrap().contains(line));
+    let h = handoff::build(&b.app, without).unwrap();
+    assert!(h.contains("Rebase, never merge."), "{h}");
+    assert!(!h.contains(line), "{h}");
+}

@@ -602,11 +602,12 @@ pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
     }
     out.push("This task needs work from another task, and it's ready:".to_string());
     out.extend(lines);
+    let pr_first = if crate::projects::task_ships_pr(app, t)? { " Say in the PR description that it needs that PR first." } else { "" };
     out.push(format!(
         "Bring it in with git, not by asking {}: git fetch origin, then rebase this task's branch so it sits on top \
          of that work. When it isn't merged yet, rebase onto its branch (git rebase origin/<its branch>), or with a \
          base of your own already, replay just your commits on top: git rebase --onto origin/<its branch> <your base> \
-         <your branch>. Rebase, never merge. Say in the PR description that it needs that PR first.",
+         <your branch>. Rebase, never merge.{pr_first}",
         app.cfg.owner
     ));
     Ok(out.join("\n"))

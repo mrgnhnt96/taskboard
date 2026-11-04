@@ -213,6 +213,9 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         text += &format!(", linked {k}");
     }
     board::log_event(app, tid, who, "status", &text)?;
+    if !body_has(body, "ships_pr") && kind.is_none() && crate::no_pr_words::apply(app, tid, who)? && jkey.is_none() {
+        jmode = "none".into();
+    }
     crate::devices::take_needs(app, "task", tid, body, who)?;
     crate::bits::take_task_bits(app, tid, body, who)?;
     let t = board::get_task(app, tid)?;
