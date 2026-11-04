@@ -4492,9 +4492,15 @@ fn run_release_script(script: &str, name: &str, dir: Option<&str>, replaces: boo
     Ok(status.code().unwrap_or(1))
 }
 
-/// `tb release cut`'s runner: the release script, once the checkout is on main or a release/* branch.
+/// `tb release cut`'s runner: the release script, once the checkout is on main or a release/* branch
+/// and fast-forwarded to origin's copy of it, so the release is cut from the latest.
 fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<&str>, replaces: bool) -> Result<i32, String> {
-    need_release_branch(&checkout_branch(&release_checkout(dir)))?;
+    let top = release_checkout(dir);
+    let branch = checkout_branch(&top);
+    need_release_branch(&branch)?;
+    if let Some(did) = taskboardd::default_sync::catch_up(&top, &branch).map_err(|e| format!("{e}."))? {
+        out(&format!("{did}."));
+    }
     run_release_script(script, name, dir, replaces)
 }
 
@@ -9538,5 +9544,78 @@ mod tests {
         let (code, err) = release_sh(&["--force", "not-a-version"], None);
         assert_eq!(code, 1);
         assert!(err.starts_with("Usage:"), "past the guard with --force: {err}");
+    }
+
+    /// A checkout holding this repo's scripts/release.sh, cloned from a bare origin that then gets a
+    /// commit it doesn't have, all in a fresh temp folder named by `tag`. The folder, the origin, the
+    /// clone that pushes to it, the checkout.
+    fn release_sh_behind_origin(tag: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("tb-release-sh-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let (origin, seed, at) = (tmp.join("origin.git"), tmp.join("seed"), tmp.join("checkout"));
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        };
+        git(&tmp, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+        git(&tmp, &["clone", "-q", origin.to_str().unwrap(), seed.to_str().unwrap()]);
+        git(&seed, &["switch", "-q", "-c", "main"]);
+        std::fs::create_dir(seed.join("scripts")).unwrap();
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/release.sh"), seed.join("scripts/release.sh")).unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-qm", "a"]);
+        git(&seed, &["push", "-q", "origin", "main"]);
+        git(&tmp, &["clone", "-q", origin.to_str().unwrap(), at.to_str().unwrap()]);
+        git(&seed, &["commit", "-q", "--allow-empty", "-m", "merged-pr"]);
+        git(&seed, &["push", "-q", "origin", "main"]);
+        (tmp, origin, seed, at)
+    }
+
+    fn rev(dir: &std::path::Path) -> String {
+        let o = std::process::Command::new("git").arg("-C").arg(dir).args(["rev-parse", "HEAD"]).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// Runs the checkout's release.sh for a beta, with no deploy key so it stops before anything is pushed.
+    fn release_sh_in(at: &std::path::Path) -> (i32, String) {
+        let o = std::process::Command::new("bash")
+            .arg(at.join("scripts/release.sh"))
+            .arg("0.1.0-beta.1")
+            .env("TB_RELEASE", "v0.1.0-beta.1")
+            .env("TB_RELEASE_DEPLOY_KEY", at.join("no-such-key"))
+            .output()
+            .unwrap();
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stderr).into_owned())
+    }
+
+    #[test]
+    fn release_sh_fast_forwards_a_checkout_behind_origin() {
+        let (tmp, origin, _seed, at) = release_sh_behind_origin("behind");
+        let (code, err) = release_sh_in(&at);
+        assert_eq!(code, 1);
+        assert!(err.contains("No release deploy key"), "past the fast-forward: {err}");
+        assert_eq!(rev(&at), rev(&origin), "on origin's latest main");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn release_sh_refuses_a_diverged_checkout() {
+        let (tmp, origin, seed, at) = release_sh_behind_origin("diverged");
+        let o = std::process::Command::new("git").arg("-C").arg(&at).args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "stale bump"]).output().unwrap();
+        assert!(o.status.success());
+        let before = rev(&at);
+        let (code, err) = release_sh_in(&at);
+        assert_eq!(code, 1);
+        assert!(err.contains("can't fast-forward"), "{err}");
+        assert_eq!(rev(&at), before, "left as it is");
+        assert_eq!(rev(&origin), rev(&seed), "nothing pushed");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn release_sh_pushes_the_branch_and_tag_atomically() {
+        let script = include_str!("../../../scripts/release.sh");
+        assert!(script.contains("git push --atomic "), "a rejected branch must not leave a pushed tag");
     }
 }

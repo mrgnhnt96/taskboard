@@ -535,3 +535,63 @@ fn the_board_looks_for_a_release_run_only_in_a_github_checkout() {
     let r = call(&app, "POST", "/releases", json!({"name": "v1", "project": "api", "cwd": other.to_string_lossy()}));
     assert_eq!(r["run_looking"], false, "off GitHub there's no run to wait for");
 }
+
+fn commit(dir: &std::path::Path, file: &str) {
+    std::fs::write(dir.join(file), file).unwrap();
+    git(dir, &["add", file]);
+    git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", file]);
+}
+
+fn rev(dir: &std::path::Path, r: &str) -> String {
+    let o = std::process::Command::new("git").arg("-C").arg(dir).args(["rev-parse", r]).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// webapp's checkout cloned from a bare origin, which then gets a commit it doesn't have (as when a PR
+/// merges after the checkout last fetched), with a release script that pushes HEAD to origin's main and
+/// notes the commit it cut from. A pending cut on webapp waits on one done task. The origin, the seed
+/// clone that pushes to it, and the script's note.
+fn behind_origin(d: &std::path::Path, app: &App) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let (origin, seed, webapp, note) = (d.join("origin.git"), d.join("seed"), d.join("webapp"), d.join("cut-from"));
+    git(d, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(d, &["clone", "-q", origin.to_str().unwrap(), seed.to_str().unwrap()]);
+    git(&seed, &["switch", "-q", "-c", "main"]);
+    commit(&seed, "a");
+    git(&seed, &["push", "-q", "origin", "main"]);
+    git(d, &["clone", "-q", origin.to_str().unwrap(), webapp.to_str().unwrap()]);
+    commit(&seed, "merged-pr");
+    git(&seed, &["push", "-q", "origin", "main"]);
+
+    releases_on(app, "webapp");
+    let script = format!("git push -q origin HEAD:main && git rev-parse HEAD > '{}' #", note.display());
+    call(app, "POST", "/projects/webapp", json!({"release_script": script}));
+    let t = task(app, "webapp", "Login form", None);
+    call(app, "POST", "/releases", json!({"name": "v1", "project": "webapp", "after": [format!("T{t}")]}));
+    done(app, t, None);
+    (origin, seed, note)
+}
+
+#[test]
+fn a_pending_cut_fast_forwards_a_checkout_behind_origin_before_its_script() {
+    let (d, app) = new_board();
+    let (origin, seed, note) = behind_origin(d.path(), &app);
+    let ready = taskboardd::pending_cut::check(&app).unwrap();
+    let rel = taskboardd::pending_cut::fire(&app, &ready[0]).unwrap();
+    assert!(rel.is_some(), "cut: {:?}", alert_texts(&app));
+    let latest = rev(&seed, "HEAD");
+    assert_eq!(std::fs::read_to_string(&note).unwrap().trim(), latest, "the script ran on origin's latest main");
+    assert_eq!(rev(&origin, "main"), latest);
+}
+
+#[test]
+fn a_pending_cut_on_a_diverged_checkout_drops_and_pushes_nothing() {
+    let (d, app) = new_board();
+    let (origin, seed, note) = behind_origin(d.path(), &app);
+    commit(&d.path().join("webapp"), "stale-version-bump");
+    let ready = taskboardd::pending_cut::check(&app).unwrap();
+    assert_eq!(taskboardd::pending_cut::fire(&app, &ready[0]).unwrap(), None);
+    assert!(!note.exists(), "the script never ran");
+    assert_eq!(rev(&origin, "main"), rev(&seed, "HEAD"), "nothing pushed");
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+    assert!(alert_texts(&app).iter().any(|a| a.contains("v1") && a.contains("can't fast-forward")), "{:?}", alert_texts(&app));
+}

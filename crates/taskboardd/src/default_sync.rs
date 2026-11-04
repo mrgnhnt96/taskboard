@@ -4,7 +4,8 @@
 //! branch fast-forwarded to origin's: moved in place when no worktree has it checked out, else merged
 //! `--ff-only` where it is, but only when that checkout has no changes to tracked files and no merge or
 //! rebase under way. A branch with commits of its own is left alone. A worktree slot claimed from a
-//! local branch gets the same before it starts (`freshen`).
+//! local branch gets the same before it starts (`freshen`), and a release cut's checkout before its
+//! release script runs (`catch_up`), which refuses the cut when it can't.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -86,6 +87,10 @@ pub(crate) fn fetch(repo: &str) -> Git {
     if FETCHED.lock().unwrap().get(repo).is_some_and(|at| at.elapsed().as_secs_f64() < FRESH_SECS) {
         return Git { code: 0, out: String::new(), err: String::new() };
     }
+    fetch_now(repo)
+}
+
+fn fetch_now(repo: &str) -> Git {
     let r = git(repo, &["fetch", "-q", "origin"], FETCH_SECS);
     if r.code == 0 {
         FETCHED.lock().unwrap().insert(repo.to_string(), Instant::now());
@@ -143,6 +148,47 @@ fn fast_forward(repo: &str, branch: &str) -> Option<String> {
         }
     }
     Some(format!("fast-forwarded {branch} to origin/{branch}: it was {} behind", plural(behind, "commit")))
+}
+
+/// Before a release script runs in the checkout `at`, on `branch`: fetches origin (always, a cut that
+/// fires right after a merge needs that merge) and fast-forwards the branch to origin's, so a release is
+/// never cut from a stale base. Nothing to do when the repo has no origin, origin has no such branch, or
+/// the branch already has all of origin's. What it did; or why the cut can't go ahead: the fetch failed,
+/// the branch has commits origin's doesn't and so can't fast-forward, or the checkout has changes or is
+/// mid-merge. Never switches branches.
+pub fn catch_up(at: &str, branch: &str) -> std::result::Result<Option<String>, String> {
+    if branch.is_empty() || !has_origin(at) {
+        return Ok(None);
+    }
+    let f = fetch_now(at);
+    if f.code != 0 {
+        return Err(format!("git fetch origin failed in {at}, so it couldn't be brought up to origin/{branch}: {}", last_line(&f.err)));
+    }
+    let remote = format!("refs/remotes/origin/{branch}");
+    if git(at, &["rev-parse", "--verify", "--quiet", &remote], GIT_SECS).code != 0 {
+        return Ok(None);
+    }
+    let count = |range: String| {
+        let r = git(at, &["rev-list", "--count", &range], GIT_SECS);
+        if r.code == 0 { Ok(r.out.trim().parse::<i64>().unwrap_or(0)) } else { Err(format!("couldn't compare {branch} with origin/{branch}: {}", last_line(&r.err))) }
+    };
+    let behind = count(format!("HEAD..{remote}"))?;
+    if behind == 0 {
+        return Ok(None);
+    }
+    let lag = format!("{branch} in {at} is {} behind origin/{branch}", plural(behind, "commit"));
+    let own = count(format!("{remote}..HEAD"))?;
+    if own > 0 {
+        return Err(format!("{lag} and has {} of its own, so it can't fast-forward. Bring it in line with origin/{branch} and cut again", plural(own, "commit")));
+    }
+    if let Some(why) = busy(at) {
+        return Err(format!("{lag} and {why}, so it can't fast-forward. Cut again once it's clean"));
+    }
+    let r = git(at, &["merge", "--ff-only", "-q", &remote], GIT_SECS);
+    if r.code != 0 {
+        return Err(format!("{lag}; fast-forwarding it failed: {}", last_line(&r.err)));
+    }
+    Ok(Some(format!("fast-forwarded {branch} in {at} to origin/{branch}: it was {} behind", plural(behind, "commit"))))
 }
 
 /// The default branch's name: origin's HEAD, else main or master on origin, when the repo has it locally.
@@ -262,6 +308,43 @@ mod tests {
         assert!(text.starts_with("fast-forwarded main"), "{text}");
         assert_eq!(head(&clone, "refs/heads/main"), head(&origin, "HEAD"));
         assert_eq!(freshen(clone.to_str().unwrap(), "origin/main", true), None);
+    }
+
+    #[test]
+    fn catch_up_fast_forwards_a_checkout_behind_origin() {
+        let (_tmp, origin, clone) = setup();
+        let at = clone.to_str().unwrap();
+        let text = catch_up(at, "main").unwrap().unwrap();
+        assert!(text.contains("2 commits behind"), "{text}");
+        assert_eq!(head(&clone, "HEAD"), head(&origin, "HEAD"));
+        assert_eq!(catch_up(at, "main"), Ok(None), "already level");
+        commit(&clone, "ahead");
+        assert_eq!(catch_up(at, "main"), Ok(None), "ahead of origin has all of origin's");
+    }
+
+    #[test]
+    fn catch_up_refuses_a_diverged_or_dirty_checkout() {
+        let (_tmp, origin, clone) = setup();
+        let at = clone.to_str().unwrap();
+        commit(&clone, "mine");
+        let before = head(&clone, "HEAD");
+        let why = catch_up(at, "main").unwrap_err();
+        assert!(why.contains("1 commit of its own") && why.contains("can't fast-forward"), "{why}");
+        assert_eq!(head(&clone, "HEAD"), before, "left as it is");
+
+        sh(&clone, &["reset", "-q", "--hard", "HEAD~1"]);
+        std::fs::write(clone.join("a"), "edited").unwrap();
+        let why = catch_up(at, "main").unwrap_err();
+        assert!(why.contains("uncommitted changes"), "{why}");
+        assert_ne!(head(&clone, "HEAD"), head(&origin, "HEAD"));
+    }
+
+    #[test]
+    fn catch_up_has_nothing_to_do_without_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        sh(tmp.path(), &["init", "-q", "-b", "main"]);
+        commit(tmp.path(), "a");
+        assert_eq!(catch_up(tmp.path().to_str().unwrap(), "main"), Ok(None));
     }
 
     #[test]
