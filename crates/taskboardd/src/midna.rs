@@ -1259,7 +1259,8 @@ pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
             let (Some(sid), Some(by)) = (e["session_id"].as_str(), e["actor"]["kind"].as_str()) else { continue };
             if e["kind"] == "session.opened" {
                 if let Some(trigger) = e["actor"]["name"].as_str().filter(|n| by == "trigger" && !n.is_empty()) {
-                    crate::start_grants::note_opened(app, sid, trigger)?;
+                    let id = e["actor"]["trigger"].as_str().filter(|t| !t.is_empty());
+                    crate::start_grants::note_opened(app, sid, trigger, id)?;
                 }
                 continue;
             }
