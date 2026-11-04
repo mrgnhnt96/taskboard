@@ -1809,14 +1809,9 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
 }
 
 /// The owner's word in terminal `sid` to merge task `id`'s PR #`num`, if there's one ([`merge_word_in`]).
-/// The owner's own `!` run of it counts too: the command.
 pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<MergeWord>> {
     if sid.is_empty() {
         return Ok(None);
-    }
-    if let Some(cmd) = owners_bang(app, sid, &PR_MERGE_CMD_RE)? {
-        let overrides = OVERRIDE_FLAG_RE.is_match(&cmd);
-        return Ok(Some(MergeWord { text: cmd, approved: false, overrides }));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
@@ -1827,13 +1822,9 @@ pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
 }
 
 /// The owner's word in terminal `sid` to close task `id`'s PR #`num` ([`close_word_in`]): the prompt.
-/// The owner's own `!` run of it counts too: the command.
 pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
-    }
-    if let Some(cmd) = owners_bang(app, sid, &PR_CLOSE_CMD_RE)? {
-        return Ok(Some(cmd));
     }
     let mut prompts = prompts_of(app, sid, None)?;
     note_questions(app, id, &mut prompts)?;
@@ -1903,54 +1894,27 @@ pub fn move_word_in(prompts: &[Prompt], id: i64, own: bool) -> Option<usize> {
 }
 
 /// The owner's word in terminal `sid` to move task `id` to a terminal of its own ([`move_word_in`]): the
-/// prompt, or the owner's own `!` run of `tb move`.
+/// prompt.
 pub fn owners_move_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
-    }
-    let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
-    if let Some(cmd) = bang.filter(|c| MOVE_CMD_RE.is_match(c)) {
-        return Ok(Some(format!("! {cmd}")));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
     Ok(move_word_in(&prompts, id, own).map(|i| prompts[i].text.clone()))
 }
 
-/// A shell command that runs `tb move`.
-static MOVE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\btb\s+move\b").unwrap());
-
 /// The owner's word in terminal `sid` that they've reviewed task `id`'s PR #`num` ([`reviewed_word_in`]):
 /// the prompt.
-/// The owner's own `!` run of it counts too: the command.
 pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
-    }
-    if let Some(cmd) = owners_bang(app, sid, &PR_REVIEWED_CMD_RE)? {
-        return Ok(Some(cmd));
     }
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
     let goal = crate::board::get_task(app, id)?.i("goal_id");
     Ok(reviewed_word_in(&prompts, id, num, own, goal).map(|i| prompts[i].text.clone()))
 }
-
-/// The command the owner is running now with Claude Code's `!` prefix in terminal `sid`, as "! <cmd>",
-/// when it's one `cmd` matches: their own run of a `tb pr` command is their word for it.
-pub(crate) fn owners_bang(app: &App, sid: &str, cmd: &Regex) -> Result<Option<String>> {
-    let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
-    Ok(bang.filter(|c| cmd.is_match(c)).map(|c| format!("! {c}")))
-}
-
-/// A shell command that runs `tb pr reviewed`.
-static PR_REVIEWED_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+reviewed\b").unwrap());
-/// A shell command that runs `tb pr merge`.
-static PR_MERGE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+merge\b").unwrap());
-/// `tb pr merge`'s override flag, in the owner's own run of it.
-static OVERRIDE_FLAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s--override\b").unwrap());
-/// A shell command that runs `tb pr close`.
-static PR_CLOSE_CMD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpr\s+close\b").unwrap());
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
 /// "the goal" can mean.

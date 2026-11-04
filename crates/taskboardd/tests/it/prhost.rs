@@ -787,49 +787,6 @@ fn the_owners_bare_pr_numbers_in_a_terminal_with_no_task_are_their_word_to_merge
     assert_eq!(b.phase(id), "merged");
 }
 
-impl Board {
-    /// The owner running `cmd` with Claude Code's `!` prefix in terminal s2, which has no task.
-    fn owner_runs(&self, cmd: &str) {
-        self.report("hook.prompt", "s2", json!({"prompt": "hi"}));
-        let dir = self.app.cfg.claude_projects.join("-elsewhere");
-        std::fs::create_dir_all(&dir).unwrap();
-        let lines = [json!({"type": "user", "message": {"content": "hi"}}), json!({"type": "user", "message": {"content": format!("<bash-input>{cmd}</bash-input>")}})];
-        std::fs::write(dir.join("c-s2.jsonl"), lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
-    }
-}
-
-/// B484: the owner's own `!` run of `tb pr merge` or `tb pr close` is their word for it.
-#[test]
-fn the_owners_own_bang_run_merges_or_closes_the_pr() {
-    let mut approved = green();
-    approved.reviewers = vec![reviewer("a", "approved")];
-    approved.approvals = 1;
-    let b = board_with(|_| {});
-    let id = b.pr_task(BB);
-    let h = fake(&b, approved.clone());
-    poll(&b);
-    let merge = || b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "via_session": "s2"}));
-    let close = || b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s2"}));
-    b.owner_runs("tb pr close T1");
-    assert!(merge().unwrap_err().contains("merges this project's PRs"), "a close run is no merge");
-    b.owner_runs("tb pr merge T1");
-    assert!(close().unwrap_err().contains("haven't told you to close this one"), "a merge run is no close");
-    merge().unwrap();
-    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
-    assert_eq!(b.phase(id), "merged");
-    let by = b.app.db.q("SELECT who FROM events WHERE task_id = ?", vec![json!(id)]).unwrap();
-    assert!(by.iter().any(|r| r.st("who").contains(" via ")), "merged on the owner's word: {by:?}");
-
-    let b = board_with(|_| {});
-    let id = b.pr_task(BB);
-    let h = fake(&b, approved);
-    poll(&b);
-    b.owner_runs("tb pr close T1 --reason 'went another way'");
-    b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s2"})).unwrap();
-    assert!(h.calls().iter().any(|c| c.starts_with("close")), "{:?}", h.calls());
-    assert_eq!(b.phase(id), "declined");
-}
-
 #[test]
 fn the_owner_approved_override_keeps_the_conflict_changes_and_stack_checks() {
     let why = json!({"owner_approved": "One approval is enough"});

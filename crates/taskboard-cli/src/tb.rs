@@ -970,7 +970,7 @@ enum ReleaseCmd {
 
 #[derive(Subcommand)]
 enum StartGrantCmd {
-    /// Let terminals a Midna trigger opens start the tasks they make. Only the owner's own `!` run counts
+    /// Let terminals a Midna trigger opens start the tasks they make. Asks the owner in a notification; their Grant sets it
     Add {
         /// The Midna trigger's name, as midna trigger list shows it
         #[arg(long)]
