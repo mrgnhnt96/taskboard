@@ -3,8 +3,10 @@
 //! grant, a terminal that trigger opened may start the tasks its own conversation made.
 //!
 //! Which trigger opened a terminal comes from Midna's `session.opened` event (`actor: {kind: "trigger",
-//! name}`), which an agent can't write, never from a prompt or a terminal's name. A grant names one
-//! trigger by its Midna id too: one with the same name that an agent added later isn't it. Only the
+//! name, trigger}`), which an agent can't write, never from a prompt or a terminal's name. That covers a
+//! terminal the trigger's headless `--run` script opens with `midna open`: Midna marks it `via: "run"` from
+//! the run's process, not from anything the script sets. A grant names one trigger by its Midna id too:
+//! one with the same name that an agent added later isn't it. Only the
 //! owner sets a grant: in the app, or with Grant on the notification the board sends when a terminal asks for
 //! one (`tb start-grant add` there, theirs or an agent's). Anyone may take one away.
 //!
@@ -24,15 +26,23 @@ CREATE TABLE IF NOT EXISTS start_grants(
 CREATE TABLE IF NOT EXISTS trigger_opened(session_id TEXT PRIMARY KEY, trigger TEXT NOT NULL, at TEXT);
 "#;
 
-/// Notes that Midna's trigger `trigger` opened terminal `sid`.
-pub fn note_opened(app: &App, sid: &str, trigger: &str) -> Result<()> {
-    app.db.x("INSERT OR REPLACE INTO trigger_opened(session_id, trigger, at) VALUES (?, ?, ?)", p![sid, trigger, now_iso()])?;
+/// The trigger's Midna id, when Midna's event named it (`actor.trigger`); null from a Midna that only
+/// gave its name.
+pub const ADDED: &[(&str, &str, &str)] = &[("trigger_opened", "trigger_id", "TEXT")];
+
+/// Notes that Midna's trigger `trigger` (id `trigger_id`, when Midna gave it) opened terminal `sid`.
+pub fn note_opened(app: &App, sid: &str, trigger: &str, trigger_id: Option<&str>) -> Result<()> {
+    app.db.x(
+        "INSERT OR REPLACE INTO trigger_opened(session_id, trigger, trigger_id, at) VALUES (?, ?, ?, ?)",
+        p![sid, trigger, trigger_id, now_iso()],
+    )?;
     Ok(())
 }
 
-/// The trigger that opened terminal `sid`, if one did.
-pub fn opened_by(app: &App, sid: &str) -> Result<Option<String>> {
-    Ok(app.db.q1("SELECT trigger FROM trigger_opened WHERE session_id = ?", p![sid])?.map(|r| r.st("trigger")))
+/// The trigger that opened terminal `sid`, if one did: its name, and its id when Midna gave it.
+pub fn opened_by(app: &App, sid: &str) -> Result<Option<(String, Option<String>)>> {
+    let row = app.db.q1("SELECT trigger, trigger_id FROM trigger_opened WHERE session_id = ?", p![sid])?;
+    Ok(row.map(|r| (r.st("trigger"), r.s("trigger_id").filter(|t| !t.is_empty()).map(str::to_string))))
 }
 
 fn active(app: &App) -> Result<Vec<Row>> {
@@ -103,12 +113,17 @@ pub fn remove(app: &App, id: i64) -> Result<Value> {
 /// The owner's grant that lets terminal `sid` start task `t` with no word in its conversation, as the log's
 /// "Started on …" line: a trigger opened `sid`, a grant names that trigger (and the task's project, when
 /// it names one), the trigger is still the one granted, and `sid`'s own conversation made the task.
+/// When Midna named the trigger's id, the grant is matched by that id alone, so a renamed trigger keeps it.
 pub fn honored(app: &App, sid: &str, t: &Row) -> Result<Option<String>> {
-    let Some(trigger) = opened_by(app, sid)? else { return Ok(None) };
+    let Some((trigger, trigger_id)) = opened_by(app, sid)? else { return Ok(None) };
     let project = t.st("project");
     let grants: Vec<Row> = active(app)?
         .into_iter()
-        .filter(|g| g.st("trigger") == trigger && g.s("project").is_none_or(|p| p.is_empty() || p == project))
+        .filter(|g| match &trigger_id {
+            Some(id) => g.st("trigger_id") == *id,
+            None => g.st("trigger") == trigger,
+        })
+        .filter(|g| g.s("project").is_none_or(|p| p.is_empty() || p == project))
         .collect();
     if grants.is_empty() {
         return Ok(None);
@@ -118,6 +133,10 @@ pub fn honored(app: &App, sid: &str, t: &Row) -> Result<Option<String>> {
         .q1("SELECT 1 FROM session_events WHERE session_id = ? AND kind = ? AND data = ? LIMIT 1", p![sid, crate::startword::MADE, t.id().to_string()])?;
     if made.is_none() {
         return Ok(None);
+    }
+    if trigger_id.is_some() {
+        let g = &grants[0];
+        return Ok(Some(format!("Started on {}'s standing grant S{} for trigger '{}'", app.cfg.owner, g.id(), g.st("trigger"))));
     }
     let now = match the_trigger(app, &trigger) {
         Ok(v) => v["id"].as_str().unwrap_or("").to_string(),

@@ -148,6 +148,41 @@ fn a_new_trigger_with_the_granted_name_isnt_granted() {
 }
 
 #[test]
+fn a_terminal_a_triggers_run_script_opened_starts_the_task_it_made() {
+    let b = board();
+    b.opened_by(json!({"kind": "trigger", "name": "Nightly triage", "trigger": "t_1", "via": "run"}));
+    b.grant(json!({"trigger": "Nightly triage"})).unwrap();
+    let id = b.new_task();
+    b.tb_start(id).unwrap();
+    assert_ne!(b.status(id), "waiting");
+    let log = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", taskboardd::p![id]).unwrap();
+    assert!(log.iter().any(|r| r.st("text").contains("standing grant S1 for trigger 'Nightly triage'")), "{:?}", log.iter().map(|r| r.st("text")).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_run_terminal_is_matched_by_its_triggers_id_not_its_name() {
+    let b = board();
+    b.grant(json!({"trigger": "Nightly triage"})).unwrap();
+    b.opened_by(json!({"kind": "trigger", "name": "Nightly triage", "trigger": "t_2", "via": "run"}));
+    let id = b.new_task();
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403, "another trigger under the granted name");
+
+    b.set_triggers(r#"[{"id": "t_1", "name": "Morning triage"}]"#);
+    b.opened_by(json!({"kind": "trigger", "name": "Morning triage", "trigger": "t_1", "via": "run"}));
+    b.tb_start(id).unwrap();
+    assert_ne!(b.status(id), "waiting", "the granted trigger, renamed");
+}
+
+#[test]
+fn a_run_scripts_terminal_without_midnas_trigger_link_isnt_granted() {
+    let b = board();
+    b.opened_by(json!({"kind": "agent"}));
+    b.grant(json!({"trigger": "Nightly triage"})).unwrap();
+    let id = b.new_task();
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+}
+
+#[test]
 fn a_removed_grant_stops_starting() {
     let b = board();
     b.opened_by(json!({"kind": "trigger", "name": "Nightly triage"}));
