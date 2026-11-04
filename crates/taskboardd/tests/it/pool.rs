@@ -313,6 +313,24 @@ fn a_task_can_need_no_devices_over_its_goals_needs() {
 }
 
 #[test]
+fn a_human_task_takes_none_of_its_goals_devices_unless_set_on_it() {
+    let b = new_board();
+    b.post("devices", json!({"name": "ipad-1", "tags": "tablet"}));
+    let g = b.goal();
+    b.post(&format!("goals/G{g}"), json!({"devices": "tablet"}));
+    let h = b.task("Sign the contract", json!({"goal_id": g, "kind": "human"}));
+    let t = b.task("Build it", json!({"goal_id": g}));
+    assert!(b.get(&format!("tasks/T{h}"))["devices"].is_null(), "a human task doesn't ask for its goal's tablet");
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![t], "the agent task gets the only tablet");
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["ipad-1"]));
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_loans WHERE task_id = ?", p![h]).unwrap(), 0);
+    b.post(&format!("tasks/T{h}"), json!({"devices": "tablet"}));
+    assert_eq!(b.get(&format!("tasks/T{h}"))["devices"]["needs_text"], "tablet", "set on it, it asks for one");
+}
+
+#[test]
 fn a_task_started_by_hand_without_free_devices_says_so() {
     let b = new_board();
     b.post("devices", json!({"name": "pixel-7", "tags": "android"}));

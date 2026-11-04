@@ -237,10 +237,14 @@ fn read_needs(app: &App, owner: &str) -> Result<Option<Vec<Need>>> {
     Ok(Some(clean_needs(Some(&serde_json::from_str::<Value>(&v).unwrap_or(json!([]))))?))
 }
 
-/// What the task asks for: its own needs, else its goal's.
+/// What the task asks for: its own needs, else its goal's. A human task asks only for its own: no
+/// agent runs it, so a device lent from its goal's needs would sit unused while agent tasks wait.
 pub fn needs(app: &App, t: &Row) -> Result<Vec<Need>> {
     if let Some(n) = read_needs(app, &rf("task", t.id()))? {
         return Ok(n);
+    }
+    if crate::human::is(t) {
+        return Ok(vec![]);
     }
     match t.i("goal_id") {
         Some(g) => Ok(read_needs(app, &rf("goal", g))?.unwrap_or_default()),
