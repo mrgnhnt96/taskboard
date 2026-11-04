@@ -958,6 +958,27 @@ fn the_owner_closes_a_pr_and_an_agent_only_on_their_word() {
 }
 
 #[test]
+fn an_agent_on_a_done_tasks_pr_closes_it_when_the_owner_answers_its_question() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s2", "name": "Term s2", "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    prflow::picked_up(&b.app, &b.task(id), "s2", "Term s2").unwrap();
+    let close = || b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s2", "reason": "Went another way"}));
+    board::session_event(&b.app, "s2", "reply", "PR #9 is still open; #12 merged already.", None).unwrap();
+    b.report("hook.prompt", "s2", json!({"prompt": "close the PR"}));
+    assert!(close().unwrap_err().contains("haven't told you to close this one"), "the reply names two PRs");
+    b.report("tb.question", "s2", json!({"text": "Should I close PR #9, or keep it open?"}));
+    board::session_event(&b.app, "s2", "reply", "Asked whether to close it; #12 is merged.", None).unwrap();
+    b.report("hook.prompt", "s2", json!({"prompt": "yeah, close the PR."}));
+    close().unwrap();
+    assert!(h.calls().contains(&"close: Went another way".to_string()), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "declined");
+}
+
+#[test]
 fn the_owner_closes_a_pr_from_their_own_shell_but_not_a_merged_one() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);

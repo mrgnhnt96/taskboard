@@ -1089,6 +1089,11 @@ pub struct Prompt {
     /// The end of the agent's message just before it, if the board has it: a bare "yes" answers the
     /// question it ends on ([`asks_to_start`]).
     pub reply: Option<String>,
+    /// When the board got it.
+    pub at: String,
+    /// The question the agent put to the owner with `tb question`, on the task being read, since the prompt
+    /// before this one: this prompt answers it, so "close the PR" there means that task's PR.
+    pub asked: Option<String>,
 }
 
 impl Prompt {
@@ -1558,7 +1563,7 @@ fn prompts_of(app: &App, sid: &str, item: Option<ItemTask>) -> Result<Vec<Prompt
     // Every prompt (the board's too, so a task made in reply to one isn't put on the prompt before it)
     // and every task the conversation made, oldest first.
     let rows = app.db.q(
-        "SELECT id, kind, text, full, data FROM session_events WHERE session_id = ? AND kind IN ('prompt', 'reply', ?)
+        "SELECT id, at, kind, text, full, data FROM session_events WHERE session_id = ? AND kind IN ('prompt', 'reply', ?)
            AND id > COALESCE((SELECT MAX(id) FROM session_events WHERE session_id = ? AND kind = 'start'), 0)
          ORDER BY id",
         p![sid, MADE, sid],
@@ -1579,7 +1584,7 @@ fn prompts_of(app: &App, sid: &str, item: Option<ItemTask>) -> Result<Vec<Prompt
             }
             _ => {
                 let (text, clipped) = typed_naming(r, item);
-                prompts.push(Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: reply.take(), ..Prompt::default() });
+                prompts.push(Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: reply.take(), at: r.st("at"), ..Prompt::default() });
             }
         }
     }
@@ -1786,7 +1791,9 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
         };
         let r = read_of(k, &as_task_refs(&bare_prs_as_refs(&text), id, num));
         let named = p.reply.as_deref().map(prs_in).unwrap_or_default();
+        let answers = p.asked.as_deref().map(prs_in).is_some_and(|asked| asked.is_empty() || asked.contains(&num));
         let unnamed = |a: &Ask| match a {
+            Ask::Unnamed if answers => true,
             Ask::Unnamed => if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) },
             Ask::Them if sets.is_some() => if named.is_empty() { i == 0 && own } else { named.contains(&num) },
             _ => false,
@@ -1828,9 +1835,35 @@ pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     if let Some(cmd) = owners_bang(app, sid, &PR_CLOSE_CMD_RE)? {
         return Ok(Some(cmd));
     }
-    let prompts = prompts_of(app, sid, None)?;
-    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    let mut prompts = prompts_of(app, sid, None)?;
+    note_questions(app, id, &mut prompts)?;
+    let own = owns_done_or_open(app, sid, id)?;
     Ok(close_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
+}
+
+/// Whether task `id` is terminal `sid`'s own: its open task, else (once it's on none) the done task it's
+/// visiting or last handed in, as a `tb question` from it is asked on.
+fn owns_done_or_open(app: &App, sid: &str, id: i64) -> Result<bool> {
+    if let Some(t) = crate::board::task_for_session(app, Some(sid))? {
+        return Ok(t.id() == id);
+    }
+    if crate::prflow::visited_by(app, sid)?.is_some_and(|t| t.id() == id) {
+        return Ok(true);
+    }
+    Ok(crate::board::last_task_of(app, sid)?.is_some_and(|t| t.id() == id))
+}
+
+/// Puts on each of `prompts` (newest first) the latest `tb question` asked on task `id` between the
+/// prompt before it and it ([`Prompt::asked`]).
+fn note_questions(app: &App, id: i64, prompts: &mut [Prompt]) -> Result<()> {
+    let Some(since) = prompts.last().map(|p| p.at.clone()) else { return Ok(()) };
+    let asked = app.db.q("SELECT at, text FROM events WHERE task_id = ? AND kind = 'question' AND at >= ? ORDER BY at, id", p![id, since])?;
+    for i in 0..prompts.len() {
+        let after = prompts.get(i + 1).map(|p| p.at.clone()).unwrap_or_default();
+        let at = &prompts[i].at;
+        prompts[i].asked = asked.iter().rev().find(|q| q.st("at") >= after && q.st("at") <= *at).map(|q| q.st("text"));
+    }
+    Ok(())
 }
 
 const MOVE_VERB: &str = r"(?:move|send|shift|transfer|put|push|hand\s+off|carry\s+on\s+with|continue|resume|start|run|open|take)";
@@ -4229,6 +4262,27 @@ mod tests {
         assert_eq!(merge_word_in(&prompts(&["close PR #194"], None), 95, 194, false), None, "a close is no merge");
         assert_eq!(close_word_in(&prompts(&["close 194 and 17342"], None), 95, 194, false), Some(0), "bare numbers");
         assert_eq!(close_word_in(&prompts(&["close 3 terminals"], None), 95, 3, false), None);
+    }
+
+    #[test]
+    fn an_answer_to_the_agents_question_closes_the_pr() {
+        let answering = |asked: &str, reply: &str, text: &str| {
+            vec![Prompt { asked: Some(asked.into()), reply: Some(reply.into()), ..Prompt::new(text) }]
+        };
+        let mixed = "PR #194 is open and #190 merged.";
+        assert_eq!(close_word_in(&after_reply(mixed, "yeah, close the PR."), 95, 194, true), None, "the reply names two PRs");
+        for yes in ["yeah, close the PR.", "yes, close the PR", "ok close the pull request"] {
+            assert_eq!(close_word_in(&answering("Asked you on PR #194: Should I close it?", mixed, yes), 95, 194, false), Some(0), "{yes}");
+            assert_eq!(close_word_in(&answering("Asked: Close the PR or keep it?", mixed, yes), 95, 194, false), Some(0), "{yes}");
+        }
+        assert_eq!(close_word_in(&answering("Asked you on PR #190: Should I close it?", mixed, "yeah, close the PR."), 95, 194, false), None);
+        assert_eq!(close_word_in(&answering("Asked you on PR #194: Should I close it?", mixed, "don't close the PR"), 95, 194, false), None);
+        assert_eq!(close_word_in(&answering("Asked you on PR #194: Should I close it?", mixed, "yeah"), 95, 194, false), None, "a bare yes isn't the word");
+        assert_eq!(close_word_in(&prompts(&["yeah, close the PR."], None), 95, 194, true), Some(0), "the terminal's own PR");
+    }
+
+    fn after_reply(reply: &str, text: &str) -> Vec<Prompt> {
+        vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }]
     }
 
     #[test]
