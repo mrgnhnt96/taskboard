@@ -281,8 +281,8 @@ fn git(dir: &str, args: &[&str]) -> Option<String> {
     Some(o.stdout.trim().to_string())
 }
 
-/// Runs the release script in the cut's checkout, which must be on main or a release/* branch, as `tb
-/// release cut` does. Why it didn't go out, if it didn't.
+/// Runs the release script in the cut's checkout, which must be on main or a release/* branch and is
+/// fast-forwarded to origin's copy of it first, as `tb release cut` does. Why it didn't go out, if it didn't.
 fn run_script(app: &App, r: &Row, script: &str) -> Option<String> {
     let name = r.st("name");
     let dir = r.s("dir").map(str::to_string).or_else(|| crate::projects::project_path(app, Some(r.s("project")?)).ok().flatten());
@@ -292,6 +292,11 @@ fn run_script(app: &App, r: &Row, script: &str) -> Option<String> {
     if branch != "main" && !branch.starts_with("release/") {
         let on = if branch.is_empty() { "a detached HEAD".to_string() } else { branch };
         return Some(format!("{top} is on {on}, and the release script only runs on main or a release/* branch"));
+    }
+    match crate::default_sync::catch_up(&top, &branch) {
+        Err(why) => return Some(why),
+        Ok(Some(did)) => app.info(format!("pending cut: {did}")),
+        Ok(None) => {}
     }
     let replaces = crate::releases::failed_named(app, &r.st("project"), &name).unwrap_or(false);
     let mut env = vec![("TB_RELEASE".to_string(), name.clone())];

@@ -57,6 +57,15 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "Commit or stash your changes first." >&2
   exit 1
 fi
+# Cut from the latest: origin may have merged work since this checkout last fetched, and a version
+# commit on a stale base can't be pushed. Fast-forward only; a branch with commits of its own stops here.
+git fetch --tags origin
+if [ "$branch" != HEAD ] && git rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null; then
+  if ! git merge --ff-only -q "origin/$branch"; then
+    echo "$branch has commits origin/$branch doesn't, so it can't fast-forward. Bring it in line with origin/$branch and cut again." >&2
+    exit 1
+  fi
+fi
 # main only takes PRs. The release commit is the one direct push, made with a deploy key
 # the repo's main-branch ruleset lets past. Set it up: README.md, "Developing".
 deploy_key=${TB_RELEASE_DEPLOY_KEY:-$HOME/.ssh/taskboard-release}
@@ -64,11 +73,12 @@ if [ ! -f "$deploy_key" ]; then
   echo "No release deploy key at $deploy_key (see README.md, \"Developing\")." >&2
   exit 1
 fi
+# --atomic: the branch and the tag go together or not at all, so a rejected branch never leaves a
+# published tag (whose release workflow would ship without the branch's commit).
 push() {
-  GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes" git push git@github.com:mrgnhnt96/taskboard.git "$@"
+  GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes" git push --atomic git@github.com:mrgnhnt96/taskboard.git "$@"
   git fetch -q origin
 }
-git fetch --tags origin
 replace=
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   if [ -z "${TB_RELEASE_REPLACE:-}" ]; then
