@@ -562,6 +562,12 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             Ok(usage::state(app))
         }
         ("GET", ["terminals"]) => crate::dispatch::terminals_state(app),
+        ("GET", ["start-grants"]) => crate::start_grants::list(app),
+        ("POST", ["start-grants"]) => start_grant_add(app, query, body),
+        ("POST", ["start-grants", id, "remove"]) => {
+            let n = id.trim_start_matches(['S', 's']).parse::<i64>().map_err(|_| ApiError::new(404, "There's no such grant."))?;
+            app.db.tx(|| crate::start_grants::remove(app, n))
+        }
         ("POST", ["terminals"]) => {
             crate::dispatch::set_board_max(app, body)?;
             app.notify_jobs();
@@ -1581,6 +1587,10 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         "Started in the UI".to_string()
     } else {
         if !crate::startword::granted(app, &via, id, false)? && crate::startword::owners_word(app, &via, id)?.is_none() {
+            if let Some(grant) = crate::start_grants::honored(app, &via, &t)? {
+                let started = format!("{grant} via {}", board::session_name(app, Some(&via), None));
+                return launch(app, id, &mode, body["session_id"].as_str(), &started, &via);
+            }
             // An ask for the goal ("start the goal") is no word for each of its tasks; the goal runs them.
             let goal = board::find_goal(app, t.i("goal_id"))?
                 .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
@@ -1599,6 +1609,26 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
     launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
+}
+
+/// A standing start grant (`tb start-grant add`): only the owner's, from the app or their own `!` run of
+/// the command in a terminal. What an agent types, or a prompt says, never sets one.
+fn start_grant_add(app: &App, query: &Query, body: &Value) -> Result<Value> {
+    let via = body_str(body, "via_session");
+    let by = if from_app(query) {
+        "the app".to_string()
+    } else if !via.is_empty() && crate::startword::owners_bang(app, &via, &crate::start_grants::ADD_CMD_RE)?.is_some() {
+        format!("{}'s own run in {}", app.cfg.owner, board::session_name(app, Some(&via), None))
+    } else {
+        return err(
+            403,
+            format!(
+                "Only {} can grant a standing start: they run it themselves (! tb start-grant add --trigger \"<name>\") or set it in the app.",
+                app.cfg.owner
+            ),
+        );
+    };
+    crate::start_grants::add(app, &by, body)
 }
 
 /// A start at a set time (`at`: `5pm`, `tomorrow 9am`, or `off` to drop it) for `what`: the owner's from

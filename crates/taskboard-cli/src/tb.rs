@@ -576,6 +576,12 @@ enum Cmd {
         #[arg(long, value_parser = ["off", "clear"])]
         today: Option<String>,
     },
+    /// The owner's standing word for terminals a Midna trigger opens: they may start the tasks they make
+    #[command(name = "start-grant")]
+    StartGrant {
+        #[command(subcommand)]
+        action: StartGrantCmd,
+    },
     /// Show or change how many task terminals run at once across the board; tasks over it wait for a free slot
     Terminals {
         /// A count from 1 to 50, or default (config.toml's [terminals] global_max)
@@ -960,6 +966,23 @@ enum ReleaseCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum StartGrantCmd {
+    /// Let terminals a Midna trigger opens start the tasks they make. Only the owner's own `!` run counts
+    Add {
+        /// The Midna trigger's name, as midna trigger list shows it
+        #[arg(long)]
+        trigger: String,
+        /// Only tasks in this project
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// The standing grants
+    List,
+    /// Take a grant away (S3)
+    Remove { id: String },
 }
 
 #[derive(Subcommand)]
@@ -7126,6 +7149,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 };
                 out(&format!("{} · {floor}", if st["mode"] == "always" { "Always during the hours" } else { "Only while agents have work" }));
             }
+            Ok(0)
+        }
+        Cmd::StartGrant { action } => {
+            let v = match action {
+                StartGrantCmd::Add { trigger, project } => {
+                    c.call("POST", "/start-grants", Some(json!({"trigger": trigger, "project": project, "via_session": c.session})))?
+                }
+                StartGrantCmd::List => c.call("GET", "/start-grants", None)?,
+                StartGrantCmd::Remove { id } => c.call("POST", &format!("/start-grants/{id}/remove"), Some(json!({})))?,
+            };
+            out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
         Cmd::Terminals { max } => {

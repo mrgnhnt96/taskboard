@@ -521,6 +521,7 @@ impl Db {
         conn.execute_batch(crate::merges::SCHEMA)?;
         conn.execute_batch(crate::merges::BACKFILL)?;
         conn.execute_batch(crate::samepr::SCHEMA)?;
+        conn.execute_batch(crate::start_grants::SCHEMA)?;
         let changed: Arc<Mutex<Vec<(String, i64)>>> = Default::default();
         let hooked = changed.clone();
         conn.update_hook(Some(move |_, _: &str, table: &str, rowid: i64| hooked.lock().push((table.to_string(), rowid))));

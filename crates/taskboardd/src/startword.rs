@@ -1905,7 +1905,7 @@ pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<O
 
 /// The command the owner is running now with Claude Code's `!` prefix in terminal `sid`, as "! <cmd>",
 /// when it's one `cmd` matches: their own run of a `tb pr` command is their word for it.
-fn owners_bang(app: &App, sid: &str, cmd: &Regex) -> Result<Option<String>> {
+pub(crate) fn owners_bang(app: &App, sid: &str, cmd: &Regex) -> Result<Option<String>> {
     let bang = crate::board::get_session(app, Some(sid))?.and_then(|s| crate::transcript::running_bang(app, &s));
     Ok(bang.filter(|c| cmd.is_match(c)).map(|c| format!("! {c}")))
 }
