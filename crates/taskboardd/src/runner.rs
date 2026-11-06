@@ -8,13 +8,10 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, human, jira, jobs, limits, locks, midna, p, prflow, projects, reports, transcript, usage, waitsfor, worktrees};
+use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, human, jira, jobs, limits, locks, midna, p, prflow, reports, transcript, usage, waitsfor, worktrees};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
-    if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
-        return Ok(Some(r.to_string()));
-    }
-    projects::project_path(app, t.s("project"))
+    worktrees::repo_of(app, t)
 }
 
 pub fn offer_text(app: &App, t: &Row) -> String {
