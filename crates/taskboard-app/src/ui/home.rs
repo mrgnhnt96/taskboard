@@ -239,6 +239,8 @@ pub fn ask_vm(a: &Value) -> Ask {
     let focus = |r: String| if card["terminal_open"] == false && opt_s(card, "question").is_some() { Act::AskAgain(r) } else { Act::Focus(r) };
     let (sev, kind, act): (Sev, &str, Option<Act>) = if let Some(id) = a["review_id"].as_i64() {
         (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
+    } else if s(a, "key").starts_with("quiet:") {
+        (Sev::Warn, "Gone quiet", pr_url(card).map(Act::OpenPr).or(r.clone().map(Act::OpenTask)))
     } else if let Some(b) = &miss {
         (Sev::Warn, "Done-when missed", Some(Act::OpenIssue(b.clone())))
     } else if let Some(b) = &critical {
@@ -1218,6 +1220,17 @@ mod tests {
         assert_eq!((merged.status.as_str(), merged.tone), ("Done", "up"));
         let closed = tile_vm(&card(json!({"status": "done", "pr": {"num": 195, "state": "CLOSED"}})));
         assert_eq!(closed.status, "Done");
+    }
+
+    #[test]
+    fn quiet_work_says_so_and_opens_its_pr() {
+        let pr = json!({"num": 7, "url": "https://example.com/pr/7", "stage": {"phase": "merge"}});
+        let a = ask_vm(&json!({"id": "a1", "key": "quiet:T5", "task": "T5", "at": "2026-10-09T10:00:00Z",
+            "title": "Form", "detail": "PR #7 is open with no update since Oct 2", "text": "T5: Form.",
+            "card": card(json!({"ref": "T5", "status": "done", "title": "Form", "pr": pr}))}));
+        assert_eq!((a.kind.as_str(), a.sev, a.title.as_str()), ("Gone quiet", Sev::Warn, "Form"));
+        assert_eq!(a.act, Some(Act::OpenPr("https://example.com/pr/7".into())));
+        assert!(a.snooze && a.dismiss && !a.answer);
     }
 
     #[test]

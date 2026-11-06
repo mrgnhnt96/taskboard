@@ -84,6 +84,7 @@ pub mod projects;
 pub mod propen;
 pub mod qa;
 pub mod quality;
+pub mod quiet;
 pub mod pending_cut;
 pub mod release_run;
 pub mod release_tags;
@@ -193,6 +194,7 @@ pub fn start_threads(app: &Arc<App>) {
         spawn(app, "runner", runner::run);
         spawn(app, "feed-listener", feed::listener_loop);
         spawn(app, "checkin", checkin::run);
+        spawn(app, "quiet", quiet::run);
         spawn(app, "suggest", suggest::run);
         spawn(app, "spans", spans::run);
         spawn(app, "review", review::run);

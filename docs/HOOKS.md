@@ -303,7 +303,9 @@ prompt = "Sign off the screens this task changes."
   holding its task open. Heredocs and pipes in the command still feed what they name; the call is still asked for
   as it would have been. A turn that hangs some other way is the check-in's: once Haiku calls it stuck
   (checkin.rs), the board raises a `stuck:<session>` alert for the owner, taken down when a later check-in finds
-  it working or the turn ends.
+  it working or the turn ends. Started work with no terminal to read, like a done task's open PR, is the
+  quiet check's (quiet.rs): no update in `[quiet] after_hours` raises a `quiet:T<n>` alert, taken down when the
+  task moves.
 - **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
   create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do
