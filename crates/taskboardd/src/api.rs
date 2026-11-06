@@ -296,6 +296,11 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "pick"]) => pick(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "did"]) => owner_did(app, tid(id)?, query, body),
+        ("POST", ["tasks", id, "owner-answer"]) => {
+            let id = tid(id)?;
+            crate::human::answer(app, id, body)?;
+            task_detail(app, id)
+        }
         ("POST", ["tasks", id, "talk"]) => crate::human::talk(app, tid(id)?),
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
         ("POST", ["tasks", id, "close-terminal"]) => close_terminal(app, tid(id)?, body),
@@ -396,6 +401,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["goals", id, "notes"]) => goal_note(app, gid(id)?, body),
         ("POST", ["goals", id, "notes", nid]) => goal_note_edit(app, gid(id)?, nid, body),
         ("POST", ["goals", id, "plan"]) => goal_plan(app, gid(id)?, body),
+        ("POST", ["goals", id, "set-aside"]) => patch_goal(app, gid(id)?, &json!({"deprioritized": true})),
+        ("POST", ["goals", id, "bring-back"]) => patch_goal(app, gid(id)?, &json!({"deprioritized": false})),
         ("GET", ["goals", id, "review"]) => crate::plan_review::show(app, gid(id)?),
         ("POST", ["goals", id, "review"]) => crate::plan_review::start(app, gid(id)?, body),
         ("POST", ["goals", id, "accept"]) => accept_goal(app, gid(id)?, body),
@@ -465,6 +472,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         }
         ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?, body)),
         ("POST", ["backlog", id, "drop"]) => app.db.tx(|| drop_issue(app, iid(id)?, body)),
+        ("POST", ["backlog", id, "without-goal"]) => app.db.tx(|| finish_goal_without(app, iid(id)?, body)),
         ("POST", ["backlog", id, "reopen"]) => app.db.tx(|| reopen_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "move"]) => app.db.tx(|| move_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "note"]) => {
@@ -649,7 +657,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             app.db.tx(|| alerts::clear_alerts(app, None, a["id"].as_str()))?;
             Ok(json!({"alerts": alerts::listing(app)}))
         }
-        ("POST", ["alerts", id, "dismiss"]) if id.starts_with(crate::home::TASK_ID) => {
+        ("POST", ["alerts", id, "dismiss"]) if crate::home::not_an_alert(id) => {
             crate::home::put_away(app, id, None)?;
             Ok(json!({"alerts": alerts::listing(app)}))
         }
@@ -670,26 +678,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             Ok(json!({"alerts": alerts::listing(app)}))
         }
         ("POST", ["alerts", id, "act"]) => alerts::act(app, id, body["n"].as_u64().unwrap_or(0) as usize),
-        // `{mins}`, `{until: "tomorrow"}` (when the work hours start) or `{until: "back"}` (after the
-        // owner's next stretch away).
-        ("POST", ["alerts", id, "snooze"]) => {
-            let task = id.starts_with(crate::home::TASK_ID);
-            if !task && !alerts::alerts(app).iter().any(|a| a["id"] == *id) {
-                return err(404, "There's no alert with that id.");
-            }
-            let until = match (body["until"].as_str(), body["mins"].as_i64()) {
-                (Some("tomorrow"), _) => Some(hours::tomorrow_start(app)),
-                (Some("back"), _) => None,
-                (None, Some(mins)) if (1..=7 * 24 * 60).contains(&mins) => Some(now_ts() + mins as f64 * 60.0),
-                _ => return err(400, "Snooze for a number of minutes (up to a week), until \"tomorrow\" or until \"back\"."),
-            };
-            if task {
-                return Ok(json!({"alert": crate::home::put_away(app, id, Some(until))?}));
-            }
-            let a = app.db.tx(|| alerts::snooze_to(app, id, until))?;
-            alerts::withdraw(app, id);
-            Ok(json!({"alert": a}))
-        }
+        ("POST", ["alerts", id, "snooze"]) => snooze(app, id, body),
         _ => {
             let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "limits", "status-bar", "usage", "prs", "alerts", "reviews"];
             if segs.first().map(|s| known.contains(s)).unwrap_or(false) && (method == "GET" || method == "POST") {
@@ -1955,6 +1944,47 @@ fn owner_did(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     task_detail(app, id)
 }
 
+/// `POST /alerts/:id/snooze`: puts a Needs you item off. `{mins}`, `{until}` of `tomorrow` or
+/// `next_week` (when those work hours start) or `back` (after the owner's next stretch away), or
+/// `{after_goal}` (once that goal finishes).
+fn snooze(app: &App, id: &str, body: &Value) -> Result<Value> {
+    use alerts::Later;
+    if !crate::home::not_an_alert(id) && !alerts::alerts(app).iter().any(|a| a["id"] == *id) {
+        return err(404, "There's no alert with that id.");
+    }
+    let later = match (body["until"].as_str(), body["mins"].as_i64(), body.get("after_goal").filter(|g| !g.is_null())) {
+        (None, None, Some(g)) => Later::AfterGoal(goal_to_wait_for(app, id, g)?),
+        (Some("tomorrow"), _, None) => Later::At(hours::tomorrow_start(app)),
+        (Some("next_week"), _, None) => Later::At(hours::next_week_start(app)),
+        (Some("back"), _, None) => Later::Back,
+        (None, Some(mins), None) if (1..=7 * 24 * 60).contains(&mins) => Later::At(now_ts() + mins as f64 * 60.0),
+        _ => return err(400, "Snooze for a number of minutes (up to a week), until \"tomorrow\", \"next_week\" or \"back\", or after a goal."),
+    };
+    if crate::home::not_an_alert(id) {
+        return Ok(json!({"alert": crate::home::put_away(app, id, Some(later))?}));
+    }
+    let a = app.db.tx(|| alerts::snooze_to(app, id, &later))?;
+    alerts::withdraw(app, id);
+    Ok(json!({"alert": a}))
+}
+
+/// The goal in an `after_goal`. It must be going, and not the item's own: the item holds that goal
+/// open, so it would never come back.
+fn goal_to_wait_for(app: &App, item: &str, goal: &Value) -> Result<i64> {
+    let g = match goal.as_i64() {
+        Some(n) => n,
+        None => gid(goal.as_str().unwrap_or(""))?,
+    };
+    let Some(row) = board::find_goal(app, Some(g))? else { return err(404, format!("There's no goal {}.", rf("goal", g))) };
+    if alerts::goal_over(app, g)? {
+        return err(409, format!("{} is over already: {}.", rf("goal", g), row.st("name")));
+    }
+    if crate::home::item_goal(app, item)? == Some(g) {
+        return err(409, format!("This holds {} open, so it would never come back. Pick another goal.", rf("goal", g)));
+    }
+    Ok(g)
+}
+
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
@@ -3204,6 +3234,25 @@ fn drop_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     app.db.update("issues", &json!(id), fields!["state" => "drop", "updated_at" => now_iso()])?;
     let reason = one_line(&body_str(body, "reason"), 300);
     board::add_issue_event(app, id, &issue_actor(body), "drop", &format!("Closed as won’t do{}", if reason.is_empty() { String::new() } else { format!(": {reason}") }), None)?;
+    board::miss_settled(app, &b)?;
+    issue_detail(app, id)
+}
+
+/// Finish the goal without it: a miss on the goal's done-when stays open in the backlog as ordinary
+/// work and stops holding the goal, which finishes if that was the last thing open.
+fn finish_goal_without(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let b = board::get_issue(app, id)?;
+    need_open(&b)?;
+    if !b.b("misses_goal") {
+        return err(409, format!("{} isn't holding a goal open.", rf("issue", id)));
+    }
+    app.db.update("issues", &json!(id), fields!["misses_goal" => 0, "blocks" => null, "blocks_why" => null, "updated_at" => now_iso()])?;
+    let who = issue_actor(body);
+    let goal = b.i("goal_id").map(|g| rf("goal", g)).unwrap_or_else(|| "the goal".into());
+    board::add_issue_event(app, id, &who, "note", &format!("Moved to the backlog: {goal} finishes without it"), None)?;
+    if let Some(g) = b.i("goal_id") {
+        board::add_goal_note(app, g, "decision", &format!("Finishing without {}: {}", rf("issue", id), b.st("title")), Some(&rf("issue", id)), false, None)?;
+    }
     board::miss_settled(app, &b)?;
     issue_detail(app, id)
 }

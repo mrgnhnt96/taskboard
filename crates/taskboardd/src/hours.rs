@@ -396,8 +396,18 @@ pub fn goal_open(app: &App, g: Option<&Row>) -> bool {
 
 /// When tomorrow's work hours start, in the Mac's local time, as a board timestamp.
 pub fn tomorrow_start(app: &App) -> f64 {
-    let midnight = (now_local().date() + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap_or_default();
-    let at = midnight + Duration::minutes(mins(&get(app).start));
+    day_start(app, now_local().date() + Duration::days(1))
+}
+
+/// When next Monday's work hours start, in the Mac's local time, as a board timestamp.
+pub fn next_week_start(app: &App) -> f64 {
+    let today = now_local().date();
+    day_start(app, today + Duration::days(7 - today.weekday().num_days_from_monday() as i64))
+}
+
+/// When work hours start on `day`, in the Mac's local time, as a board timestamp.
+pub fn day_start(app: &App, day: chrono::NaiveDate) -> f64 {
+    let at = day.and_hms_opt(0, 0, 0).unwrap_or_default() + Duration::minutes(mins(&get(app).start));
     at.and_local_timezone(chrono::Local).earliest().map(|d| d.timestamp() as f64).unwrap_or_else(|| now_ts() + 86400.0)
 }
 

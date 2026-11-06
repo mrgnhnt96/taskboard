@@ -220,6 +220,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("sessions", "api_error_at", "TEXT"),
     ("sessions", "api_error_tries", "INT DEFAULT 0"),
     ("tasks", "human_min", "INT"),
+    ("tasks", "owner_answer", "TEXT"),
     ("issues", "area", "TEXT"),
     ("issues", "impact", "TEXT"),
     ("issues", "priority", "TEXT"),

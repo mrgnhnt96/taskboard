@@ -2,9 +2,10 @@
 //!
 //! It reads the same `GET /home` the app's home page does (the alerts, each with its task's card, and
 //! the goals held after a wave for review) and acts through the same endpoints its buttons post to:
-//! an answer or a picker's choices, Restart, Mark done, Continue, Dismiss and Snooze. What only the
-//! owner's own click may do (Start, Done on a human task) it points at instead: `tb start`, which
-//! checks the owner's word, or the app.
+//! an answer or a picker's choices, Restart, Mark done, Continue, Dismiss, Snooze, the answers on a
+//! to-do other than Done, Finish the goal without it and Set goal aside. What only the owner's own
+//! click may do (Start, Done on a human task) it points at instead: `tb start`, which checks the
+//! owner's word, or the app.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -44,12 +45,46 @@ pub enum NeedsCmd {
     /// Take an alert off the list for a while, only on the owner's word (30 minutes when left out)
     Snooze {
         item: String,
-        #[arg(long, conflicts_with = "until")]
+        #[arg(long, conflicts_with_all = ["until", "after_goal"])]
         mins: Option<i64>,
-        /// tomorrow (when the work hours start) or back (after the owner's next stretch away)
-        #[arg(long, value_parser = ["tomorrow", "back"])]
+        /// tomorrow or next-week (when those work hours start), or back (after the owner's next stretch away)
+        #[arg(long, value_parser = ["tomorrow", "next-week", "back"], conflicts_with = "after_goal")]
         until: Option<String>,
+        /// Until this goal finishes: G<n>
+        #[arg(long)]
+        after_goal: Option<String>,
     },
+    /// A to-do the owner can't do: hand it back so what waits finds another way, only on the owner's word
+    CantDo {
+        item: String,
+        /// Why, for the agents that wait for it
+        note: Option<String>,
+    },
+    /// A to-do that waits on someone else: off the list until a date, with what waits still waiting, only on the owner's word
+    WaitingOn {
+        item: String,
+        /// The date it comes back: 2026-11-12
+        #[arg(long)]
+        until: String,
+        /// Who or what it waits on
+        note: Option<String>,
+    },
+    /// A to-do nothing should wait for: what waits carries on and it stays on the list, only on the owner's word
+    DontWait {
+        item: String,
+        /// A note for the agents that carry on
+        note: Option<String>,
+    },
+    /// A to-do that isn't needed: cancel it, only on the owner's word
+    NotNeeded {
+        item: String,
+        /// A note for the agents that wait for it
+        note: Option<String>,
+    },
+    /// A missed target: leave it in the backlog so the goal can finish, only on the owner's word
+    Without { item: String },
+    /// Set the item's goal aside, only on the owner's word
+    SetAside { item: String },
 }
 
 /// A question as (question, [(label, description)], multi).
@@ -85,6 +120,12 @@ pub struct Item {
     /// The backlog item that holds a PR and waits for the owner to approve or reject it.
     pub critical: Option<String>,
     pub review: Option<i64>,
+    /// The tasks it holds up.
+    pub holds: Vec<String>,
+    /// The goal it holds open.
+    pub holds_goal: Option<String>,
+    /// An agent waits on the owner's word.
+    pub waiting: bool,
 }
 
 fn st<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -93,6 +134,10 @@ fn st<'a>(v: &'a Value, k: &str) -> &'a str {
 
 fn opt(v: &Value, k: &str) -> Option<String> {
     v[k].as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn refs(holds: &Value) -> Vec<String> {
+    holds["tasks"].as_array().map(|ts| ts.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
 fn phase(card: &Value) -> &str {
@@ -196,6 +241,9 @@ fn item(a: &Value) -> Item {
         critical,
         review: a["review_id"].as_i64(),
         alert,
+        holds: refs(&a["holds"]),
+        holds_goal: opt(&a["holds"], "goal"),
+        waiting: a["waiting"] == true,
     }
 }
 
@@ -214,6 +262,7 @@ fn stop(e: &Value) -> Option<Item> {
     let line = g["stopped"].as_str().filter(|l| l.contains(" is done"))?;
     let n: i64 = line.strip_prefix("Wave ")?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
     let gr = opt(g, "ref").or_else(|| g["id"].as_i64().map(|id| format!("G{id}")))?;
+    let stage = &e["stage"];
     Some(Item {
         handle: gr.clone(),
         kind: "Wave stop",
@@ -221,7 +270,7 @@ fn stop(e: &Value) -> Option<Item> {
         text: line.to_string(),
         task: None,
         goal: Some(gr),
-        alert: None,
+        alert: opt(stage, "id"),
         wave: Some(n),
         project: st(e, "project").to_string(),
         at: st(g, "updated_at").to_string(),
@@ -231,10 +280,13 @@ fn stop(e: &Value) -> Option<Item> {
         picker: false,
         fixes: vec![],
         dismiss: false,
-        snooze: false,
+        snooze: stage.is_object(),
         miss: None,
         critical: None,
         review: None,
+        holds: refs(&stage["holds"]),
+        holds_goal: opt(&stage["holds"], "goal"),
+        waiting: false,
     })
 }
 
@@ -303,10 +355,29 @@ pub fn list_lines(items: &[Item]) -> Vec<String> {
         if !age.is_empty() {
             where_.push(age);
         }
+        where_.extend(holds_line(i));
         out.push(format!("{}  {} · {} · {}", i.handle, i.kind, short(&i.title, 110), where_.join(" · ")));
     }
     out.push("tb needs show <item> for one in full and what can be done about it.".into());
     out
+}
+
+fn holds_line(i: &Item) -> Option<String> {
+    match (i.holds.len(), &i.holds_goal) {
+        (0, None) => None,
+        (0, Some(_)) => Some("Holds its goal".into()),
+        (1, _) => Some("Holds 1 task".into()),
+        (n, _) => Some(format!("Holds {n} tasks")),
+    }
+}
+
+/// How much is put off and when the next of it is back: "Later 2 · back Nov 12", or None with nothing put off.
+pub fn later_line(home: &Value) -> Option<String> {
+    let n = home["later_count"].as_i64().filter(|n| *n > 0)?;
+    Some(match home["next_back"].as_str() {
+        Some(at) => format!("Later {n} · back {}", when(at, "%b %-d")),
+        None => format!("Later {n}"),
+    })
 }
 
 /// What can be done about the item, as commands.
@@ -335,10 +406,17 @@ pub fn todo(i: &Item) -> Vec<String> {
         }
         "Couldn't start" => out.push(format!("tb start {h}")),
         "Wave stop" => out.push(format!("tb needs continue {h}   (wave {} starts)", i.wave.map(|n| n + 1).unwrap_or(0))),
-        "Your task" => out.push("Only the owner does a human task: follow its steps, then press Done on its page in the app.".into()),
+        "Your task" => {
+            out.push("Only the owner does a human task: follow its steps, then press Done on its page in the app.".into());
+            out.push(format!("tb needs cant-do {h} \"<why>\"   (hand it back: what waits finds another way)"));
+            out.push(format!("tb needs waiting-on {h} --until <YYYY-MM-DD> \"<who>\"   (off the list until then)"));
+            out.push(format!("tb needs dont-wait {h}   (what waits carries on, and it stays listed)"));
+            out.push(format!("tb needs not-needed {h}   (cancel it)"));
+        }
         "Done-when missed" => {
             if let Some(b) = &i.miss {
                 out.push(format!("tb backlog show {b}, then tb backlog task {b}, tb backlog ticket {b} or tb backlog drop {b} --reason \"…\""));
+                out.push(format!("tb needs without {h}   (it stays in the backlog and the goal can finish)"));
             }
         }
         "Weekly review" => {
@@ -360,7 +438,10 @@ pub fn todo(i: &Item) -> Vec<String> {
         out.push(format!("tb needs dismiss {h}"));
     }
     if i.snooze {
-        out.push(format!("tb needs snooze {h} [--mins 60 | --until tomorrow | --until back]"));
+        out.push(format!("tb needs snooze {h} [--mins 60 | --until tomorrow | --until next-week | --until back | --after-goal G<n>]"));
+    }
+    if let Some(g) = &i.goal {
+        out.push(format!("tb needs set-aside {h}   (sets {g} aside)"));
     }
     out
 }
@@ -383,6 +464,11 @@ pub fn show_lines(i: &Item) -> Vec<String> {
     }
     if let Some(a) = &i.alert {
         facts.push(format!("alert {a}"));
+    }
+    if !i.holds.is_empty() {
+        facts.push(format!("Holds {}", i.holds.join(", ")));
+    } else if let Some(g) = &i.holds_goal {
+        facts.push(format!("Holds {g}"));
     }
     out.push(facts.join(" · "));
     if !i.text.is_empty() {
@@ -468,7 +554,15 @@ fn critical_request(i: &Item, b: &str, text: Option<&str>, picks: &[String]) -> 
     Ok((format!("/backlog/{b}/critical"), json!({"approve": approve})))
 }
 
-/// The request for Restart, Finish, Continue, Dismiss or Snooze on `i`: (path, body).
+/// An answer on a to-do of the owner's other than Done.
+fn owner_answer(i: &Item, answer: &str, note: &Option<String>) -> Result<(String, Value), String> {
+    match i.task.as_deref().filter(|_| i.kind == "Your task") {
+        Some(t) => Ok((format!("/tasks/{t}/owner-answer"), json!({"answer": answer, "note": note.as_deref().unwrap_or("")}))),
+        None => Err(format!("{} isn't a to-do of the owner's ({}).", i.handle, i.kind)),
+    }
+}
+
+/// The request for an action on `i`, anything but an answer: (path, body).
 pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> {
     let lost = matches!(i.kind, "Terminal lost" | "Looks finished");
     let alert = || i.alert.clone().ok_or_else(|| format!("{} has no alert to take off the list: it stays until it's handled.", i.handle));
@@ -488,14 +582,31 @@ pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> 
             _ => format!("{} has no alert to dismiss: it stays until it's handled.", i.handle),
         }),
         NeedsCmd::Dismiss { .. } => Ok((format!("/alerts/{}/dismiss", alert()?), json!({}))),
-        NeedsCmd::Snooze { mins, until, .. } => {
-            let body = match (mins, until) {
-                (_, Some(u)) => json!({"until": u}),
-                (Some(m), None) => json!({"mins": m}),
-                (None, None) => json!({"mins": 30}),
+        NeedsCmd::Snooze { mins, until, after_goal, .. } => {
+            let body = match (mins, until, after_goal) {
+                (_, _, Some(g)) => json!({"after_goal": g}),
+                (_, Some(u), None) => json!({"until": u.replace('-', "_")}),
+                (Some(m), None, None) => json!({"mins": m}),
+                (None, None, None) => json!({"mins": 30}),
             };
             Ok((format!("/alerts/{}/snooze", alert()?), body))
         }
+        NeedsCmd::CantDo { note, .. } => owner_answer(i, "cant_do", note),
+        NeedsCmd::NotNeeded { note, .. } => owner_answer(i, "not_needed", note),
+        NeedsCmd::DontWait { note, .. } => owner_answer(i, "dont_wait", note),
+        NeedsCmd::WaitingOn { until, note, .. } => {
+            let (path, mut body) = owner_answer(i, "waiting", note)?;
+            body["until"] = json!(until);
+            Ok((path, body))
+        }
+        NeedsCmd::Without { .. } => match &i.miss {
+            Some(b) => Ok((format!("/backlog/{b}/without-goal"), json!({}))),
+            None => Err(format!("{} isn't a missed target ({}).", i.handle, i.kind)),
+        },
+        NeedsCmd::SetAside { .. } => match &i.goal {
+            Some(g) => Ok((format!("/goals/{g}/set-aside"), json!({}))),
+            None => Err(format!("{} isn't in a goal.", i.handle)),
+        },
         _ => Err("not an action".into()),
     }
 }
@@ -516,17 +627,27 @@ pub fn done_line(cmd: &NeedsCmd, i: &Item, v: &Value) -> String {
             }
         }
         NeedsCmd::Dismiss { .. } => format!("Dismissed {h}."),
+        NeedsCmd::Snooze { after_goal: Some(g), .. } => format!("Snoozed {h} until {g} finishes."),
         NeedsCmd::Snooze { .. } => match v["alert"]["snoozed_until"].as_str() {
-            Some(at) => format!("Snoozed {h} until {}.", clock(at)),
+            Some(at) => format!("Snoozed {h} until {}.", when(at, "%b %-d, %-I:%M %p")),
             None => format!("Snoozed {h} until the owner's back."),
         },
+        NeedsCmd::CantDo { .. } => format!("Handed {h} back. What waits for it finds another way."),
+        NeedsCmd::NotNeeded { .. } => format!("Cancelled {h}."),
+        NeedsCmd::DontWait { .. } => format!("Nothing waits for {h} now. It stays on the list."),
+        NeedsCmd::WaitingOn { until, .. } => format!("{h} is off the list until {until}."),
+        NeedsCmd::Without { .. } => format!("{} stays in the backlog, and the goal can finish without it.", i.miss.as_deref().unwrap_or(h)),
+        NeedsCmd::SetAside { .. } => format!("Set {} aside.", i.goal.as_deref().unwrap_or(h)),
         _ => String::new(),
     }
 }
 
-fn clock(at: &str) -> String {
+/// `at` as a time on the 12-hour clock today, or in `other_day`'s format on any other day.
+fn when(at: &str, other_day: &str) -> String {
     use chrono::{DateTime, Local};
-    DateTime::parse_from_rfc3339(at).map(|t| t.with_timezone(&Local).format("%-I:%M %p").to_string()).unwrap_or_else(|_| at.to_string())
+    let Ok(t) = DateTime::parse_from_rfc3339(at).map(|t| t.with_timezone(&Local)) else { return at.to_string() };
+    let format = if t.date_naive() == Local::now().date_naive() { "%-I:%M %p" } else { other_day };
+    t.format(format).to_string()
 }
 
 pub fn handle_of(cmd: &NeedsCmd) -> Option<&str> {
@@ -538,7 +659,13 @@ pub fn handle_of(cmd: &NeedsCmd) -> Option<&str> {
         | NeedsCmd::Finish { item }
         | NeedsCmd::Continue { item }
         | NeedsCmd::Dismiss { item }
-        | NeedsCmd::Snooze { item, .. } => Some(item),
+        | NeedsCmd::Snooze { item, .. }
+        | NeedsCmd::CantDo { item, .. }
+        | NeedsCmd::WaitingOn { item, .. }
+        | NeedsCmd::DontWait { item, .. }
+        | NeedsCmd::NotNeeded { item, .. }
+        | NeedsCmd::Without { item }
+        | NeedsCmd::SetAside { item } => Some(item),
     }
 }
 
@@ -549,6 +676,7 @@ pub fn json_of(i: &Item) -> Value {
         "asks": i.asks.iter().map(|(q, os, multi)| json!({"question": q, "multi": multi,
             "options": os.iter().map(|(l, d)| json!({"label": l, "description": d})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "picker": i.picker, "fixes": i.fixes.iter().map(|(l, w)| json!({"label": l, "do": w})).collect::<Vec<_>>(),
+        "holds": {"tasks": i.holds, "goal": i.holds_goal}, "waiting": i.waiting,
         "todo": todo(i),
     })
 }
@@ -560,17 +688,20 @@ mod tests {
     fn home() -> Value {
         json!({
             "goals": [
-                {"goal": {"ref": "G3", "name": "Polish", "stopped": "Wave 1 is done. Review it, then continue", "updated_at": "2026-10-20T10:00:00Z"}, "project": "web"},
+                {"goal": {"ref": "G3", "name": "Polish", "stopped": "Wave 1 is done. Review it, then continue", "updated_at": "2026-10-20T10:00:00Z"}, "project": "web",
+                 "stage": {"id": "stage:G3:1", "wave": 1, "holds": {"tasks": ["T20", "T21"], "goal": "G3"}}},
                 {"goal": {"ref": "G4", "name": "Other", "stopped": null}, "project": "web"}
             ],
             "needs": [
                 {"id": "aaaa111111", "at": "2026-10-20T09:00:00Z", "text": "Weekly review: 5h on builds", "review_id": 2, "key": "review:2", "quiet": true, "card": null},
-                {"id": "bbbb222222", "at": "2026-10-20T12:00:00Z", "text": "T12: Which API?", "task": "T12", "goal": "G3",
+                {"id": "bbbb222222", "at": "2026-10-20T12:00:00Z", "text": "T12: Which API?", "task": "T12", "goal": "G3", "waiting": true,
+                 "holds": {"tasks": ["T30"], "goal": "G3"},
                  "card": {"ref": "T12", "title": "Move to v2", "status": "needs", "needs_reason": "question", "project": "web",
                           "question": "Which API?", "ask": {"picker": false, "questions": [{"question": "Which API?", "options": [{"label": "Old", "description": ""}, {"label": "New", "description": "v2"}]}]}}},
                 {"id": null, "at": "2026-10-20T11:00:00Z", "text": "", "task": "T13",
                  "card": {"ref": "T13", "title": "Lost one", "status": "needs", "needs_reason": "lost", "lost": true, "project": "api"}},
                 {"id": "cccc333333", "at": "2026-10-20T08:00:00Z", "text": "Picto misses its done-when (B268)", "goal": "G23", "key": "miss:268", "card": null,
+                 "holds": {"tasks": [], "goal": "G23"},
                  "actions": [{"label": "Look", "prompt": "Look at B268", "command": ""}]},
                 {"id": "ffff666666", "at": "2026-10-20T14:00:00Z", "text": "B301 holds T40's PR #12: …", "title": "B301 holds T40's PR #12", "goal": "G3",
                  "key": "critical-ask:301", "project": "web", "card": null,
@@ -643,11 +774,82 @@ mod tests {
         assert_eq!(act_request(&NeedsCmd::Continue { item: "G3".into() }, stop).unwrap().0, "/goals/G3/waves/1/continue");
         let q = find(&items, "T12").unwrap();
         assert_eq!(act_request(&NeedsCmd::Dismiss { item: "T12".into() }, q).unwrap().0, "/alerts/bbbb222222/dismiss");
-        let snooze = NeedsCmd::Snooze { item: "T12".into(), mins: None, until: Some("tomorrow".into()) };
+        let snooze = NeedsCmd::Snooze { item: "T12".into(), mins: None, until: Some("tomorrow".into()), after_goal: None };
         assert_eq!(act_request(&snooze, q).unwrap(), ("/alerts/bbbb222222/snooze".into(), json!({"until": "tomorrow"})));
         let review = find(&items, "aaaa111111").unwrap();
         assert!(act_request(&NeedsCmd::Dismiss { item: "x".into() }, review).unwrap_err().contains("stays until the owner opens it"));
         assert!(act_request(&NeedsCmd::Dismiss { item: "T13".into() }, lost).unwrap_err().contains("no alert to dismiss"));
+    }
+
+    fn snooze(item: &str, until: Option<&str>, after_goal: Option<&str>) -> NeedsCmd {
+        NeedsCmd::Snooze { item: item.into(), mins: None, until: until.map(str::to_string), after_goal: after_goal.map(str::to_string) }
+    }
+
+    #[test]
+    fn later_takes_next_week_a_goal_and_a_finished_stage() {
+        let items = items(&home(), None);
+        let q = find(&items, "T12").unwrap();
+        assert_eq!(act_request(&snooze("T12", Some("next-week"), None), q).unwrap().1, json!({"until": "next_week"}));
+        assert_eq!(act_request(&snooze("T12", None, Some("G9")), q).unwrap().1, json!({"after_goal": "G9"}));
+        assert_eq!(done_line(&snooze("T12", None, Some("G9")), q, &json!({})), "Snoozed T12 until G9 finishes.");
+        let stage = find(&items, "G3").unwrap();
+        assert!(stage.snooze && !stage.dismiss);
+        assert_eq!(act_request(&snooze("G3", Some("tomorrow"), None), stage).unwrap().0, "/alerts/stage:G3:1/snooze");
+        assert!(todo(stage).iter().any(|l| l.contains("--after-goal")));
+    }
+
+    #[test]
+    fn a_goal_that_read_as_stopped_without_a_stage_cant_be_put_off() {
+        let home = json!({"goals": [{"goal": {"ref": "G3", "name": "Polish", "stopped": "Wave 1 is done. Review it, then continue"}, "project": "web"}], "needs": []});
+        let items = items(&home, None);
+        assert!(act_request(&snooze("G3", Some("tomorrow"), None), &items[0]).unwrap_err().contains("no alert"));
+    }
+
+    #[test]
+    fn a_to_do_takes_the_other_answers_and_nothing_else_does() {
+        let items = items(&home(), None);
+        let to_do = find(&items, "H14").unwrap();
+        let note = Some("Oracle won't take my card".to_string());
+        let cant = NeedsCmd::CantDo { item: "T14".into(), note: note.clone() };
+        assert_eq!(act_request(&cant, to_do).unwrap(), ("/tasks/T14/owner-answer".into(), json!({"answer": "cant_do", "note": note})));
+        assert_eq!(act_request(&NeedsCmd::NotNeeded { item: "T14".into(), note: None }, to_do).unwrap().1, json!({"answer": "not_needed", "note": ""}));
+        assert_eq!(act_request(&NeedsCmd::DontWait { item: "T14".into(), note: None }, to_do).unwrap().1, json!({"answer": "dont_wait", "note": ""}));
+        let waiting = NeedsCmd::WaitingOn { item: "T14".into(), until: "2026-11-12".into(), note: Some("Sam".into()) };
+        assert_eq!(act_request(&waiting, to_do).unwrap().1, json!({"answer": "waiting", "note": "Sam", "until": "2026-11-12"}));
+        assert_eq!(done_line(&waiting, to_do, &json!({})), "T14 is off the list until 2026-11-12.");
+        assert!(act_request(&cant, find(&items, "T12").unwrap()).unwrap_err().contains("isn't a to-do"));
+        let lines = show_lines(to_do);
+        for verb in ["cant-do", "waiting-on", "dont-wait", "not-needed"] {
+            assert!(lines.iter().any(|l| l.contains(&format!("tb needs {verb} T14"))), "{lines:#?}");
+        }
+    }
+
+    #[test]
+    fn a_miss_finishes_without_it_and_a_goals_item_sets_it_aside() {
+        let items = items(&home(), None);
+        let miss = find(&items, "cccc333333").unwrap();
+        let without = NeedsCmd::Without { item: "cccc333333".into() };
+        assert_eq!(act_request(&without, miss).unwrap(), ("/backlog/B268/without-goal".into(), json!({})));
+        assert_eq!(done_line(&without, miss, &json!({})), "B268 stays in the backlog, and the goal can finish without it.");
+        assert!(act_request(&without, find(&items, "T12").unwrap()).unwrap_err().contains("isn't a missed target"));
+        assert!(show_lines(miss).iter().any(|l| l.contains("tb needs without cccc333333")));
+        assert_eq!(act_request(&NeedsCmd::SetAside { item: "T12".into() }, find(&items, "T12").unwrap()).unwrap().0, "/goals/G3/set-aside");
+        assert!(act_request(&NeedsCmd::SetAside { item: "T13".into() }, find(&items, "T13").unwrap()).unwrap_err().contains("isn't in a goal"));
+    }
+
+    #[test]
+    fn rows_say_what_they_hold_and_a_line_says_whats_put_off() {
+        let items = items(&home(), None);
+        let lines = list_lines(&items);
+        let row = |h: &str| lines.iter().find(|l| l.starts_with(h)).unwrap().clone();
+        assert!(row("T12").ends_with("Holds 1 task"), "{lines:#?}");
+        assert!(row("G3").ends_with("Holds 2 tasks"), "{lines:#?}");
+        assert!(row("cccc333333").ends_with("Holds its goal"), "{lines:#?}");
+        assert!(!row("T13").contains("Holds"), "{lines:#?}");
+        assert!(show_lines(find(&items, "T12").unwrap())[1].contains("Holds T30"));
+        assert_eq!(later_line(&json!({"later_count": 0})), None);
+        assert_eq!(later_line(&json!({"later_count": 2})).unwrap(), "Later 2");
+        assert_eq!(later_line(&json!({"later_count": 2, "next_back": "2030-11-12T17:00:00Z"})).unwrap(), "Later 2 · back Nov 12");
     }
 
     #[test]

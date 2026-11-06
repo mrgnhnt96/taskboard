@@ -70,7 +70,7 @@ pub fn waves(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<Value>> {
                 to_start.push(rf("task", t.id()));
             }
         }
-        let all_done = done.len() == ts.len();
+        let all_done = done.len() + ts.iter().filter(|t| crate::human::released(t)).count() == ts.len();
         let stop = w.b("stop_after");
         let released = w.s("released_at").is_some();
         let held = w.s("held_at").is_some() && !all_done;
@@ -158,6 +158,11 @@ pub fn stopped_line(wl: &[Value]) -> Option<String> {
         )),
         _ => None,
     }
+}
+
+/// The wave the goal is stopped after for the owner's review, if it is.
+pub fn stopped_wave(wl: &[Value]) -> Option<i64> {
+    wl.iter().find(|w| w["passed"] != true).filter(|w| w["state"] == "stopped").and_then(|w| w["wave"].as_i64())
 }
 
 /// A wave's name and stop point (`POST /goals/:id/waves/:n`, `tb goal wave`).
