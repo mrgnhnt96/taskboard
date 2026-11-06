@@ -84,6 +84,22 @@ fn on_branch(b: &Board, id: i64, branch: &str) {
 }
 
 #[test]
+fn each_blocker_says_why_it_blocks() {
+    let b = new_board();
+    let (one, two) = done_with_open_pr(&b);
+    let three = b.task("Add the page");
+    b.on("s3", three);
+    b.report("tb.done", "s3", json!({"summary": "Done.", "pr": "https://github.com/acme/webapp/pull/10"}));
+    on_branch(&b, three, "feat/page");
+
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}"), format!("T{three}")], "merged": true, "why": "Needs both on main"}));
+
+    let card = b.card(two);
+    let why: Vec<&str> = card["blocked_by"].as_array().unwrap().iter().map(|x| x["why"].as_str().unwrap()).collect();
+    assert_eq!(why, vec![format!("Blocked by T{one} until PR #9 merges"), format!("Blocked by T{three} until PR #10 merges")], "{card}");
+}
+
+#[test]
 fn it_parks_while_the_pr_is_open_and_resumes_once_it_merges() {
     let b = new_board();
     let (one, two) = done_with_open_pr(&b);

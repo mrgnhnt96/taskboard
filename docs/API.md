@@ -318,7 +318,7 @@ The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat objec
   "claude_session_id": str|null,    // enables "Reopen the old conversation"
   "goal": {"id": int, "ref": "G3", "name": str, "position": int, "total": int, "next_title": str|null, "open_issues": int} | null,
                                     // NOTE: replaces task_card.goal here. position is 1-based within the goal; next_title = the next task's title
-  "blocked_by": [task_card],        // tasks it waits for that aren't done (waits_for); uses ref, title, status, failed, blocked, starting, pr
+  "blocked_by": [task_card],        // tasks it waits for that aren't done (waits_for); uses ref, title, status, failed, blocked, starting, pr; each adds why, the reason it blocks
   "meta": [[name, value]],          // "Details" fields (strings)
   "context": {
     "where": {"branch": str, "worktree": str, "last_commit": str, "uncommitted": int|str, "conversation": str},  // all optional

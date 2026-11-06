@@ -323,60 +323,65 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
         let Some(other) = other else { continue };
-        if ready_for(app, t, n, Some(&other))? {
-            continue;
+        if !ready_for(app, t, n, Some(&other))? {
+            return blocker_reason(app, t, &other).map(Some);
         }
-        let who = label(app, &other)?;
-        if crate::human::is(&other) && other.s("status") != Some("done") {
-            return Ok(Some(format!("Waits for you to do {who}")));
-        }
-        let pr = other.i("pr_num").map(|p| format!("PR #{p}"));
-        let dropped = if pr_merged(&other) { dropped_in(app, &other)? } else { None };
-        return Ok(Some(match other.s("status") {
-            Some("done") if !other.b("failed") => match pr {
-                Some(pr) if dropped.is_some() => {
-                    let (d, into) = dropped.unwrap();
-                    format!(
-                        "Blocked by {who}: {} merged into {}'s branch, but a push to that branch dropped its commits, so its work isn't on the main branch",
-                        if d.id() == other.id() { format!("its {pr}") } else { format!("{}'s PR #{}", rf("task", d.id()), d.i0("pr_num")) },
-                        rf("task", into.id())
-                    )
-                }
-                Some(pr) if pr_merged(&other) => match stack_bottom(app, &other)? {
-                    Some(bt) => format!(
-                        "Blocked by {who}: its {pr} merged into {}'s branch, and reaches the main branch once {}'s{} merges",
-                        rf("task", bt.id()),
-                        rf("task", bt.id()),
-                        bt.i("pr_num").map(|n| format!(" PR #{n}")).unwrap_or_else(|| " PR".into())
-                    ),
-                    None => format!("Blocked by {who} until {pr} merges"),
-                },
-                Some(pr) if pr_declined(&other) && ids(t).contains(&n) => {
-                    let r = rf("task", n);
-                    format!(
-                        "Blocked by {who}, whose {pr} was declined, so its work isn't merged. If it landed another way: tb task set {r} --landed <commit>. To go on without it: tb wait-for --drop {r} --task {}",
-                        rf("task", t.id())
-                    )
-                }
-                Some(pr) if pr_declined(&other) => format!("Blocked by {who}, whose {pr} was declined, so its work isn't merged"),
-                Some(pr) => format!("Blocked by {who} until {pr} merges"),
-                None if has(other.s("pr_url")) => format!("Blocked by {who} until its PR merges"),
-                None if ids(t).contains(&n) => {
-                    let r = rf("task", n);
-                    format!(
-                        "Blocked by {who}, which finished with no PR linked, so no merge is coming. If its work went through another PR: tb task set {r} --pr-link <link>. \
-                         If it landed another way: tb task set {r} --landed <commit>. To go on without it: tb wait-for --drop {r} --task {}",
-                        rf("task", t.id())
-                    )
-                }
-                None => format!("Blocked by {who}, which finished with no PR linked, so no merge is coming"),
-            },
-            Some("done") =>format!("Blocked by {who}, which failed. It starts once {} is done", rf("task", n)),
-            Some("planned") => format!("Blocked by {who}, which isn't queued yet"),
-            _ => format!("Blocked by {who}"),
-        }));
     }
     Ok(None)
+}
+
+/// Why unfinished `other` holds `t` back.
+fn blocker_reason(app: &App, t: &Row, other: &Row) -> Result<String> {
+    let n = other.id();
+    let who = label(app, other)?;
+    if crate::human::is(other) && other.s("status") != Some("done") {
+        return Ok(format!("Waits for you to do {who}"));
+    }
+    let pr = other.i("pr_num").map(|p| format!("PR #{p}"));
+    let dropped = if pr_merged(other) { dropped_in(app, other)? } else { None };
+    Ok(match other.s("status") {
+        Some("done") if !other.b("failed") => match pr {
+            Some(pr) if dropped.is_some() => {
+                let (d, into) = dropped.unwrap();
+                format!(
+                    "Blocked by {who}: {} merged into {}'s branch, but a push to that branch dropped its commits, so its work isn't on the main branch",
+                    if d.id() == other.id() { format!("its {pr}") } else { format!("{}'s PR #{}", rf("task", d.id()), d.i0("pr_num")) },
+                    rf("task", into.id())
+                )
+            }
+            Some(pr) if pr_merged(other) => match stack_bottom(app, other)? {
+                Some(bt) => format!(
+                    "Blocked by {who}: its {pr} merged into {}'s branch, and reaches the main branch once {}'s{} merges",
+                    rf("task", bt.id()),
+                    rf("task", bt.id()),
+                    bt.i("pr_num").map(|n| format!(" PR #{n}")).unwrap_or_else(|| " PR".into())
+                ),
+                None => format!("Blocked by {who} until {pr} merges"),
+            },
+            Some(pr) if pr_declined(other) && ids(t).contains(&n) => {
+                let r = rf("task", n);
+                format!(
+                    "Blocked by {who}, whose {pr} was declined, so its work isn't merged. If it landed another way: tb task set {r} --landed <commit>. To go on without it: tb wait-for --drop {r} --task {}",
+                    rf("task", t.id())
+                )
+            }
+            Some(pr) if pr_declined(other) => format!("Blocked by {who}, whose {pr} was declined, so its work isn't merged"),
+            Some(pr) => format!("Blocked by {who} until {pr} merges"),
+            None if has(other.s("pr_url")) => format!("Blocked by {who} until its PR merges"),
+            None if ids(t).contains(&n) => {
+                let r = rf("task", n);
+                format!(
+                    "Blocked by {who}, which finished with no PR linked, so no merge is coming. If its work went through another PR: tb task set {r} --pr-link <link>. \
+                     If it landed another way: tb task set {r} --landed <commit>. To go on without it: tb wait-for --drop {r} --task {}",
+                    rf("task", t.id())
+                )
+            }
+            None => format!("Blocked by {who}, which finished with no PR linked, so no merge is coming"),
+        },
+        Some("done") =>format!("Blocked by {who}, which failed. It starts once {} is done", rf("task", n)),
+        Some("planned") => format!("Blocked by {who}, which isn't queued yet"),
+        _ => format!("Blocked by {who}"),
+    })
 }
 
 /// Whether `t` waits for a Start on the board: its pickup is manual and it isn't in a goal that was run. A
@@ -447,7 +452,9 @@ pub fn blocked_by(app: &App, t: &Row) -> Result<Vec<Value>> {
     for n in deps(t) {
         if let Some(o) = board::find_task(app, Some(n))? {
             if !ready_for(app, t, n, Some(&o))? {
-                out.push(board::task_card(app, &o)?);
+                let mut card = board::task_card(app, &o)?;
+                card["why"] = json!(blocker_reason(app, t, &o)?);
+                out.push(card);
             }
         }
     }
