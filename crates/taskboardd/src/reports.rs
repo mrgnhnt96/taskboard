@@ -989,7 +989,7 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
          {tb} goal new \"<feature>\" --tldr \"…\" --outcome \"<done when>\", then the task with --kind design --goal G<n> --here; \
          the build tasks that follow go in that goal and wait for it.{backlog} \
          To check the board for this work first: {tb} search \"<words>\".{switch} Then end your turn without repeating your answer. \
-         If {owner} said not to track it, just end your turn."
+         If {owner} said not to track it, just end your turn. The task-board skill's no-task.md has the rest."
     )))
 }
 

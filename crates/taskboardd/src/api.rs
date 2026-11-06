@@ -2722,7 +2722,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
     } else {
         lines.extend([
             format!("This is how the goal stood when the terminal opened. Before changing anything, run {tb} goal show {gref} for how it stands now."),
-            format!("Load the task-board skill and its planning guide before you change the plan; slice the work by the rules above. Make every change with tb ({tb} goal set, {tb} task set, {tb} task new, {tb} propose and the rest). Read the code as much as you need, but don't change it, and don't queue or start tasks: {owner} starts them from the board."),
+            format!("Load the task-board skill, then read its board.md and planning.md before you change the plan; slice the work by the rules above. Make every change with tb ({tb} goal set, {tb} task set, {tb} task new, {tb} propose and the rest). Read the code as much as you need, but don't change it, and don't queue or start tasks: {owner} starts them from the board."),
             format!("Wait for {owner} to say what they want; don't start on anything by yourself."),
         ]);
     }

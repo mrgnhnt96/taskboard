@@ -14,3 +14,5 @@ Start what the owner named: $ARGUMENTS
 - Nothing named, and this conversation has talked over more than one piece of work that isn't on the board yet or isn't in one goal: put them in one goal (`tb goal new … --task …`, a `--task` each) and run it with `tb start G<n>`.
 
 If the board still refuses, say so and stop: it has asked the owner in a notification.
+
+The rest of the rules for starting work are in the task-board skill's `board.md`.

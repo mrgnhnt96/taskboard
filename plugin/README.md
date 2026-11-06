@@ -13,7 +13,7 @@ plugin/
     bin/tb                            shim that runs the Rust tb binary
     bin/wait-hint                     stops sleep-poll loops; steers long builds to the background
     commands/                         /start
-    skills/task-board/                SKILL.md, questions.md, planning.md, pr.md
+    skills/task-board/                SKILL.md, board.md, no-task.md, triage.md, jira.md, questions.md, planning.md, pr.md
 ```
 
 ## Install
