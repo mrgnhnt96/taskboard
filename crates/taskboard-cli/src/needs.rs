@@ -109,6 +109,8 @@ fn kind(a: &Value, card: &Value) -> &'static str {
     let needs = st(card, "status") == "needs";
     if a["review_id"].as_i64().is_some() {
         "Weekly review"
+    } else if st(a, "key").starts_with("quiet:") {
+        "Gone quiet"
     } else if st(a, "key").starts_with("miss:") {
         "Done-when missed"
     } else if st(a, "key").starts_with(CRITICAL) {

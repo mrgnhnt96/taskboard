@@ -88,6 +88,13 @@ budget_usd = "0.10"
 timeout_secs = 90
 lines = 60
 
+# Started work with no update in `after_hours`: a task that's working, back in the queue after it
+# started, or done with its PR still open reaches Needs you as "Gone quiet". It comes down when the task
+# moves. Tasks in paused or set-aside goals are left out.
+[quiet]
+on = true
+after_hours = 48
+
 # The weekly time review: where agent time went, what got rerun or timed out, how long tasks waited on
 # you, and the fixes that suggests. When one is ready you get a notification and a Needs you item that
 # stays until you open it. cadence is "weekly" or "off"; `tb review` works either way. With suggest on

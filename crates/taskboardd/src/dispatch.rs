@@ -618,6 +618,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().map(|k| k.starts_with("master:")).unwrap_or(false) {
         return crate::breaks::alert_resolved(app, a);
     }
+    if a["key"].as_str().is_some_and(crate::quiet::is_key) {
+        return crate::quiet::alert_resolved(app, a);
+    }
     let at = a["at"].as_str().unwrap_or("");
     let sid = if let Some(tid) = a["task_id"].as_i64() {
         let Some(t) = board::find_task(app, Some(tid))? else { return Ok(true) };
