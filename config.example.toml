@@ -42,6 +42,7 @@ midna_up = 20.0
 running_job_expiry = 360.0
 pending_job_expiry = 3600.0
 gone_after_missed = 2
+hook_gone_after_idle = 604800.0      # 7 days: a terminal only hooks reported, quiet this long and not in Midna, is gone
 md_debounce = 1.0
 
 # The hours agents may start in. Change them later from the page or with `tb hours`.

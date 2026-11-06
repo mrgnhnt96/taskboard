@@ -7,8 +7,8 @@ use std::path::Path;
 use serde_json::json;
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::util::RowExt;
-use taskboardd::{board, midna};
+use taskboardd::util::{iso, now_ts, RowExt};
+use taskboardd::{board, midna, projects, reports};
 
 /// A `midna` that answers by method: `events` for `events.list` (a shell snippet), one Claude
 /// terminal for `session.list`, and `{}` for anything else.
@@ -101,4 +101,113 @@ fn a_sync_that_finds_nothing_new_writes_nothing() {
     sync_state(&app, "needs_you", "2026-10-23T10:01:00Z");
     assert_ne!(app.db.mark().unwrap(), mark);
     assert_eq!(board::get_session(&app, Some("s1")).unwrap().unwrap().s("status"), Some("needs"));
+}
+
+const DAY: f64 = 86400.0;
+
+/// A terminal only hooks reported, in the leftover folder 'w', last heard from `days` ago.
+fn hook_terminal(app: &App, sid: &str, days: f64) {
+    let at = iso(now_ts() - days * DAY);
+    app.db
+        .insert(
+            "sessions",
+            taskboardd::fields!["id" => sid, "status" => "idle", "source" => "hook", "agent" => "claude", "project" => "w",
+                                "project_path" => "/private/tmp/mh.yqIF/w", "last_activity" => at, "seen_at" => at],
+        )
+        .unwrap();
+}
+
+fn status_of(app: &App, sid: &str) -> String {
+    board::get_session(app, Some(sid)).unwrap().unwrap().st("status")
+}
+
+fn lists_project(app: &App, name: &str) -> bool {
+    projects::list_projects(app).unwrap().iter().any(|p| p["name"] == name)
+}
+
+#[test]
+fn a_stale_hook_terminal_goes_and_takes_its_project_with_it() {
+    let (app, _d) = board_with("echo '[]'");
+    hook_terminal(&app, "h1", 8.0);
+    assert!(lists_project(&app, "w"));
+
+    let (gone, _) = midna::sync(&app, &[], &[]).unwrap();
+
+    assert_eq!(gone, ["h1"]);
+    let s = board::get_session(&app, Some("h1")).unwrap().expect("the row is kept");
+    assert_eq!(s.s("status"), Some("gone"));
+    assert!(s.s("gone_at").is_some());
+    assert!(!lists_project(&app, "w"));
+}
+
+#[test]
+fn a_hook_terminal_heard_from_this_week_stays() {
+    let (app, _d) = board_with("echo '[]'");
+    hook_terminal(&app, "h1", 6.0);
+    midna::sync(&app, &[], &[]).unwrap();
+    assert_eq!(status_of(&app, "h1"), "idle");
+    assert!(lists_project(&app, "w"));
+}
+
+#[test]
+fn a_late_report_of_old_activity_counts_as_hearing_from_the_terminal() {
+    let (app, _d) = board_with("echo '[]'");
+    hook_terminal(&app, "h1", 8.0);
+    app.db.x("UPDATE sessions SET seen_at = ? WHERE id = 'h1'", taskboardd::p![iso(now_ts() - DAY)]).unwrap();
+    midna::sync(&app, &[], &[]).unwrap();
+    assert_eq!(status_of(&app, "h1"), "idle");
+}
+
+#[test]
+fn a_hook_terminal_with_no_time_on_it_stays() {
+    let (app, _d) = board_with("echo '[]'");
+    hook_terminal(&app, "h1", 8.0);
+    app.db.x("UPDATE sessions SET last_activity = NULL, seen_at = NULL WHERE id = 'h1'", taskboardd::p![]).unwrap();
+    midna::sync(&app, &[], &[]).unwrap();
+    assert_eq!(status_of(&app, "h1"), "idle");
+}
+
+#[test]
+fn a_stale_hook_terminal_midna_lists_stays() {
+    let listed = [
+        ("an agent terminal", json!({"id": "h1", "name": "Term h1", "agent": "claude", "cwd": "/tmp", "status": {"state": "idle"}})),
+        ("a plain shell", json!({"id": "h1", "name": "Term h1", "agent": "", "cwd": "/tmp", "status": {"state": "idle"}})),
+    ];
+    for (what, s) in listed {
+        let (app, _d) = board_with("echo '[]'");
+        hook_terminal(&app, "h1", 8.0);
+        let (gone, _) = midna::sync(&app, &[s], &[]).unwrap();
+        assert!(gone.is_empty(), "{what}");
+        assert_eq!(status_of(&app, "h1"), "idle", "{what}");
+    }
+}
+
+#[test]
+fn the_idle_limit_comes_from_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.intervals.hook_gone_after_idle = DAY;
+    cfg.runner = false;
+    let app = App::for_tests(cfg);
+    hook_terminal(&app, "h1", 2.0);
+    midna::sync(&app, &[], &[]).unwrap();
+    assert_eq!(status_of(&app, "h1"), "gone");
+}
+
+#[test]
+fn a_retired_terminal_that_fires_a_hook_comes_back() {
+    let (app, _d) = board_with("echo '[]'");
+    hook_terminal(&app, "h1", 8.0);
+    midna::sync(&app, &[], &[]).unwrap();
+    assert_eq!(status_of(&app, "h1"), "gone");
+
+    let hook = json!({"event": "hook.stop", "session": "h1", "claude_session": "c-h1", "cwd": "", "git": {}, "last_message": "still here"});
+    reports::handle(&app, hook, false).unwrap();
+
+    let s = board::get_session(&app, Some("h1")).unwrap().unwrap();
+    assert_ne!(s.s("status"), Some("gone"));
+    assert_eq!(s.s("gone_at"), None);
+    assert!(lists_project(&app, "w"));
+    midna::sync(&app, &[], &[]).unwrap();
+    assert_ne!(status_of(&app, "h1"), "gone", "its new activity keeps it");
 }
