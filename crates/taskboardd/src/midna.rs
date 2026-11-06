@@ -549,7 +549,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
         }
         let now = now_iso();
         for s in sessions {
-            let Some(sid) = s.get("id").map(|v| v.as_str().map(|x| x.to_string()).unwrap_or_else(|| v.to_string())) else { continue };
+            let Some(sid) = listed_id(s) else { continue };
             let cur = board::get_session(app, Some(&sid))?;
             let st = s.get("status").and_then(|v| v.as_object()).cloned().unwrap_or_default();
             let agent = s.get("agent").and_then(|v| v.as_str()).unwrap_or("");
@@ -628,12 +628,36 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 gone.push(sid);
             }
         }
-        Ok(())
+        retire_stale_hook_terminals(app, sessions, &mut gone)
     })?;
     if !gone.is_empty() {
         app.debug(format!("midna: {} gone", plural(gone.len() as i64, "terminal")));
     }
     Ok((gone, to_close))
+}
+
+fn listed_id(s: &Value) -> Option<String> {
+    s.get("id").map(|v| v.as_str().map(|x| x.to_string()).unwrap_or_else(|| v.to_string()))
+}
+
+/// Marks gone the terminals only hooks ever told the board about, once Midna doesn't list them and
+/// they've been quiet for `hook_gone_after_idle`. Such a row may be a real Claude outside Midna, so
+/// being missing from the list isn't enough; a hook from one that's still alive brings it back.
+/// Any listing counts, also one with no agent in it, which the sync loop skips.
+fn retire_stale_hook_terminals(app: &App, sessions: &[Value], gone: &mut Vec<String>) -> Result<()> {
+    let listed: Vec<String> = sessions.iter().filter_map(listed_id).collect();
+    for s in app.db.q("SELECT * FROM sessions WHERE status != 'gone' AND source = 'hook'", p![])? {
+        let sid = s.st("id");
+        if listed.contains(&sid) || gone.contains(&sid) {
+            continue;
+        }
+        let quiet = [s.s("last_activity"), s.s("seen_at")].into_iter().filter_map(wall_age_secs).reduce(f64::min);
+        if quiet.is_some_and(|secs| secs >= app.cfg.intervals.hook_gone_after_idle) {
+            board::session_gone(app, &sid, "no hooks for days and not in Midna")?;
+            gone.push(sid);
+        }
+    }
+    Ok(())
 }
 
 /// A task waiting on its terminal (a permission prompt approved there, an API error it got past)

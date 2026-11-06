@@ -97,6 +97,8 @@ pub struct Intervals {
     pub running_job_expiry: f64,
     pub pending_job_expiry: f64,
     pub gone_after_missed: i64,
+    /// How long a hook-only terminal Midna doesn't list stays quiet before it counts as gone.
+    pub hook_gone_after_idle: f64,
     pub md_debounce: f64,
 }
 
@@ -112,6 +114,7 @@ impl Default for Intervals {
             running_job_expiry: 360.0,
             pending_job_expiry: 3600.0,
             gone_after_missed: 2,
+            hook_gone_after_idle: 7.0 * 86400.0,
             md_debounce: 1.0,
         }
     }
