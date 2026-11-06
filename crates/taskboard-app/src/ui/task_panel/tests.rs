@@ -1534,3 +1534,53 @@ fn a_fenced_block_is_code_kept_as_written() {
     assert_eq!(kids.len(), 3, "{kids:?}");
     assert!(matches!(&kids[1], view::Node::Text { s, st: view::St::Pre, .. } if s == "quill touch ios\n\n  --port 9"), "{:?}", kids[1]);
 }
+
+fn blocked(extra: Value, blockers: Value) -> Value {
+    let mut task = json!({"ref": "T9", "id": 9, "title": "x", "status": "queued", "project": "webapp", "goal": {"id": 1, "ref": "G1", "name": "g"},
+                          "waiting": "Blocked by T5 (G1) until its PR merges", "blocked_by": blockers});
+    task.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    task
+}
+
+fn blocker(r: &str, status: &str) -> Value {
+    json!({"ref": r, "title": format!("{r} title"), "status": status, "project": "webapp"})
+}
+
+#[::core::prelude::v1::test]
+fn a_done_blocker_says_why_it_still_blocks() {
+    let text = panel_text(blocked(json!({}), json!([blocker("T5", "done")])), json!({}));
+    assert!(text.contains("T5 title Blocked by T5 (G1) until its PR merges"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_blocker_still_at_work_shows_no_reason() {
+    let text = panel_text(blocked(json!({"waiting": "Blocked by T5 (G1)"}), json!([blocker("T5", "working")])), json!({}));
+    assert!(text.contains("T5 title") && !text.contains("Blocked by T5 (G1)"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn the_reason_goes_under_the_blocker_it_is_about() {
+    let text = panel_text(blocked(json!({}), json!([blocker("T5", "done"), blocker("T6", "done")])), json!({}));
+    assert!(text.contains("T5 title Blocked by T5 (G1) until its PR merges"), "{text}");
+    assert_eq!(text.matches("until its PR merges").count(), 1, "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn the_reason_is_said_once_on_a_task_started_by_hand() {
+    let text = panel_text(blocked(json!({"goal": null}), json!([blocker("T5", "done")])), json!({}));
+    assert!(text.contains("Not starting yet: Blocked by T5 (G1) until its PR merges."), "{text}");
+    assert_eq!(text.matches("until its PR merges").count(), 1, "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_human_task_says_the_reason_once_in_its_box() {
+    let text = panel_text(blocked(json!({"kind": "human", "detail": "Do it"}), json!([blocker("T5", "done")])), json!({}));
+    assert_eq!(text.matches("until its PR merges").count(), 1, "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_scheduled_tasks_start_time_is_not_taken_for_the_reason() {
+    let at = (chrono::Local::now() + chrono::Duration::days(2)).format("%Y-%m-%dT%H:%M:%S").to_string();
+    let text = panel_text(blocked(json!({"start_at": at, "waiting": "Starts Sunday at 9:00 AM"}), json!([blocker("T5", "done")])), json!({}));
+    assert!(!text.contains("Starts Sunday at 9:00 AM"), "{text}");
+}

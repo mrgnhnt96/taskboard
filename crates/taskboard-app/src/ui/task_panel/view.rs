@@ -1671,12 +1671,23 @@ fn blocked_row(c: &Ctx, t: &Value) -> Option<Node> {
         return None;
     }
     let mut body = Vec::new();
-    for x in bs {
+    for (i, x) in bs.iter().enumerate() {
         let br = or_empty(&x["ref"]);
         body.push(el(K::Row, vec![c.btn(&br, Act::new("open-task", "", &br, ""), Look::Ref, false, None), status_pill(x)]));
         body.push(txt(or_empty(&x["title"]), St::Plain));
+        if i == 0 {
+            body.extend(done_blocker_reason(t, x).map(|why| txt(why, St::WarnHelp)));
+        }
     }
     Some(lrow("Blocked by", body))
+}
+
+/// Why a finished task still blocks `t`. `waiting` is about the first blocker, and only a done one needs
+/// it: for any other the pill already says it all. A scheduled task's `waiting` is its start time, and a
+/// task started by hand or a human task shows `waiting` higher up the panel.
+fn done_blocker_reason<'a>(t: &'a Value, blocker: &Value) -> Option<&'a str> {
+    let said_above = starts_by_hand(t) || s(t, "kind") == "human";
+    opt_s(t, "waiting").filter(|_| s(blocker, "status") == "done" && !said_above && scheduled_at(t).is_none())
 }
 
 /// The note for testers the board posts on the ticket at merge (`[jira] merged_note`), or that it's waiting for one.
