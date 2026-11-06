@@ -39,8 +39,10 @@ enum Cmd {
     /// Log a note on the task (or, with --goal, on its goal)
     Note {
         text: String,
+        /// For the whole goal: its other tasks see it
         #[arg(long)]
         goal: bool,
+        /// What it is: something found, a choice made, or something to refer back to
         #[arg(long, default_value = "finding", value_parser = ["finding", "decision", "reference"])]
         kind: String,
         #[command(flatten)]
@@ -48,12 +50,16 @@ enum Cmd {
     },
     /// Save a checkpoint a new terminal could carry on from
     Checkpoint {
+        /// What's finished. Repeat for more
         #[arg(long)]
         done: Vec<String>,
+        /// What's next. Repeat for more
         #[arg(long)]
         next: Vec<String>,
+        /// A choice to keep. Repeat for more
         #[arg(long = "decision")]
         decisions: Vec<String>,
+        /// A key file. Repeat for more
         #[arg(long = "file")]
         files: Vec<String>,
         #[command(flatten)]
@@ -61,14 +67,18 @@ enum Cmd {
     },
     /// Report a problem outside the task to the backlog
     Found {
+        /// A short summary, 80 characters at most
         title: String,
+        /// What kind of problem: a bug, a gap, a follow-up, or something to clean up
         #[arg(long, default_value = "bug", value_parser = ["bug", "gap", "follow", "clean"])]
         kind: String,
+        /// What you saw
         #[arg(long)]
         detail: Option<String>,
+        /// The error text or other output
         #[arg(long)]
         output: Option<String>,
-        /// It misses the goal's own done-when (same as --blocks goal): it goes to the owner, and the goal stays open until it's settled
+        /// It misses the goal's own done-when (same as --blocks goal): it goes to the owner as an alert, and the goal stays open until the miss is made into a task that's done, sent to Jira or closed
         #[arg(long)]
         misses_goal: bool,
         /// Whether it blocks: pr (merging this task's PR leaves main worse: a crash, data lost, a usable hole, something that works today stops), goal (the goal's done-when isn't met without it) or none. Required while the task's PR is open
@@ -128,7 +138,7 @@ enum Cmd {
         /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`; see tb jira)
         #[arg(long = "merged-note", value_name = "MARKDOWN", conflicts_with = "no_pr")]
         merged_note: Option<String>,
-        /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d
+        /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d. The Days page compares it with the agent's time
         #[arg(long)]
         human: Option<String>,
         #[command(flatten)]
@@ -178,7 +188,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["queue", "now"])]
         at: Option<String>,
     },
-    /// This terminal's task
+    /// This terminal's task and its line. With the board down it says so and fails; it saves nothing
     Status {
         #[command(flatten)]
         t: TaskArg,
@@ -217,6 +227,7 @@ enum Cmd {
     /// Wait for another task's work before carrying on (or `none`)
     WaitFor {
         tasks: Vec<String>,
+        /// What you need from it
         #[arg(long)]
         why: Option<String>,
         /// Wait until its PR merges, not just until it's done
@@ -239,7 +250,7 @@ enum Cmd {
         /// Planned even while the goal is running, so they wait for its next run
         #[arg(long)]
         planned: bool,
-        /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
+        /// Only when the open backlog items whose titles look like it name different work: the board refuses it otherwise and says which item to take
         #[arg(long = "not-backlog")]
         not_backlog: bool,
     },
@@ -508,14 +519,18 @@ enum Cmd {
     },
     /// Attach a link or file path (design, proposal, doc, evidence, results) to a task or goal
     Attach {
+        /// A link or path. Writing goes up as a brief artifact and its link: the board refuses loose .md, .txt, .rst and .html files
         url: String,
+        /// What it is; written results take results, leading with the answer
         #[arg(long, default_value = "other", value_parser = ["design", "proposal", "doc", "evidence", "results", "other"])]
         kind: String,
+        /// Its title. A claude.ai artifact link takes the artifact's own title: the board can't open it to read one
         #[arg(long)]
         title: Option<String>,
         /// A line on what it is, shown under its title on the board
         #[arg(long)]
         summary: Option<String>,
+        /// Attach it to this goal instead of the task
         #[arg(long)]
         goal: Option<String>,
         #[command(flatten)]
@@ -992,6 +1007,7 @@ enum LessonCmd {
     /// Suggest a lesson for later work: planning (how to slice goals), code, process or tooling. It reaches
     /// handoffs (or planners, for planning) once the owner keeps it
     Add {
+        /// One or two sentences saying what to do differently
         text: String,
         #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
         kind: String,
@@ -1034,6 +1050,7 @@ enum LessonCmd {
     /// Later work showed the lesson again: count it and add that work as evidence
     Confirm {
         lesson: String,
+        /// What showed it holds. Repeat for more
         #[arg(long)]
         evidence: Vec<String>,
     },
@@ -1395,7 +1412,7 @@ enum GoalCmd {
         /// The branch its tasks' PRs go into instead of the repo's default, like release/1.2 for a backport; their worktrees start there. default to clear
         #[arg(long, value_name = "BRANCH|default")]
         base: Option<String>,
-        /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
+        /// Only when the open backlog items whose titles look like it name different work: the board refuses it otherwise and says which item to take
         #[arg(long = "not-backlog")]
         not_backlog: bool,
     },
@@ -1644,14 +1661,15 @@ enum TaskCmd {
         effort: Option<String>,
         /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
         /// starts on it, --detail holds the steps and links, and the owner presses Done in the app.
-        /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that
+        /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that, with the
+        /// owner's note in their prompt
         #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "same_pr", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
         human: bool,
         /// design: its work is a design (concepts, a canvas, mockups). It ends without a PR once its design
         /// is attached (tb attach <link> --kind design), and in a goal the other tasks wait for it
         #[arg(long, value_parser = ["design", "none"], conflicts_with = "pr")]
         kind: Option<String>,
-        /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
+        /// Only when the open backlog items whose titles look like it name different work: the board refuses it otherwise and says which item to take
         #[arg(long = "not-backlog", conflicts_with = "issue")]
         not_backlog: bool,
     },

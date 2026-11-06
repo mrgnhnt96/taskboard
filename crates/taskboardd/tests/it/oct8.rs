@@ -261,6 +261,9 @@ fn each_role_s_file_is_named_in_the_skill_and_holds_its_rules() {
     assert!(core.contains("\n## When you're on a task\n"), "reports.rs names this heading");
     for (file, heading) in [
         ("no-task.md", "# When there's no task"),
+        ("worktrees.md", "## Moving to a slot"),
+        ("steps.md", "## Review steps"),
+        ("lessons.md", "# Lessons"),
         ("board.md", "## Putting things on the board"),
         ("board.md", "## Context limits"),
         ("board.md", "## Work hours"),
@@ -271,6 +274,17 @@ fn each_role_s_file_is_named_in_the_skill_and_holds_its_rules() {
         assert!(read(file).lines().any(|l| l == heading), "{file} holds {heading}");
         assert!(!core.lines().any(|l| l == heading), "{heading} moved out of SKILL.md");
     }
+}
+
+#[test]
+fn the_skill_core_stays_within_its_size_limit() {
+    const LIMIT: usize = 8 * 1024;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/task-board/skills/task-board/SKILL.md");
+    let size = std::fs::read(&path).unwrap_or_else(|e| panic!("SKILL.md: {e}")).len();
+    assert!(
+        size <= LIMIT,
+        "SKILL.md is {size} bytes, over the {LIMIT} byte limit: every agent loads it, so move text to a topic file beside it and leave a one-line pointer saying when to read that file"
+    );
 }
 
 #[test]

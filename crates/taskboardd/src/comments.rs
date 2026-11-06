@@ -652,8 +652,8 @@ fn refusal(cfg: &Config, found: Vec<Found>, whose: &str, what: &str) -> Option<S
     }
     let owner = cfg.owner.clone();
     Some(format!(
-        "Task board: not {what} yet: {whose} adds {} ({}), and {owner} wants no comments in code. Take them out, commit, and try again. \
-         Pragmas the tools read are fine.",
+        "Task board: not {what} yet: {whose} adds {} ({}), and {owner} wants no comments in code. Take them out and make the code say it \
+         (names, small functions); the why goes in the commit or PR. Then commit and try again. Pragmas the tools read are fine.",
         if found.len() == 1 { "a code comment".to_string() } else { format!("{} code comments", found.len()) },
         shown(&found)
     ))
