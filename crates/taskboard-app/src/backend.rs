@@ -209,6 +209,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_PLAN_REVIEW").is_ok() {
             seed_plan_review(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_STOPPED").is_ok() {
+            seed_stopped(&board);
+        }
         Fake { board, dir }
     }
 }
@@ -306,6 +309,16 @@ fn seed_sessions(board: &Board) {
         if let Some(t) = task {
             let _ = board.db.x("UPDATE tasks SET session_id = ?, session_name = ? WHERE id = ?", taskboardd::p![id, name, t]);
         }
+    }
+}
+
+/// Dev (`TASKBOARD_FAKE_STOPPED=1`): the passkeys goal's T2 and T3 lose their terminals to a
+/// close by hand, for Needs you's Stopped line.
+fn seed_stopped(board: &Board) {
+    use taskboardd::board::{self, CLOSED_BY_YOU, MIDNA};
+    for t in [2, 3] {
+        let _ = board::update_task(board, t, taskboardd::fields!["status" => "needs", "needs_reason" => "lost", "lost" => 1, "question" => null, "session_id" => null]);
+        let _ = board::log_event(board, t, MIDNA, "status", &format!("Terminal ended ({CLOSED_BY_YOU}) before the task was done"));
     }
 }
 

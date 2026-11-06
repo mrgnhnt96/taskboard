@@ -130,6 +130,18 @@ pub fn miss_key(issue: i64) -> String {
     format!("miss:{issue}")
 }
 
+pub fn is_miss_key(key: &str) -> bool {
+    key.starts_with("miss:")
+}
+
+/// A miss's alert is over once its issue left the backlog. [`miss_settled`] clears it at that moment; this
+/// brings down one that clear didn't reach.
+pub fn miss_resolved(app: &App, a: &Value) -> Result<bool> {
+    let issue = a["key"].as_str().and_then(|k| k.strip_prefix("miss:")).and_then(|n| n.parse::<i64>().ok());
+    let Some(issue) = issue else { return Ok(false) };
+    Ok(app.db.count("SELECT COUNT(*) FROM issues WHERE id = ? AND state = 'open'", p![issue])? == 0)
+}
+
 /// The goal's open misses on its own done-when: issues filed with `--misses-goal` still in the backlog, or
 /// made into a task that isn't done yet. One the owner sent to Jira or closed no longer holds the goal.
 pub fn open_misses(app: &App, goal_id: i64) -> Result<i64> {
@@ -421,6 +433,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("start_retry_at".into(), start_retry_at(t, &status));
         o.insert("start_at".into(), t.v("start_at"));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
+        o.insert("closed_by_hand".into(), json!(closed_by_hand(app, t)?));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
         o.insert("same_pr".into(), json!(crate::samepr::anchor_id(t)));
@@ -1576,6 +1589,22 @@ const LOST_RESTARTS_PER_HOUR: i64 = 2;
 /// How long a lost task waits before it starts again: Midna's `session.closed` can land a moment
 /// after Claude's SessionEnd, and a close by Morgan means it shouldn't restart at all.
 pub const LOST_RESTART_GRACE_SECS: f64 = 15.0;
+
+/// Whether a lost task's terminal was closed on purpose, going by the reason its latest end was
+/// logged with. The board can't tell a deliberate close from a mistaken one, so such a task stays
+/// listed, quietly: `home::needs` puts it under Stopped.
+pub fn closed_by_hand(app: &App, t: &Row) -> Result<bool> {
+    if t.s("status") != Some("needs") || !t.b("lost") {
+        return Ok(false);
+    }
+    let ended = app.db.val("SELECT text FROM events WHERE task_id = ? AND who = ? AND kind = 'status' AND text LIKE 'Terminal ended (%' ORDER BY id DESC LIMIT 1", p![t.id(), MIDNA])?;
+    Ok(ended.as_str().and_then(end_reason).is_some_and(|r| DELIBERATE_EXITS.contains(&r)))
+}
+
+/// The reason in a `Terminal ended (<reason>: <detail>) …` event.
+fn end_reason(text: &str) -> Option<&str> {
+    text.strip_prefix("Terminal ended (")?.split([':', ')']).next()
+}
 
 pub fn restarts_left(app: &App, t: &Row) -> Result<bool> {
     let since = iso(now_ts() - 3600.0);

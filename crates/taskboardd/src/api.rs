@@ -407,6 +407,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["goals", id, "review"]) => crate::plan_review::start(app, gid(id)?, body),
         ("POST", ["goals", id, "accept"]) => accept_goal(app, gid(id)?, body),
         ("POST", ["goals", id, "run"]) => run_goal(app, gid(id)?, query, body),
+        ("POST", ["goals", id, "restart"]) => restart_goal(app, gid(id)?, query, body),
         ("POST", ["goals", id, "waves", n]) => {
             let (g, n) = (gid(id)?, wave_n(n)?);
             app.db.tx(|| {
@@ -2875,17 +2876,44 @@ fn resume_parked(app: &App, id: i64, who: &str) -> Result<i64> {
         if !lost && !manual {
             continue;
         }
-        let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
-        let mut f = fields!["pickup" => pickup, "pickup_session" => null, "retry_at" => null];
-        if lost {
-            f.extend(fields!["status" => "queued", "lost" => 0, "needs_reason" => null, "question" => null, "session_id" => null,
-                             "start_job" => null, "latest" => "Its terminal closed; Play on its goal starts it again from its handoff."]);
-        }
-        board::update_task(app, t.id(), f)?;
-        board::log_event(app, t.id(), who, "status", "Resumed with the rest of the goal")?;
+        back_in_queue(app, &t, lost, who, "Resumed with the rest of the goal")?;
         n += 1;
     }
     Ok(n)
+}
+
+/// Puts a parked task back in the queue, where the runner starts it from its handoff in the goal's
+/// order and within the board's limits. `lost` also clears what its closed terminal left.
+fn back_in_queue(app: &App, t: &Row, lost: bool, who: &str, said: &str) -> Result<()> {
+    let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
+    let mut f = fields!["pickup" => pickup, "pickup_session" => null, "retry_at" => null];
+    if lost {
+        f.extend(fields!["status" => "queued", "lost" => 0, "needs_reason" => null, "question" => null, "session_id" => null,
+                         "start_job" => null, "latest" => "Its terminal closed; it starts again from its handoff."]);
+    }
+    board::update_task(app, t.id(), f)?;
+    board::log_event(app, t.id(), who, "status", said)?;
+    Ok(())
+}
+
+/// Restart on a goal's Stopped line: the tasks it counts go back in the queue, and only those. The
+/// goal's planned work stays planned, unlike Play.
+fn restart_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
+    let who = if from_app(query) { OWNER.to_string() } else { board::caller(app, body, &board::session_name(app, Some(&body_str(body, "via_session")), None)) };
+    let n = app.db.tx(|| {
+        board::get_goal(app, id)?;
+        let tasks = crate::home::stopped_tasks(app, id)?;
+        if tasks.is_empty() {
+            return err(409, format!("{} has no closed tasks to restart.", rf("goal", id)));
+        }
+        for t in &tasks {
+            back_in_queue(app, t, true, &who, "Restarted with the rest of the goal's closed tasks")?;
+        }
+        Ok(tasks.len())
+    })?;
+    let mut d = goal_detail(app, id)?;
+    d["restarted_now"] = json!(n);
+    Ok(d)
 }
 
 /// After Play on a goal: why each queued task of its current wave still can't start ("T192 waits for you to

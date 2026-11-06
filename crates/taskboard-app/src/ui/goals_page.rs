@@ -132,6 +132,7 @@ pub(crate) struct Tally {
     working: i64,
     review: i64,
     pending: i64,
+    stopped: i64,
     queued: i64,
     planned: i64,
     done: i64,
@@ -148,6 +149,7 @@ impl Tally {
             St::Working => self.working += 1,
             St::Review => self.review += 1,
             St::Pending => self.pending += 1,
+            St::Stopped => self.stopped += 1,
             St::Queued => self.queued += 1,
             St::Planned => self.planned += 1,
             St::Done => self.done += 1,
@@ -174,6 +176,7 @@ impl Tally {
             working: (i(g, "active") - i(g, "needs")).max(0),
             review,
             pending: 0,
+            stopped: 0,
             queued: i(g, "queued"),
             planned: i(g, "planned"),
             done: i(g, "done"),
@@ -189,7 +192,7 @@ impl Tally {
 
     /// The bar's parts, finished work first.
     pub(crate) fn parts(&self) -> Vec<(St, i64)> {
-        vec![(St::Done, self.done), (St::Pending, self.pending), (St::Review, self.review), (St::Working, self.working), (St::Needs, self.needs), (St::Failed, self.failed), (St::Queued, self.queued), (St::Planned, self.planned)]
+        vec![(St::Done, self.done), (St::Pending, self.pending), (St::Review, self.review), (St::Working, self.working), (St::Needs, self.needs), (St::Failed, self.failed), (St::Stopped, self.stopped), (St::Queued, self.queued), (St::Planned, self.planned)]
     }
 }
 
@@ -261,6 +264,9 @@ fn now_line(t: &Tally, stopped: bool) -> (String, St) {
     if bits.is_empty() && t.pending > 0 {
         bits.push(format!("{} pending merge", t.pending));
     }
+    if bits.is_empty() && t.stopped > 0 {
+        bits.push(format!("{} stopped", t.stopped));
+    }
     let st = if t.needs > 0 {
         St::Needs
     } else if t.failed > 0 {
@@ -271,6 +277,8 @@ fn now_line(t: &Tally, stopped: bool) -> (String, St) {
         St::Review
     } else if t.pending > 0 {
         St::Pending
+    } else if t.stopped > 0 {
+        St::Stopped
     } else {
         St::Queued
     };
@@ -933,6 +941,17 @@ mod tests {
         assert_eq!((row.done, row.review, row.total), (14, 1, 15));
         assert_eq!(row.parts.iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 14), (St::Review, 1)]);
         assert_eq!(row.now, "1 in review");
+    }
+
+    #[test]
+    fn a_goal_with_closed_terminals_reads_stopped_not_queued() {
+        let g = goal(1, "web", 1, 3, json!({"needs": 2}));
+        let closed = json!({"needs_reason": "lost", "lost": true, "closed_by_hand": true});
+        let d = json!({"tasks": [task("T1", 1, "done", json!({})), task("T2", 1, "needs", closed.clone()), task("T3", 1, "needs", closed)],
+                       "waves": [wave(1, "running", 3, json!({}))]});
+        let row = goal_row(&g, Some(&d));
+        assert_eq!((row.now.as_str(), row.now_st), ("2 stopped", St::Stopped));
+        assert_eq!(row.parts.iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 1), (St::Stopped, 2)]);
     }
 
     #[test]

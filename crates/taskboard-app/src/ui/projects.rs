@@ -263,6 +263,7 @@ fn pill(g: &Value, t: &Tally) -> (St, &'static str) {
         _ if t.stuck() > 0 => (St::Failed, St::Failed.label()),
         _ if n(St::Review) > 0 => (St::Review, St::Review.label()),
         _ if n(St::Pending) > 0 => (St::Pending, St::Pending.label()),
+        _ if n(St::Stopped) > 0 => (St::Stopped, St::Stopped.label()),
         _ if n(St::Queued) > 0 || opt_s(g, "after_blocker").is_some() => (St::Queued, St::Queued.label()),
         // A task that finished failed is history once the goal moves on; it says Failed only
         // when nothing else is live. A failure the goal stops on already says Needs you.

@@ -163,6 +163,7 @@ pub fn when_line(t: &Value) -> String {
     let verb = match s(t, "status") {
         "queued" | "planned" => "Added",
         "working" => "Updated",
+        "needs" if b(t, "closed_by_hand") => "Closed",
         "needs" if b(t, "lost") => "Lost",
         "needs" if opt_s(t, "question").is_some() => "Asked",
         "needs" => "Updated",

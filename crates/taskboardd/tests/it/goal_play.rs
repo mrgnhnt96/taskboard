@@ -157,3 +157,145 @@ fn open_in_claude_shows_its_terminal_once_open() {
     assert_eq!(job("edit").v("focus"), json!(true), "the owner pressed it, so Midna switches to it");
     assert_eq!(job("suggest").v("focus"), Value::Null, "a planner opened for suggestions stays where it is");
 }
+
+fn needs(b: &Board) -> Vec<Value> {
+    api::dispatch(&b.app, "GET", "home", &Query::new(), &json!({})).unwrap()["needs"].as_array().unwrap().clone()
+}
+
+/// A task of goal `gid` taken in terminal `sid`, which the owner then closed.
+fn closed_task(b: &Board, gid: i64, title: &str, sid: &str) -> i64 {
+    let id = b.task(title, json!({"goal_id": gid}));
+    b.session(sid);
+    b.report("tb.take", sid, json!({"task": format!("T{id}")}));
+    b.owner_closes(sid);
+    id
+}
+
+#[test]
+fn terminals_closed_by_hand_are_one_quiet_line_for_their_goal() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    let one = closed_task(&b, gid, "Move the database", "s1");
+    let two = closed_task(&b, gid, "Move the jobs", "s2");
+
+    let rows = needs(&b);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    let row = &rows[0];
+    assert_eq!(row["id"], format!("stopped:G{gid}"));
+    assert_eq!(row["title"], "Move to Oracle · 2 closed");
+    assert_eq!(row["project"], "webapp");
+    assert!(row["card"].is_null(), "it's the goal's line, not a task's");
+    assert!(row["task"].is_null(), "so Dismiss and Snooze don't reach it");
+    let mut tasks: Vec<String> = row["stopped"]["tasks"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect();
+    tasks.sort();
+    assert_eq!(tasks, vec![format!("T{one}"), format!("T{two}")]);
+    assert_eq!(row["waiting"], false, "no agent is waiting on a closed terminal");
+    assert_eq!(row["holds"]["goal"], format!("G{gid}"));
+}
+
+#[test]
+fn a_terminal_that_ended_on_its_own_stays_a_row_of_its_own() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    let id = b.task("Move the database", json!({"goal_id": gid}));
+    b.session("s1");
+    b.report("tb.take", "s1", json!({"task": format!("T{id}")}));
+    board::update_task(&b.app, id, vec![("status", json!("needs")), ("needs_reason", json!("lost")), ("lost", json!(1))]).unwrap();
+
+    let rows = needs(&b);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0]["id"], format!("task:T{id}"));
+    assert_eq!(rows[0]["card"]["closed_by_hand"], false);
+}
+
+#[test]
+fn a_hand_closed_task_outside_any_goal_keeps_its_own_row() {
+    let b = new_board();
+    let id = b.task("Tidy the logs", json!({}));
+    b.session("s1");
+    b.report("tb.take", "s1", json!({"task": format!("T{id}")}));
+    b.owner_closes("s1");
+
+    let rows = needs(&b);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0]["id"], format!("task:T{id}"));
+    assert_eq!(rows[0]["card"]["closed_by_hand"], true);
+}
+
+#[test]
+fn restarting_a_goal_queues_only_its_closed_tasks() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    let closed = closed_task(&b, gid, "Move the database", "s1");
+    let asking = b.task("Move the jobs", json!({"goal_id": gid}));
+    board::update_task(&b.app, asking, vec![("status", json!("needs")), ("needs_reason", json!("question")), ("question", json!("Which schema?"))]).unwrap();
+    let planned = b.task("Move the docs", json!({"goal_id": gid}));
+    let was = b.row(planned).st("status");
+
+    let r = b.post(&format!("/goals/G{gid}/restart"), json!({}));
+    assert_eq!(r["restarted_now"], 1, "{r}");
+    let t = b.row(closed);
+    assert_eq!((t.s("status"), t.b("lost"), t.s("session_id")), (Some("queued"), false, None));
+    assert_eq!(b.row(asking).s("status"), Some("needs"), "a question isn't a closed terminal");
+    assert_eq!(b.row(planned).st("status"), was, "planned work stays planned");
+    assert!(!needs(&b).iter().any(|n| n["id"] == format!("stopped:G{gid}")), "the line goes with them");
+
+    let again = api::dispatch(&b.app, "POST", &format!("/goals/G{gid}/restart"), &Query::new(), &json!({})).unwrap_err();
+    assert_eq!(again.status, 409, "{}", again.message);
+}
+
+#[test]
+fn a_paused_or_set_aside_goal_leaves_the_list_until_it_is_resumed() {
+    for field in ["paused", "deprioritized"] {
+        let b = new_board();
+        let gid = goal(&b, false);
+        let closed = closed_task(&b, gid, "Move the database", "s1");
+        let asking = b.task("Move the jobs", json!({"goal_id": gid}));
+        board::update_task(&b.app, asking, vec![("status", json!("needs")), ("needs_reason", json!("question")), ("question", json!("Which schema?"))]).unwrap();
+        board::update_goal(&b.app, gid, vec![(field, json!(1))]).unwrap();
+        assert_eq!(needs(&b), Vec::<Value>::new(), "{field}");
+
+        let rest = api::dispatch(&b.app, "POST", &format!("/goals/G{gid}/restart"), &Query::new(), &json!({})).unwrap_err();
+        assert_eq!(rest.status, 409, "a goal at rest has no Stopped line: {}", rest.message);
+
+        let run = b.play(gid);
+        assert_eq!(run["resumed_now"], 1, "{run}");
+        assert_eq!(b.row(closed).s("status"), Some("queued"), "Play already restarts its closed tasks");
+    }
+}
+
+#[test]
+fn a_put_off_item_in_a_resting_goal_leaves_later_too() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    let id = b.task("Move the database", json!({"goal_id": gid}));
+    board::update_task(&b.app, id, vec![("status", json!("needs")), ("needs_reason", json!("question")), ("question", json!("Which schema?"))]).unwrap();
+    b.post(&format!("/alerts/task:T{id}/snooze"), json!({"mins": 60}));
+    let later = |b: &Board| api::dispatch(&b.app, "GET", "home", &Query::new(), &json!({})).unwrap()["later_count"].clone();
+    assert_eq!(later(&b), 1);
+
+    board::update_goal(&b.app, gid, vec![("paused", json!(1))]).unwrap();
+    assert_eq!(later(&b), 0);
+}
+
+#[test]
+fn an_urgent_alert_in_a_resting_goal_stays_listed() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    taskboardd::dispatch::raise(&b.app, "The database is down", None, Some(gid), Some("db"), true).unwrap();
+    taskboardd::dispatch::raise(&b.app, "Have a look at this", None, Some(gid), Some("look"), false).unwrap();
+    board::update_goal(&b.app, gid, vec![("paused", json!(1))]).unwrap();
+
+    let texts: Vec<String> = needs(&b).iter().map(|n| n["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(texts, vec!["The database is down".to_string()]);
+}
+
+#[test]
+fn a_resting_goals_alert_stays_out_of_the_digest() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    taskboardd::dispatch::raise(&b.app, "Have a look at this", None, Some(gid), Some("look"), false).unwrap();
+    assert_eq!(taskboardd::digest::members(&b.app).len(), 1);
+    board::update_goal(&b.app, gid, vec![("deprioritized", json!(1))]).unwrap();
+    assert_eq!(taskboardd::digest::members(&b.app), Vec::<Value>::new());
+}

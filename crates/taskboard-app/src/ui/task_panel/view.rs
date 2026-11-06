@@ -271,6 +271,8 @@ pub enum BoxTone {
     Lost,
     Done,
     Info,
+    /// A terminal you closed yourself: nothing's wrong, it just isn't running.
+    Quiet,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1510,7 +1512,12 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
         let grp = format!("lost:{r}");
         // Signs its work shipped from another terminal after this one closed (`lost_done.rs`).
         let found = arr(t, "looks_finished");
-        let label = if found.is_empty() { "Terminal lost" } else { "Looks finished" };
+        let quiet = b(t, "closed_by_hand") && found.is_empty();
+        let label = match (quiet, found.is_empty()) {
+            (true, _) => "Stopped",
+            (_, true) => "Terminal lost",
+            _ => "Looks finished",
+        };
         let mut bx = vec![txt(label, St::BoxLabel), txt(opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."), St::BannerText)];
         for f in found {
             let line = format!("{} · {}", s(f, "what"), fmt::hhmm(s(f, "at")));
@@ -1537,7 +1544,7 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
         row.extend(c.note(&grp));
         bx.push(el(K::Row, row));
         bx.push(c.btn("See what the new terminal gets", Act::new("tab", "context", "", ""), Look::Link, false, None));
-        (BoxTone::Lost, bx)
+        (if quiet { BoxTone::Quiet } else { BoxTone::Lost }, bx)
     } else if status == "needs" && s(t, "needs_reason") == "start_failed" {
         let mut row = vec![
             c.btn("New Midna terminal", Act::new("start", "new", &r, &act), Look::Primary, false, None),

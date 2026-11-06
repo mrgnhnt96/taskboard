@@ -640,7 +640,7 @@ fn repeat_alerts(app: &App) -> Result<()> {
     let mut sent = false;
     for a in rows.iter_mut() {
         // Outside the work hours only urgent alerts keep repeating; the digest repeats the rest.
-        if (!open && a["urgent"] != true) || digest::holds(app, a) {
+        if (!open && a["urgent"] != true) || digest::holds(app, a) || crate::home::alert_rests(app, a) {
             continue;
         }
         // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
@@ -685,6 +685,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().is_some_and(crate::quiet::is_key) {
         return crate::quiet::alert_resolved(app, a);
     }
+    if a["key"].as_str().is_some_and(board::is_miss_key) {
+        return board::miss_resolved(app, a);
+    }
     let at = a["at"].as_str().unwrap_or("");
     let sid = if let Some(tid) = a["task_id"].as_i64() {
         let Some(t) = board::find_task(app, Some(tid))? else { return Ok(true) };
@@ -710,18 +713,22 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     Ok(s.map(|s| s.s("status") == Some("working") && s.st("status_at").as_str() > at).unwrap_or(false))
 }
 
+/// Drops the alerts that are over. Judging them takes queries that can wait on a long transaction, so only the
+/// removal is written, onto the list as it stands by then: a change made meanwhile isn't undone.
 pub fn prune_alerts(app: &App) -> Result<()> {
-    let rows = alerts(app);
-    let mut keep_rows = vec![];
-    for a in &rows {
-        if !resolved(app, a)? {
-            keep_rows.push(a.clone());
+    let mut over = vec![];
+    for a in alerts(app) {
+        if resolved(app, &a)? {
+            over.push(a["id"].clone());
         }
     }
-    if keep_rows.len() != rows.len() {
-        keep(app, &keep_rows)?;
+    if over.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    app.db.tx(|| {
+        let rows: Vec<Value> = alerts(app).into_iter().filter(|a| !over.contains(&a["id"])).collect();
+        keep(app, &rows)
+    })
 }
 
 /// Where a notification click goes: the app's URL scheme (`taskboard://task/T12`,
@@ -1144,8 +1151,8 @@ pub fn tick(app: &App) -> Result<()> {
     prune_asks(app)?;
     app.db.tx(|| bring_back_after_goals(app))?;
     prune_alerts(app)?;
-    deliver_held(app)?;
-    repeat_alerts(app)?;
+    app.db.tx(|| deliver_held(app))?;
+    app.db.tx(|| repeat_alerts(app))?;
     digest::tick(app)?;
     tend_waiters(app);
     Ok(())

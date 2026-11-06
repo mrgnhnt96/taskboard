@@ -152,7 +152,9 @@ fn kind(a: &Value, card: &Value) -> &'static str {
     let reason = st(card, "needs_reason");
     let has_card = card.is_object();
     let needs = st(card, "status") == "needs";
-    if a["review_id"].as_i64().is_some() {
+    if a["stopped"].is_object() {
+        "Stopped"
+    } else if a["review_id"].as_i64().is_some() {
         "Weekly review"
     } else if st(a, "key").starts_with("quiet:") {
         "Gone quiet"
@@ -164,6 +166,8 @@ fn kind(a: &Value, card: &Value) -> &'static str {
         "Urgent"
     } else if has_card && card["lost"] == true && card["looks_finished"].as_array().is_some_and(|f| !f.is_empty()) {
         "Looks finished"
+    } else if has_card && card["closed_by_hand"] == true {
+        "Stopped"
     } else if has_card && card["lost"] == true {
         "Terminal lost"
     } else if reason == "start_failed" {
@@ -189,7 +193,7 @@ fn item(a: &Value) -> Item {
     let card = &a["card"];
     let task = opt(a, "task").or_else(|| opt(card, "ref"));
     let goal = opt(a, "goal").or_else(|| opt(&card["goal"], "ref"));
-    let alert = opt(a, "id");
+    let alert = opt(a, "id").filter(|_| !a["stopped"].is_object());
     let kind = kind(a, card);
     let answer = matches!(kind, "Question" | "Needs you") && st(card, "status") == "needs";
     let text = if answer { opt(card, "question").unwrap_or_else(|| st(a, "text").to_string()) } else { st(a, "text").to_string() };
@@ -259,6 +263,9 @@ fn critical_ask() -> Asked {
 /// A goal held after a wave for review (its `stopped` line, "Wave 1 is done. Review it, then continue").
 fn stop(e: &Value) -> Option<Item> {
     let g = &e["goal"];
+    if g["paused"] == true {
+        return None;
+    }
     let line = g["stopped"].as_str().filter(|l| l.contains(" is done"))?;
     let n: i64 = line.strip_prefix("Wave ")?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
     let gr = opt(g, "ref").or_else(|| g["id"].as_i64().map(|id| format!("G{id}")))?;
@@ -295,6 +302,7 @@ fn rank(i: &Item) -> u8 {
         "Urgent" | "Terminal lost" | "Couldn't start" | "Failed" | "Checks failed" => 0,
         "Question" | "Needs you" | "Holds a PR" => 1,
         "Weekly review" | "Review the PR" | "Ready to merge" => 3,
+        "Stopped" => 4,
         _ => 2,
     }
 }
@@ -400,6 +408,8 @@ pub fn todo(i: &Item) -> Vec<String> {
             out.push(format!("tb needs restart {h}   (a new terminal from its handoff)"));
             out.push(format!("tb needs finish {h}   (its work shipped: a new terminal checks it and hands it in)"));
         }
+        "Stopped" if i.task.is_none() => out.push(format!("tb needs restart {h}   (its closed tasks go back in the queue)")),
+        "Stopped" => out.push(format!("tb needs restart {h}   (a new terminal from its handoff)")),
         "Holds a PR" => {
             out.push(format!("tb needs answer {h} --pick 1   (approve: its fix task runs before the PR merges)"));
             out.push(format!("tb needs answer {h} --pick 2   (reject: back to the backlog, and the PR stops waiting on it)"));
@@ -564,10 +574,13 @@ fn owner_answer(i: &Item, answer: &str, note: &Option<String>) -> Result<(String
 
 /// The request for an action on `i`, anything but an answer: (path, body).
 pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> {
-    let lost = matches!(i.kind, "Terminal lost" | "Looks finished");
+    let lost = matches!(i.kind, "Terminal lost" | "Looks finished" | "Stopped");
+    let whole_goal = i.kind == "Stopped" && i.task.is_none();
     let alert = || i.alert.clone().ok_or_else(|| format!("{} has no alert to take off the list: it stays until it's handled.", i.handle));
     match cmd {
         NeedsCmd::Restart { .. } | NeedsCmd::Finish { .. } if !lost => Err(format!("{} hasn't lost its terminal ({}).", i.handle, i.kind)),
+        NeedsCmd::Finish { .. } if whole_goal => Err(format!("{} is a whole goal: finish its tasks one at a time.", i.handle)),
+        NeedsCmd::Restart { .. } if whole_goal => Ok((format!("/goals/{}/restart", i.handle), json!({}))),
         NeedsCmd::Restart { .. } => Ok((format!("/tasks/{}/resume", i.handle), json!({"mode": "fresh"}))),
         NeedsCmd::Finish { .. } => Ok((format!("/tasks/{}/resume", i.handle), json!({"mode": "finish"}))),
         NeedsCmd::Continue { .. } => match (&i.goal, i.wave) {
@@ -617,6 +630,7 @@ pub fn done_line(cmd: &NeedsCmd, i: &Item, v: &Value) -> String {
     match cmd {
         NeedsCmd::Answer { .. } if i.critical.is_some() => v["text"].as_str().map(str::to_string).unwrap_or_else(|| format!("Answered {h}.")),
         NeedsCmd::Answer { .. } => format!("Answered {h}. Its agent carries on with it."),
+        NeedsCmd::Restart { .. } if i.task.is_none() => format!("{h}'s closed tasks are back in the queue."),
         NeedsCmd::Restart { .. } => format!("Restarting {h} in a new terminal from its handoff."),
         NeedsCmd::Finish { .. } => format!("A new terminal checks {h} and hands it in."),
         NeedsCmd::Continue { .. } => {
@@ -880,5 +894,46 @@ mod tests {
         assert!(!lines.iter().any(|l| l.contains("Suggested")), "{lines:#?}");
         let done = done_line(&NeedsCmd::Answer { item: "B301".into(), text: None, pick: vec!["1".into()] }, b, &json!({"text": "Approved B301."}));
         assert_eq!(done, "Approved B301.");
+    }
+
+    fn with_stopped() -> Value {
+        let mut h = home();
+        h["needs"].as_array_mut().unwrap().extend([
+            json!({"id": "stopped:G5", "at": "2026-10-20T15:00:00Z", "title": "Picto · 2 closed", "text": "T20 One\nT21 Two", "goal": "G5", "goal_name": "Picto",
+                   "project": "web", "card": null, "stopped": {"tasks": ["T20", "T21"]}}),
+            json!({"id": null, "at": "2026-10-20T15:00:00Z", "text": "", "task": "T22",
+                   "card": {"ref": "T22", "title": "Alone", "status": "needs", "needs_reason": "lost", "lost": true, "closed_by_hand": true, "project": "web"}}),
+        ]);
+        h
+    }
+
+    #[test]
+    fn a_closed_goal_is_one_quiet_item_that_restarts_as_a_whole() {
+        let items = items(&with_stopped(), None);
+        let g = find(&items, "G5").unwrap();
+        assert_eq!((g.kind, g.task.as_deref()), ("Stopped", None));
+        assert_eq!(items.iter().filter(|i| i.kind == "Stopped").map(|i| i.handle.as_str()).collect::<Vec<_>>(), vec!["G5", "T22"]);
+        assert_eq!(items.iter().rev().take(2).filter(|i| i.kind == "Stopped").count(), 2, "Stopped sorts below everything else");
+        let restart = NeedsCmd::Restart { item: "G5".into() };
+        assert_eq!(act_request(&restart, g).unwrap(), ("/goals/G5/restart".into(), json!({})));
+        assert!(act_request(&NeedsCmd::Finish { item: "G5".into() }, g).unwrap_err().contains("whole goal"));
+        assert!(act_request(&NeedsCmd::Dismiss { item: "G5".into() }, g).is_err(), "it stays until it's restarted");
+        assert_eq!(done_line(&restart, g, &json!({})), "G5's closed tasks are back in the queue.");
+        let alone = find(&items, "T22").unwrap();
+        assert_eq!(act_request(&NeedsCmd::Restart { item: "T22".into() }, alone).unwrap(), ("/tasks/T22/resume".into(), json!({"mode": "fresh"})));
+    }
+
+    #[test]
+    fn a_stopped_item_keeps_to_its_project() {
+        let web = items(&with_stopped(), Some("web"));
+        assert!(find(&web, "G5").is_ok());
+        assert!(find(&items(&with_stopped(), Some("api")), "G5").is_err());
+    }
+
+    #[test]
+    fn a_paused_goal_has_no_wave_to_continue() {
+        let mut h = home();
+        h["goals"][0]["goal"]["paused"] = json!(true);
+        assert!(find(&items(&h, None), "G3").is_err());
     }
 }

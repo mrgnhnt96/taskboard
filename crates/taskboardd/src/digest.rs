@@ -43,7 +43,7 @@ fn save(app: &App, s: &Value) -> Result<()> {
 
 /// The alerts the digest lists now, in the app's order.
 pub fn members(app: &App) -> Vec<Value> {
-    dispatch::listing(app).into_iter().filter(|a| holds(app, a) && !dispatch::snoozed(a)).collect()
+    dispatch::listing(app).into_iter().filter(|a| holds(app, a) && !dispatch::snoozed(a) && !crate::home::alert_rests(app, a)).collect()
 }
 
 fn ids(rows: &[Value]) -> Vec<String> {
