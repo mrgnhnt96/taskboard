@@ -40,15 +40,16 @@ pub fn words(q: &str) -> Vec<String> {
 }
 
 /// Whether `w` names the ref `r` (both lower case): its whole (`t332`), or its number alone (`332`).
-/// `Some(true)` for all of it, `Some(false)` for its start, `None` when it doesn't.
+/// A human task's `h332` still answers to `t332`. `Some(true)` for all of it, `Some(false)` for its start, `None` when it doesn't.
 fn ref_match(r: &str, w: &str) -> Option<bool> {
     let num = r.trim_start_matches(|c: char| c.is_ascii_alphabetic());
     let bare = !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit()) && num.len() < r.len();
+    let as_task = r.strip_prefix('h').map(|n| format!("t{n}"));
     if r.is_empty() {
         None
-    } else if r == w || (bare && num == w) {
+    } else if r == w || as_task.as_deref() == Some(w) || (bare && num == w) {
         Some(true)
-    } else if r.starts_with(w) || (bare && num.starts_with(w)) {
+    } else if r.starts_with(w) || as_task.as_ref().is_some_and(|t| t.starts_with(w)) || (bare && num.starts_with(w)) {
         Some(false)
     } else {
         None
@@ -151,7 +152,7 @@ pub fn find(app: &App, q: &str, limit: usize, goal_id: Option<i64>) -> Result<Va
         } else {
             let s = |k| t.s(k).unwrap_or("");
             let other = if goal_id.is_some() { [s("detail"), s("summary")] } else { [s("project"), goal(t.i("goal_id"))] };
-            match score(&rf("task", t.id()), s("title"), &other, &w) {
+            match score(&crate::human::task_ref(&t), s("title"), &other, &w) {
                 Some((sc, _)) => sc,
                 None => continue,
             }
@@ -249,6 +250,17 @@ mod tests {
         assert_eq!(score("T1332", "x", &[], &w), None, "a number inside the ref isn't it");
         assert_eq!(score("", "x", &["332"], &w).unwrap().0, 5, "no ref: other text");
         assert_eq!(score("T9", "x", &[], &words("t")).unwrap().0, 1, "a letter alone still starts a ref");
+    }
+
+    #[test]
+    fn a_human_task_answers_to_both_its_refs() {
+        let (_d, app) = board();
+        let h = app.db.insert("tasks", crate::fields!["title" => "Renew the signing key", "project" => "webapp", "status" => "needs", "kind" => crate::human::KIND]).unwrap();
+        let t = app.db.insert("tasks", crate::fields!["title" => "Rotate the key", "project" => "webapp", "status" => "queued"]).unwrap();
+        assert_eq!(refs(&search(&app, &format!("h{h}"), "6"), "tasks"), [format!("H{h}")]);
+        assert_eq!(refs(&search(&app, &format!("t{h}"), "6"), "tasks"), [format!("H{h}")]);
+        assert_eq!(score("H12", "x", &[], &words("t12")).unwrap().0, 0);
+        assert_eq!(refs(&search(&app, &format!("h{t}"), "6"), "tasks"), Vec::<String>::new(), "a plain task has no H ref");
     }
 
     #[test]
