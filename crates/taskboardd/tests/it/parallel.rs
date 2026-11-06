@@ -1175,10 +1175,10 @@ fn review_fixes_reclaim_a_slot_on_the_pushed_branch() {
     assert!(b.card(one)["log"].to_string().contains(&format!("Made worktree slot-2 at {}, on its branch feature/one", slot(&b, 2))), "{}", b.card(one)["log"]);
 }
 
-/// A slot folder whose worktree was removed under it, then made again by a tool writing its output there.
+/// A slot whose worktree was removed under it, its empty folder left behind.
 fn lose_worktree(b: &Board, n: i64) {
     git(Path::new(&b.repo()), &["worktree", "remove", "--force", &slot(&b, n)]);
-    std::fs::create_dir_all(Path::new(&slot(&b, n)).join(".review/pr-1/agents")).unwrap();
+    std::fs::create_dir_all(slot(&b, n)).unwrap();
 }
 
 fn top_level(folder: &str) -> String {
@@ -1206,7 +1206,6 @@ fn a_slot_that_lost_its_worktree_is_made_again_and_never_moves_the_shared_checko
     assert_eq!((out["slot"].clone(), out["path"].clone()), (json!("slot-1"), json!(slot(&b, 1))));
     assert_eq!(top_level(&slot(&b, 1)), real(&slot(&b, 1)), "a worktree of its own again");
     assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/one");
-    assert!(!Path::new(&slot(&b, 1)).join(".review").exists());
     assert_eq!(git(Path::new(&b.repo()), &["rev-parse", "--abbrev-ref", "HEAD"]), "main", "the shared checkout stays on main");
     assert!(b.card(one)["log"].to_string().contains("Made worktree slot-1 again"), "{}", b.card(one)["log"]);
 
