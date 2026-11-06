@@ -1281,15 +1281,27 @@ pub fn issue_from_line(b: &Row) -> String {
     }
 }
 
+/// What the item blocks right now. Settled, it blocks nothing: closed, sent to Jira, deferred, or made into a
+/// task that's done. The stored level stays, so reopening the item brings its hold back.
+fn blocks_now<'a>(app: &App, b: &'a Row) -> Result<&'a str> {
+    let holds = match b.s("state") {
+        Some("open") => true,
+        Some("task") => find_task(app, b.i("task_id"))?.is_none_or(|t| t.s("status") != Some("done") || t.b("failed")),
+        _ => false,
+    };
+    Ok(if holds { b.s("blocks").unwrap_or(crate::blocks::NONE) } else { crate::blocks::NONE })
+}
+
 pub fn issue_card(app: &App, b: &Row) -> Result<Value> {
     let g = find_goal(app, b.i("goal_id"))?;
+    let blocks = blocks_now(app, b)?;
     Ok(json!({
         "id": b.id(), "ref": rf("issue", b.id()), "kind": b.v("kind"), "kind_label": kind_label(&b.st("kind")),
         "title": b.v("title"), "goal": goal_ref(g.as_ref()), "goal_id": b.v("goal_id"), "project": b.v("project"), "area": b.v("area"),
         "found_by_task": b.v("found_by_task"),
         "found_by_name": b.v("found_by_name"), "source": b.v("source"),
         "created_at": b.v("created_at"), "updated_at": b.v("updated_at"), "state": b.v("state"), "misses_goal": b.b("misses_goal"),
-        "blocks": b.s("blocks").unwrap_or("none"), "blocks_why": b.v("blocks_why"),
+        "blocks": blocks, "blocks_why": if blocks == crate::blocks::NONE { Value::Null } else { b.v("blocks_why") },
         "jira_key": b.v("jira_key"), "jira_url": jira_url(app, b.s("jira_key").unwrap_or("")),
         "task_id": b.v("task_id"), "task_ref": rf_opt("task", b.i("task_id")),
         "from": issue_from_line(b),
