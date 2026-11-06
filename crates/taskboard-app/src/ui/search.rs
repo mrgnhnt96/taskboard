@@ -1,5 +1,5 @@
-//! Search (⌘K and the sidebar's search box): a palette over the page that finds tasks, goals,
-//! backlog issues, attachments and terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
+//! Search (⌘K and the sidebar's search box): a palette over the page that finds projects, tasks,
+//! goals, backlog issues, attachments and terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
 //! Opened on a goal's page it searches that goal alone (its tasks' detail and summary too); ⌫ in
 //! the empty field, or the chip's ×, widens it to everything.
 use crate::app::MainWindow;
@@ -7,6 +7,7 @@ use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::goals_page::{GoalGroup, goal_group};
 use crate::ui::modals::Modal;
+use crate::ui::projects::{self, ProjectRow};
 use crate::ui::status::{self, St};
 use crate::ui::text_input::FieldChanged;
 use crate::ui::{issue_panel, kit, sidebar};
@@ -52,6 +53,7 @@ pub type Ask = (String, Option<i64>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
+    Projects,
     Tasks,
     Goals,
     Backlog,
@@ -62,6 +64,7 @@ pub enum Kind {
 impl Kind {
     fn label(self) -> &'static str {
         match self {
+            Kind::Projects => "Projects",
             Kind::Tasks => "Tasks",
             Kind::Goals => "Goals",
             Kind::Backlog => "Backlog",
@@ -73,6 +76,8 @@ impl Kind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
+    /// Its name.
+    Project(String),
     Task(String),
     Goal(String),
     Issue(String),
@@ -85,6 +90,7 @@ pub enum Target {
 pub enum Dot {
     Status(St),
     Goal,
+    Project,
     /// A backlog issue: filled while it's open.
     Issue { open: bool },
     /// An attachment, tinted by its kind.
@@ -95,7 +101,7 @@ pub enum Dot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub target: Target,
-    /// T12 / G3 / B7; empty for a terminal.
+    /// T12 / G3 / B7; empty for a project or a terminal.
     pub r: String,
     pub title: String,
     /// The matched spans of `title` (byte ranges).
@@ -359,10 +365,52 @@ pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<
     .collect()
 }
 
+/// Projects by name, those with open work first; the right says what's open, else how many goals finished.
+fn project_hits(rows: Vec<ProjectRow>, w: &[String]) -> Vec<Hit> {
+    let rows = rows
+        .into_iter()
+        .map(|p| {
+            let m = score("", &p.name, &[], w);
+            (p, m)
+        })
+        .collect();
+    rank(rows, w, |_| (0, 0))
+        .into_iter()
+        .map(|(p, hl)| {
+            let place = match (p.open > 0 || p.tasks > 0, p.finished) {
+                (true, _) => p.sub(),
+                (false, 0) => String::new(),
+                (false, n) => format!("{n} done"),
+            };
+            Hit { target: Target::Project(p.name.clone()), r: String::new(), title: p.name, hl, place, dot: Dot::Project }
+        })
+        .collect()
+}
+
+/// The projects matching `q`, on top so one isn't pushed out of sight by the tasks that merely
+/// belong to it; a ref typed in full keeps its result first, for ↩.
+fn add_projects(groups: &mut Vec<Group>, rows: Vec<ProjectRow>, q: &str) {
+    let w = words(q);
+    if w.is_empty() {
+        return;
+    }
+    let found = group(Kind::Projects, project_hits(rows, &w));
+    if found.hits.is_empty() {
+        return;
+    }
+    let names_ref = |g: &Group| g.hits.iter().any(|h| h.r.eq_ignore_ascii_case(q.trim()));
+    let at = groups.iter().position(names_ref).map_or(0, |g| g + 1);
+    groups.insert(at, found);
+}
+
 fn current(m: &MainWindow, cx: &App) -> Vec<Group> {
     let q = m.search.input.as_ref().map(|i| i.text(cx)).unwrap_or_default();
     let scoped = m.search.scope.is_some();
     let mut groups = results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.search.atts.as_ref(), m.data.sessions.as_deref(), scoped);
+    if !scoped {
+        let (open, idle) = projects::list(m.state(), &m.data.goals);
+        add_projects(&mut groups, open.into_iter().chain(idle).collect(), &q);
+    }
     // The board sent the best few: its counts are the whole.
     let asked = (q, m.search.scope.as_ref().map(|s| s.id));
     if let Some((_, tasks, issues, atts)) = m.search.found.as_ref().filter(|f| f.0 == asked) {
@@ -463,7 +511,7 @@ pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
 }
 
 fn placeholder(scoped: bool) -> &'static str {
-    if scoped { "Search this goal’s tasks, backlog and attachments" } else { "Search tasks, goals, backlog, attachments and terminals" }
+    if scoped { "Search this goal’s tasks, backlog and attachments" } else { "Search projects, tasks, goals, backlog, attachments and terminals" }
 }
 
 /// The goal whose page is showing, to keep the palette to.
@@ -502,6 +550,7 @@ pub fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
 fn go(m: &mut MainWindow, target: Target, window: &mut Window, cx: &mut Context<MainWindow>) {
     close(m, window, cx);
     match target {
+        Target::Project(name) => projects::open_for(m, &name, cx),
         Target::Task(r) => m.open_task(r, cx),
         Target::Goal(r) => crate::ui::goal::open(m, &r, false, cx),
         Target::Issue(r) => m.open_issue(r, cx),
@@ -672,6 +721,7 @@ fn result_row(t: &Theme, h: &Hit, ix: usize, selected: bool, cx: &mut Context<Ma
     let dot = match h.dot {
         Dot::Status(st) => kit::dot(st.colors(t).2, 8.),
         Dot::Goal => div().flex_none().size(px(8.)).rounded(px(2.)).bg(t.goal),
+        Dot::Project => div().flex_none().size(px(8.)).rounded(px(2.)).bg(t.text),
         Dot::Issue { open } => kit::dot(if open { t.backlog_dot } else { t.border_2 }, 8.),
         Dot::Attachment(kind) => div().flex_none().size(px(8.)).rounded(px(2.)).bg(crate::ui::task_panel::att_tint(t, kind).0),
         Dot::Idle => kit::dot(t.border_2, 8.),
@@ -878,6 +928,66 @@ mod tests {
             land(m, &("si".into(), None), json!({"tasks": [], "issues": [], "tasks_total": 0, "issues_total": 0}), cx);
             assert_eq!(m.search.found.as_ref().map(|f| f.0.0.as_str()), Some("sig"));
             assert!(m.data.tasks.as_ref().is_some_and(|t| t["tasks"].as_array().is_some_and(|a| !a.is_empty())), "the answer for sig stays");
+        })
+        .unwrap();
+    }
+
+    fn project(name: &str, open: usize, finished: usize) -> ProjectRow {
+        ProjectRow { name: name.into(), open, running: 0, queued: false, needs: false, waits_on: vec![], finished, tasks: 0 }
+    }
+
+    #[test]
+    fn a_project_shows_by_name_above_the_tasks_in_it() {
+        let (tasks, goals, sessions) = sample();
+        let mut g = results("webapp", Some(&tasks), &goals, None, None, Some(&sessions), false);
+        add_projects(&mut g, vec![project("webapp", 1, 2), project("api", 0, 0)], "webapp");
+        assert_eq!(g[0].kind, Kind::Projects);
+        assert_eq!(titles(&g[0]), vec!["webapp"]);
+        assert_eq!(g[0].hits[0].target, Target::Project("webapp".into()));
+        assert_eq!(g[0].hits[0].hl, vec![0..6]);
+        assert_eq!(g[0].hits[0].place, "1 goal");
+        assert_eq!(g[1].kind, Kind::Tasks);
+    }
+
+    #[test]
+    fn an_idle_project_says_what_finished_or_nothing() {
+        let w = words("p");
+        let hits = project_hits(vec![project("p1", 0, 3), project("p2", 0, 0)], &w);
+        assert_eq!(hits.iter().map(|h| h.place.as_str()).collect::<Vec<_>>(), vec!["3 done", ""]);
+    }
+
+    #[test]
+    fn a_ref_typed_in_full_stays_ahead_of_a_project() {
+        let (tasks, goals, sessions) = sample();
+        let mut g = results("t3", Some(&tasks), &goals, None, None, Some(&sessions), false);
+        add_projects(&mut g, vec![project("t3-tools", 1, 0)], "t3");
+        assert_eq!(g.iter().map(|g| g.kind).take(2).collect::<Vec<_>>(), vec![Kind::Tasks, Kind::Projects]);
+    }
+
+    #[test]
+    fn projects_wait_for_something_typed() {
+        let mut g = vec![];
+        add_projects(&mut g, vec![project("webapp", 1, 0)], "  ");
+        assert!(g.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn typing_a_project_finds_it_and_opening_it_shows_its_page(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _) = crate::parity::window(cx);
+        crate::parity::settle(cx);
+        w.update(cx, |m, window, cx| open(m, window, cx)).unwrap();
+        crate::parity::settle(cx);
+        let name = w.update(cx, |m, _, _| s(&arr(m.state(), "projects")[0], "name").to_string()).unwrap();
+        cx.simulate_input(w.into(), &name);
+        crate::parity::settle(cx);
+        w.update(cx, |m, window, cx| {
+            let groups = current(m, cx);
+            assert_eq!(groups[0].kind, Kind::Projects);
+            let target = groups[0].hits[0].target.clone();
+            assert_eq!(target, Target::Project(name.clone()));
+            go(m, target, window, cx);
+            assert_eq!(m.page, crate::app::Page::Projects);
+            assert_eq!(m.projects.selected.as_deref(), Some(name.as_str()));
         })
         .unwrap();
     }
