@@ -293,7 +293,7 @@ impl<'a> GoalOrder<'a> {
                 if x.id() == t.id() {
                     break;
                 }
-                if !matches!(x.s("status"), Some("done") | Some("planned")) {
+                if !matches!(x.s("status"), Some("done") | Some("planned")) && !crate::human::released(x) {
                     return Ok(Some(format!("Waits for {} to finish first", rf("task", x.id()))));
                 }
             }

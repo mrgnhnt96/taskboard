@@ -4346,6 +4346,7 @@ fn needs_cmd(c: &Ctx, cmd: crate::needs::NeedsCmd) -> Result<i32, String> {
             out(&serde_json::to_string_pretty(&items.iter().map(needs::json_of).collect::<Vec<_>>()).unwrap_or_default());
         } else {
             needs::list_lines(&items).iter().for_each(|l| out(l));
+            needs::later_line(&home).iter().for_each(|l| out(l));
         }
         return Ok(0);
     }

@@ -106,7 +106,7 @@ fn label(app: &App, other: &Row) -> Result<String> {
 }
 
 pub fn ready(other: Option<&Row>) -> bool {
-    other.map(|o| o.s("status") == Some("done") && !o.b("failed")).unwrap_or(false)
+    other.map(|o| (o.s("status") == Some("done") && !o.b("failed")) || crate::human::released(o)).unwrap_or(false)
 }
 
 /// The tasks this one waits for until their PR merges, not just until they're done (`tb wait-for --merged`).
@@ -570,6 +570,7 @@ fn elsewhere(app: &App, other: &Row) -> Result<String> {
 
 pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
     let (mut lines, mut away, mut owner) = (vec![], vec![], vec![]);
+    let mut owner_all_done = true;
     let shared = crate::samepr::shared_ids(app, t)?;
     for n in deps(t) {
         if shared.contains(&n) {
@@ -585,6 +586,7 @@ pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
             }
             if crate::human::is(o) {
                 owner.push(crate::human::done_line(app, o));
+                owner_all_done &= !crate::human::answered(o);
             } else if o.s("project") == t.s("project") {
                 lines.push(format!("- {}", where_it_is(app, o)?));
             } else {
@@ -594,7 +596,11 @@ pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
     }
     let mut out = vec![];
     if !owner.is_empty() {
-        out.push(format!("This task waited for {} to do something only they can, and it's done:", app.cfg.owner));
+        out.push(if owner_all_done {
+            format!("This task waited for {} to do something only they can, and it's done:", app.cfg.owner)
+        } else {
+            format!("This task waited for {} to do something only they can. Where that stands:", app.cfg.owner)
+        });
         out.extend(owner);
     }
     if !away.is_empty() {

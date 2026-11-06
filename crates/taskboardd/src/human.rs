@@ -3,21 +3,45 @@
 //! once nothing holds it back, the runner puts it in Needs you and raises an alert, and it's done when
 //! the owner presses Done in the app (with an optional note). Tasks that wait for it, by `waits_for` or
 //! by their goal's order, then go on, and a parked one is told what the owner did.
+//!
+//! The owner can answer with something other than Done (`answer`): Can't do this hands it back, Not
+//! needed cancels it, Don't wait for me frees what waits while it stays listed, and Waiting on someone
+//! puts it off until a date.
 
 use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::board::{self, OWNER};
 use crate::util::*;
-use crate::{dig, dispatch, fields, midna, reports, waitsfor};
+use crate::dispatch::Later;
+use crate::{dig, dispatch, fields, home, hours, midna, reports, waitsfor};
 
 pub const KIND: &str = "human";
 
 /// The `needs_reason` of a human task that's ready for the owner.
 pub const NEEDS: &str = "human";
 
+/// How the owner answered other than with Done (`tasks.owner_answer`). The first two finish the task.
+pub const CANT_DO: &str = "cant_do";
+pub const NOT_NEEDED: &str = "not_needed";
+pub const DONT_WAIT: &str = "dont_wait";
+
+/// The `answer` of `POST /tasks/:id/owner-answer` that keeps what waits waiting and records nothing on the task.
+const WAITING: &str = "waiting";
+
 pub fn is(t: &Row) -> bool {
     t.s("kind") == Some(KIND)
+}
+
+/// The owner answered it other than with Done.
+pub fn answered(t: &Row) -> bool {
+    is(t) && t.s("owner_answer").is_some()
+}
+
+/// Still open, but the owner said not to wait for it: it holds nothing back, neither the tasks that
+/// wait for it nor its goal.
+pub fn released(t: &Row) -> bool {
+    is(t) && t.s("owner_answer") == Some(DONT_WAIT) && t.s("status") != Some("done")
 }
 
 /// The task's ref as people see it: H<n> for a human task, else T<n>. T<n> still finds either.
@@ -62,7 +86,7 @@ pub fn refuse_agent_finish(app: &App, t: &Row) -> Result<()> {
 pub fn ready(app: &App, t: &Row) -> Result<()> {
     let r = task_ref(t);
     let ask = format!("Your task: {}. Follow its steps, then press Done.", t.st("title"));
-    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => NEEDS, "question" => ask.clone(), "answered_at" => null, "latest" => ask])?;
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => NEEDS, "question" => ask.clone(), "answered_at" => null, "latest" => ask, "owner_answer" => null])?;
     board::log_event(app, t.id(), "Board", "status", "Ready for you")?;
     dispatch::add_alert_keyed(app, &format!("{r}: {}", t.st("title")), Some(t.id()), t.i("goal_id"), &alert_key(t.id()))
 }
@@ -81,17 +105,103 @@ pub fn done(app: &App, id: i64, body: &Value) -> Result<()> {
         if t.s("status") == Some("done") {
             return err(409, "It's already done.");
         }
-        let note = clip(body_str(body, "note").trim(), 2000);
-        let mut ctx = board::task_context(&t);
-        if !note.is_empty() {
-            ctx.insert("owner_note".into(), json!(note));
-            board::save_context(app, id, &ctx, false)?;
-        }
+        let note = owner_note(body);
+        keep_note(app, &t, &note)?;
+        board::update_task(app, id, fields!["owner_answer" => null])?;
         let summary = if note.is_empty() { "Done by you".to_string() } else { format!("Done by you: {note}") };
-        reports::finish_task(app, &t, OWNER, &summary, false, None)?;
-        dispatch::clear_alert_key(app, &alert_key(id))?;
-        dispatch::clear_alerts(app, Some(id), None)
+        finish(app, &t, &summary)
     })
+}
+
+fn owner_note(body: &Value) -> String {
+    clip(body_str(body, "note").trim(), 2000)
+}
+
+fn keep_note(app: &App, t: &Row, note: &str) -> Result<()> {
+    if note.is_empty() {
+        return Ok(());
+    }
+    let mut ctx = board::task_context(t);
+    ctx.insert("owner_note".into(), json!(note));
+    board::save_context(app, t.id(), &ctx, false)
+}
+
+fn finish(app: &App, t: &Row, summary: &str) -> Result<()> {
+    reports::finish_task(app, t, OWNER, summary, false, None)?;
+    dispatch::clear_alert_key(app, &alert_key(t.id()))?;
+    dispatch::clear_alerts(app, Some(t.id()), None)
+}
+
+/// `POST /tasks/:id/owner-answer`: the owner's answer on a to-do of theirs other than Done, with an
+/// optional `note`: `cant_do`, `not_needed`, `dont_wait`, or `waiting` with `until`, a date. Unlike
+/// Done, `tb needs` may send these on the owner's word.
+pub fn answer(app: &App, id: i64, body: &Value) -> Result<()> {
+    app.db.tx(|| {
+        let t = board::get_task(app, id)?;
+        let r = task_ref(&t);
+        if !is(&t) {
+            return err(409, format!("{r} isn't a human task."));
+        }
+        if t.s("status") != Some("needs") {
+            return err(409, format!("{r} isn't waiting on {} now.", app.cfg.owner));
+        }
+        let note = owner_note(body);
+        match body_str(body, "answer").as_str() {
+            CANT_DO => close(app, &t, CANT_DO, "Handed back", &note),
+            NOT_NEEDED => close(app, &t, NOT_NEEDED, "Not needed", &note),
+            DONT_WAIT => dont_wait(app, &t, &note),
+            WAITING => put_off(app, &t, &body_str(body, "until"), &note),
+            _ => err(400, "Answer with cant_do, not_needed, dont_wait or waiting."),
+        }
+    })?;
+    app.wake_runner();
+    Ok(())
+}
+
+fn close(app: &App, t: &Row, answer: &str, what: &str, note: &str) -> Result<()> {
+    keep_note(app, t, note)?;
+    board::update_task(app, t.id(), fields!["owner_answer" => answer])?;
+    finish(app, t, &if note.is_empty() { what.to_string() } else { format!("{what}: {note}") })
+}
+
+fn dont_wait(app: &App, t: &Row, note: &str) -> Result<()> {
+    if released(t) {
+        return err(409, format!("Nothing waits for {} already.", task_ref(t)));
+    }
+    let goal = t.i("goal_id");
+    let goal_was_finished = goal.map(|g| board::goal_finished(app, g)).transpose()?.unwrap_or(true);
+    keep_note(app, t, note)?;
+    board::update_task(app, t.id(), fields!["owner_answer" => DONT_WAIT])?;
+    board::log_event(app, t.id(), OWNER, "status", "Don't wait for this: it stays on the list and holds nothing back")?;
+    if let (Some(g), false) = (goal, goal_was_finished) {
+        if board::goal_finished(app, g)? {
+            board::on_goal_finished(app, g, None)?;
+        }
+    }
+    Ok(())
+}
+
+/// Waiting on someone: off the list until the work hours of `date`. What waits for it keeps waiting.
+fn put_off(app: &App, t: &Row, date: &str, on: &str) -> Result<()> {
+    let Ok(day) = chrono::NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d") else {
+        return err(400, "Say when to bring it back, as a date: until 2026-11-12.");
+    };
+    let until = hours::day_start(app, day);
+    if until <= now_ts() {
+        return err(400, "Pick a date that's still to come.");
+    }
+    let later = Later::WaitingOn(until, on.to_string());
+    let ids: Vec<String> = dispatch::alerts(app).iter().filter(|a| a["task_id"].as_i64() == Some(t.id())).filter_map(|a| a["id"].as_str().map(str::to_string)).collect();
+    if ids.is_empty() {
+        home::put_away(app, &format!("{}{}", home::TASK_ID, rf("task", t.id())), Some(later.clone()))?;
+    }
+    for id in &ids {
+        dispatch::snooze_to(app, id, &later)?;
+        dispatch::withdraw(app, id);
+    }
+    let who = if on.is_empty() { "someone".to_string() } else { on.to_string() };
+    board::log_event(app, t.id(), OWNER, "status", &format!("Waiting on {who} until {}", day.format("%b %-d")))?;
+    Ok(())
 }
 
 /// `POST /tasks/:id/talk`: a Claude terminal to ask about a human task in, opened in its project's
@@ -152,7 +262,13 @@ pub fn note(t: &Row) -> Option<String> {
 
 /// The resume prompt's line for a human task this one waited for.
 pub fn done_line(app: &App, t: &Row) -> String {
-    let mut line = format!("- {} “{}” is done: {} did it", task_ref(t), short(&t.st("title"), 80), app.cfg.owner);
+    let (owner, name) = (&app.cfg.owner, format!("{} “{}”", task_ref(t), short(&t.st("title"), 80)));
+    let mut line = match t.s("owner_answer") {
+        Some(CANT_DO) => format!("- {name} wasn't done: {owner} can't do it, so find another way, or say what's missing with a question"),
+        Some(NOT_NEEDED) => format!("- {name} was cancelled: {owner} says it isn't needed"),
+        Some(DONT_WAIT) if released(t) => format!("- {name} isn't done yet: {owner} said not to wait for it, so carry on without it"),
+        _ => format!("- {name} is done: {owner} did it"),
+    };
     match note(t) {
         Some(n) => line += &format!(" and noted: {n}"),
         None => line += ".",
@@ -165,13 +281,15 @@ pub fn done_line(app: &App, t: &Row) -> String {
 pub fn goal_text(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(gid) = t.i("goal_id") else { return Ok(None) };
     let deps = crate::waitsfor::deps(t);
-    let lines: Vec<String> = board::goal_tasks(app, gid)?
+    let lines: Vec<(String, bool)> = board::goal_tasks(app, gid)?
         .iter()
-        .filter(|o| is(o) && o.s("status") == Some("done") && !o.b("failed") && !deps.contains(&o.id()))
-        .map(|o| done_line(app, o))
+        .filter(|o| is(o) && waitsfor::ready(Some(o)) && !deps.contains(&o.id()))
+        .map(|o| (done_line(app, o), answered(o)))
         .collect();
     if lines.is_empty() {
         return Ok(None);
     }
-    Ok(Some(format!("Done by {} in this goal, which this task may build on:\n{}", app.cfg.owner, lines.join("\n"))))
+    let owner = &app.cfg.owner;
+    let head = if lines.iter().any(|(_, a)| *a) { format!("What {owner} did or said of their part of this goal:") } else { format!("Done by {owner} in this goal, which this task may build on:") };
+    Ok(Some(format!("{head}\n{}", lines.into_iter().map(|(l, _)| l).collect::<Vec<_>>().join("\n"))))
 }

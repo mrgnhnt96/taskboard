@@ -521,28 +521,93 @@ fn take_responses(app: &App) -> Result<()> {
 }
 
 pub fn snooze_alert(app: &App, alert_id: &str, mins: i64) -> Result<Option<Value>> {
-    snooze_to(app, alert_id, Some(now_ts() + mins as f64 * 60.0))
+    snooze_to(app, alert_id, &Later::At(now_ts() + mins as f64 * 60.0))
 }
 
-/// Snoozes alert `alert_id` to a clock time, or (`None`) until the owner is back from their next
-/// stretch away: `snoozed_back` is when it was snoozed. Snoozed, it's out of Needs you and quiet.
-pub fn snooze_to(app: &App, alert_id: &str, until: Option<f64>) -> Result<Option<Value>> {
+/// When a Needs you item put off comes back.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Later {
+    At(f64),
+    /// After the owner's next stretch away.
+    Back,
+    AfterGoal(i64),
+    /// At a chosen time, with who or what it waits on (which may be left empty).
+    WaitingOn(f64, String),
+}
+
+impl Later {
+    /// Writes this onto an alert or a put-away entry. `snoozed_back` is when it was snoozed.
+    pub fn mark(&self, a: &mut Value) {
+        clear_later(a);
+        match self {
+            Later::At(t) => a["snoozed_until"] = json!(iso(*t)),
+            Later::Back => a["snoozed_back"] = json!(now_iso()),
+            Later::AfterGoal(g) => a["snoozed_goal"] = json!(g),
+            Later::WaitingOn(t, on) => {
+                a["snoozed_until"] = json!(iso(*t));
+                a["snoozed_waiting"] = json!(on);
+            }
+        }
+    }
+}
+
+fn clear_later(a: &mut Value) {
+    for k in ["snoozed_until", "snoozed_back", "snoozed_goal", "snoozed_waiting"] {
+        a[k] = Value::Null;
+    }
+}
+
+/// Snoozes alert `alert_id`. Snoozed, it's out of Needs you and quiet.
+pub fn snooze_to(app: &App, alert_id: &str, later: &Later) -> Result<Option<Value>> {
     let mut rows = alerts(app);
     for a in rows.iter_mut().filter(|a| a["id"] == alert_id) {
-        a["snoozed_until"] = until.map(|t| json!(iso(t))).unwrap_or(Value::Null);
-        a["snoozed_back"] = if until.is_none() { json!(now_iso()) } else { Value::Null };
+        later.mark(a);
     }
     keep(app, &rows)?;
     Ok(rows.into_iter().find(|a| a["id"] == alert_id))
 }
 
-/// Whether alert `a` is snoozed now: its time hasn't come, or the owner hasn't been away and back.
+/// Whether alert `a` is snoozed now: its goal is still going, its time hasn't come, or the owner
+/// hasn't been away and back.
 pub fn snoozed(a: &Value) -> bool {
+    if a["snoozed_goal"].is_i64() {
+        return true;
+    }
     match (a["snoozed_until"].as_str().and_then(parse_iso), a["snoozed_back"].as_str().and_then(parse_iso)) {
         (Some(until), _) => until > now_ts(),
         (None, Some(since)) => !crate::clock::back_since(since),
         _ => false,
     }
+}
+
+/// Whether something put off until goal `id` should come back: it finished, was archived or is gone.
+pub fn goal_over(app: &App, id: i64) -> Result<bool> {
+    Ok(board::find_goal(app, Some(id))?.is_none_or(|g| g.b("archived")) || board::goal_finished(app, id)?)
+}
+
+/// Brings back what was put off until a goal that's over now. An alert notifies again, or once the
+/// work hours open.
+pub fn bring_back_after_goals(app: &App) -> Result<()> {
+    let mut rows = alerts(app);
+    let mut back = false;
+    for a in rows.iter_mut() {
+        let Some(g) = a["snoozed_goal"].as_i64() else { continue };
+        if !goal_over(app, g)? {
+            continue;
+        }
+        clear_later(a);
+        back = true;
+        if !hours::is_open(app) && a["urgent"] != true {
+            a["held"] = json!(true);
+        } else if !digest::holds(app, a) {
+            a["notified_at"] = json!(now_iso());
+            notify_alert(app, a);
+        }
+    }
+    if back {
+        keep(app, &rows)?;
+    }
+    crate::home::bring_back_after_goals(app)
 }
 
 /// Notifies each alert held outside the work hours (`waits_for_hours`) once they open, once. One that
@@ -558,8 +623,7 @@ fn deliver_held(app: &App) -> Result<()> {
             continue;
         }
         a["notified_at"] = json!(now_iso());
-        a["snoozed_until"] = Value::Null;
-        a["snoozed_back"] = Value::Null;
+        clear_later(a);
         notify_alert(app, a);
     }
     keep(app, &rows)
@@ -582,13 +646,13 @@ fn repeat_alerts(app: &App) -> Result<()> {
         // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
         let due = match a["snoozed_until"].as_str().and_then(parse_iso) {
             Some(s) => now >= s,
+            None if a["snoozed_goal"].is_i64() => false,
             None if a["snoozed_back"].is_string() => !snoozed(a),
             None => age_secs(a["notified_at"].as_str().or(a["at"].as_str())).unwrap_or(0.0) >= every,
         };
         if due {
             a["notified_at"] = json!(now_iso());
-            a["snoozed_until"] = Value::Null;
-            a["snoozed_back"] = Value::Null;
+            clear_later(a);
             sent = true;
             notify_alert(app, a);
         }
@@ -1078,6 +1142,7 @@ fn prune_asks(app: &App) -> Result<()> {
 pub fn tick(app: &App) -> Result<()> {
     take_responses(app)?;
     prune_asks(app)?;
+    app.db.tx(|| bring_back_after_goals(app))?;
     prune_alerts(app)?;
     deliver_held(app)?;
     repeat_alerts(app)?;

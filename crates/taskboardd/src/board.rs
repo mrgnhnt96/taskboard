@@ -59,6 +59,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
 /// What runs once a goal finishes: its hook, the goals chained after it, its quality and retro.
 pub fn on_goal_finished(app: &App, goal_id: i64, task: Option<&Row>) -> Result<()> {
     app.db.update("goals", &json!(goal_id), fields!["ran_at" => null])?;
+    crate::dispatch::bring_back_after_goals(app)?;
     let goal = get_goal(app, goal_id)?;
     hooks::fire_goal(app, "goal.finished", &goal, task);
     crate::chain::finished(app, &goal)?;
@@ -113,7 +114,7 @@ pub fn goal_finished(app: &App, goal_id: i64) -> Result<bool> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
     let accepted = find_goal(app, Some(goal_id))?.map(|g| accepted_failed(&g)).unwrap_or_default();
     Ok(!rows.is_empty()
-        && rows.iter().all(|r| r.s("status") == Some("done") && (!r.b("failed") || accepted.contains(&r.id())) && !pr_still_open(r))
+        && rows.iter().all(|r| crate::human::released(r) || (r.s("status") == Some("done") && (!r.b("failed") || accepted.contains(&r.id())) && !pr_still_open(r)))
         && open_misses(app, goal_id)? == 0)
 }
 
@@ -426,6 +427,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         // `human` for a task only the owner does (`human.rs`), with the note they left on Done.
         o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
         o.insert("owner_note".into(), json!(crate::human::note(t)));
+        o.insert("owner_answer".into(), t.v("owner_answer"));
         o.insert("lane".into(), crate::worklane::card(app, t)?);
         // The PR bar's review step (a step with `bar`) before the PR opens, from its first round.
         o.insert("code_review".into(), crate::code_review::card(app, t)?);
@@ -809,8 +811,9 @@ fn counts_in(app: &App, goal_id: i64, rows: &[Row], order: Option<&GoalOrder>) -
     let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
     let last_update = last_update(app, rows)?;
-    let finished_at = if total > 0 && done + failed_accepted == total && bits_waiting == 0 && misses == 0 {
-        rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
+    let released = n(&|r| crate::human::released(r));
+    let finished_at = if total > 0 && done + failed_accepted + released == total && bits_waiting == 0 && misses == 0 {
+        rows.iter().filter_map(|r| r.s("finished_at").or(r.s("updated_at"))).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
         Value::Null
     };
@@ -1003,7 +1006,7 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "pr_base": g.v("pr_base"), "setup": g.v("setup"),
+        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "set_aside": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "pr_base": g.v("pr_base"), "setup": g.v("setup"),
         "lane": crate::worklane::goal_lane(g),
         "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
         "after_blocker": crate::chain::blocker(app, g)?,
