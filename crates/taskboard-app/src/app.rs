@@ -222,6 +222,7 @@ pub struct MainWindow {
     pub board: ui::board::State,
     pub goal_page: ui::goal::State,
     pub backlog: ui::backlog::State,
+    pub home: ui::home::State,
     pub task_panel: ui::task_panel::State,
     pub issue_panel: ui::issue_panel::State,
     pub hours: ui::hours::State,
@@ -301,6 +302,7 @@ impl MainWindow {
             board: Default::default(),
             goal_page: Default::default(),
             backlog: Default::default(),
+            home: Default::default(),
             task_panel: Default::default(),
             issue_panel: Default::default(),
             hours: Default::default(),
@@ -1083,7 +1085,7 @@ impl MainWindow {
     }
 
     pub fn needs_count(&self) -> i64 {
-        fmt::i(&self.state()["counts"], "needs")
+        fmt::i(&self.state()["counts"], "waiting")
     }
 
     /// `projectNames` over this window's goals (`allGoals`: non-archived).

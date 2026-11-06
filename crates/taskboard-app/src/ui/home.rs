@@ -1,16 +1,18 @@
 //! The home page, Needs you (`GET /home` and today's numbers from `GET /days`): everything that
-//! waits on you, the questions to answer first (answered right here) and then the rest to act on,
-//! each with the one signal it needs, under today's numbers and a project switch.
+//! waits on you in four groups, Agents waiting, Decide, Your to-dos and Stopped, one row per goal in
+//! each, under today's numbers and a project switch.
 //!
-//! What each part shows is worked out by the pure `*_vm` functions; the render code only lays it
-//! out. The page is read-only: an answer, a picker's choices (pressed through Midna), a signal
-//! (Restart, Start, Open PR, Continue, Open terminal) or a dismiss is all it sends. An item opens in place; its title links to its page.
+//! What each part shows is worked out by the pure `*_vm` functions here and in `groups`; `view` only
+//! lays it out. The page sends signals and nothing else: an answer, a picker's choices (pressed
+//! through Midna), what a row finishes with, and what its Later and More menus offer. A row opens in
+//! place; its title links to its page.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::issue_panel as ip;
 use crate::ui::kit;
 use crate::ui::status::St;
+use groups::Holds;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -18,11 +20,20 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+mod groups;
+mod view;
+
+pub use view::{State, render};
+
 const PAGE_X: f32 = 36.;
 const PROJECT_FILTER: &str = "home-project";
+/// The id prefixes of what `GET /home` lists that isn't an alert.
+const TASK_ID: &str = "task:";
+const STAGE_ID: &str = "stage:";
+const STOPPED_ID: &str = "stopped:";
 
 thread_local! {
-    /// Items opened or shut against their default (a question starts open, the rest shut).
+    /// Rows opened or shut against their default (an agent's question starts open, the rest shut).
     static FLIPPED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// A picker's choices so far by task ref, (question, option), until Send.
     static PICKED: RefCell<HashMap<String, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
@@ -142,11 +153,19 @@ pub struct Ask {
     pub act: Option<Act>,
     /// A second button beside `act`: Mark done on a lost task.
     pub also: Option<Act>,
-    /// A task waiting on your answer: it goes under Answer with a field of its own.
+    /// A task waiting on your answer, answered right on its row.
     pub answer: bool,
+    /// An agent stopped on you: it goes under Agents waiting and counts.
+    pub waiting: bool,
+    /// What it holds up.
+    pub holds: Holds,
+    /// The backlog item of a missed target.
+    pub issue: Option<String>,
+    /// A goal's closed terminals: (ref, title).
+    pub closed: Vec<(String, String)>,
     /// Review and urgent alerts stay until what raised them clears.
     pub dismiss: bool,
-    /// An alert, which Snooze takes off the list for a while.
+    /// Later can put it off.
     pub snooze: bool,
     /// The alert's fixes as (label, command), a button each beside Dismiss.
     pub actions: Vec<(String, String)>,
@@ -193,6 +212,11 @@ impl Ask {
         }
         self.task.as_ref().or(self.goal.as_ref()).map(|(r, _)| r.clone()).unwrap_or_default()
     }
+
+    /// An alert of the board's, not a task or goal listed for what it is.
+    pub fn is_alert(&self) -> bool {
+        !self.id.is_empty() && ![TASK_ID, STAGE_ID, STOPPED_ID].iter().any(|p| self.id.starts_with(p))
+    }
 }
 
 /// "41m", "3h", "2d" (no "ago"); "now" under a minute.
@@ -214,6 +238,12 @@ fn ask_rest(a: &Value) -> &str {
     let text = s(a, "text");
     let rest = text.strip_prefix(s(a, "task")).map(|x| x.trim_start_matches(':').trim_start());
     rest.filter(|x| !x.is_empty()).unwrap_or(text)
+}
+
+/// What a missed target's alert says is missed, less the goal's name before it and its own ref after it.
+fn missed_of(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once(" misses its done-when: ")?;
+    rest.rsplit_once(" (B").map(|(said, _)| said).filter(|said| !said.is_empty())
 }
 
 fn pr_url(card: &Value) -> Option<String> {
@@ -300,7 +330,8 @@ pub fn ask_vm(a: &Value) -> Ask {
     };
     let pr_open = obj(card, "pr").is_some_and(|p| !p["num"].is_null() && crate::ui::goal::pr_open(p));
     let (asks, picker) = if answer { asks_of(card) } else { (Vec::new(), false) };
-    let title = if let Some(t) = own_title {
+    let missed = miss.as_ref().and_then(|_| missed_of(s(a, "text")));
+    let title = if let Some(t) = own_title.or(missed) {
         t.to_string()
     } else if has_card {
         s(card, "title").to_string()
@@ -312,10 +343,7 @@ pub fn ask_vm(a: &Value) -> Ask {
     let help = match &miss {
         Some(b) => {
             let goal = if goal_name.is_empty() { "The goal" } else { goal_name };
-            vec![
-                format!("{goal} can’t finish until {b} is settled: open it and choose Make it a task, Create ticket or Won’t do."),
-                format!("Dismiss only hides this; {goal} still waits on {b}."),
-            ]
+            vec![format!("{goal} can’t finish until {b} is settled.")]
         }
         None => vec![],
     };
@@ -329,7 +357,7 @@ pub fn ask_vm(a: &Value) -> Ask {
             tile_vm(card).line
         } else if let Some(d) = detail {
             d.to_string()
-        } else if title == text {
+        } else if title == text || missed.is_some() {
             String::new()
         } else {
             text.clone()
@@ -345,6 +373,10 @@ pub fn ask_vm(a: &Value) -> Ask {
         also,
         act,
         answer,
+        waiting: b(a, "waiting"),
+        holds: Holds::of(&a["holds"], miss.is_some()),
+        issue: miss,
+        closed: Vec::new(),
         // The board keeps these until they're handled (`dispatch::stays`).
         dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true && critical.is_none(),
         snooze: !s(a, "id").is_empty(),
@@ -359,7 +391,8 @@ pub fn ask_vm(a: &Value) -> Ask {
 fn stopped_vm(a: &Value) -> Ask {
     let goal = s(a, "goal").to_string();
     let name = s(a, "goal_name").to_string();
-    let closed = arr(&a["stopped"], "tasks").len();
+    let titles: HashMap<&str, &str> = s(a, "text").lines().filter_map(|l| l.split_once(' ')).collect();
+    let closed: Vec<(String, String)> = arr(&a["stopped"], "tasks").iter().filter_map(Value::as_str).map(|r| (r.to_string(), titles.get(r).copied().unwrap_or_default().to_string())).collect();
     let at = s(a, "at").to_string();
     Ask {
         id: s(a, "id").to_string(),
@@ -374,9 +407,13 @@ fn stopped_vm(a: &Value) -> Ask {
         wave: None,
         time: short_ago(&at),
         at,
-        act: Some(Act::RestartGoal(goal, closed)),
+        act: Some(Act::RestartGoal(goal, closed.len())),
         also: None,
         answer: false,
+        waiting: false,
+        holds: Holds::of(&a["holds"], false),
+        issue: None,
+        closed,
         dismiss: false,
         snooze: false,
         actions: Vec::new(),
@@ -405,7 +442,7 @@ fn stop_vm(e: &Value) -> Option<Ask> {
     };
     let at = s(g, "updated_at").to_string();
     Some(Ask {
-        id: format!("stop-{gr}-{n}"),
+        id: opt_s(&e["stage"], "id")?.to_string(),
         sev: Sev::Warn,
         kind: "Wave stop".into(),
         text: line.to_string(),
@@ -420,8 +457,12 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         act: Some(Act::Continue(gr, n)),
         also: None,
         answer: false,
+        waiting: false,
+        holds: Holds::of(&e["stage"]["holds"], false),
+        issue: None,
+        closed: Vec::new(),
         dismiss: false,
-        snooze: false,
+        snooze: true,
         actions: Vec::new(),
         help: vec![],
         asks: Vec::new(),
@@ -632,51 +673,6 @@ pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
     cx.notify();
 }
 
-/// The Snooze menu: (label, `POST /alerts/:id/snooze` body).
-pub fn snooze_choices() -> [(&'static str, Value); 6] {
-    [
-        ("15 minutes", json!({"mins": 15})),
-        ("30 minutes", json!({"mins": 30})),
-        ("1 hour", json!({"mins": 60})),
-        ("3 hours", json!({"mins": 180})),
-        ("Tomorrow", json!({"until": "tomorrow"})),
-        ("Until I’m back", json!({"until": "back"})),
-    ]
-}
-
-/// The toast once alert `a` is snoozed: "Snoozed until 3:45 PM".
-pub fn snoozed_note(a: &Value) -> String {
-    match opt_s(a, "snoozed_until") {
-        Some(at) if fmt::hhmm(at).contains(':') => format!("Snoozed until {}", fmt::hhmm(at)),
-        Some(_) => "Snoozed until tomorrow".into(),
-        None => "Snoozed until you’re back".into(),
-    }
-}
-
-/// Snooze on a Needs you item: `POST /alerts/:id/snooze`, gone from the list until it's up.
-fn snooze(m: &mut MainWindow, id: &str, body: Value, cx: &mut Context<MainWindow>) {
-    m.menu = None;
-    if let Some(needs) = m.data.home.as_mut().and_then(|h| std::rc::Rc::make_mut(h).get_mut("needs")).and_then(Value::as_array_mut) {
-        needs.retain(|a| s(a, "id") != id);
-    }
-    m.post(format!("alerts/{id}/snooze"), body, cx, |m, v, cx| sent(m, snoozed_note(&v["alert"]), cx));
-    cx.notify();
-}
-
-const SNOOZE_MENU: &str = "home-snooze:";
-
-/// The open Snooze menu, under the item it's for.
-fn snooze_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    let (key, at) = m.menu.as_ref().filter(|(k, _)| k.starts_with(SNOOZE_MENU))?;
-    let id = key[SNOOZE_MENU.len()..].to_string();
-    let mut menu = kit::menu_box(t, 170.).id("home-snooze-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    for (n, (label, body)) in snooze_choices().into_iter().enumerate() {
-        let id = id.clone();
-        menu = menu.child(kit::menu_item(t, ("home-snooze-choice", n), label, false).on_click(cx.listener(move |m, _, _, cx| snooze(m, &id, body.clone(), cx))));
-    }
-    Some(kit::popover(*at, menu))
-}
-
 fn sent_note(state: &Value) -> &'static str {
     if state["midna"]["up"] == Value::Bool(false) { "Saved. It runs once Midna is back." } else { "Sent to Midna" }
 }
@@ -735,8 +731,17 @@ fn pick(m: &mut MainWindow, r: &str, answers: Vec<Vec<usize>>, cx: &mut Context<
     });
 }
 
+/// An agent's question starts open, so it's answered at once.
+fn starts_open(a: &Ask) -> bool {
+    a.answer && !a.human
+}
+
+fn flipped(key: &str) -> bool {
+    FLIPPED.with(|f| f.borrow().contains(key))
+}
+
 fn is_open(a: &Ask) -> bool {
-    a.answer != FLIPPED.with(|f| f.borrow().contains(&a.key()))
+    starts_open(a) != flipped(&a.key())
 }
 
 fn flip(key: String) {
@@ -748,325 +753,6 @@ fn flip(key: String) {
     });
 }
 
-// ================================================================== render
-
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let t = cx.global::<Theme>().clone();
-    let Built { asks: all, stats, names, .. } = Built::of(m);
-
-    let project = m.filters.project.clone();
-    let asks: Vec<&Ask> = all.iter().filter(|a| project == "all" || a.project == project).collect();
-    let (answers, acts): (Vec<&Ask>, Vec<&Ask>) = asks.iter().partition(|a| a.answer);
-
-    let mut page = div().flex().flex_col().px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4));
-
-    // Needs you · how many and the oldest, then which project.
-    let oldest = asks.iter().filter(|a| !a.at.is_empty()).min_by(|a, b| a.at.cmp(&b.at)).map(|a| a.time.clone());
-    let sub = match (asks.len(), oldest) {
-        (0, _) => String::new(),
-        (n, Some(o)) => format!("{n} · oldest {o}"),
-        (n, None) => n.to_string(),
-    };
-    let counts: Vec<(String, usize)> = names.iter().map(|p| (p.clone(), all.iter().filter(|a| &a.project == p).count())).collect();
-    let tabs = ip::project_filter(&t, PROJECT_FILTER, &project, &counts, cx, |m, p, cx| {
-        let mut f = m.filters.clone();
-        f.project = p;
-        m.set_filters(f, cx);
-    });
-    page = page.child(
-        div()
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child("Needs you"))
-            .when(!sub.is_empty(), |d| d.child(div().text_size(px(13.)).text_color(t.muted).child(sub)))
-            .child(div().flex_1())
-            .when(names.len() > 1, |d| d.child(tabs)),
-    );
-
-    if !stats.is_empty() {
-        let mut row = div().flex().gap(px(10.)).mt(px(16.));
-        for x in stats.iter() {
-            row = row.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .rounded(px(10.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.card)
-                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(if x.warn { t.warn_fg } else { t.text }).child(x.value.clone()))
-                    .child(div().text_size(px(12.)).text_color(t.muted).truncate().child(x.label)),
-            );
-        }
-        page = page.child(row);
-    }
-
-    if m.data.home.is_none() {
-        page = page.child(kit::empty(&t, if m.down.is_some() { "Can’t load the board." } else { "Loading…" }));
-    } else if asks.is_empty() {
-        page = page.child(kit::empty(&t, "Nothing needs you.").pt(px(32.)));
-    }
-    if !answers.is_empty() {
-        page = page.child(group_label(&t, "Answer", answers.len()));
-        for a in &answers {
-            page = page.child(item(&t, a, cx));
-        }
-    }
-    if !acts.is_empty() {
-        page = page.child(group_label(&t, "Act on", acts.len()));
-        for a in &acts {
-            page = page.child(item(&t, a, cx));
-        }
-    }
-    let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
-    let menu = snooze_menu(m, &t, cx);
-    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().bg(t.bg).child(page).children(filter).children(menu).into_any_element()
-}
-
-fn group_label(t: &Theme, text: &str, n: usize) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .pt(px(18.))
-        .pb(px(8.))
-        .text_size(px(12.))
-        .text_color(t.muted)
-        .child(div().font_weight(FontWeight::BOLD).child(text.to_uppercase()))
-        .child(n.to_string())
-}
-
-/// The kind's color: a question in the Needs you color, the rest by what they are.
-fn kind_color(t: &Theme, a: &Ask) -> Hsla {
-    let st = match (a.answer, a.kind.as_str(), a.sev) {
-        (true, ..) => St::Needs,
-        (_, "Wave stop", _) => return t.goal,
-        (_, "Review the PR", _) => St::Review,
-        (_, "Ready to merge", _) => St::Done,
-        (_, _, Sev::Crit) => St::Failed,
-        (_, _, Sev::Warn) => St::Needs,
-        (_, _, Sev::Ok) => St::Done,
-        (_, _, Sev::Quiet) => return t.muted,
-    };
-    st.colors(t).0
-}
-
-/// One item: its head row (open or shut on a click, its title a link to its page) and, open, a
-/// question's answer field or the rest of what the alert said.
-fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
-    let key = a.key();
-    let open = is_open(a);
-    let id = |part: &str| SharedString::from(format!("home-{part}-{key}"));
-    let question = a.answer;
-    let quiet = a.sev == Sev::Quiet;
-
-    // The ref and title, and under them the PR's state or what the alert said.
-    let (r, link_act) = match (&a.task, &a.goal) {
-        (Some((r, _)), _) => (r.clone(), Act::OpenTask(r.clone())),
-        (None, Some((g, _))) => (g.clone(), Act::OpenGoal(g.clone())),
-        _ => (String::new(), Act::OpenTask(String::new())),
-    };
-    let link = {
-        let act = link_act.clone();
-        div()
-            .id(id("title"))
-            .min_w_0()
-            .truncate()
-            .text_size(px(if question { 15. } else { 14. }))
-            .font_weight(if quiet { FontWeight::NORMAL } else { FontWeight::BOLD })
-            .text_color(if quiet { t.muted } else { t.text })
-            .cursor_pointer()
-            .hover(|s| s.underline())
-            .child(a.title.clone())
-            .when(!r.is_empty(), |d| {
-                d.on_click(cx.listener(move |m, _, _, cx| {
-                    cx.stop_propagation();
-                    run_act(m, &act, cx);
-                }))
-            })
-    };
-    let title = div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .flex_basis(px(200.))
-        .min_w(px(80.))
-        .overflow_hidden()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .min_w_0()
-                .when(!r.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.clone())))
-                .child(link),
-        )
-        // Open, the body says it in full; the line keeps its room so the head doesn't move.
-        .when(!a.line.is_empty() && !(question && a.line == a.text), |d| {
-            d.child(div().text_size(px(12.)).text_color(t.muted).truncate().when(open && !question && a.line == a.text, |d| d.invisible()).child(a.line.clone()))
-        });
-
-    // A goal's own alert already has the goal for its title.
-    let goal = match (&a.goal, &a.task) {
-        (Some(_), None) => String::new(),
-        (Some((_, name)), _) if !name.is_empty() => match a.wave.filter(|_| question) {
-            Some(n) => format!("{name} · wave {n}"),
-            None => name.clone(),
-        },
-        (_, Some(_)) => "Not in a goal".to_string(),
-        _ => String::new(),
-    };
-
-    // The buttons stay in the head open or shut, so opening only adds the body. An alert you can
-    // dismiss keeps its actions beside Dismiss in the body instead.
-    let beside_dismiss = !question && a.dismiss;
-    let acts = [("act", a.act.clone()), ("also", a.also.clone())].into_iter().filter_map(|(part, act)| act.map(|act| (part, act)));
-    let mut buttons: Vec<_> = acts.filter(|_| !beside_dismiss).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
-    if a.snooze {
-        let menu = format!("{SNOOZE_MENU}{}", a.id);
-        buttons.insert(
-            0,
-            small_btn(t, id("snooze"), "Snooze ▾").on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                let p = e.position();
-                m.toggle_menu(&menu, point(p.x - px(120.), p.y + px(14.)), cx);
-            })),
-        );
-    }
-
-    let head = div()
-        .id(id("head"))
-        .flex()
-        .items_center()
-        .gap(px(18.))
-        .px(px(20.))
-        .py(px(13.))
-        .cursor_pointer()
-        .on_click(cx.listener({
-            let key = key.clone();
-            move |_, _, _, cx| {
-                flip(key.clone());
-                cx.notify();
-            }
-        }))
-        .child(div().flex_none().w(px(20.)).flex().justify_center().child(chevron(open, t.muted)))
-        .child(div().flex_shrink(1.).w(px(130.)).min_w(px(64.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(kind_color(t, a)).truncate().child(a.kind.clone()))
-        .child(title)
-        .child(div().flex_shrink(1.).min_w_0().max_w(px(260.)).text_size(px(12.)).text_color(if goal == "Not in a goal" { t.muted } else { t.goal }).truncate().child(goal))
-        .child(div().flex_none().w(px(56.)).flex().justify_end().text_size(px(12.)).text_color(t.muted).child(a.time.clone()))
-        .child(div().flex_none().min_w(px(110.)).h(px(30.)).flex().justify_end().gap(px(6.)).children(buttons));
-
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .mb(px(8.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(if question { t.warn_line } else { t.border })
-        .when(!quiet, |d| d.bg(t.card))
-        .overflow_hidden()
-        .child(head);
-    if !open {
-        return card;
-    }
-    let body = div().flex().flex_col().gap(px(10.)).pl(px(58.)).pr(px(20.)).pb(px(16.));
-    if question {
-        let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        let focus = body_focus(a).map(|act| kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx))));
-        // An option answers in one click, and so does a picker's when it asks one single-select
-        // question; otherwise its options toggle and Send presses them. The alert's suggested
-        // answers answer like options.
-        let chosen = picked(&r);
-        let one = one_click(&a.asks);
-        let mut option = |label: &str, desc: &str, qo: Option<(usize, usize)>| {
-            let n = qo.map_or_else(|| label.to_string(), |(q, o)| format!("{q}-{o}"));
-            let (r, text) = (r.clone(), label.to_string());
-            let head = match qo {
-                Some((_, o)) if a.picker && one => kit::btn(t, id(&format!("pick-{n}")), text).on_click(cx.listener(move |m, _, _, cx| pick(m, &r, vec![vec![o]], cx))),
-                Some((q, o)) if a.picker => {
-                    let asks = a.asks.clone();
-                    let b = kit::btn(t, id(&format!("pick-{n}")), text).on_click(cx.listener(move |_, _, _, cx| {
-                        let next = toggle_pick(&asks, &picked(&r), q, o);
-                        PICKED.with(|p| p.borrow_mut().insert(r.clone(), next));
-                        cx.notify();
-                    }));
-                    if chosen.contains(&(q, o)) { b.border_color(t.warn).bg(t.warn_soft).font_weight(FontWeight::SEMIBOLD) } else { b }
-                }
-                _ => kit::btn(t, id(&format!("opt-{n}")), text.clone()).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &text, cx))),
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .child(div().flex_none().child(head))
-                .when(!desc.is_empty(), |d| d.child(div().min_w_0().text_size(px(13.)).text_color(t.text_2).child(desc.to_string())))
-        };
-        let mut rows = Vec::new();
-        for (q, x) in a.asks.iter().enumerate() {
-            if !x.question.is_empty() {
-                rows.push(div().pt(px(4.)).text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(x.question.clone()));
-            }
-            rows.extend(x.options.iter().enumerate().filter(|(_, (l, _))| !l.is_empty()).map(|(o, (l, d))| option(l, d, Some((q, o)))));
-        }
-        if a.asks.is_empty() {
-            rows.extend(a.actions.iter().map(|(l, _)| option(l, "", None)));
-        }
-        let send = (a.picker && !one).then(|| {
-            let answers = pick_answers(&a.asks, &chosen);
-            let b = kit::btn_primary(t, id("pick-send"), "Send");
-            match answers {
-                Some(answers) => {
-                    let r = r.clone();
-                    b.on_click(cx.listener(move |m, _, _, cx| pick(m, &r, answers.clone(), cx)))
-                }
-                None => b.opacity(0.5).cursor_default(),
-            }
-        });
-        card = card.child(
-            body.child(div().text_size(px(15.)).text_color(t.warn_text).child(a.text.clone()))
-                .when(!rows.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).children(rows)))
-                .when(send.is_some() || focus.is_some(), |d| d.child(div().flex().items_center().gap(px(8.)).children(send).children(focus))),
-        );
-    } else {
-        let dismiss_btn = a.dismiss.then(|| {
-            let aid = a.id.clone();
-            kit::btn(t, id("dismiss"), "Dismiss").on_click(cx.listener(move |m, _, _, cx| dismiss(m, &aid, cx)))
-        });
-        let fixes: Vec<_> = a
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(n, (label, command))| {
-                let (aid, label, command) = (a.id.clone(), label.clone(), command.clone());
-                kit::btn(t, id(&format!("fix-{n}")), label.clone()).on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
-            })
-            .collect();
-        // The alert's own action leads, filled so it doesn't read as another Dismiss.
-        let acts: Vec<_> = [("act", a.act.clone()), ("also", a.also.clone())]
-            .into_iter()
-            .filter(|_| beside_dismiss)
-            .filter_map(|(part, act)| act.map(|act| (part, act)))
-            .map(|(part, act)| {
-                let b = if part == "act" { kit::btn_primary(t, id(part), act.label()) } else { kit::btn(t, id(part), act.label()) };
-                b.on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)))
-            })
-            .collect();
-        let buttons = (!acts.is_empty() || !fixes.is_empty() || dismiss_btn.is_some())
-            .then(|| div().flex().flex_wrap().items_center().gap(px(8.)).children(acts).children(fixes).children(dismiss_btn));
-        let mut body = body.child(div().text_size(px(13.)).text_color(t.text_2).child(ref_text(t, id("text"), &a.text, cx)));
-        for (n, line) in a.help.iter().enumerate() {
-            body = body.child(div().text_size(px(12.)).text_color(t.muted).child(ref_text(t, id(&format!("help-{n}")), line, cx)));
-        }
-        card = card.child(body.children(buttons));
-    }
-    card
-}
-
 /// The terminal button under a question: none when the head's button already opens the terminal,
 /// and none on a human task, which has no terminal (its head's Open task leads to its steps and Done).
 fn body_focus(a: &Ask) -> Option<Act> {
@@ -1074,17 +760,6 @@ fn body_focus(a: &Ask) -> Option<Act> {
         return None;
     }
     Some(Act::Focus(a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default()))
-}
-
-fn small_btn(t: &Theme, id: SharedString, label: &'static str) -> Stateful<Div> {
-    kit::btn(t, id, label).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.))
-}
-
-fn act_btn(t: &Theme, id: SharedString, act: Act, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    small_btn(t, id, act.label()).on_click(cx.listener(move |m, _, _, cx| {
-        cx.stop_propagation();
-        run_act(m, &act, cx);
-    }))
 }
 
 /// The byte ranges of the task, goal and backlog refs (`T12`, `G3`, `B219`) in `text`, each with
@@ -1113,49 +788,6 @@ pub fn ref_spans(text: &str) -> Vec<(std::ops::Range<usize>, Act)> {
         out.extend(act.map(|act| (start..i, act)));
     }
     out
-}
-
-/// `text` with its refs as links that open them.
-fn ref_text(t: &Theme, id: SharedString, text: &str, cx: &mut Context<MainWindow>) -> AnyElement {
-    let spans = ref_spans(text);
-    if spans.is_empty() {
-        return text.to_string().into_any_element();
-    }
-    let under = UnderlineStyle { thickness: px(1.), color: Some(t.accent), wavy: false };
-    let style = HighlightStyle { color: Some(t.accent), underline: Some(under), ..Default::default() };
-    let styled = StyledText::new(text.to_string()).with_highlights(spans.iter().map(|(r, _)| (r.clone(), style)));
-    let ranges: Vec<_> = spans.iter().map(|(r, _)| r.clone()).collect();
-    let acts: Vec<Act> = spans.into_iter().map(|(_, a)| a).collect();
-    let this = cx.entity().downgrade();
-    InteractiveText::new(id, styled)
-        .on_click(ranges, move |ix, _, cx| {
-            if let Some(act) = acts.get(ix) {
-                let _ = this.update(cx, |m, cx| run_act(m, act, cx));
-            }
-        })
-        .into_any_element()
-}
-
-/// A 16px chevron: right shut, down open.
-fn chevron(open: bool, color: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |b, _, window, _| {
-            let k = b.size.width.as_f32() / 24.;
-            let u = |x: f32, y: f32| point(b.origin.x + px(x * k), b.origin.y + px(y * k));
-            let pts = if open { [(6., 9.), (12., 15.), (18., 9.)] } else { [(9., 6.), (15., 12.), (9., 18.)] };
-            let mut p = PathBuilder::stroke(px(1.8));
-            p.move_to(u(pts[0].0, pts[0].1));
-            for (x, y) in &pts[1..] {
-                p.line_to(u(*x, *y));
-            }
-            if let Ok(p) = p.build() {
-                window.paint_path(p, color);
-            }
-        },
-    )
-    .size(px(16.))
-    .flex_none()
 }
 
 #[cfg(test)]
@@ -1252,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn an_alert_snoozes_and_says_until_when() {
+    fn an_alert_goes_to_later_and_says_until_when() {
         let home = json!({"needs": [
             {"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep the old form?", "task": "T5", "urgent": true, "card": card(json!({"ref": "T5", "status": "needs"}))},
             {"id": "task:T6", "at": "2026-10-09T09:00:00Z", "text": "Which icon?", "task": "T6", "card": card(json!({"ref": "T6", "status": "needs"}))}
@@ -1260,11 +892,12 @@ mod tests {
         let asks = asks_vm(&home);
         assert!(asks[0].snooze && !asks[0].dismiss, "an urgent alert can't be dismissed but snoozes");
         assert!(asks[1].snooze && asks[1].dismiss, "a task with no alert up snoozes and dismisses by its task:T6 id");
-        assert_eq!(snooze_choices().map(|c| c.0), ["15 minutes", "30 minutes", "1 hour", "3 hours", "Tomorrow", "Until I’m back"]);
-        assert_eq!(snoozed_note(&json!({"snoozed_until": null, "snoozed_back": "2026-10-09T10:00:00Z"})), "Snoozed until you’re back");
-        assert_eq!(snoozed_note(&json!({"snoozed_until": "2020-01-02T09:00:00Z"})), "Snoozed until tomorrow");
+        assert_eq!(groups::later_choices().map(|c| c.0), ["1 hour", "3 hours", "Tomorrow", "Until I’m back"]);
+        assert_eq!(groups::later_note(&json!({"snoozed_until": null, "snoozed_back": "2026-10-09T10:00:00Z"})), "Back when you are");
+        assert_eq!(groups::later_note(&json!({"snoozed_until": "2020-01-02T09:00:00Z"})), "Back Jan 2");
+        assert_eq!(groups::later_note(&json!({"snoozed_until": null, "snoozed_goal": 3})), "Back when G3 finishes");
         let soon = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        assert_eq!(snoozed_note(&json!({"snoozed_until": soon})), format!("Snoozed until {}", fmt::hhmm(&soon)));
+        assert_eq!(groups::later_note(&json!({"snoozed_until": soon})), format!("Back at {}", fmt::hhmm(&soon)));
     }
 
     #[test]
@@ -1458,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn a_done_when_miss_opens_its_backlog_item_and_says_what_dismiss_leaves() {
+    fn a_done_when_miss_opens_its_backlog_item_and_says_what_it_holds() {
         let home = json!({"needs": [
             {"id": "a4", "at": "2026-10-15T09:00:00Z", "key": "miss:219", "goal": "G3", "goal_name": "Core Teardown", "card": null,
              "text": "Core Teardown misses its done-when: Android teardown can throw (B169) (B219)"}
@@ -1466,11 +1099,19 @@ mod tests {
         let a = &asks_vm(&home)[0];
         assert_eq!(a.kind, "Done-when missed");
         assert_eq!(a.act, Some(Act::OpenIssue("B219".into())));
-        assert_eq!(a.title, "Core Teardown");
+        assert_eq!(a.title, "Android teardown can throw (B169)", "the row says what's missed, with the goal named above it");
+        assert_eq!(a.goal.as_ref().map(|(_, n)| n.as_str()), Some("Core Teardown"));
+        assert!(a.line.is_empty());
         assert!(a.dismiss);
-        assert_eq!(a.help.len(), 2);
+        assert_eq!(a.issue.as_deref(), Some("B219"));
+        assert_eq!(a.help.len(), 1);
         assert!(a.help[0].contains("Core Teardown can’t finish until B219 is settled"), "{:?}", a.help);
-        assert!(a.help[1].starts_with("Dismiss only hides this"), "{:?}", a.help);
+    }
+
+    #[test]
+    fn a_miss_with_no_words_of_its_own_keeps_the_goal_as_its_title() {
+        let home = json!({"needs": [{"id": "a4", "key": "miss:268", "goal": "G23", "goal_name": "Picto", "card": null, "text": "Picto misses its done-when (B268)"}]});
+        assert_eq!(asks_vm(&home)[0].title, "Picto");
     }
 
     #[test]
@@ -1507,7 +1148,7 @@ mod tests {
     #[test]
     fn a_wave_stop_waits_for_continue() {
         let home = json!({"needs": [], "goals": [
-            {"project": "webapp", "wave": 2, "queued": 4,
+            {"project": "webapp", "wave": 2, "queued": 4, "stage": {"id": "stage:G5:1", "wave": 1, "holds": {"tasks": ["T1", "T2"], "goal": "G5"}},
              "goal": {"ref": "G5", "name": "Faster sign-in", "stopped": "Wave 1 is done. Review it, then continue", "updated_at": "2026-10-09T10:00:00Z"}},
             {"project": "api", "wave": 3, "queued": 1, "goal": {"ref": "G6", "name": "Quiet", "stopped": "T9 in wave 2 failed"}},
             {"project": "api", "wave": 1, "queued": 2, "goal": {"ref": "G7", "name": "Running"}}
@@ -1518,7 +1159,9 @@ mod tests {
         assert_eq!((a.kind.as_str(), a.title.as_str(), a.line.as_str()), ("Wave stop", "Faster sign-in · wave 1 finished", "4 tasks wait in wave 2"));
         assert_eq!(a.act, Some(Act::Continue("G5".into(), 1)));
         assert_eq!(a.act.as_ref().map(Act::label), Some("Continue"));
-        assert!(!a.dismiss && !a.answer);
+        assert!(!a.dismiss && !a.answer && a.snooze, "it goes to Later, by the id the board knows it by");
+        assert_eq!(a.id, "stage:G5:1");
+        assert_eq!(a.holds.label(), "Holds 2 tasks");
         assert_eq!(a.project, "webapp");
     }
 
@@ -1595,7 +1238,7 @@ mod tests {
 
     #[test]
     fn a_paused_goal_shows_no_wave_stop() {
-        let e = |paused: bool| json!({"goal": {"ref": "G3", "name": "Polish", "stopped": "Wave 1 is done. Review it, then continue", "paused": paused}});
+        let e = |paused: bool| json!({"stage": {"id": "stage:G3:1"}, "goal": {"ref": "G3", "name": "Polish", "stopped": "Wave 1 is done. Review it, then continue", "paused": paused}});
         assert!(stop_vm(&e(false)).is_some());
         assert!(stop_vm(&e(true)).is_none());
     }
