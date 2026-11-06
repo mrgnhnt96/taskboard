@@ -536,3 +536,169 @@ fn dropping_a_wait_it_doesnt_have_is_refused() {
     assert_eq!(e.status, 409, "{}", e.message);
     assert!(e.message.contains("--stack-on none"), "{}", e.message);
 }
+
+const PR9: &str = "https://github.com/acme/webapp/pull/9";
+
+fn submit(b: &Board, session: &str, extra: Value) -> Result<Value, (u16, String)> {
+    let mut body = json!({"event": "tb.done", "session": session, "claude_session": format!("c-{session}"), "cwd": "", "git": {"branch": "feature/x"}});
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    reports::handle(&b.app, body, false).map_err(|e| (e.status, e.message))
+}
+
+fn merge(b: &Board, id: i64) {
+    board::update_task(&b.app, id, vec![("pr_state", json!("MERGED")), ("pr_phase", json!("merged"))]).unwrap();
+}
+
+/// T1 owns PR #9 and T3's summary names it, so T3 finished with no PR linked. T2 waits for T3 to merge.
+/// Gives T1, T2 and T3.
+fn done_with_no_pr_and_a_waiter(b: &Board) -> (i64, i64, i64) {
+    let (one, two) = done_with_open_pr(b);
+    let three = b.task("Finish the endpoint");
+    b.on("s3", three);
+    submit(b, "s3", json!({"summary": format!("Went out in {PR9}.")})).unwrap();
+    assert_eq!(b.row(three).s("status"), Some("done"));
+    assert!(b.row(three).s("pr_url").is_none(), "a PR the summary only mentions isn't linked");
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{three}")], "merged": true}));
+    (one, two, three)
+}
+
+#[test]
+fn submitting_with_another_tasks_pr_joins_it() {
+    let b = new_board();
+    let (one, two) = done_with_open_pr(&b);
+    let three = b.task("Finish the endpoint");
+    b.on("s3", three);
+    submit(&b, "s3", json!({"summary": "Done.", "pr": PR9})).unwrap();
+
+    let t = b.row(three);
+    assert_eq!(t.i("same_pr"), Some(one));
+    assert_eq!(t.s("pr_url"), Some(PR9));
+    assert_eq!(t.i("pr_num"), None, "the PR stays the other task's");
+    assert!(logged(&b, three, &format!("Its work went through T{one}'s PR #9")));
+
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{three}")], "merged": true}));
+    assert!(alert(&b, three).is_none());
+    assert!(b.card(two)["waiting"].as_str().unwrap().contains("until its PR merges"));
+    assert!(runner::start_queued(&b.app).unwrap().is_empty(), "the PR hasn't merged");
+
+    merge(&b, one);
+    assert!(waitsfor::merged(&b.app, Some(&b.row(three))).unwrap());
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two]);
+}
+
+#[test]
+fn finishing_with_no_pr_is_refused_while_a_task_waits_for_its_merge() {
+    let b = new_board();
+    let (_, two) = done_with_open_pr(&b);
+    let three = b.task("Finish the endpoint");
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{three}")], "merged": true}));
+    b.on("s3", three);
+
+    let (status, text) = submit(&b, "s3", json!({"summary": format!("Went out in {PR9}.")})).unwrap_err();
+    assert_eq!(status, 409, "{text}");
+    assert!(text.contains(&format!("T{two} waits for T{three}'s PR to merge")), "{text}");
+    assert_eq!(b.row(three).s("status"), Some("working"), "it isn't finished");
+
+    submit(&b, "s3", json!({"summary": "Nothing to ship.", "no_pr": "Already on main"})).unwrap();
+    assert_eq!(b.row(three).s("status"), Some("done"));
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two], "no PR on purpose means no merge to wait for");
+}
+
+#[test]
+fn a_done_task_with_no_pr_raises_a_needs_you_naming_the_ways_out() {
+    let b = new_board();
+    let (_, two, three) = done_with_no_pr_and_a_waiter(&b);
+    declined::sweep(&b.app).unwrap();
+
+    let text = alert(&b, three).expect("a Needs-you for the held waiter");
+    assert!(text.contains(&format!("T{three} finished with no PR linked, so T{two} waits")), "{text}");
+    for way in [format!("tb task set T{three} --pr-link <link>"), format!("tb task set T{three} --landed <commit>"), format!("tb wait-for --drop T{three} --task T{two}")] {
+        assert!(text.contains(&way), "{text}");
+    }
+    let w = b.card(two)["waiting"].as_str().unwrap().to_string();
+    assert!(w.contains("finished with no PR linked") && w.contains("--pr-link") && !w.contains("until its PR merges"), "{w}");
+}
+
+#[test]
+fn linking_a_merged_pr_clears_the_needs_you_and_frees_the_waiter() {
+    let b = new_board();
+    let (one, two, three) = done_with_no_pr_and_a_waiter(&b);
+    merge(&b, one);
+    declined::sweep(&b.app).unwrap();
+    assert!(alert(&b, three).is_some());
+    assert!(runner::start_queued(&b.app).unwrap().is_empty());
+
+    patch(&b, three, json!({"pr_link": PR9})).unwrap();
+    assert_eq!(b.row(three).i("same_pr"), Some(one));
+    assert!(alert(&b, three).is_none());
+    assert!(waitsfor::merged(&b.app, Some(&b.row(three))).unwrap(), "the owner's merged state came with the link");
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two]);
+}
+
+#[test]
+fn a_pr_no_task_owns_links_as_the_tasks_own() {
+    let b = new_board();
+    let (_, _, three) = done_with_no_pr_and_a_waiter(&b);
+    declined::sweep(&b.app).unwrap();
+    patch(&b, three, json!({"pr_link": "https://github.com/acme/webapp/pull/12"})).unwrap();
+    assert_eq!(b.row(three).i("pr_num"), Some(12));
+    assert_eq!(b.row(three).i("same_pr"), None);
+    assert!(alert(&b, three).is_none());
+}
+
+#[test]
+fn a_pr_link_is_refused_where_it_cant_apply() {
+    let b = new_board();
+    let (one, two, three) = done_with_no_pr_and_a_waiter(&b);
+
+    let (status, text) = patch(&b, three, json!({"pr_link": "not a link"})).unwrap_err();
+    assert_eq!(status, 400, "{text}");
+    let (status, text) = patch(&b, two, json!({"pr_link": PR9})).unwrap_err();
+    assert_eq!(status, 409, "{text}");
+    assert!(text.contains("isn't done"), "{text}");
+    let (status, text) = patch(&b, one, json!({"pr_link": "https://github.com/acme/webapp/pull/12"})).unwrap_err();
+    assert_eq!(status, 409, "{text}");
+    assert!(text.contains("has a PR already"), "{text}");
+
+    // A task that stacks can't also share a PR, but it can link one of its own.
+    board::update_task(&b.app, three, vec![("pr_after", json!(two))]).unwrap();
+    let (status, text) = patch(&b, three, json!({"pr_link": PR9})).unwrap_err();
+    assert_eq!(status, 409, "{text}");
+    assert!(text.contains("--stack-on none"), "{text}");
+    patch(&b, three, json!({"pr_link": "https://github.com/acme/webapp/pull/12"})).unwrap();
+    assert_eq!(b.row(three).i("pr_num"), Some(12));
+
+    // Linking the same PR again changes nothing.
+    patch(&b, three, json!({"pr_link": "https://github.com/acme/webapp/pull/12"})).unwrap();
+}
+
+#[test]
+fn a_done_task_with_no_pr_raises_nothing_unless_a_merge_waits_on_it() {
+    let b = new_board();
+    let (_, two) = done_with_open_pr(&b);
+    let three = b.task("Finish the endpoint");
+    b.on("s3", three);
+    submit(&b, "s3", json!({"summary": format!("Went out in {PR9}.")})).unwrap();
+    declined::sweep(&b.app).unwrap();
+    assert!(alert(&b, three).is_none(), "nothing waits on it");
+
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{three}")]}));
+    declined::sweep(&b.app).unwrap();
+    assert!(alert(&b, three).is_none(), "its waiter only needed it done");
+    assert!(!declined::held(&b.app, &b.row(three)).unwrap().iter().any(|w| w.id() == two));
+}
+
+#[test]
+fn a_task_finished_without_a_pr_on_purpose_holds_nobody() {
+    let b = new_board();
+    let (_, two) = done_with_open_pr(&b);
+    let three = b.task("Finish the endpoint");
+    b.on("s3", three);
+    submit(&b, "s3", json!({"summary": "Nothing to ship.", "no_pr": "Already on main"})).unwrap();
+    b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{three}")], "merged": true}));
+    declined::sweep(&b.app).unwrap();
+    assert!(alert(&b, three).is_none());
+    assert!(declined::held(&b.app, &b.row(three)).unwrap().iter().all(|w| w.id() != two));
+}

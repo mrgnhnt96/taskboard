@@ -1734,6 +1734,10 @@ enum TaskCmd {
         /// counts as merged for the tasks waiting for it; none takes it back
         #[arg(long, value_name = "COMMIT|none")]
         landed: Option<String>,
+        /// The PR a done task's work went through, when it finished with none linked; tasks waiting for
+        /// its merge follow that PR, even one another task owns
+        #[arg(long = "pr-link", value_name = "LINK")]
+        pr_link: Option<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
         #[arg(long, value_name = "NAME|none")]
         area: Option<String>,
@@ -6690,7 +6694,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, area, model, effort, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, area, model, effort, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -6777,6 +6781,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = landed {
                     b["landed"] = json!(x);
                 }
+                if let Some(x) = pr_link {
+                    b["pr_link"] = json!(x);
+                }
                 if let Some(x) = area {
                     b["area"] = json!(x);
                 }
@@ -6788,6 +6795,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 let moving = b.get("project").is_some();
                 let landing = b.get("landed").is_some();
+                let linking = b.get("pr_link").and_then(|x| x.as_str()).map(str::to_string);
                 let v = c.call("POST", &format!("/tasks/{t}"), Some(b))?;
                 let mut bits = String::new();
                 if moving {
@@ -6801,6 +6809,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if v["ships_pr_set"].is_boolean() {
                     bits += if v["ships_pr"] == true { " · ends in a PR" } else { " · no PR" };
+                }
+                if let Some(link) = linking {
+                    bits += &format!(" · its work went through {link}");
                 }
                 if landing {
                     bits += &match v["landed"].as_str() {
