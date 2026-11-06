@@ -94,7 +94,7 @@ fn square(color: Hsla, outline: bool) -> Div {
 pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
     let st = m.state_rc();
     let page = m.page.clone();
-    let needs = m.data.home.as_ref().map(|h| arr(h, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).count() as i64).unwrap_or_else(|| m.needs_count());
+    let needs = m.needs_count();
     let projects = arr(&st, "projects").len();
     let counts = &st["counts"];
     let all_goals = m.data.goals.clone();

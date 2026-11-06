@@ -294,7 +294,8 @@ fn an_urgent_alert_in_a_resting_goal_stays_listed() {
 fn a_resting_goals_alert_stays_out_of_the_digest() {
     let b = new_board();
     let gid = goal(&b, false);
-    taskboardd::dispatch::raise(&b.app, "Have a look at this", None, Some(gid), Some("look"), false).unwrap();
+    let asked = b.app.db.insert("tasks", taskboardd::fields!["title" => "x", "goal_id" => gid, "status" => "needs", "needs_reason" => "question"]).unwrap();
+    taskboardd::dispatch::add_alert(&b.app, "Which port?", Some(asked), Some(gid), None, None).unwrap();
     assert_eq!(taskboardd::digest::members(&b.app).len(), 1);
     board::update_goal(&b.app, gid, vec![("deprioritized", json!(1))]).unwrap();
     assert_eq!(taskboardd::digest::members(&b.app), Vec::<Value>::new());

@@ -212,6 +212,12 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_STOPPED").is_ok() {
             seed_stopped(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_NEEDS").is_ok() {
+            seed_needs(&board);
+        }
+        if std::env::var("TASKBOARD_FAKE_QUIET").is_ok() {
+            let _ = taskboardd::dispatch::add_alert_keyed(&board, "T5: no update for 40 minutes", Some(5), None, "quiet:T5");
+        }
         Fake { board, dir }
     }
 }
@@ -319,6 +325,46 @@ fn seed_stopped(board: &Board) {
     for t in [2, 3] {
         let _ = board::update_task(board, t, taskboardd::fields!["status" => "needs", "needs_reason" => "lost", "lost" => 1, "question" => null, "session_id" => null]);
         let _ = board::log_event(board, t, MIDNA, "status", &format!("Terminal ended ({CLOSED_BY_YOU}) before the task was done"));
+    }
+}
+
+/// Dev (`TASKBOARD_FAKE_NEEDS=1`): Needs you's Decide and Your to-dos filled, and two items on Later.
+fn seed_needs(board: &Board) {
+    use taskboardd::{board as b, dispatch, fields, human, util};
+    let post = |path: String, body: Value| api::dispatch(board, "POST", &path, &Query::new(), &body).unwrap_or(Value::Null);
+    let goal = |name: &str| post("/goals".into(), json!({"name": name, "project": "webapp"}))["id"].as_i64();
+    let miss = |g: i64, name: &str, title: &str| {
+        let now = util::now_iso();
+        let Ok(id) = board.db.insert("issues", fields!["project" => "webapp", "goal_id" => g, "kind" => "gap", "title" => title, "said" => title, "how" => "Found while checking the goal.",
+                                                       "source" => "terminal", "state" => "open", "misses_goal" => 1, "created_at" => now, "updated_at" => now]) else { return };
+        let _ = dispatch::add_alert_keyed(board, &format!("{name} misses its done-when: {title} (B{id})"), None, Some(g), &b::miss_key(id));
+    };
+    let todo = |title: &str, goal: Option<i64>| {
+        let t = post("/tasks".into(), json!({"title": title, "detail": "1. Open the account page.\n2. Copy the key.", "project": "webapp", "pickup": "new"}))["id"].as_i64()?;
+        let _ = b::update_task(board, t, taskboardd::fields!["kind" => human::KIND, "status" => "needs", "needs_reason" => human::NEEDS, "goal_id" => goal]);
+        Some(t)
+    };
+    let replay = "Picto: every error replay shows the 30 s before it";
+    let accuracy = "Picto: dashboard and replay accuracy";
+    if let (Some(g1), Some(g2)) = (goal(replay), goal(accuracy)) {
+        for title in ["Dashboard counts drift from the event log", "Replay misses the first click", "Export skips the last frame"] {
+            miss(g1, replay, title);
+        }
+        for title in ["Accuracy page shows last week's sample", "Replay speed resets on reload"] {
+            miss(g2, accuracy, title);
+        }
+    }
+    let _ = dispatch::raise(board, "Release 11.05.26 for revali was dropped", None, None, Some("release-dropped"), false);
+    let first = todo("Create the Oracle Cloud account", Some(1));
+    todo("Send the signing key to the build machine", None);
+    let held = post("/tasks".into(), json!({"title": "Deploy to Oracle Cloud", "detail": "Ship it.", "project": "webapp", "pickup": "new"}))["id"].as_i64();
+    if let (Some(h), Some(t)) = (first, held) {
+        let _ = b::update_task(board, t, fields!["waits_for" => json!([h]).to_string()]);
+    }
+    for title in ["Renew the Apple certificate", "Sign the data agreement"] {
+        if let Some(t) = todo(title, None) {
+            post(format!("/alerts/task:T{t}/snooze"), json!({"until": "next_week"}));
+        }
     }
 }
 

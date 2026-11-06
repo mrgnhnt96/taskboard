@@ -14,7 +14,7 @@ use crate::app::App;
 use crate::board::{self, OWNER};
 use crate::util::*;
 use crate::dispatch::Later;
-use crate::{dig, dispatch, fields, home, hours, midna, reports, waitsfor};
+use crate::{dig, dispatch, fields, home, hours, midna, p, reports, waitsfor};
 
 pub const KIND: &str = "human";
 
@@ -228,6 +228,61 @@ pub fn talk(app: &App, id: i64) -> Result<Value> {
                       "context": talk_context(app, &t)?, "focus": true, "queue": false});
     let j = app.db.tx(|| board::create_job(app, "agent", args, None, "human_talk", Some(json!({"task": id}))))?;
     Ok(json!({"ok": true, "job": rf("job", j)}))
+}
+
+/// `POST /alerts/:id/talk`: a Claude terminal to talk an alert over in, in its project's checkout (the
+/// home folder when it has none). Claude explains it and what can be done; nothing here settles the alert.
+/// Refused for an alert that's gone, or while Midna is down.
+pub fn talk_alert(app: &App, id: &str) -> Result<Value> {
+    let Some(a) = dispatch::listing(app).into_iter().find(|a| a["id"] == id) else {
+        return err(404, "There's no alert with that id.");
+    };
+    if !midna::up(app) {
+        return err(409, "Midna isn't running, so the board can't open a terminal.");
+    }
+    let project = alert_project(app, &a)?;
+    let cwd = match project.as_deref().map(|p| dig::checkout(app, p)).transpose()?.flatten() {
+        Some(p) => p,
+        None => dirs::home_dir().unwrap_or_default(),
+    };
+    let text = a["title"].as_str().filter(|t| !t.is_empty()).or(a["text"].as_str()).unwrap_or("");
+    let args = json!({"cwd": cwd, "title": short(&format!("Ask: {text}"), 40), "prompt": "", "draft": "",
+                      "context": alert_context(app, &a, project.as_deref()), "focus": true, "queue": false});
+    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "alert_talk", Some(json!({"alert": id}))))?;
+    Ok(json!({"ok": true, "job": rf("job", j)}))
+}
+
+fn alert_project(app: &App, a: &Value) -> Result<Option<String>> {
+    if let Some(p) = a["project"].as_str().filter(|p| !p.is_empty()) {
+        return Ok(Some(p.to_string()));
+    }
+    let of_task = a["task"].as_str().and_then(home::number).and_then(|id| board::get_task(app, id).ok()).map(|t| t.st("project"));
+    let of_goal = a["goal"].as_str().and_then(home::number).map(|g| app.db.val("SELECT project FROM goals WHERE id = ?", p![g])).transpose()?;
+    Ok(of_task.or(of_goal.and_then(|p| p.as_str().map(str::to_string))).filter(|p| !p.is_empty()))
+}
+
+fn alert_context(app: &App, a: &Value, project: Option<&str>) -> String {
+    let owner = &app.cfg.owner;
+    let mut parts = vec![format!(
+        "{owner} opened this terminal from the task board to talk over an alert. Explain what it means and what can be done \
+         about it, looking in the code or on the board as you need. Don't change code. Wait for {owner}; don't start on \
+         anything by yourself. You aren't on a task: don't take one."
+    )];
+    let mut alert = format!("The alert: {}", a["text"].as_str().unwrap_or("").trim());
+    if let Some(d) = a["detail"].as_str().filter(|d| !d.is_empty()) {
+        alert.push_str(&format!("\n{d}"));
+    }
+    if let Some(p) = project {
+        alert.push_str(&format!("\nProject: {p}"));
+    }
+    parts.push(alert);
+    if let Some(t) = a["task"].as_str() {
+        parts.push(format!("For its task as it stands now: tb task show {t}"));
+    }
+    if let Some(g) = a["goal"].as_str() {
+        parts.push(format!("For its goal: tb goal show {g}"));
+    }
+    parts.join("\n\n")
 }
 
 fn talk_context(app: &App, t: &Row) -> Result<String> {

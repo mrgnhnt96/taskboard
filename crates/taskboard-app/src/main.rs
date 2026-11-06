@@ -8,13 +8,16 @@
 //! - `TASKBOARD_PAGE=board|backlog|sessions|settings|G3|releases:webapp`, `TASKBOARD_OPEN=T2|B1` — initial page / panel.
 //! - `TASKBOARD_FAKE_RELEASES=1` — with the fake backend, sample releases and a pending cut too.
 //! - `TASKBOARD_FAKE_STOPPED=1` — with the fake backend, two tasks whose terminals were closed by hand.
+//! - `TASKBOARD_FAKE_NEEDS=1` — with the fake backend, misses, an alert, to-dos and items put off on Needs you.
+//! - `TASKBOARD_FAKE_QUIET=1` — with the fake backend, work gone quiet under Agents waiting.
 //! - `TASKBOARD_W` / `TASKBOARD_H` — window size.
 //! - `taskboard://task/T12` (also `goal/G3`, `issue/B7`, `session/<id>`) opens that page; the
 //!   daemon's notifications link there. `TASKBOARD_LINK=<url>` follows one at startup.
 //! - `TASKBOARD_DEV=1` — dev mode even inside a bundle: no install / login item. See `install.rs`.
 //! - `TASKBOARD_PICK=B2,B3` — check these issues on the Backlog page.
 //! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit;
-//!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips).
+//!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips),
+//!   `TASKBOARD_SNAPSHOT_CLICK=x,y;x,y` clicks there in turn first (menus and opened rows).
 mod app;
 mod backend;
 mod fingerprint;
@@ -196,10 +199,25 @@ fn snapshot(any: AnyWindowHandle, cx: &mut App) {
     let delay: u64 = std::env::var("TASKBOARD_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
     cx.spawn(async move |cx| {
         cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
-        let mouse = std::env::var("TASKBOARD_SNAPSHOT_MOUSE").ok().and_then(|v| {
+        let spot = |v: &str| {
             let (x, y) = v.split_once(',')?;
             Some(point(px(x.trim().parse().ok()?), px(y.trim().parse().ok()?)))
-        });
+        };
+        let clicks = std::env::var("TASKBOARD_SNAPSHOT_CLICK").unwrap_or_default();
+        for position in clicks.split(';').filter_map(spot) {
+            let _ = cx.update_window(any, |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
+                window.refresh();
+                window.draw(cx).clear(cx);
+                let (button, modifiers, click_count) = (MouseButton::Left, Modifiers::default(), 1);
+                window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers, click_count, first_mouse: false }), cx);
+                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers, click_count }), cx);
+            });
+            cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+        }
+        let mouse = std::env::var("TASKBOARD_SNAPSHOT_MOUSE").ok().and_then(|v| spot(&v));
         if let Some(position) = mouse {
             for _ in 0..2 {
                 let _ = cx.update_window(any, |_, window, cx| {

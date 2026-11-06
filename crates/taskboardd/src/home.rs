@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::dispatch::{self, Later};
 use crate::util::*;
-use crate::{board, human, p, waitsfor, waves};
+use crate::{board, human, p, quiet, waitsfor, waves};
 
 fn in_flight(t: &Row) -> bool {
     match t.s("status") {
@@ -201,15 +201,27 @@ fn agent_waiting(t: &Row) -> bool {
     t.s("status") == Some("needs") && !t.b("lost") && matches!(t.s("needs_reason"), Some("question") | Some("attention"))
 }
 
+/// Whether alert `a` belongs under Agents waiting: its agent waits on the owner's word, or has gone quiet.
+pub fn alert_waits(app: &App, a: &Value) -> bool {
+    gone_quiet(a) || a["task"].as_str().and_then(number).and_then(|id| board::get_task(app, id).ok()).is_some_and(|t| agent_waiting(&t))
+}
+
+fn gone_quiet(a: &Value) -> bool {
+    a["key"].as_str().is_some_and(quiet::is_key)
+}
+
 /// The agents waiting on the owner in goals that are running, whether or not the item is put off.
-fn waiting_count(app: &App) -> Result<i64> {
+/// Work gone quiet counts too: its agent has stopped and only the owner can tell it why.
+pub fn waiting_count(app: &App) -> Result<i64> {
     let n = app.db.val(
         "SELECT COUNT(*) FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id WHERE t.status = 'needs' \
          AND t.needs_reason IN ('question', 'attention') AND COALESCE(t.lost, 0) = 0 \
          AND COALESCE(g.paused, 0) = 0 AND COALESCE(g.deprioritized, 0) = 0",
         p![],
     )?;
-    Ok(n.as_i64().unwrap_or(0))
+    let resting = resting_goals(app)?;
+    let quiet = dispatch::listing(app).iter().filter(|a| gone_quiet(a) && !rests(app, a, &resting)).count() as i64;
+    Ok(n.as_i64().unwrap_or(0) + quiet)
 }
 
 /// An alert as a Needs you item: with its task's card (or null), its goal's name and what it holds up.
@@ -227,7 +239,7 @@ fn alert_item(app: &App, goals: &mut Goals, mut a: Value) -> Result<Value> {
     };
     a["card"] = card;
     a["goal_name"] = goal_name;
-    a["waiting"] = json!(task.as_ref().is_some_and(agent_waiting));
+    a["waiting"] = json!(gone_quiet(&a) || task.as_ref().is_some_and(agent_waiting));
     a["holds"] = holds;
     Ok(a)
 }
@@ -336,7 +348,7 @@ fn needs(app: &App) -> Result<(Vec<Value>, Vec<Value>)> {
 }
 
 /// The number in `T12` or `G3`.
-fn number(r: &str) -> Option<i64> {
+pub(crate) fn number(r: &str) -> Option<i64> {
     r.trim_start_matches(['T', 'G']).parse().ok()
 }
 
