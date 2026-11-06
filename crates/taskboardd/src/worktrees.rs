@@ -63,11 +63,14 @@ pub(crate) fn last_line(text: &str) -> String {
     text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("no output").to_string()
 }
 
+/// The task's repo: the folder saved on it, or its project's folder when that's unset or gone (the
+/// project moved after the task was made). A gone folder is kept when the project has no other.
 pub(crate) fn repo_of(app: &App, t: &Row) -> Result<Option<String>> {
-    match t.s("repo_path").filter(|r| !r.is_empty()) {
-        Some(r) => Ok(Some(r.to_string())),
-        None => projects::project_path(app, t.s("project")),
+    let saved = t.s("repo_path").filter(|r| !r.is_empty());
+    if let Some(r) = saved.filter(|r| Path::new(r).is_dir()) {
+        return Ok(Some(r.to_string()));
     }
+    Ok(projects::project_path(app, t.s("project"))?.or(saved.map(|r| r.to_string())))
 }
 
 fn folder(repo: &str, t: &Row) -> String {
