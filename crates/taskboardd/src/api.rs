@@ -2963,9 +2963,10 @@ pub fn attachment_file(app: &App, id: &str) -> Result<std::path::PathBuf> {
     Ok(p)
 }
 
-/// `GET /search?q=…`: tasks, backlog issues, goals and goal notes matching the words, best first.
-/// The project defaults to the caller's (from `cwd`); `project=all` searches every one. `kind` is
-/// task, backlog (or issue), goal or note; `open=1` keeps only what's still open. With `palette=1`
+/// `GET /search?q=…`: what the query names by ref, then tasks, backlog issues, goals and goal notes
+/// matching the words, best first. The project defaults to the caller's (from `cwd`); `project=all`
+/// searches every one. `kind` is task, human, backlog (or issue), goal, note or idea; `open=1` keeps
+/// only what's still open. With `palette=1`
 /// it's the app's search palette instead (`goal=<id>` keeps one goal's): see [`crate::palette::find`].
 fn search(app: &App, query: &Query) -> Result<Value> {
     let text = q(query, "q", "");
@@ -2974,24 +2975,26 @@ fn search(app: &App, query: &Query) -> Result<Value> {
         let goal = q(query, "goal", "").trim_start_matches(['G', 'g']).parse::<i64>().ok();
         return crate::palette::find(app, text, limit, goal);
     }
-    if crate::relevance::fts_query(text).is_none() {
-        return err(400, "Say what to search for: a few words.");
+    if !crate::relevance::searchable(text) {
+        return err(400, "Say what to search for: a few words or a ref.");
     }
     let kind = match q(query, "kind", "all") {
         "all" => None,
         "backlog" | "issue" => Some("issue"),
-        k @ ("task" | "goal" | "note" | "idea") => Some(k),
-        k => return err(400, format!("“{k}” isn't a kind to search: say task, backlog, goal, note or idea.")),
+        k @ ("task" | "human" | "goal" | "note" | "idea") => Some(k),
+        k => return err(400, format!("“{k}” isn't a kind to search: say task, human, backlog, goal, note or idea.")),
     };
-    let project = match q(query, "project", "") {
+    let named = q(query, "project", "");
+    let project = match named {
         "all" => None,
         "" => crate::projects::project_for_path(app, query.get("cwd").map(String::as_str))?,
         p => Some(p.to_string()),
     };
+    let ref_project = Some(named).filter(|p| !matches!(*p, "" | "all"));
     let open = as_bool(query.get("open").map(|s| json!(s)).as_ref(), false);
     let limit = q(query, "limit", "20").parse::<usize>().unwrap_or(20).clamp(1, 100);
     let f = crate::relevance::Find { text, project: project.as_deref(), kind, open, limit };
-    Ok(json!({"project": project, "hits": crate::relevance::find(app, &f)?}))
+    Ok(json!({"project": project, "hits": crate::relevance::search(app, &f, ref_project)?}))
 }
 
 fn list_backlog(app: &App, query: &Query) -> Result<Value> {

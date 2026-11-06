@@ -276,7 +276,7 @@ fn hits(app: &App, project: Option<&str>, text: &str) -> Result<Vec<Hit>> {
 // ---- board search ----
 
 /// What `GET /search` looks for: the words, in a project (None: every project), of one kind (task,
-/// issue, goal, note or idea; None: all of them), and whether only what's still open counts.
+/// human, issue, goal, note or idea; None: all of them), and whether only what's still open counts.
 pub struct Find<'a> {
     pub text: &'a str,
     pub project: Option<&'a str>,
@@ -285,17 +285,101 @@ pub struct Find<'a> {
     pub limit: usize,
 }
 
+/// A ref the query names: what it is, its id, and whether it had its letter.
+struct NamedRef {
+    kind: &'static str,
+    id: i64,
+    lettered: bool,
+}
+
+/// The refs in the query: H605, t605, or, when the query is only numbers, each kind's 605. A number
+/// among other words is just a number.
+fn named_refs(text: &str) -> Vec<NamedRef> {
+    let tokens: Vec<&str> = text.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| !w.is_empty()).collect();
+    let bare = tokens.iter().all(|w| w.bytes().all(|b| b.is_ascii_digit()));
+    let mut out = vec![];
+    for w in tokens {
+        if bare {
+            let Ok(id) = w.parse() else { continue };
+            out.extend(["task", "goal", "issue", "idea"].map(|kind| NamedRef { kind, id, lettered: false }));
+            continue;
+        }
+        let kind = match w.chars().next().map(|c| c.to_ascii_uppercase()) {
+            Some('T' | 'H') => "task",
+            Some('G') => "goal",
+            Some('B') => "issue",
+            Some('I') => "idea",
+            _ => continue,
+        };
+        let digits = &w[1..];
+        if let (true, Ok(id)) = (digits.bytes().all(|b| b.is_ascii_digit()), digits.parse()) {
+            out.push(NamedRef { kind, id, lettered: true });
+        }
+    }
+    out
+}
+
+/// Whether the query has anything to look for: words, or a ref.
+pub fn searchable(text: &str) -> bool {
+    fts_query(text).is_some() || !named_refs(text).is_empty()
+}
+
+fn same_card(a: &Value, b: &Value) -> bool {
+    a["kind"] == b["kind"] && a["id"] == b["id"]
+}
+
+/// The cards of what the query names by ref that's on the board and fits the search.
+fn ref_cards(app: &App, f: &Find, ref_project: Option<&str>) -> Result<Vec<Value>> {
+    let mut out = vec![];
+    for r in named_refs(f.text) {
+        let wanted = match f.kind {
+            None => true,
+            Some("human") => r.kind == "task",
+            Some(k) => k == r.kind,
+        };
+        if !wanted {
+            continue;
+        }
+        let Some((mut c, open)) = card(app, r.kind, r.id)? else { continue };
+        let project = if r.lettered { ref_project } else { f.project };
+        let in_project = project.is_none_or(|p| c["project"] == p);
+        let repeat = out.iter().any(|o| same_card(o, &c));
+        if !repeat && in_project && (open || !f.open) && (f.kind != Some("human") || c["human"] == true) {
+            c["score"] = json!(1.0);
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+/// `GET /search`: what the query names by ref, then what matches its words. A ref is the same in
+/// every project, so one with its letter is found board-wide unless a project was named
+/// (`ref_project`).
+pub fn search(app: &App, f: &Find, ref_project: Option<&str>) -> Result<Vec<Value>> {
+    let mut out = ref_cards(app, f, ref_project)?;
+    for c in find(app, f)? {
+        if !out.iter().any(|o| same_card(o, &c)) {
+            out.push(c);
+        }
+    }
+    out.truncate(f.limit);
+    Ok(out)
+}
+
 /// The tasks, backlog issues, goals, goal notes and ideas that match the words, best first, as cards with
 /// their state.
 pub fn find(app: &App, f: &Find) -> Result<Vec<Value>> {
     let Some(q) = fts_query(f.text) else { return Ok(vec![]) };
     let mut found: Vec<(f64, String, i64)> = vec![];
     if f.kind != Some("goal") {
+        let human = f.kind == Some("human");
+        let indexed_kind = if human { Some("task") } else { f.kind };
         let rows = app.db.q(
             "SELECT kind, rid, bm25(search) AS rank FROM search
              WHERE search MATCH ? AND kind IN ('task', 'issue', 'note', 'idea') AND (? IS NULL OR kind = ?) AND (? IS NULL OR project IS ?)
+               AND (? = 0 OR rid IN (SELECT id FROM tasks WHERE kind = ?))
              ORDER BY rank LIMIT 500",
-            p![q, f.kind, f.kind, f.project, f.project],
+            p![q, indexed_kind, indexed_kind, f.project, f.project, human, crate::human::KIND],
         )?;
         // bm25 is negative, more so for a better match.
         let best = rows.iter().filter_map(|r| r.f("rank")).fold(0.0_f64, |a, b| a.max(-b));
@@ -342,7 +426,7 @@ fn card(app: &App, kind: &str, id: i64) -> Result<Option<(Value, bool)>> {
             let status = t.st("status");
             let state = if t.b("failed") && status != "done" { "failed".to_string() } else { status.clone() };
             let g = goal(t.i("goal_id"))?;
-            (json!({"kind": "task", "id": id, "ref": rf("task", id), "title": t.v("title"), "state": state,
+            (json!({"kind": "task", "id": id, "ref": crate::human::task_ref(&t), "human": crate::human::is(&t), "title": t.v("title"), "state": state,
                     "project": t.v("project"), "goal": crate::board::goal_ref(g.as_ref())}), status != "done")
         }
         "issue" => {
@@ -702,5 +786,69 @@ mod tests {
         assert!(crate::api::dispatch(&app, "GET", "/search", &q, &json!({})).is_err(), "no words to search");
         let q: crate::api::Query = [("q".to_string(), "retry".to_string()), ("kind".to_string(), "lesson".to_string())].into();
         assert!(crate::api::dispatch(&app, "GET", "/search", &q, &json!({})).is_err(), "not a kind");
+    }
+
+    fn human_task(app: &App, project: &str, title: &str, status: &str) -> i64 {
+        app.db.insert("tasks", crate::fields!["title" => title, "detail" => "1. Do it.", "project" => project, "status" => status, "kind" => crate::human::KIND]).unwrap()
+    }
+
+    #[test]
+    fn a_human_task_shows_its_own_ref_and_has_a_filter() {
+        let (_d, app) = board();
+        let h = human_task(&app, "webapp", "Renew the signing key", "needs");
+        let t = app.db.insert("tasks", crate::fields!["title" => "Rotate the signing key", "project" => "webapp", "status" => "queued"]).unwrap();
+
+        let hits = search(&app, &[("q", "signing key"), ("project", "webapp")]);
+        let mut all = refs(&hits);
+        all.sort();
+        assert_eq!(all, [format!("task H{h}"), format!("task T{t}")]);
+        assert_eq!(hits.iter().filter(|c| c["human"] == true).count(), 1);
+        assert_eq!(refs(&search(&app, &[("q", "signing key"), ("project", "webapp"), ("kind", "human")])), [format!("task H{h}")]);
+        assert_eq!(refs(&search(&app, &[("q", "signing key"), ("project", "webapp"), ("kind", "task")])).len(), 2, "a human task is still a task");
+        assert!(search(&app, &[("q", &format!("T{t}")), ("kind", "human"), ("project", "all")]).is_empty(), "not a human task");
+        assert_eq!(refs(&search(&app, &[("q", &format!("t{h}")), ("kind", "human"), ("project", "all")])), [format!("task H{h}")]);
+    }
+
+    #[test]
+    fn a_ref_finds_its_object_first() {
+        let (_d, app) = board();
+        let h = app.db.insert("tasks", crate::fields!["id" => 605, "title" => "Renew the signing key", "project" => "webapp", "status" => "needs", "kind" => crate::human::KIND]).unwrap();
+        let done = human_task(&app, "webapp", "Sign in once", "done");
+        let g = app.db.insert("goals", crate::fields!["name" => "Passkeys", "project" => "webapp"]).unwrap();
+        let b = issue(&app, "webapp", "Dark mode colours", "");
+        let n = app.db.insert("tasks", crate::fields!["title" => format!("Follow up on H{h}"), "project" => "webapp", "status" => "queued"]).unwrap();
+
+        let in_webapp = |q: &str| refs(&search(&app, &[("q", q), ("project", "webapp")]));
+        assert_eq!(in_webapp(&format!("H{h}")), [format!("task H{h}"), format!("task T{n}")], "then what mentions it, once each");
+        assert_eq!(in_webapp(&format!("h{h}"))[0], format!("task H{h}"), "in any case");
+        assert_eq!(in_webapp(&format!("T{h}"))[0], format!("task H{h}"), "T<n> still finds it");
+        assert_eq!(in_webapp(&format!("G{g}")), [format!("goal G{g}")]);
+        assert_eq!(in_webapp(&format!("B{b}")), [format!("issue B{b}")]);
+        assert_eq!(in_webapp(&format!("dark H{h}"))[..2], [format!("task H{h}"), format!("issue B{b}")], "with words too");
+        assert!(in_webapp("T99999").is_empty(), "nothing there");
+
+        assert_eq!(in_webapp(&format!("H{h} T{h}"))[0], format!("task H{h}"));
+        assert_eq!(in_webapp(&format!("H{h} T{h}")).iter().filter(|r| **r == format!("task H{h}")).count(), 1, "once");
+
+        let text = format!("H{h}");
+        let elsewhere = Find { text: &text, project: Some("api"), kind: None, open: false, limit: 20 };
+        assert_eq!(refs(&super::search(&app, &elsewhere, None).unwrap()), [format!("task H{h}")], "from another project's terminal");
+        assert!(find(&app, &elsewhere).unwrap().is_empty(), "find only reads words: an idea's text can't name refs by accident");
+        assert!(search(&app, &[("q", &format!("H{h}")), ("project", "api")]).is_empty(), "a named project still counts");
+        assert!(search(&app, &[("q", &format!("H{done}")), ("project", "all"), ("open", "1")]).is_empty(), "only what's open");
+        assert!(search(&app, &[("q", &format!("H{h}")), ("project", "all"), ("kind", "goal")]).is_empty(), "not that kind");
+    }
+
+    #[test]
+    fn a_number_is_a_ref_only_on_its_own() {
+        let (_d, app) = board();
+        let t = app.db.insert("tasks", crate::fields!["title" => "Retry the upload", "project" => "webapp", "status" => "queued"]).unwrap();
+        app.db.insert("tasks", crate::fields!["title" => "Other work", "project" => "api", "status" => "queued"]).unwrap();
+        let there = t + 1;
+
+        assert_eq!(refs(&search(&app, &[("q", &t.to_string()), ("project", "webapp")])), [format!("task T{t}")]);
+        assert!(search(&app, &[("q", &there.to_string()), ("project", "webapp")]).is_empty(), "a bare number keeps to the project");
+        assert_eq!(refs(&search(&app, &[("q", &there.to_string()), ("project", "all")])), [format!("task T{there}")]);
+        assert_eq!(refs(&search(&app, &[("q", &format!("upload {there}")), ("project", "all")])), [format!("task T{t}")], "among words it's only a number");
     }
 }

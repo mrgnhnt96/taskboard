@@ -313,8 +313,9 @@ enum Cmd {
         #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
         kind: Option<String>,
     },
-    /// Tasks, backlog items, goals, goal notes and ideas that match some words, best first
+    /// Tasks, backlog items, goals, goal notes and ideas that match some words or a ref (H605, T12, G4, B9, I3), best first
     Search {
+        /// Words, a ref (found in any project), or both. A number on its own is a ref in this project
         query: String,
         /// The project (this terminal's when left out)
         #[arg(long, conflicts_with = "all")]
@@ -322,7 +323,8 @@ enum Cmd {
         /// Every project's
         #[arg(long)]
         all: bool,
-        #[arg(long, value_parser = ["task", "backlog", "goal", "note", "idea"])]
+        /// human keeps only human tasks (H<n>); task has them too
+        #[arg(long, value_parser = ["task", "human", "backlog", "goal", "note", "idea"])]
         kind: Option<String>,
         /// Only what's still open
         #[arg(long)]
