@@ -56,10 +56,7 @@ fn restarts(t: &Row) -> bool {
 /// The fields that put task `t` (in goal `goal`) in `project`: its repo and area there, out of the old project's
 /// release, and back on the board waiting for Start when it ran and has no terminal to carry on in.
 pub fn task_fields(app: &App, t: &Row, project: &str, goal: Option<i64>) -> Result<Vec<(&'static str, Value)>> {
-    let repo = board::find_goal(app, goal)?
-        .filter(|g| g.s("project") == Some(project))
-        .and_then(|g| g.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()))
-        .or(projects::project_path(app, Some(project))?);
+    let repo = crate::worktrees::repo_in_goal(app, board::find_goal(app, goal)?.as_ref(), project)?;
     let area = crate::areas::clean(app, project, &t.v("area")).unwrap_or(Value::Null);
     let mut f = fields!["project" => project, "repo_path" => repo, "area" => area, "release_id" => null];
     if restarts(t) {

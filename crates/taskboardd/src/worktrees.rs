@@ -63,14 +63,22 @@ pub(crate) fn last_line(text: &str) -> String {
     text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("no output").to_string()
 }
 
-/// The task's repo: the folder saved on it, or its project's folder when that's unset or gone (the
-/// project moved after the task was made). A gone folder is kept when the project has no other.
+/// The repo of a task or goal: the folder saved on it, or its project's folder when that's unset or gone
+/// (the project moved after it was made). A gone folder is kept when the project has no other.
 pub(crate) fn repo_of(app: &App, t: &Row) -> Result<Option<String>> {
     let saved = t.s("repo_path").filter(|r| !r.is_empty());
     if let Some(r) = saved.filter(|r| Path::new(r).is_dir()) {
         return Ok(Some(r.to_string()));
     }
     Ok(projects::project_path(app, t.s("project"))?.or(saved.map(|r| r.to_string())))
+}
+
+/// The repo a task in `project` starts in: its goal's when the goal is in that project, else the project's.
+pub(crate) fn repo_in_goal(app: &App, goal: Option<&Row>, project: &str) -> Result<Option<String>> {
+    match goal.filter(|g| g.s("project") == Some(project)) {
+        Some(g) => repo_of(app, g),
+        None => projects::project_path(app, Some(project)),
+    }
 }
 
 fn folder(repo: &str, t: &Row) -> String {

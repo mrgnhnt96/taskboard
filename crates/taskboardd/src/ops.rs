@@ -139,11 +139,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     }
     let jkey = if jmode == "link" { Some(jira_key(jopt["key"].as_str().unwrap_or(""))?) } else { None };
     let now = now_iso();
-    let repo = g
-        .as_ref()
-        .filter(|g| g.s("project") == Some(project.as_str()))
-        .and_then(|g| g.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()))
-        .or(projects::project_path(app, Some(&project))?);
+    let repo = crate::worktrees::repo_in_goal(app, g.as_ref(), &project)?;
     let latest = one_line(&body_str(body, "latest"), 240);
     let lock_names = crate::locks::clean(body.get("locks"))?;
     let lock_warning = crate::locks::unseen_warning(app, lock_names.as_deref(), None)?;

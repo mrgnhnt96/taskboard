@@ -2733,8 +2733,7 @@ fn goal_plan(app: &App, id: i64, body: &Value) -> Result<Value> {
     let edit = body_str(body, "mode") == "edit";
     app.db.tx(|| {
         let g = board::get_goal(app, id)?;
-        let cwd = g.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()).or(projects::project_path(app, g.s("project"))?);
-        let Some(cwd) = cwd else { return err(409, format!("The board doesn't know the folder for the project “{}”.", g.st("project"))) };
+        let Some(cwd) = crate::worktrees::repo_of(app, &g)? else { return err(409, format!("The board doesn't know the folder for the project “{}”.", g.st("project"))) };
         let mut args = json!({"cwd": cwd, "title": short(&format!("Plan: {}", g.st("name")), 40), "queue": false});
         if edit {
             // The owner pressed Open in Claude, so the terminal comes to the front once open.
