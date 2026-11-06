@@ -1441,6 +1441,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         if has_key("landed") {
             planned |= crate::declined::set_landed(app, &board::get_task(app, id)?, &body["landed"], &who)?;
         }
+        if has_key("pr_link") {
+            planned |= crate::declined::set_pr_link(app, &board::get_task(app, id)?, &body["pr_link"], &who)?;
+        }
         if planned && f.is_empty() {
             return board::bump_ctx(app, id);
         }
@@ -1517,7 +1520,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    if body.get("landed").is_some() {
+    if body.get("landed").is_some() || body.get("pr_link").is_some() {
         app.wake_runner();
     }
     let mut d = task_detail(app, id)?;

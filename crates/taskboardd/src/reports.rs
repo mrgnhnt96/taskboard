@@ -2088,7 +2088,12 @@ fn on_done(r: &mut Report) -> Result<Value> {
     }
     let pr = if no_pr.is_empty() { pr } else { None };
     if let Some(pr) = pr {
-        prflow::link_pr(r.app, &t, &pr, &r.name())?;
+        if !prflow::link_pr(r.app, &t, &pr, &r.name())? && !pr_arg.is_empty() {
+            crate::samepr::join_owner(r.app, &t, &pr, &r.name())?;
+        }
+    }
+    if !r.spooled {
+        crate::declined::refuse_stranding(r.app, &board::get_task(r.app, t.id())?)?;
     }
     if let Some(text) = crate::design::done_text(r.app, &t)? {
         r.log(t.id(), "status", &text, None)?;

@@ -360,7 +360,16 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
                 }
                 Some(pr) if pr_declined(&other) => format!("Blocked by {who}, whose {pr} was declined, so its work isn't merged"),
                 Some(pr) => format!("Blocked by {who} until {pr} merges"),
-                None => format!("Blocked by {who} until its PR merges"),
+                None if has(other.s("pr_url")) => format!("Blocked by {who} until its PR merges"),
+                None if ids(t).contains(&n) => {
+                    let r = rf("task", n);
+                    format!(
+                        "Blocked by {who}, which finished with no PR linked, so no merge is coming. If its work went through another PR: tb task set {r} --pr-link <link>. \
+                         If it landed another way: tb task set {r} --landed <commit>. To go on without it: tb wait-for --drop {r} --task {}",
+                        rf("task", t.id())
+                    )
+                }
+                None => format!("Blocked by {who}, which finished with no PR linked, so no merge is coming"),
             },
             Some("done") =>format!("Blocked by {who}, which failed. It starts once {} is done", rf("task", n)),
             Some("planned") => format!("Blocked by {who}, which isn't queued yet"),

@@ -321,6 +321,43 @@ pub fn member_submit(app: &App, body: &mut Value, t: &Row, text: &str) -> Result
     Ok(true)
 }
 
+/// Why `t` can't become a member of the task that owns a PR.
+pub fn cant_join(app: &App, t: &Row) -> Result<Option<String>> {
+    let me = rf("task", t.id());
+    if let Some(a) = anchor_id(t) {
+        return Ok(Some(format!("{me} shares {}'s PR already.", rf("task", a))));
+    }
+    if let Some(p) = stack::parent_id(t) {
+        return Ok(Some(format!("{me} stacks on {}; a task shares a PR or stacks on one, not both. Take it off first (--stack-on none).", rf("task", p))));
+    }
+    if !members(app, t.id())?.is_empty() {
+        return Ok(Some(format!("Other tasks share {me}'s PR, so it can't share another.")));
+    }
+    Ok(None)
+}
+
+/// The other task that owns `pr`.
+pub fn owner(app: &App, t: &Row, pr: &PrLink) -> Result<Option<Row>> {
+    app.db.q1("SELECT * FROM tasks WHERE pr_repo = ? AND pr_num = ? AND id != ?", p![pr.repo, pr.num, t.id()])
+}
+
+/// `t`'s work went through `pr`, which another task owns: it becomes that task's member, so it counts as
+/// merged when that PR does. Whether it joined; false when no other task owns the PR or `t` can't join.
+pub fn join_owner(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {
+    if has(t.s("pr_repo")) || crate::prflow::other_repo(app, t, pr).is_some() || cant_join(app, t)?.is_some() {
+        return Ok(false);
+    }
+    let Some(a) = owner(app, t, pr)? else { return Ok(false) };
+    board::update_task(
+        app,
+        t.id(),
+        fields!["same_pr" => a.id(), "pr_host" => a.v("pr_host"), "pr_repo" => a.v("pr_repo"), "pr_url" => a.v("pr_url"),
+                "pr_state" => a.v("pr_state"), "pr_phase" => a.v("pr_phase")],
+    )?;
+    board::log_event(app, t.id(), who, "status", &format!("Its work went through {}'s PR #{}", rf("task", a.id()), pr.num))?;
+    Ok(true)
+}
+
 /// Plan-check warnings on a goal's open tasks: a shared PR with more tasks, or more planned files across
 /// them, than one reader can follow.
 pub fn plan_warnings(app: &App, tasks: &[Row]) -> Result<Vec<String>> {
