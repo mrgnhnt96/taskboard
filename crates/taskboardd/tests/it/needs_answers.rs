@@ -406,6 +406,49 @@ fn a_put_off_agent_question_still_counts_as_waiting() {
 }
 
 #[test]
+fn gone_quiet_sits_with_the_waiting_agents_and_counts() {
+    let b = new_board();
+    let t = b.task("Open PR", json!({}));
+    b.set(t, vec![("status", json!("working"))]);
+    dispatch::raise(&b.app, "It has gone quiet", Some(t), None, Some(&format!("quiet:T{t}")), false).unwrap();
+    assert_eq!(b.item("needs", &format!("T{t}")).unwrap()["waiting"], true);
+    assert_eq!(b.home()["waiting"], 1);
+    assert_eq!(b.get("state")["counts"]["waiting"], 1, "the sidebar reads this one");
+    assert!(dispatch::nudges(&b.app, &dispatch::alerts(&b.app)[0]));
+}
+
+#[test]
+fn the_state_counts_agents_not_everything_on_the_list() {
+    let b = new_board();
+    dispatch::add_alert(&b.app, "A release was dropped", None, None, None, None).unwrap();
+    assert_eq!(b.home()["needs"].as_array().unwrap().len(), 1);
+    assert_eq!(b.get("state")["counts"]["waiting"], 0);
+}
+
+#[test]
+fn an_alert_can_be_talked_over_in_a_terminal() {
+    let b = new_board();
+    let g = b.goal("Release", json!({"project": "webapp"}));
+    dispatch::add_alert(&b.app, "Release 11.05.26 was dropped", None, Some(g), None, None).unwrap();
+    let id = dispatch::alerts(&b.app)[0]["id"].as_str().unwrap().to_string();
+
+    b.app.shared.lock().midna_seen_at = None;
+    assert_eq!(b.post(&format!("alerts/{id}/talk"), json!({})).unwrap_err().0, 409);
+    b.app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
+
+    let out = b.post(&format!("alerts/{id}/talk"), json!({})).unwrap();
+    let job: i64 = out["job"].as_str().unwrap()[1..].parse().unwrap();
+    let j = b.app.db.q1("SELECT purpose, args FROM jobs WHERE id = ?", p![job]).unwrap().unwrap();
+    assert_eq!(j.st("purpose"), "alert_talk");
+    let args: Value = serde_json::from_str(&j.st("args")).unwrap();
+    assert_eq!(args["cwd"], json!(b.dir.path().join("webapp")));
+    assert!(args["context"].as_str().unwrap().contains("Release 11.05.26 was dropped"));
+    assert_eq!(dispatch::alerts(&b.app).len(), 1, "talking it over settles nothing");
+
+    assert_eq!(b.post("alerts/nope/talk", json!({})).unwrap_err().0, 404);
+}
+
+#[test]
 fn a_wave_that_stops_holds_the_next_once_nothing_in_it_is_left_to_start() {
     let b = new_board();
     let g = b.goal("Login", json!({}));

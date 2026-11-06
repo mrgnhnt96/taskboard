@@ -678,6 +678,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             app.db.tx(|| alerts::clear_alerts(app, None, Some(id)))?;
             Ok(json!({"alerts": alerts::listing(app)}))
         }
+        ("POST", ["alerts", id, "talk"]) => crate::human::talk_alert(app, id),
         ("POST", ["alerts", id, "act"]) => alerts::act(app, id, body["n"].as_u64().unwrap_or(0) as usize),
         ("POST", ["alerts", id, "snooze"]) => snooze(app, id, body),
         _ => {
@@ -834,6 +835,7 @@ fn build_state_board(app: &App, query: &Query) -> Result<Value> {
     counts.insert("done_hidden".into(), json!(done_hidden));
     counts.insert("open_issues".into(), json!(open_issues.len()));
     counts.insert("untriaged".into(), json!(app.db.count("SELECT COUNT(*) FROM issues WHERE state = 'open' AND goal_id IS NULL", p![])?));
+    counts.insert("waiting".into(), json!(crate::home::waiting_count(app)?));
     let mut planned = vec![];
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'planned' ORDER BY goal_id, position, id", p![])? {
         if project_match(t.s("project"), project) && task_goal_match(app, &t, goal)? {

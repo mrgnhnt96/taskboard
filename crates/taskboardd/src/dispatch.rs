@@ -312,10 +312,17 @@ fn push_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>,
     let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
     keep(app, &rows)?;
     let kept = rows.into_iter().find(|a| a["id"] == new_id);
-    if let Some(a) = kept.as_ref().filter(|a| !digest::holds(app, a) && a["held"] != true) {
-        notify_alert(app, a);
+    if let Some(a) = &kept {
+        notify_new(app, a);
     }
     Ok(kept)
+}
+
+/// A new alert's notification, unless the digest or the work hours hold it.
+fn notify_new(app: &App, a: &Value) {
+    if !digest::holds(app, a) && a["held"] != true {
+        notify_alert(app, a);
+    }
 }
 
 /// Whether a new alert's notification waits for the work hours to open (`deliver_held`): outside them
@@ -368,7 +375,12 @@ pub fn add_alert_keyed_with(app: &App, text: &str, task_id: Option<i64>, goal_id
             a[k] = v.clone();
         }
     }
-    keep(app, &rows)
+    keep(app, &rows)?;
+    // Only its key says it's work gone quiet, so `push_alert` couldn't tell it reaches the desktop.
+    if let Some(a) = rows.iter().find(|a| a["id"] == new["id"] && crate::quiet::is_key(key)) {
+        notify_new(app, a);
+    }
+    Ok(())
 }
 
 /// A fix an alert offers: a button labelled `label` that opens a Claude terminal with `prompt` typed in
@@ -775,10 +787,16 @@ pub fn alert_params(app: &App, a: &Value) -> Value {
     p
 }
 
+/// Whether alert `a` reaches the desktop: a notification always means an agent is waiting on the owner.
+/// An urgent alert does too, so a red main branch can't go unheard. The rest wait in Needs you.
+pub fn nudges(app: &App, a: &Value) -> bool {
+    !quiet(a) && (a["urgent"] == true || crate::home::alert_waits(app, a))
+}
+
 /// An alert's desktop notification. With snooze buttons, the alert's one waiter (`Waiter::listen`) hears the
 /// owner's pick and leaves it for the next tick to act on.
 fn notify_alert(app: &App, a: &Value) {
-    if !app.cfg.notify || !app.cfg.runner || quiet(a) {
+    if !app.cfg.notify || !app.cfg.runner || !nudges(app, a) {
         return;
     }
     let params = alert_params(app, a);
@@ -862,7 +880,7 @@ fn tend_waiters(app: &App) {
     let (midna, inbox) = (app.cfg.midna.clone(), app.shared.lock().notify_inbox.clone());
     let mut up: Vec<(String, String, String)> = vec![];
     if !snooze_actions(app).is_empty() {
-        for a in rows.iter().filter(|a| !digest::holds(app, a) && !quiet(a) && a["held"] != true) {
+        for a in rows.iter().filter(|a| !digest::holds(app, a) && nudges(app, a) && a["held"] != true) {
             let (Some(id), Some(at)) = (a["id"].as_str(), a["notified_at"].as_str().or(a["at"].as_str())) else { continue };
             up.push((id.to_string(), at.to_string(), notification_id(id)));
         }
@@ -1225,6 +1243,25 @@ mod tests {
         let t2 = alert_for(&app, "T2");
         assert!(t2["held"].is_null());
         assert!(t2["snoozed_until"].is_string(), "its snooze notifies it when it ends");
+    }
+
+    #[test]
+    fn only_a_waiting_agent_or_something_urgent_reaches_the_desktop() {
+        let (_d, app) = quiet_app();
+        let task = |status: &str, reason: &str| {
+            let id = app.db.insert("tasks", crate::fields!["title" => "x", "status" => status, "needs_reason" => reason]).unwrap();
+            let line = format!("T{id}: x");
+            add_alert(&app, &line, Some(id), None, None, None).unwrap();
+            alert_for(&app, &format!("T{id}"))
+        };
+        assert!(nudges(&app, &task("needs", "question")));
+        assert!(nudges(&app, &task("needs", "attention")));
+        assert!(!nudges(&app, &task("needs", "human")), "a to-do waits in Needs you");
+        assert!(!nudges(&app, &task("done", "")), "a PR to look at waits in Needs you");
+        assert!(!nudges(&app, &json!({"text": "A release was dropped"})));
+        assert!(nudges(&app, &json!({"text": "No update", "key": "quiet:T9"})), "gone quiet sits with the agents");
+        assert!(nudges(&app, &json!({"text": "main is red", "urgent": true})));
+        assert!(!nudges(&app, &json!({"text": "Weekly review", "urgent": true, "quiet": true})));
     }
 
     #[test]

@@ -61,7 +61,8 @@ reader just changed doesn't vanish from under them).
     "done": [task_card]                         // newest `when` first, only those inside the ?done window (cap ~200)
   },
   "counts": {
-    "needs": int,                               // shown in the page title "(3) Task board"
+    "needs": int,                               // tasks in the Needs column
+    "waiting": int,                             // agents waiting on your word: the sidebar's Needs you count and the page title "(3) Task board"; the same as `waiting` on GET /home
     "open_issues": int,                         // open issues matching the filters (Backlog page header fallback)
     "done_hidden": int,                         // done tasks matching the filters but older than the ?done window
     "queued": int, "working": int               // optional, unused today
@@ -77,7 +78,8 @@ Planned tasks never appear in `columns`; they only show on the goal page. Column
  "snoozed_until"?: iso, "snoozed_back"?: iso, "snoozed_goal"?: int, "snoozed_waiting"?: str}
 ```
 Something that needs the reader (a task that couldn't start, an answer that didn't arrive…). `task`/`goal` give
-the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an alert with `"review": true` (a PR waiting
+the "Open T12" button. Only an alert for an agent waiting on your word (a question, a call for attention, work gone
+quiet) or an urgent one reaches the desktop or the digest; the rest wait in Needs you. Dismissed with `POST /alerts/:id/dismiss`, except an alert with `"review": true` (a PR waiting
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
 by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
 `POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
@@ -195,7 +197,7 @@ Query: `project=<name|all>`. The home page: what needs you, and the goals with w
           // {"id": "stage:G3:1", "text", "goal", "goal_name", "stage": true, "wave", "waiting": false, "holds", "later"}
   "later_count": int,              // how many are in `later`
   "next_back": iso|null,           // when the soonest of them comes back
-  "waiting": int,                  // agents waiting on your word in running goals, put off or not
+  "waiting": int,                  // agents waiting on your word in running goals and work gone quiet, put off or not
   "goals": [{
     "goal": goal_summary|null,     // null: the project's tasks outside any goal
     "project": str,
@@ -215,7 +217,7 @@ holds: {"tasks": ["T30"], "goal": "G3"|null}
 later: {"until": iso|null, "back": bool, "after_goal": "G3"|null, "waiting_on": str|null}
 ```
 `waiting` on an item: an agent waits on your word (a question or a call for attention, not a lost terminal or a
-to-do). `holds`: the tasks that wait for the item, those a stopped wave or the goal's order keeps behind it, and the
+to-do), or its work has gone quiet. `holds`: the tasks that wait for the item, those a stopped wave or the goal's order keeps behind it, and the
 goal it holds open; a to-do answered `dont_wait` holds nothing. `later` says what brings the item back: a time
 (`until`), your next return (`back`), a goal finishing (`after_goal`), and `waiting_on` when it waits on someone.
 
@@ -1003,6 +1005,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | `POST /usage/override` | `{off?: bool}` | Lifts today's limit until local midnight (`tb usage override`); `off: true` puts it back. **Response read:** the `usage` object. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
 | `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. A new alert is marked `suggest: "pending"` (unless `[alerts] suggest = false`), as an agent's question alert is: the board then asks Haiku for its card's `title`, `detail` and one to three `actions` (`{label, prompt, command: ""}`, each opening a Claude terminal with `prompt` typed in), and sets `suggest` to `"done"`, or `"failed"` with the alert left as plain text. **Response read:** `{alert}`. |
+| `POST /alerts/:id/talk` | `{}` | Talk it over on Needs you: a Claude terminal in the alert's project's checkout (the home folder when it has none) with the alert in its context. Settles nothing. 404 for an alert that's gone, 409 while Midna is down. **Response read:** `{ok, job}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
 | `POST /alerts/:id/snooze` | `{mins}`, `{until: "tomorrow"\|"next_week"\|"back"}` or `{after_goal: "G3"}` | Put a Needs you item off: an alert, a task with no alert (`task:T12`) or a finished stage (`stage:G3:1`). `mins` is up to a week; `tomorrow` and `next_week` are when those work hours start (`next_week` is next Monday); `back` is after the owner's next stretch away; `after_goal` is when that goal finishes or is archived, and is 409 for a goal that's over or that the item holds open. A put-off agent question still counts in `waiting` on `GET /home`. **Response read:** `{alert}`. |
 

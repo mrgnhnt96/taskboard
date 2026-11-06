@@ -1,4 +1,4 @@
-//! One notification for everything waiting on the owner. With `[alerts] digest_mins` above 0, an alert that isn't
+//! One notification for the agents waiting on the owner. With `[alerts] digest_mins` above 0, an alert that isn't
 //! urgent doesn't notify on its own: new ones gather for `digest_mins`, then go out together as one notification
 //! (Midna's `taskboard-digest`, replaced each time) that opens Home's Needs you list. It repeats every
 //! `alert_every_mins` inside the work hours while anything is left, snoozes as one, and is taken away once
@@ -27,7 +27,7 @@ pub fn on(app: &App) -> bool {
 
 /// Whether alert `a` goes out in the digest rather than on its own.
 pub fn holds(app: &App, a: &Value) -> bool {
-    on(app) && a["urgent"] != true && !dispatch::quiet(a)
+    on(app) && a["urgent"] != true && dispatch::nudges(app, a)
 }
 
 /// The digest's last notification: `sent` (the alerts it listed), `notified_at`, `snoozed_until` and
@@ -185,6 +185,12 @@ mod tests {
         (dir, app)
     }
 
+    /// An agent's question on a new task, as its alert raises it. The task is T1, T2… in order.
+    fn ask(app: &App, text: &str) {
+        let id = app.db.insert("tasks", crate::fields!["title" => "x", "status" => "needs", "needs_reason" => "question"]).unwrap();
+        dispatch::add_alert(app, &format!("T{id}: {text}"), Some(id), None, None, None).unwrap();
+    }
+
     fn age(app: &App, mins: f64) {
         let mut rows = dispatch::alerts(app);
         for a in rows.iter_mut() {
@@ -196,8 +202,8 @@ mod tests {
     #[test]
     fn new_alerts_gather_before_one_notification() {
         let (_d, app) = app(5);
-        dispatch::add_alert(&app, "T1: which port?", Some(1), None, None, None).unwrap();
-        dispatch::add_alert(&app, "T2: needs attention", Some(2), None, None, None).unwrap();
+        ask(&app, "which port?");
+        ask(&app, "needs attention");
         tick(&app).unwrap();
         assert!(showing_since(&app).is_none());
         age(&app, 6.0);
@@ -214,19 +220,26 @@ mod tests {
     fn urgent_and_snoozed_alerts_stay_out() {
         let (_d, app) = app(5);
         dispatch::raise(&app, "main is red", None, None, Some("master:1"), true).unwrap();
-        dispatch::add_alert(&app, "T3: review my PR", Some(3), None, None, Some("review")).unwrap();
-        dispatch::add_alert(&app, "T4: which color?", Some(4), None, None, None).unwrap();
-        let t4 = dispatch::alerts(&app).into_iter().find(|a| a["task"] == "T4").unwrap();
-        dispatch::snooze_alert(&app, t4["id"].as_str().unwrap(), 30).unwrap();
+        ask(&app, "which port?");
+        ask(&app, "which color?");
+        let t2 = dispatch::alerts(&app).into_iter().find(|a| a["task"] == "T2").unwrap();
+        dispatch::snooze_alert(&app, t2["id"].as_str().unwrap(), 30).unwrap();
         let rows = members(&app);
         assert_eq!(rows.len(), 1);
-        assert_eq!(title(&rows), "T3 needs you");
+        assert_eq!(title(&rows), "T1 needs you");
+    }
+
+    #[test]
+    fn what_no_agent_waits_on_stays_out() {
+        let (_d, app) = app(5);
+        dispatch::add_alert(&app, "T3: review my PR", Some(3), None, None, Some("review")).unwrap();
+        assert!(members(&app).is_empty());
     }
 
     #[test]
     fn it_goes_away_once_nothing_waits() {
         let (_d, app) = app(5);
-        dispatch::add_alert(&app, "T1: which port?", Some(1), None, None, None).unwrap();
+        ask(&app, "which port?");
         age(&app, 6.0);
         tick(&app).unwrap();
         assert!(showing_since(&app).is_some());
@@ -238,7 +251,7 @@ mod tests {
     #[test]
     fn a_snooze_holds_the_repeat() {
         let (_d, app) = app(5);
-        dispatch::add_alert(&app, "T1: which port?", Some(1), None, None, None).unwrap();
+        ask(&app, "which port?");
         age(&app, 6.0);
         tick(&app).unwrap();
         let at = showing_since(&app).unwrap();
@@ -259,7 +272,7 @@ mod tests {
     #[test]
     fn off_leaves_alerts_on_their_own() {
         let (_d, app) = app(0);
-        dispatch::add_alert(&app, "T1: which port?", Some(1), None, None, None).unwrap();
+        ask(&app, "which port?");
         assert!(members(&app).is_empty());
     }
 }
