@@ -1,5 +1,5 @@
-//! The statuses every list shows (Needs you, Working, Queued, In review, Pending merge, Done,
-//! Failed, and Planned for work nothing runs yet): one chip color each, the same everywhere. The detail a
+//! The statuses every list shows (Needs you, Working, Queued, Stopped, In review, Pending merge,
+//! Done, Failed, and Planned for work nothing runs yet): one chip color each, the same everywhere. The detail a
 //! task's old pill carried ("Question", "Checks failed", "Starting"…) goes on the row's line.
 // The Needs you, Goals, Tasks and goal pages draw their rows with it.
 #![allow(dead_code)]
@@ -16,6 +16,8 @@ pub enum St {
     Needs,
     Working,
     Queued,
+    /// Its terminal was closed by hand: nothing failed and nothing will run it until it's restarted.
+    Stopped,
     Review,
     /// Approved and green, held behind the PR it stacks on (a tail merge).
     Pending,
@@ -30,6 +32,7 @@ impl St {
             St::Needs => "Needs you",
             St::Working => "Working",
             St::Queued => "Queued",
+            St::Stopped => "Stopped",
             St::Review => "In review",
             St::Pending => "Pending merge",
             St::Done => "Done",
@@ -46,9 +49,10 @@ impl St {
             St::Working => 2,
             St::Review => 3,
             St::Pending => 4,
-            St::Queued => 5,
-            St::Planned => 6,
-            St::Done => 7,
+            St::Stopped => 5,
+            St::Queued => 6,
+            St::Planned => 7,
+            St::Done => 8,
         }
     }
 
@@ -57,7 +61,7 @@ impl St {
         match self {
             St::Needs => (t.warn_fg, t.warn_soft, t.warn),
             St::Working => (t.accent_fg, t.accent_soft, t.accent),
-            St::Queued => (t.text_2, t.seg, t.border_2),
+            St::Queued | St::Stopped => (t.text_2, t.seg, t.border_2),
             St::Review => (t.results, t.results_soft, t.results),
             St::Pending => (t.up_fg, gpui_kit::transparent_black(), t.up),
             St::Done => (t.up_fg, t.up_soft, t.up),
@@ -97,6 +101,7 @@ pub fn row(c: &Value) -> Row {
     let run = fmt::running_for(c).trim_start_matches("running ").to_string();
     let (st, line, loud, age) = match tile.status.as_str() {
         "Lost" => (St::Failed, format!("Terminal lost · {}", tile.line), true, short(fmt::ago(when))),
+        "Stopped" => (St::Stopped, format!("Stopped · {}", tile.line), false, short(fmt::ago(when))),
         "Looks finished" => (St::Needs, format!("Looks finished · {}", tile.line), true, short(fmt::ago(when))),
         "Couldn’t start" | "Couldn’t compact" => (St::Failed, format!("{} · {}", tile.status, tile.line), true, short(fmt::ago(when))),
         "Question" => (St::Needs, format!("Question: {}", opt_s(c, "question").unwrap_or("")), true, short(fmt::ago(when))),
@@ -252,5 +257,12 @@ mod tests {
         let no_base = card(json!({"status": "done", "pr": {"num": 59, "state": "OPEN", "stage": {"phase": "waits"}}}));
         assert_eq!(row(&no_base).line, "PR #59");
         assert!(St::Pending.open());
+    }
+
+    #[test]
+    fn a_closed_terminal_is_a_quiet_stopped_row_not_a_failure() {
+        let closed = row(&card(json!({"status": "needs", "lost": true, "closed_by_hand": true})));
+        assert_eq!((closed.st, closed.loud), (St::Stopped, false));
+        assert!(closed.line.starts_with("Stopped · "), "{}", closed.line);
     }
 }

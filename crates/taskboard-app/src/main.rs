@@ -7,6 +7,7 @@
 //! - `TASKBOARD_THEME=dark|light` — override the system appearance.
 //! - `TASKBOARD_PAGE=board|backlog|sessions|settings|G3|releases:webapp`, `TASKBOARD_OPEN=T2|B1` — initial page / panel.
 //! - `TASKBOARD_FAKE_RELEASES=1` — with the fake backend, sample releases and a pending cut too.
+//! - `TASKBOARD_FAKE_STOPPED=1` — with the fake backend, two tasks whose terminals were closed by hand.
 //! - `TASKBOARD_W` / `TASKBOARD_H` — window size.
 //! - `taskboard://task/T12` (also `goal/G3`, `issue/B7`, `session/<id>`) opens that page; the
 //!   daemon's notifications link there. `TASKBOARD_LINK=<url>` follows one at startup.

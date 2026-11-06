@@ -150,10 +150,12 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
     if b(g, "paused") {
         return ("Paused".into(), "warn");
     }
-    if tasks.iter().any(|t| b(t, "lost")) {
+    // A terminal you closed yourself asks for nothing: the goal only shows it stopped.
+    let closed = |t: &Value| b(t, "closed_by_hand") && crate::ui::home::looks_finished(t).is_none();
+    if tasks.iter().any(|t| b(t, "lost") && !closed(t)) {
         return ("Needs a restart".into(), "down");
     }
-    if tasks.iter().any(|t| s(t, "status") == "needs") {
+    if tasks.iter().any(|t| s(t, "status") == "needs" && !closed(t)) {
         return ("Waiting on you".into(), "warn");
     }
     // Stopped at a wave for the owner (a review stop or a failed task), even with a task still
@@ -163,6 +165,9 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
     }
     if tasks.iter().any(|t| s(t, "status") == "working") {
         return ("In progress".into(), "accent");
+    }
+    if tasks.iter().any(closed) {
+        return ("Stopped".into(), "queued");
     }
     let queued: Vec<&Value> = tasks.iter().filter(|t| s(t, "status") == "queued").collect();
     if queued.iter().any(|t| b(t, "blocked")) {
@@ -175,7 +180,7 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
 }
 
 /// The status bar's parts in the design's order (done, working, needs you, in review, failed,
-/// queued, planned), and the line beside it: ("2 of 7", " done · 2 working · 1 needs you").
+/// stopped, queued, planned), and the line beside it: ("2 of 7", " done · 2 working · 1 needs you").
 /// A `/goals` row, without its tasks, counts from its summary.
 pub fn progress(g: &Value) -> (Vec<(St, i64)>, String, String) {
     let mut n: HashMap<St, i64> = HashMap::new();
@@ -198,7 +203,7 @@ pub fn progress(g: &Value) -> (Vec<(St, i64)>, String, String) {
         n.extend(counts.into_iter().filter(|(_, x)| *x > 0));
         i(g, "total")
     };
-    let order = [St::Done, St::Pending, St::Working, St::Needs, St::Review, St::Failed, St::Queued, St::Planned];
+    let order = [St::Done, St::Pending, St::Working, St::Needs, St::Review, St::Failed, St::Stopped, St::Queued, St::Planned];
     let parts: Vec<(St, i64)> = order.iter().filter_map(|st| n.get(st).map(|x| (*st, *x))).collect();
     let lead = format!("{} of {total}", n.get(&St::Done).copied().unwrap_or(0));
     let mut tail = " done".to_string();
@@ -1902,5 +1907,23 @@ mod tests {
         assert!(posts.iter().any(|(p, _)| p == "goals/G1/run"), "{posts:?}");
         assert!(posts.iter().any(|(p, b)| p == "goals/G1" && b["paused"] == json!(true)), "{posts:?}");
         assert!(posts.iter().any(|(p, b)| p == "goals/G1" && b["paused"] == json!(false)), "{posts:?}");
+    }
+
+    #[test]
+    fn a_goal_with_only_closed_terminals_reads_stopped_not_lost() {
+        let closed = json!({"status": "needs", "needs_reason": "lost", "lost": true, "closed_by_hand": true});
+        let lost = json!({"status": "needs", "needs_reason": "lost", "lost": true});
+        let g = |tasks: Value| json!({"tasks": tasks});
+        assert_eq!(goal_state(&g(json!([closed, {"status": "done"}]))), ("Stopped".to_string(), "queued"));
+        assert_eq!(goal_state(&g(json!([closed, {"status": "working"}]))).0, "In progress", "work still running comes first");
+        assert_ne!(goal_state(&g(json!([closed, lost]))).0, "Stopped", "a real loss still shows");
+    }
+
+    #[test]
+    fn closed_terminals_count_as_stopped_not_queued() {
+        let closed = json!({"status": "needs", "needs_reason": "lost", "lost": true, "closed_by_hand": true});
+        let (parts, lead, tail) = progress(&json!({"tasks": [closed, closed, {"status": "done"}, {"status": "queued"}]}));
+        assert_eq!(parts, vec![(St::Done, 1), (St::Stopped, 2), (St::Queued, 1)]);
+        assert_eq!(format!("{lead}{tail}"), "1 of 4 done · 2 stopped · 1 queued");
     }
 }

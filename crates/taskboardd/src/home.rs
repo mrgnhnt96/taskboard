@@ -8,9 +8,10 @@
 //!
 //! Put off, an item leaves `needs` for `later` until its time comes. Each item says what it `holds`
 //! up, and `waiting` counts the agents waiting on the owner, put off or not. A goal stopped after a
-//! wave is a Needs you item too: its entry's `stage`, under a `stage:G12:1` id.
+//! wave is a Needs you item too: its entry's `stage`, under a `stage:G12:1` id. Nothing from a paused
+//! or set-aside goal is listed, put off or not.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
@@ -111,7 +112,7 @@ fn rank(e: &Value) -> u8 {
 /// The stage the goal is stopped at for the owner's review, unless it's put off: then the goal reads
 /// as not stopped.
 fn stage_entry(app: &App, g: &Row, tasks: &[Row], goal: &mut Value) -> Result<Value> {
-    if goal["stopped"].is_null() || !waves::uses_waves(tasks) {
+    if goal["stopped"].is_null() || g.b("paused") || !waves::uses_waves(tasks) {
         return Ok(Value::Null);
     }
     let Some(wave) = waves::stopped_wave(&waves::waves(app, g, tasks)?) else { return Ok(Value::Null) };
@@ -232,8 +233,7 @@ fn alert_item(app: &App, goals: &mut Goals, mut a: Value) -> Result<Value> {
 }
 
 /// A task that needs you with no alert up, under a `task:T<n>` id.
-fn task_item(app: &App, goals: &mut Goals, t: &Row) -> Result<Value> {
-    let card = board::task_card(app, t)?;
+fn task_item(app: &App, goals: &mut Goals, t: &Row, card: Value) -> Result<Value> {
     let text = card["question"].as_str().or(card["latest"].as_str()).unwrap_or("").to_string();
     let r = rf("task", t.id());
     Ok(json!({"id": format!("{TASK_ID}{r}"), "at": t.v("updated_at"), "text": text, "task": r, "goal": card["goal"]["ref"],
@@ -247,10 +247,10 @@ fn later_of(a: &Value) -> Value {
 }
 
 /// The stages put off that are still stopped.
-fn later_stages(app: &App, goals: &mut Goals, away: &Row) -> Result<Vec<Value>> {
+fn later_stages(app: &App, goals: &mut Goals, away: &Row, resting: &HashSet<i64>) -> Result<Vec<Value>> {
     let mut out = vec![];
     for (id, entry) in away.iter().filter(|(_, p)| dispatch::snoozed(p)) {
-        let Some((g, wave)) = stage_parts(id) else { continue };
+        let Some((g, wave)) = stage_parts(id).filter(|(g, _)| !resting.contains(g)) else { continue };
         let Some(v) = goals.get(app, g)? else { continue };
         if v.goal.b("archived") || waves::stopped_wave(&v.waves) != Some(wave) {
             continue;
@@ -261,15 +261,39 @@ fn later_stages(app: &App, goals: &mut Goals, away: &Row) -> Result<Vec<Value>> 
     Ok(out)
 }
 
+/// The goals resting from Needs you: paused or set aside. Their closed tasks stay on the goal's
+/// page, and Play there restarts them.
+fn resting_goals(app: &App) -> Result<HashSet<i64>> {
+    Ok(app.db.q("SELECT id FROM goals WHERE paused = 1 OR deprioritized = 1", p![])?.iter().map(|g| g.id()).collect())
+}
+
+fn alert_goal(app: &App, a: &Value) -> Option<i64> {
+    let id = |k: &str| a[k].as_str().and_then(number);
+    id("goal").or_else(|| board::get_task(app, id("task")?).ok()?.i("goal_id"))
+}
+
+/// An alert in a resting goal stays off the list. An urgent one doesn't: it keeps repeating, and
+/// the list is where it's answered.
+fn rests(app: &App, a: &Value, resting: &HashSet<i64>) -> bool {
+    a["urgent"] != true && alert_goal(app, a).is_some_and(|g| resting.contains(&g))
+}
+
+/// Whether alert `a` is off Needs you for its goal, so nothing should repeat it either.
+pub fn alert_rests(app: &App, a: &Value) -> bool {
+    resting_goals(app).is_ok_and(|r| rests(app, a, &r))
+}
+
 /// The Needs you list and what's put off. An alert snoozed takes its task with it until it ends.
+/// Nothing from a resting goal is on either.
 fn needs(app: &App) -> Result<(Vec<Value>, Vec<Value>)> {
     let mut goals = Goals::default();
     let (mut out, mut later) = (vec![], vec![]);
+    let resting = resting_goals(app)?;
     let (snoozed, up): (Vec<Value>, Vec<Value>) = dispatch::listing(app).into_iter().partition(dispatch::snoozed);
-    for a in up {
+    for a in up.into_iter().filter(|a| !rests(app, a, &resting)) {
         out.push(alert_item(app, &mut goals, a)?);
     }
-    for a in &snoozed {
+    for a in snoozed.iter().filter(|a| !rests(app, a, &resting)) {
         let mut item = alert_item(app, &mut goals, a.clone())?;
         item["later"] = later_of(a);
         later.push(item);
@@ -277,21 +301,37 @@ fn needs(app: &App) -> Result<(Vec<Value>, Vec<Value>)> {
     // A task that needs you with no alert up (dismissed, or never raised) still does, under a
     // `task:T<n>` id that Dismiss and Snooze put away (`put_away`).
     let away = put_away_list(app);
+    let mut stopped: Vec<StoppedGoal> = vec![];
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'needs' ORDER BY updated_at DESC", p![])? {
         let r = rf("task", t.id());
+        if t.i("goal_id").is_some_and(|g| resting.contains(&g)) {
+            continue;
+        }
         if out.iter().chain(&snoozed).any(|a| a["task"].as_str() == Some(r.as_str())) {
             continue;
         }
         let put = away.get(&r);
         if let Some(p) = put.filter(|p| dispatch::snoozed(p)) {
-            let mut item = task_item(app, &mut goals, &t)?;
+            let mut item = task_item(app, &mut goals, &t, board::task_card(app, &t)?)?;
             item["later"] = later_of(p);
             later.push(item);
         } else if !put.is_some_and(|p| p["asking"].as_str() == Some(asking(&t).as_str())) {
-            out.push(task_item(app, &mut goals, &t)?);
+            let card = board::task_card(app, &t)?;
+            match t.i("goal_id").filter(|_| quietly_stopped(&card)) {
+                Some(goal) => {
+                    let holds = task_holds(app, &mut goals, &t)?;
+                    let at = stopped.iter().position(|s| s.goal == goal).unwrap_or_else(|| {
+                        stopped.push(StoppedGoal { goal, cards: vec![], holds: vec![] });
+                        stopped.len() - 1
+                    });
+                    stopped[at].add(card, &holds);
+                }
+                None => out.push(task_item(app, &mut goals, &t, card)?),
+            }
         }
     }
-    later.extend(later_stages(app, &mut goals, &away)?);
+    out.extend(stopped.iter().map(stopped_row));
+    later.extend(later_stages(app, &mut goals, &away, &resting)?);
     Ok((out, later))
 }
 
@@ -300,8 +340,70 @@ fn number(r: &str) -> Option<i64> {
     r.trim_start_matches(['T', 'G']).parse().ok()
 }
 
+/// A terminal closed by hand on work that doesn't look finished: quiet, and restarted with its goal.
+fn quietly_stopped(card: &Value) -> bool {
+    card["closed_by_hand"] == true && card["looks_finished"].is_null()
+}
+
+/// One goal on the Stopped list while it's being built: its closed tasks' cards, newest close first,
+/// and what they hold up.
+struct StoppedGoal {
+    goal: i64,
+    cards: Vec<Value>,
+    holds: Vec<String>,
+}
+
+impl StoppedGoal {
+    fn add(&mut self, card: Value, holds: &Value) {
+        self.cards.push(card);
+        for r in refs(&holds["tasks"]) {
+            if !self.holds.contains(&r) {
+                self.holds.push(r);
+            }
+        }
+    }
+}
+
+fn refs(list: &Value) -> Vec<String> {
+    list.as_array().map(|a| a.iter().filter_map(|r| r.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// One goal's line under Stopped: `stopped` holds the tasks its Restart starts again
+/// (`stopped_tasks`). It has no `task`, so Dismiss and Snooze don't reach it.
+fn stopped_row(StoppedGoal { goal, cards, holds }: &StoppedGoal) -> Value {
+    let first = &cards[0];
+    let tasks: Vec<&Value> = cards.iter().map(|c| &c["ref"]).collect();
+    let text = cards.iter().map(|c| format!("{} {}", c["ref"].as_str().unwrap_or(""), c["title"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
+    let goal_ref = rf("goal", *goal);
+    let name = first["goal"]["name"].as_str().unwrap_or("");
+    json!({"id": format!("{STOPPED_ID}{goal_ref}"), "at": first["updated_at"], "title": format!("{name} · {} closed", tasks.len()), "text": text,
+           "goal": goal_ref, "goal_name": name, "project": first["project"], "card": null, "waiting": false,
+           "holds": {"tasks": holds, "goal": goal_ref}, "stopped": {"tasks": tasks}})
+}
+
+/// The tasks on goal `id`'s Stopped line, the ones its Restart starts again. A goal at rest has no
+/// line: Play on it restarts them.
+pub fn stopped_tasks(app: &App, id: i64) -> Result<Vec<Row>> {
+    if resting_goals(app)?.contains(&id) {
+        return Ok(vec![]);
+    }
+    let alerted: Vec<Value> = dispatch::listing(app);
+    let away = put_away_list(app);
+    let mut out = vec![];
+    for t in board::goal_tasks(app, id)? {
+        let r = rf("task", t.id());
+        let alone = !alerted.iter().any(|a| a["task"].as_str() == Some(r.as_str())) && !is_put_away(&away, &t);
+        if alone && board::closed_by_hand(app, &t)? && crate::lost_done::card(&t).is_null() {
+            out.push(t);
+        }
+    }
+    Ok(out)
+}
+
 /// The id prefix of a Needs you item that's a task with no alert up: `task:T12`.
 pub const TASK_ID: &str = "task:";
+/// The id prefix of a goal's line under Stopped: `stopped:G12`.
+const STOPPED_ID: &str = "stopped:";
 
 /// The id prefix of a goal's finished stage: `stage:G12:1`, stopped after wave 1.
 pub const STAGE_ID: &str = "stage:";
@@ -326,6 +428,12 @@ const PUT_AWAY: &str = "needs_put_away";
 
 fn put_away_list(app: &App) -> Row {
     jloads_obj(crate::reqcache::setting(app, PUT_AWAY).ok().flatten().as_deref())
+}
+
+/// Whether a task with no alert up was put away and still is: dismissed while asking the same, or
+/// in a snooze.
+fn is_put_away(away: &Row, t: &Row) -> bool {
+    away.get(&rf("task", t.id())).is_some_and(|p| p["asking"].as_str() == Some(asking(t).as_str()) || dispatch::snoozed(p))
 }
 
 /// What a task that needs you is asking: a new question or a new reason brings a dismissed one back.

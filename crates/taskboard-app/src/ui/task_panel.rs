@@ -1240,6 +1240,7 @@ impl Draw<'_> {
                 Some(BoxTone::Ask) => t.warn_fg,
                 Some(BoxTone::Lost) => t.down,
                 Some(BoxTone::Done) => t.up_fg,
+                Some(BoxTone::Quiet) => t.muted,
                 _ => t.accent_fg,
             }),
             St::H3 => div()
@@ -1264,7 +1265,7 @@ impl Draw<'_> {
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             // No color of its own: a step still to come is muted.
             St::TlHWarn => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn_fg),
-            St::BannerText => d.text_size(px(14.)).line_height(relative(1.5)).text_color(if boxed == Some(BoxTone::Lost) { t.text } else { t.warn_text }),
+            St::BannerText => d.text_size(px(14.)).line_height(relative(1.5)).text_color(if matches!(boxed, Some(BoxTone::Lost | BoxTone::Quiet)) { t.text } else { t.warn_text }),
             St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD),
             St::TlS => d.text_size(px(12.)).text_color(t.muted),
             St::TlText => d.text_size(px(13.)).line_height(relative(1.5)).text_color(t.text),
@@ -1422,6 +1423,7 @@ impl Draw<'_> {
             BoxTone::Lost => (t.down_soft, None, 10.),
             BoxTone::Done => (t.up_soft, None, 8.),
             BoxTone::Info => (accent_tint(t), Some(t.accent_line), 10.),
+            BoxTone::Quiet => (t.seg, None, 10.),
         };
         let kids = self.kids(m, n, Some(tone), cx);
         div()
@@ -1443,7 +1445,11 @@ impl Draw<'_> {
     #[inline(never)]
     fn c_banner(&mut self, m: &MainWindow, n: &Node, tone: BoxTone, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
-        let (bg, line) = if tone == BoxTone::Lost { (t.down_soft, t.down_line) } else { (t.warn_soft, t.warn_line) };
+        let (bg, line) = match tone {
+            BoxTone::Lost => (t.down_soft, t.down_line),
+            BoxTone::Quiet => (t.seg, t.border),
+            _ => (t.warn_soft, t.warn_line),
+        };
         let kids = self.kids(m, n, Some(tone), cx);
         div()
             .flex()

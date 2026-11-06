@@ -161,3 +161,27 @@ fn an_item_made_into_a_task_blocks_until_that_task_is_done() {
     board::update_task(&b.app, b.task, vec![("failed", json!(0))]).unwrap();
     assert_eq!(blocks(), "none");
 }
+
+#[test]
+fn a_miss_made_into_a_task_by_an_agent_report_clears_its_alert() {
+    let b = new_board();
+    let iid = b.issue(&b.found(json!({"misses_goal": true})).unwrap());
+    assert_eq!(b.alerts().len(), 1);
+    let body = json!({"event": "tb.new_task", "session": "s1", "title": "Fix sign-in", "goal": format!("G{}", b.goal), "issue": format!("B{iid}"), "planned": true});
+    reports::handle(&b.app, body, false).unwrap();
+    assert_eq!(b.app.db.q("SELECT state FROM issues WHERE id = ?", p![iid]).unwrap()[0].st("state"), "task");
+    assert!(b.alerts().is_empty(), "{:?}", b.alerts());
+}
+
+#[test]
+fn a_miss_alert_left_up_after_its_item_settled_goes_at_the_next_prune() {
+    let b = new_board();
+    let open = b.issue(&b.found(json!({"misses_goal": true, "title": "Still open"})).unwrap());
+    let settled = b.issue(&b.found(json!({"misses_goal": true, "title": "Settled"})).unwrap());
+    b.app.db.update("issues", &json!(settled), taskboardd::fields!["state" => "task", "task_id" => b.task]).unwrap();
+    assert_eq!(b.alerts().len(), 2, "the clear never ran");
+
+    dispatch::prune_alerts(&b.app).unwrap();
+
+    assert_eq!(dispatch::alerts(&b.app).iter().map(|a| a["key"].clone()).collect::<Vec<_>>(), [json!(board::miss_key(open))]);
+}

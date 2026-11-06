@@ -67,6 +67,8 @@ pub enum Sev {
     Crit,
     Warn,
     Ok,
+    /// Nothing is wrong and nothing waits on you yet: a terminal you closed yourself.
+    Quiet,
 }
 
 /// What a Needs you item's button does.
@@ -74,6 +76,8 @@ pub enum Sev {
 pub enum Act {
     /// A lost terminal: `POST /tasks/:id/resume {mode: fresh}`.
     Restart(String),
+    /// The goal's terminals you closed, this many of them: `POST /goals/:id/restart`.
+    RestartGoal(String, usize),
     /// A lost task whose work shipped: `POST /tasks/:id/resume {mode: finish}`, a new terminal that
     /// checks it and hands it in with `tb submit`.
     MarkDone(String),
@@ -98,7 +102,9 @@ pub enum Act {
 impl Act {
     pub fn label(&self) -> &'static str {
         match self {
-            Act::Restart(_) => "Restart",
+            Act::Restart(_) | Act::RestartGoal(_, 1) => "Restart",
+            Act::RestartGoal(_, 2) => "Restart both",
+            Act::RestartGoal(..) => "Restart all",
             Act::MarkDone(_) => "Mark done",
             Act::Start(_) => "Try again",
             Act::Focus(_) => "Open terminal",
@@ -225,6 +231,9 @@ pub fn looks_finished(card: &Value) -> Option<String> {
 }
 
 pub fn ask_vm(a: &Value) -> Ask {
+    if a["stopped"].is_object() {
+        return stopped_vm(a);
+    }
     let card = &a["card"];
     // The card's ref says H<n> for a human task, where the alert's says T<n>.
     let r = opt_s(card, "ref").or(opt_s(a, "task")).map(str::to_string);
@@ -249,6 +258,8 @@ pub fn ask_vm(a: &Value) -> Ask {
         (Sev::Crit, "Urgent", r.clone().map(Act::OpenTask))
     } else if has_card && b(card, "lost") && looks_finished(card).is_some() {
         (Sev::Warn, "Looks finished", r.clone().map(Act::OpenTask))
+    } else if has_card && b(card, "closed_by_hand") {
+        (Sev::Quiet, "Stopped", r.clone().map(Act::Restart))
     } else if has_card && b(card, "lost") {
         (Sev::Crit, "Terminal lost", r.clone().map(Act::Restart))
     } else if has_card && reason == "start_failed" {
@@ -344,10 +355,45 @@ pub fn ask_vm(a: &Value) -> Ask {
     }
 }
 
+/// A goal's terminals you closed yourself, one quiet line for the lot: its Restart starts them again.
+fn stopped_vm(a: &Value) -> Ask {
+    let goal = s(a, "goal").to_string();
+    let name = s(a, "goal_name").to_string();
+    let closed = arr(&a["stopped"], "tasks").len();
+    let at = s(a, "at").to_string();
+    Ask {
+        id: s(a, "id").to_string(),
+        sev: Sev::Quiet,
+        kind: "Stopped".into(),
+        text: s(a, "text").to_string(),
+        task: None,
+        title: s(a, "title").to_string(),
+        line: String::new(),
+        goal: Some((goal.clone(), name)),
+        project: s(a, "project").to_string(),
+        wave: None,
+        time: short_ago(&at),
+        at,
+        act: Some(Act::RestartGoal(goal, closed)),
+        also: None,
+        answer: false,
+        dismiss: false,
+        snooze: false,
+        actions: Vec::new(),
+        help: vec![],
+        asks: Vec::new(),
+        picker: false,
+        human: false,
+    }
+}
+
 /// A goal held after a wave for your review (its `stopped` line, "Wave 1 is done. Review it,
 /// then continue"): Continue lets the next wave start.
 fn stop_vm(e: &Value) -> Option<Ask> {
     let g = &e["goal"];
+    if b(g, "paused") {
+        return None;
+    }
     let line = opt_s(g, "stopped").filter(|l| l.contains(" is done"))?;
     let n: i64 = line.strip_prefix("Wave ")?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
     let (gr, name) = (fmt::ref_of(g, "G"), s(g, "name").to_string());
@@ -488,6 +534,7 @@ pub fn tile_vm(c: &Value) -> Tile {
     };
     let (status, tone, line): (&str, &str, String) = match s(c, "status") {
         "needs" if b(c, "lost") && looks_finished(c).is_some() => ("Looks finished", "needs", looks_finished(c).unwrap_or_default()),
+        "needs" if b(c, "closed_by_hand") => ("Stopped", "queued", format!("Terminal closed {}", fmt::hhmm(s(c, "when")))),
         "needs" if b(c, "lost") => ("Lost", "down", format!("Terminal closed {}", fmt::hhmm(s(c, "when")))),
         "needs" if s(c, "needs_reason") == "start_failed" => ("Couldn’t start", "down", "Midna didn’t start it".into()),
         "needs" if s(c, "needs_reason") == "compact_failed" => ("Couldn’t compact", "down", "Its conversation didn’t compact".into()),
@@ -556,6 +603,10 @@ fn sent(m: &mut MainWindow, text: String, cx: &mut Context<MainWindow>) {
 pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
     match act.clone() {
         Act::Restart(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "fresh"}), cx, move |m, _, cx| sent(m, format!("Restarting {r}"), cx)),
+        Act::RestartGoal(g, n) => m.post(format!("goals/{g}/restart"), json!({}), cx, move |m, _, cx| {
+            let tasks = if n == 1 { "1 task".to_string() } else { format!("{n} tasks") };
+            sent(m, format!("Restarting {tasks} in {g}"), cx)
+        }),
         Act::MarkDone(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "finish"}), cx, move |m, _, cx| sent(m, format!("A new terminal checks {r} and marks it done"), cx)),
         Act::Start(r) => m.post(format!("tasks/{r}/start"), json!({"mode": "new"}), cx, move |m, _, cx| sent(m, format!("Starting {r}"), cx)),
         Act::Focus(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Showing {r}’s terminal in Midna"), cx)),
@@ -800,6 +851,7 @@ fn kind_color(t: &Theme, a: &Ask) -> Hsla {
         (_, _, Sev::Crit) => St::Failed,
         (_, _, Sev::Warn) => St::Needs,
         (_, _, Sev::Ok) => St::Done,
+        (_, _, Sev::Quiet) => return t.muted,
     };
     st.colors(t).0
 }
@@ -811,6 +863,7 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
     let open = is_open(a);
     let id = |part: &str| SharedString::from(format!("home-{part}-{key}"));
     let question = a.answer;
+    let quiet = a.sev == Sev::Quiet;
 
     // The ref and title, and under them the PR's state or what the alert said.
     let (r, link_act) = match (&a.task, &a.goal) {
@@ -825,8 +878,8 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
             .min_w_0()
             .truncate()
             .text_size(px(if question { 15. } else { 14. }))
-            .font_weight(FontWeight::BOLD)
-            .text_color(t.text)
+            .font_weight(if quiet { FontWeight::NORMAL } else { FontWeight::BOLD })
+            .text_color(if quiet { t.muted } else { t.text })
             .cursor_pointer()
             .hover(|s| s.underline())
             .child(a.title.clone())
@@ -915,7 +968,7 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         .rounded(px(12.))
         .border_1()
         .border_color(if question { t.warn_line } else { t.border })
-        .bg(t.card)
+        .when(!quiet, |d| d.bg(t.card))
         .overflow_hidden()
         .child(head);
     if !open {
@@ -1502,5 +1555,48 @@ mod tests {
         crate::parity::settle(cx);
         draw(cx);
         assert!(!Rc::ptr_eq(&first.asks, &built().asks), "a new answer builds the asks again");
+    }
+
+    fn closed(by_hand: bool) -> Value {
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        card(json!({"status": "needs", "needs_reason": "lost", "lost": true, "closed_by_hand": by_hand, "when": now}))
+    }
+
+    #[test]
+    fn a_goals_closed_terminals_are_one_quiet_row_with_a_restart() {
+        let row = |tasks: Value| json!({"id": "stopped:G5", "at": "2026-10-20T15:00:00Z", "title": "Picto · 2 closed", "text": "T20 One\nT21 Two",
+                                        "goal": "G5", "goal_name": "Picto", "project": "web", "card": null, "stopped": {"tasks": tasks}});
+        let two = ask_vm(&row(json!(["T20", "T21"])));
+        assert_eq!((two.sev, two.kind.as_str(), two.title.as_str()), (Sev::Quiet, "Stopped", "Picto · 2 closed"));
+        assert_eq!(two.act, Some(Act::RestartGoal("G5".into(), 2)));
+        assert!(!two.dismiss && !two.snooze && two.task.is_none());
+        assert_eq!(two.act.as_ref().map(Act::label), Some("Restart both"));
+        assert_eq!(ask_vm(&row(json!(["T20"]))).act.as_ref().map(Act::label), Some("Restart"));
+        assert_eq!(ask_vm(&row(json!(["T20", "T21", "T22"]))).act.as_ref().map(Act::label), Some("Restart all"));
+    }
+
+    #[test]
+    fn a_hand_closed_task_outside_a_goal_is_quiet_and_a_lost_one_stays_red() {
+        let a = ask_vm(&json!({"id": null, "at": "", "task": "T7", "card": closed(true)}));
+        assert_eq!((a.sev, a.kind.as_str()), (Sev::Quiet, "Stopped"));
+        assert_eq!(a.act, Some(Act::Restart("T7".into())));
+        let lost = ask_vm(&json!({"id": null, "at": "", "task": "T7", "card": closed(false)}));
+        assert_ne!(lost.sev, Sev::Quiet);
+        assert_eq!(lost.kind, "Terminal lost");
+    }
+
+    #[test]
+    fn a_closed_task_reads_stopped_on_its_tile() {
+        assert_eq!(tile_vm(&closed(true)).status, "Stopped");
+        assert_eq!(tile_vm(&closed(false)).status, "Lost");
+        let t = tile_vm(&closed(true));
+        assert!(t.line.ends_with("AM") || t.line.ends_with("PM"), "12-hour time: {}", t.line);
+    }
+
+    #[test]
+    fn a_paused_goal_shows_no_wave_stop() {
+        let e = |paused: bool| json!({"goal": {"ref": "G3", "name": "Polish", "stopped": "Wave 1 is done. Review it, then continue", "paused": paused}});
+        assert!(stop_vm(&e(false)).is_some());
+        assert!(stop_vm(&e(true)).is_none());
     }
 }
