@@ -129,3 +129,35 @@ fn backlog_add_from_a_task_terminal_says_what_it_blocks() {
     let v = b.add(json!({"title": "Crash on reload", "project": "webapp"})).unwrap();
     assert_eq!(board::get_issue(&b.app, b.issue(&v)).unwrap().st("blocks"), "none");
 }
+
+#[test]
+fn a_settled_item_stops_saying_it_blocks_and_reopening_brings_it_back() {
+    let b = new_board();
+    let iid = b.issue(&b.found(json!({"title": "Sign-in fails on iOS", "blocks": "goal", "blocks_why": "Done-when: signs in on every platform"})).unwrap());
+    let card = || board::issue_dict(&b.app, &board::get_issue(&b.app, iid).unwrap()).unwrap();
+    let post = |path: String| api::dispatch(&b.app, "POST", &path, &Query::new(), &json!({})).unwrap();
+    assert_eq!((card()["blocks"].as_str(), card()["blocks_why"].as_str()), (Some("goal"), Some("Done-when: signs in on every platform")));
+
+    post(format!("backlog/B{iid}/drop"));
+    assert_eq!((card()["blocks"].as_str(), card()["blocks_why"].as_str()), (Some("none"), None), "closed as won't do");
+    assert_eq!(board::open_misses(&b.app, b.goal).unwrap(), 0);
+
+    post(format!("backlog/B{iid}/reopen"));
+    assert_eq!((card()["blocks"].as_str(), card()["blocks_why"].as_str()), (Some("goal"), Some("Done-when: signs in on every platform")));
+    assert_eq!(board::open_misses(&b.app, b.goal).unwrap(), 1);
+}
+
+#[test]
+fn an_item_made_into_a_task_blocks_until_that_task_is_done() {
+    let b = new_board();
+    let iid = b.issue(&b.found(json!({"title": "Sign-in fails on iOS", "blocks": "goal", "blocks_why": "Done-when: signs in on every platform"})).unwrap());
+    b.app.db.update("issues", &json!(iid), taskboardd::fields!["state" => "task", "task_id" => b.task]).unwrap();
+    let blocks = || board::issue_card(&b.app, &board::get_issue(&b.app, iid).unwrap()).unwrap()["blocks"].clone();
+    assert_eq!(blocks(), "goal");
+
+    board::update_task(&b.app, b.task, vec![("status", json!("done")), ("failed", json!(1))]).unwrap();
+    assert_eq!(blocks(), "goal", "a failed task settles nothing");
+
+    board::update_task(&b.app, b.task, vec![("failed", json!(0))]).unwrap();
+    assert_eq!(blocks(), "none");
+}
