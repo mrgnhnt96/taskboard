@@ -1543,7 +1543,8 @@ fn blocked(extra: Value, blockers: Value) -> Value {
 }
 
 fn blocker(r: &str, status: &str) -> Value {
-    json!({"ref": r, "title": format!("{r} title"), "status": status, "project": "webapp"})
+    let why = format!("Blocked by {r} (G1) until its PR merges");
+    json!({"ref": r, "title": format!("{r} title"), "status": status, "project": "webapp", "why": why})
 }
 
 #[::core::prelude::v1::test]
@@ -1559,10 +1560,24 @@ fn a_blocker_still_at_work_shows_no_reason() {
 }
 
 #[::core::prelude::v1::test]
-fn the_reason_goes_under_the_blocker_it_is_about() {
+fn every_done_blocker_says_its_own_reason() {
     let text = panel_text(blocked(json!({}), json!([blocker("T5", "done"), blocker("T6", "done")])), json!({}));
     assert!(text.contains("T5 title Blocked by T5 (G1) until its PR merges"), "{text}");
-    assert_eq!(text.matches("until its PR merges").count(), 1, "{text}");
+    assert!(text.contains("T6 title Blocked by T6 (G1) until its PR merges"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_done_blocker_behind_a_live_one_says_its_reason() {
+    let text = panel_text(blocked(json!({"waiting": "Blocked by T5 (G1)"}), json!([blocker("T5", "working"), blocker("T6", "done")])), json!({}));
+    assert!(text.contains("T6 title Blocked by T6 (G1) until its PR merges"), "{text}");
+    assert!(!text.contains("T5 title Blocked by T5"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn only_the_reason_said_above_is_left_out_on_a_task_started_by_hand() {
+    let text = panel_text(blocked(json!({"goal": null}), json!([blocker("T5", "done"), blocker("T6", "done")])), json!({}));
+    assert_eq!(text.matches("Blocked by T5 (G1) until its PR merges").count(), 1, "{text}");
+    assert!(text.contains("T6 title Blocked by T6 (G1) until its PR merges"), "{text}");
 }
 
 #[::core::prelude::v1::test]
@@ -1582,5 +1597,6 @@ fn a_human_task_says_the_reason_once_in_its_box() {
 fn a_scheduled_tasks_start_time_is_not_taken_for_the_reason() {
     let at = (chrono::Local::now() + chrono::Duration::days(2)).format("%Y-%m-%dT%H:%M:%S").to_string();
     let text = panel_text(blocked(json!({"start_at": at, "waiting": "Starts Sunday at 9:00 AM"}), json!([blocker("T5", "done")])), json!({}));
-    assert!(!text.contains("Starts Sunday at 9:00 AM"), "{text}");
+    assert!(!text.contains("T5 title Starts Sunday at 9:00 AM"), "{text}");
+    assert!(text.contains("T5 title Blocked by T5 (G1) until its PR merges"), "{text}");
 }
