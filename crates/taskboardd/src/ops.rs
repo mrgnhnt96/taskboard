@@ -294,7 +294,7 @@ fn refuse_backlog_match(app: &App, body: &Value, title: &str, project: &str, goa
         409,
         format!(
             "“{title}” looks like work already in the backlog: {list}. Take the item instead, so it becomes the task: {take}. \
-             To look for other open work like it: {tb} search \"<words>\". If this is different work, add --not-backlog."
+             To look for other open work like it: {tb} search \"<words>\". Only when the item names different work that just sounds alike, run this same command again with --not-backlog."
         ),
     )
 }

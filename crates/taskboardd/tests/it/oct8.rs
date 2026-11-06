@@ -238,9 +238,53 @@ fn a_turn_that_changed_code_with_no_task_is_asked_to_track_it() {
     assert!(block.contains("header.rs") && !block.contains("scratch"), "{block}");
     assert!(block.contains("--here"), "{block}");
     assert!(block.contains("If the work is a design") && block.contains("goal new") && block.contains("--kind design --goal G<n> --here"), "{block}");
+    assert!(block.contains("no-task.md"), "{block}");
 
     let again = b.report("hook.stop", "s1", json!({"last_message": "Done.", "stop_hook_active": true}));
     assert!(again.get("block").is_none(), "it asks once per turn");
+}
+
+#[test]
+fn a_terminal_with_no_task_is_pointed_at_the_no_task_rules() {
+    let b = new_board();
+    b.add_session("s1");
+    let out = b.report("hook.session_start", "s1", json!({"source": "startup"}));
+    let context = out["context"].as_str().expect("the terminal is told it has no task");
+    assert!(context.contains("no task on this terminal") && context.contains("no-task.md"), "{context}");
+}
+
+#[test]
+fn each_role_s_file_is_named_in_the_skill_and_holds_its_rules() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/task-board/skills/task-board");
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+    let core = read("SKILL.md");
+    assert!(core.contains("\n## When you're on a task\n"), "reports.rs names this heading");
+    for (file, heading) in [
+        ("no-task.md", "# When there's no task"),
+        ("worktrees.md", "## Moving to a slot"),
+        ("steps.md", "## Review steps"),
+        ("lessons.md", "# Lessons"),
+        ("board.md", "## Putting things on the board"),
+        ("board.md", "## Context limits"),
+        ("board.md", "## Work hours"),
+        ("triage.md", "# When you're a code review's triage agent"),
+        ("jira.md", "## When you're the Jira desk"),
+    ] {
+        assert!(core.contains(&format!("`{file}`")), "SKILL.md points to {file}");
+        assert!(read(file).lines().any(|l| l == heading), "{file} holds {heading}");
+        assert!(!core.lines().any(|l| l == heading), "{heading} moved out of SKILL.md");
+    }
+}
+
+#[test]
+fn the_skill_core_stays_within_its_size_limit() {
+    const LIMIT: usize = 8 * 1024;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/task-board/skills/task-board/SKILL.md");
+    let size = std::fs::read(&path).unwrap_or_else(|e| panic!("SKILL.md: {e}")).len();
+    assert!(
+        size <= LIMIT,
+        "SKILL.md is {size} bytes, over the {LIMIT} byte limit: every agent loads it, so move text to a topic file beside it and leave a one-line pointer saying when to read that file"
+    );
 }
 
 #[test]

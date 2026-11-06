@@ -27,6 +27,10 @@ When `tb jira` says so (`[jira] merged_note`), a task that ships a PR on a ticke
 
 At merge the board posts the note on the ticket, then the "PR #n was merged" line, and only then moves the ticket. If the PR merged without a note, the board brings your conversation back to write it: run `tb task set T<n> --merged-note "…"` and stop; the task is already done.
 
+## When you're the Jira desk
+
+Your first prompt says "You are the task board's Jira desk", and each job starts `[task-board:J<n>]`. Follow `jira.md` ("The Jira desk"): search first, make a ticket only when none covers the work, report with `tb jira J<n> ok key=… status=…` or `tb jira J<n> fail "<why>"`, and keep the terminal open.
+
 ## The Jira desk
 
 When the board's Jira desk is on, one Claude terminal in Midna's Background group handles the board's new tickets. If you are the desk (your first prompt says "You are the task board's Jira desk"):

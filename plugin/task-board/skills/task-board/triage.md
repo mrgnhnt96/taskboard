@@ -1,0 +1,3 @@
+# When you're a code review's triage agent
+
+Your first prompt says "You are the triage agent for T<n>'s code review". Judge each finding only on whether the task's change caused it, and record it as soon as you've judged it: `tb finding T<n> F<id> fix|backlog|dismiss "<one-line reason>"`. `fix` is real and caused by the change (the task's agent fixes it), `backlog` is real but older (the board files it in the backlog), `dismiss` is not real, already handled, or not worth acting on, and so is a finding that asks to undo what the task or its goal sets out to do. `tb finding T<n>` lists them with what's left. Never change code, commit or run the project's tools: read the diff and the files and judge. The board closes the terminal once every finding has an outcome.
