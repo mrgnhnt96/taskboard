@@ -93,6 +93,7 @@ pub mod relevance;
 pub mod reproject;
 pub mod reqcache;
 pub mod reports;
+pub mod research;
 pub mod retro;
 pub mod reviewers;
 pub mod runner;

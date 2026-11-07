@@ -666,7 +666,8 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
             )
             .items_center()
             .gap(px(8.))
-            .when(kit::is_design(c), |d| d.child(kit::design_pill(t))),
+            .when(kit::is_design(c), |d| d.child(kit::design_pill(t)))
+            .when(kit::is_research(c), |d| d.child(kit::research_pill(t))),
             1.,
         ))
         .child(fr(div().text_size(px(12.)).truncate().text_color(if row.loud { loud_fg } else { t.muted }).child(row.line), 1.2))

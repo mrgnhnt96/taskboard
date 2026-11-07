@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::board;
 use crate::util::*;
-use crate::{fields, human};
+use crate::{fields, human, research};
 
 pub const KIND: &str = "design";
 
@@ -16,7 +16,7 @@ pub fn is(t: &Row) -> bool {
     t.s("kind") == Some(KIND)
 }
 
-/// `kind` from a body: `human`, `design`, or none for an agent's task.
+/// `kind` from a body: `human`, `design`, `research`, or none for an agent's task.
 pub fn clean_kind(v: Option<&Value>) -> Result<Option<&'static str>> {
     match v {
         None | Some(Value::Null) => Ok(None),
@@ -25,25 +25,32 @@ pub fn clean_kind(v: Option<&Value>) -> Result<Option<&'static str>> {
             "" | "agent" | "none" => Ok(None),
             k if k == human::KIND => Ok(Some(human::KIND)),
             k if k == KIND => Ok(Some(KIND)),
-            _ => err(400, "A task's kind is design, human, or none for an agent's task."),
+            k if k == research::KIND => Ok(Some(research::KIND)),
+            _ => err(400, "A task's kind is design, research, human, or none for an agent's task."),
         },
-        _ => err(400, "A task's kind is design, human, or none for an agent's task."),
+        _ => err(400, "A task's kind is design, research, human, or none for an agent's task."),
     }
 }
 
-/// Sets a task's kind from `tb task set --kind design|none`, logging the change. False when it didn't change.
+/// Sets a task's kind from `tb task set --kind design|research|none`, logging the change. False when it didn't change.
 pub fn set(app: &App, t: &Row, v: &Value, who: &str) -> Result<bool> {
     let want = clean_kind(Some(v))?;
     if human::is(t) || want == Some(human::KIND) {
-        return err(400, "A human task is made with tb task new --human and stays one; --kind is design or none.");
+        return err(400, "A human task is made with tb task new --human and stays one; --kind is design, research or none.");
     }
     if want == t.s("kind") {
         return Ok(false);
     }
-    // A design ends without a PR; back to none, it ends in one as its project does.
-    let ships_pr = if want == Some(KIND) { Some(0) } else { None };
+    // A design or research task ends without a PR; back to none, it ends in one as its project does.
+    let ships_pr = want.map(|_| 0);
     board::update_task(app, t.id(), fields!["kind" => want, "ships_pr" => ships_pr])?;
-    board::log_event(app, t.id(), who, "note", if want == Some(KIND) { "Made a design task: it ends with its design attached, not a PR" } else { "No longer a design task" })?;
+    let text = match (want, t.s("kind")) {
+        (Some(KIND), _) => "Made a design task: it ends with its design attached, not a PR",
+        (Some(_), _) => "Made a research task: it ends with its findings attached, not a PR",
+        (None, Some(research::KIND)) => "No longer a research task",
+        (None, _) => "No longer a design task",
+    };
+    board::log_event(app, t.id(), who, "note", text)?;
     Ok(true)
 }
 
@@ -84,7 +91,7 @@ pub fn open_in_goal(app: &App, goal_id: i64, except: i64) -> Result<Vec<i64>> {
 
 /// What a build task joining a goal waits for: what it waited for already, plus the goal's open design tasks.
 pub fn waits_with_goal(app: &App, t: &Row, goal_id: i64) -> Result<Option<String>> {
-    if is(t) || human::is(t) {
+    if is(t) || human::is(t) || research::is(t) {
         return Ok(t.s("waits_for").map(|s| s.to_string()));
     }
     let mut ids = crate::waitsfor::ids(t);

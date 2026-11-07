@@ -30,6 +30,7 @@ pub enum Tone {
     Closed,
     Jira,
     Design,
+    Results,
 }
 
 /// Button looks (`.btn` classes).
@@ -688,6 +689,9 @@ fn head_chips(c: &Ctx, t: &Value) -> Option<Node> {
     }
     if s(t, "kind") == "design" {
         chips.push(Node::Pill { s: "Design".into(), tone: Tone::Design, tip: Some("Ends with its design attached, not a PR".into()) });
+    }
+    if s(t, "kind") == "research" {
+        chips.push(Node::Pill { s: "Research".into(), tone: Tone::Results, tip: Some("Ends with its findings attached, not a PR".into()) });
     }
     let project = or_empty(&t["project"]);
     if !project.is_empty() {

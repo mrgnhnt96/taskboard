@@ -131,7 +131,8 @@ fn pr_block(app: &App, t: &Row, tb: &str) -> Result<String> {
 fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
     if !ships {
         let why = if t.i("ships_pr") == Some(0) { "This task ends without a PR" } else { "This project has no git remote, so the task ends without a PR" };
-        return Ok(format!("{why}, so it has no Jira ticket. Don't make or link one; a branch it needs is named <type>/<short-slug>."));
+        let s = format!("{why}, so it has no Jira ticket. Don't make or link one; a branch it needs is named <type>/<short-slug>.");
+        return Ok(if crate::research::is(t) { format!("{s}\n{}", crate::research::HOW_IT_ENDS) } else { s });
     }
     let mut s = "If this task changes code, it ends in one pull request: finished code that builds, breaks nothing \
                  that works today, and can be merged on its own. Keep it small and easy to review; split anything \

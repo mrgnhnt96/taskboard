@@ -96,6 +96,16 @@ pub fn design_pill(t: &Theme) -> Div {
     pill(t.goal, t.goal_soft, "Design")
 }
 
+/// Whether a task card is a research task (`kind: "research"`).
+pub fn is_research(c: &serde_json::Value) -> bool {
+    c["kind"] == "research"
+}
+
+/// The "Research" pill on a research task's row, card and panel.
+pub fn research_pill(t: &Theme) -> Div {
+    pill(t.results, t.results_soft, "Research")
+}
+
 /// The pill tones the board uses, by name.
 pub fn tone(t: &Theme, name: &str) -> (Hsla, Hsla) {
     match name {

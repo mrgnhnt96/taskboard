@@ -2095,7 +2095,7 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if !r.spooled {
         crate::declined::refuse_stranding(r.app, &board::get_task(r.app, t.id())?)?;
     }
-    if let Some(text) = crate::design::done_text(r.app, &t)? {
+    if let Some(text) = crate::design::done_text(r.app, &t)?.or(crate::research::done_text(r.app, &t)?) {
         r.log(t.id(), "status", &text, None)?;
     }
     let t = board::get_task(r.app, t.id())?;
@@ -2183,6 +2183,9 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     // A design task's design is what it delivers: it needs one attached, and no evidence of building to it.
     if crate::design::is(t) {
         return crate::design::refuse_bare_submit(app, t);
+    }
+    if crate::research::is(t) {
+        return crate::research::refuse_bare_submit(app, t);
     }
     let atts = board::attachments(app, Some(t.id()), None)?;
     let design = atts.iter().find(|a| a["kind"] == "design");
@@ -3118,6 +3121,9 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     if crate::design::is(&t) {
         text.push_str(" It's a design task: it ends without a PR, once its design is attached: tb attach <canvas or mockup link> --kind design --title \"<what it shows>\", then tb submit.");
     }
+    if crate::research::is(&t) {
+        text.push_str(&format!(" {}", crate::research::HOW_IT_ENDS));
+    }
     if let Some(mine) = &current {
         text.push_str(&format!(" {} waits here to resume once {tr} is done.", rf("task", mine.id())));
     }
@@ -3508,7 +3514,8 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 // Decide the start word as it's typed: what it grants `tb start`, and tell the agent.
                 let prompt = r.body["prompt"].as_str().unwrap_or("");
                 let owners = !crate::startword::MARKER_RE.is_match(prompt) && owners_ask(prompt);
-                if let Some(c) = crate::startword::note_prompt(app, &sid, owners)? {
+                let research = if owners { crate::research::prompt_note(prompt, r.task()?.as_ref()) } else { None };
+                for c in crate::startword::note_prompt(app, &sid, owners)?.into_iter().chain(research) {
                     out["context"] = match out["context"].as_str() {
                         Some(had) if !had.is_empty() => json!(format!("{had}\n\n{c}")),
                         _ => json!(c),

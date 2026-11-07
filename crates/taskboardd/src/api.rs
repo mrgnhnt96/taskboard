@@ -1041,13 +1041,14 @@ fn reopen_session(app: &App, id: &str) -> Result<Value> {
 /// picks out those tasks. With a `limit` it comes a page at a time, still to do first and newest
 /// first within that, with the `total` that match and the `next` page's cursor (null at the end).
 fn list_tasks(app: &App, query: &Query) -> Result<Value> {
-    let (status, project, goal) = (q(query, "status", "all"), q(query, "project", "all"), q(query, "goal", "all"));
+    let (status, project, goal, kind) = (q(query, "status", "all"), q(query, "project", "all"), q(query, "goal", "all"), q(query, "kind", "all"));
     let ids: Option<HashSet<i64>> = query.get("ids").map(|s| s.split(',').filter_map(|x| parse_ref_str(x.trim(), "task").ok().flatten()).collect());
     let page = Paging::of(query);
     let mut rows = vec![];
     for t in app.db.q("SELECT * FROM tasks ORDER BY id DESC", p![])? {
         if ids.as_ref().is_none_or(|ids| ids.contains(&t.id()))
             && (status == "all" || t.s("status") == Some(status) || (status == "open" && t.s("status") != Some("done")))
+            && (kind == "all" || t.s("kind") == Some(kind))
             && project_match(t.s("project"), project)
             && task_goal_match(app, &t, goal)?
         {
