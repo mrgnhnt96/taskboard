@@ -1,0 +1,165 @@
+## Verdict
+
+macOS desktop, pointer and keyboard. I reviewed Flow 5 at 1360x860 in dark and light, and at 900x560 in dark. Evidence was nine captures plus code (backlog.rs, the plan excerpt, and app.rs, api.rs, triage.rs, kit.rs and theme.rs). This is a native GPUI app, so nothing was driven with real input: behaviour findings come from reading the code, and layout findings from the captures. First impression: the screen reads as organised. The selection bar, the tinted rows and the purple Plan button lead the eye correctly, and the disabled full-width button is the only real noise. The problems are in what the actions do, not how the page looks. Counts: 0 at severity 4 would be wrong here: 1 Catastrophe, 6 Major, 13 Minor, 0 Cosmetic. Top problem: Drop (X) and Defer (D) fire on one keypress across the whole selection, including rows that are off-screen or hidden by a kind filter. There is no confirm and no Undo, the toast lasts 3 seconds, and no list anywhere shows deferred or dropped issues, even though the Undo plumbing already exists in the app.
+
+## Findings
+
+### R1 · 4 Catastrophe · Defer and Drop fire on one key with no undo, and nothing lists what they removed
+- **Element:** Backlog › selection bar › Defer (D), Drop (X); after-defer.png, after-drop.png; all sizes
+- **Evidence:** Confirmed
+- **Problem:** One stray D or X closes every checked issue at once (up to the server's 200), with no confirm. That includes issues off-screen and issues hidden by a kind chip, because selected() ignores the kind filter. The keys also fire while the Move menu is open, since on_key only guards the project menu. The toast has no Undo and is gone in 3 seconds. triage.rs lists only state = 'open', and the app has no deferred or dropped list, so recovery means remembering each title, finding it in ⌘K, and reopening issues one at a time.
+- **Principle:** Destructive actions can be undone or ask to confirm [NNG-H3] [NNG-H5]; Undo lasts long enough to reach [WCAG 2.2.1]. Severity guide: destructive action with no confirm or undo next to a frequent one.
+- **Fix:** Show Undo on both toasts, as Ideas already does with m.toast_undo. toast_undo posts {} today, so give it a body and send POST backlog/bulk {ids, action:"reopen"}, which the server already supports. Keep the toast until the next bulk action rather than 6 s, restore the checks on Undo, and bind ⌘Z while it shows. Ignore D, X and 1-3 while a plan- menu is open. Undo is a one-click signal, so this keeps the read-only rule.
+
+### R2 · 3 Major · Issue titles disappear from the list at the smallest window
+- **Element:** Backlog › issue list › row, 900x560, small-picked.png
+- **Evidence:** Confirmed
+- **Problem:** The fixed 380pt draft leaves the list about 197pt. Rows show only check, kind, ref, NEW and a clipped 'weba'. The title has flex_1 and collapses to nothing, while the impact bars and priority are clipped off. People can't scan what they're triaging, and with no title to click they can't open the issue either. Group captions cut to 'Things that ar…' as well. From the layout, titles start to suffer below roughly 1150 wide.
+- **Principle:** Every feature reachable at every width; the work stays the biggest thing [tablet:HIG-LAYOUT] [NNG-H8] [SCR-6]. Rated 3 rather than 4 because widening the window is an obvious workaround.
+- **Fix:** Below about 1150 window width, stop reserving 380pt. Stack the draft under the list as a collapsed strip ('2 issues · not planned', expanding upward), or narrow it to 280pt. Give the title a min width of 200pt, and drop the area, then the NEW pill, before the title ever shrinks.
+
+### R3 · 3 Major · Rows can't be checked, and Plan and Create can't be pressed, from the keyboard
+- **Element:** Backlog › rows, group checks, kind chips, lenses, Plan waves, Create goal, Move menu; all sizes
+- **Evidence:** Confirmed
+- **Problem:** The bar advertises keys, but they only act on a selection, and picking one needs a mouse. The app source has no tab_index or tab stop at all, and every control here is a div with on_click. So Tab reaches nothing, there's no row cursor, and no visible focus. M opens the Move menu, but no key can choose a goal. Plan and Create have no key. The page takes focus only on a mouse-down inside it, so after arriving from the sidebar the keys do nothing until you click in the page. For a keyboard-driven owner, triage breaks into constant hand travel.
+- **Principle:** Keyboard [WCAG 2.1.1]; Focus visible [WCAG 2.4.7]; arrows move within groups [MS-KBD]; Flexibility and efficiency [NNG-H7]. Rated 3 because the owner has a pointer; a keyboard-only user would be blocked outright.
+- **Fix:** Focus the page on entering Backlog. Add a row cursor: ↑/↓ move it with a 2px focus ring, Space checks, Shift+↑/↓ extends, Enter opens the issue. In the Move menu, use ↑/↓ plus Return, and number the first nine goals as the priority menu does. Add ⌘Return for the draft's current action (Plan, Re-plan, Create). Give the remaining controls tab_index. Don't reuse X for select, since it means Drop here.
+
+### R4 · 3 Major · Issue refs, counts and unchecked boxes fail contrast
+- **Element:** Backlog › row ref, group count, draft count, wave count (t.faint); unchecked check_box (t.border_2); vol-picked.png, backlog-light.png
+- **Evidence:** Confirmed
+- **Problem:** Refs like B9 are what plans refer to ('after B12'), and the draft's status line carries the plan state, yet both use t.faint. Computed from theme.rs: light #8a95a3 gives 3.04:1 on card, 2.82:1 on bg and 2.77:1 on the selected row. Dark #6f7a88 gives 3.80:1 on card, 4.30:1 on bg and 3.81:1 on the selected row. Unchecked boxes, the page's main control, have a border of 1.63:1 in dark and 1.48:1 in light, so they nearly vanish in vol-picked.png.
+- **Principle:** Contrast (minimum) [WCAG 1.4.3]; Non-text contrast [WCAG 1.4.11].
+- **Fix:** Use t.muted for refs and counts: #5f6b7a gives 4.94:1 on the light selected row and 5.42:1 on white, and dark muted clears 4.5:1 on all three backgrounds. Set the unchecked border to t.faint, which gives 3.80:1 dark and 3.04:1 light.
+
+### R5 · 3 Major · Mixed-project selection blocks the goal but doesn't show which issues are the problem
+- **Element:** Backlog › New backlog goal › project warning, rows, draft items; All projects; vol-picked.png
+- **Evidence:** Confirmed
+- **Problem:** 'A goal holds one project's work' appears, but no row or draft item shows its project: the row's grey word is the area (daemon, cli), which looks like one. The owner can't tell which of 8 issues to remove without opening each. Group Select all makes this easy to hit, because Similar groups span projects under the default All projects. Plan waves stays the enabled primary with no project check, so Claude's time can be spent on a plan that can't be created. Create then falls through to a plain disabled 'Create goal', and with several waves the warning has scrolled away at the top.
+- **Principle:** Errors say how to fix them [NNG-H9]; recognition rather than recall [NNG-H6]; error prevention [NNG-H5]; walkthrough question 2.
+- **Fix:** When the filter is All projects, show the project on each row, and group the draft by project with a head reading 'webapp · 3' above its issues (L1). Replace the warning with 'Across 3 projects: webapp 5, cli 2, docs 1', with a one-click 'Keep webapp' per project that unchecks the rest. Disable Plan while mixed, and label Create 'Pick one project'.
+
+### R6 · 3 Major · Move to goal hides that it can start work or change an issue's project, and can't be undone
+- **Element:** Backlog › selection bar › Move to goal menu, menu-move.png; mixed selection as in vol-picked.png
+- **Evidence:** Confirmed
+- **Problem:** Menu rows show only ref and name. Picking a running goal queues tasks immediately, and the owner learns that only from the toast afterwards. With a mixed selection the menu lists every goal, not just one project's, and move_issue then silently rewrites the issue's project and may clear its area. Create refuses that same mix with 'A goal holds one project's work', so the two paths disagree, and an agent can end up working in the wrong repo. A task is made per issue, with no Undo.
+- **Principle:** Visibility of system status [NNG-H1]; Consistency [NNG-H4]; Error prevention [NNG-H5].
+- **Fix:** Show each goal's state on the right of its menu row (Running, Planned, Done), and project when several are in play. While mixed, disable Move and show the R5 summary in its place, matching Create. Leave out finished goals. live_goals only removes archived ones.
+
+### R7 · 3 Major · Esc to close a menu wipes the whole selection
+- **Element:** Backlog › Move and Set priority menus, Esc; menu-move.png, menu-prio.png
+- **Evidence:** Confirmed
+- **Problem:** backlog::escape runs before the app's own menu close and clears the checks too ('closing its menu too'). Changing your mind about a menu is the commonest use of Esc, and it unchecks everything, which may be 30 issues picked across a long scroll, with nothing to bring them back. The Esc hint on Clear is visible, but nothing suggests the same key does both while a menu is open.
+- **Principle:** Esc cancels transient UI [MS-KBD]; User control and freedom [NNG-H3]; Unsaved input survives in-app actions.
+- **Fix:** In escape(), if a plan- menu is open, close it and return, leaving picked untouched. The project filter already behaves this way. A second Esc clears. When the selection is more than about 5, show 'Cleared 12' with Undo, restoring the picks.
+
+### R8 · 2 Minor · The list moves under the pointer, and group counts cover only loaded pages
+- **Element:** Backlog › issue list; 3 s sync, older pages, 'Claude is grouping…' line, Similar lens
+- **Evidence:** Confirmed
+- **Problem:** Sync keeps the scroll by line index, not by item. A new issue, or the Grouping line appearing at the top, shifts every row while the pointer stays still, so the next click lands on the wrong row. In Similar, groups sort by size and can swap places as pages load, and issues move out of their kind group once Claude groups them. The Grouping line also scrolls away with the list. Group counts and Select all see only held rows, so '12' and a full check can both be understated while the header says 121.
+- **Principle:** Visibility of system status [NNG-H1]; Error prevention [NNG-H5]; large, stable targets [NNG-FITTS]. Judged from code, because the grouping state couldn't be captured.
+- **Fix:** Anchor the scroll to the top visible issue ref and its offset, not the line index. Hold new rows behind a '3 new issues' line while the list is scrolled, and insert them when it's clicked. Keep the group order fixed until the lens or filter changes. Have the server return per-group totals, so the head reads the true count and Select all can cover the whole group. Move 'Claude is grouping' into the header line so it stays visible.
+
+### R9 · 2 Minor · Picking is one 18pt box at a time
+- **Element:** Backlog › row › check_box; group head; vol-picked.png at 123 issues
+- **Evidence:** Confirmed
+- **Problem:** The action repeated most is an 18x18pt box, and the row around it doesn't respond. It passes the 24px rule only by spacing. There's no Shift-click range, and the handler ignores modifiers, so picking 10 adjacent issues takes 10 precise clicks. There's also no search within a 121-issue list.
+- **Principle:** Frequent targets are large [NNG-FITTS]; bulk actions and shortcuts [NNG-H7].
+- **Fix:** Make the full-height left gutter of the row (about 38pt wide) toggle the check, with the title still opening the issue. Add Shift-click to check the range from the last check.
+
+### R10 · 2 Minor · The selection bar pushes the list down on first check and stacks up at small sizes
+- **Element:** Backlog › toolbar › selection bar; below about 1140 wide; small-picked.png
+- **Evidence:** Confirmed
+- **Problem:** With nothing checked the bar has no size. Chips (about 275pt) and bar (about 552pt) stop fitting on one line below about 1140 window width, so the first check adds a row and moves the list about 44pt under the pointer, and the next click hits a different issue. At 900x560 the title, lens, chips and bar take about 38% of the height before any issue appears.
+- **Principle:** Narrowing keeps the order [SCR-6]; the work dominates [SCR-1]; short heights (pass 7).
+- **Fix:** Reserve the bar's row at widths where it wraps, or overlay the bar on the chip row while a selection exists, since chips are rarely used then. At short heights, move the lens to the title row and collapse the kind chips into one 'Kinds' menu.
+
+### R11 · 2 Minor · Issues aren't indented under their group label
+- **Element:** Backlog › group head and rows; vol-picked.png
+- **Evidence:** Confirmed
+- **Problem:** Group label and row cards share a left edge, so a long list reads as one stream, and in vol-picked.png the boundary between 'Test gaps in the daemon' and 'Needs you' is only a small gap. The owner has already corrected this pattern.
+- **Principle:** LESSONS L1: put a group's label above its members and indent the members under it [SEC-2].
+- **Fix:** Indent the rows by 28pt so each row's checkbox sits under the group's label text. The group check keeps its place to the left as the parent.
+
+### R12 · 2 Minor · Standing helper text that shows no data
+- **Element:** Backlog › lens help line; 'Claude splits these into waves…'; 'Check issues on the left…'; kind-group captions such as 'Things that are broken'; backlog-picked.png, small-picked.png
+- **Evidence:** Confirmed
+- **Problem:** These sentences never change with the data, and they repeat on every visit for a user who sees this page all day. The Claude paragraph takes three lines of the draft, and the lens line wraps to three lines at 900 wide, pushing issues down. Fallback captions only restate the group name. Claude's real group summaries are data and can stay.
+- **Principle:** Owner's rule: no filler labels or helper text that shows no data. Aesthetic and minimalist design [NNG-H8].
+- **Fix:** Move Lens::help into a tooltip on each lens segment, and delete the line. Delete the 'Claude splits…' paragraph, and show the same idea as the Plan button's tooltip. Blank group_about for groups that fall back to kind. For the empty draft, see R19.
+
+### R13 · 2 Minor · The draft says 'not planned' three times and shows a dead primary button
+- **Element:** Backlog › New backlog goal, before planning; backlog-picked.png
+- **Evidence:** Confirmed
+- **Problem:** The header says '2 issues · not planned', the box says 'Not planned yet · 2 issues', and the disabled full-width button says 'Plan before creating'. The bar also says '2 selected'. In dark, the disabled button is as large as the real next step, directly under it, and looks like a second primary. Checks also carry two meanings: the same list is the draft of a new goal and the target for Defer and Drop, so Drop acts on what is labelled a goal.
+- **Principle:** One fact, one place [SEC-7]; one emphasis [SEC-5]; everything earns its place [SCR-5].
+- **Fix:** Keep the header status only. Remove the box title row and the dashed box, leaving the item list and Plan. Show Create only once a plan exists, which also removes 'Plan before creating' and 'Re-plan before creating'.
+
+### R14 · 2 Minor · Draft titles are cut off and can't be read or opened
+- **Element:** Backlog › New backlog goal › item row; vol-picked.png, planning.png
+- **Evidence:** Confirmed
+- **Problem:** Titles truncate hard ('tb finding … backlog is refused as the…', 'Parity pages cite tests that no longer…'). item_el has no tooltip and no click, and an 'after B12' label narrows them further. Reviewing a plan is the moment the owner needs to read them, and the only route is finding the same issue in the list on the left.
+- **Principle:** Recognition rather than recall [NNG-H6]; walkthrough question 3.
+- **Fix:** Open the issue from the draft title with m.open_issue, as list rows do, using the same right panel, so it keeps one home per object. Add a tooltip with the full title. Let titles wrap to two lines inside waves.
+
+### R15 · 2 Minor · Long selections hit hidden limits, and the draft and Move menu aren't bounded
+- **Element:** Backlog › New backlog goal (plan-draft), Move to goal menu, Plan waves
+- **Evidence:** Confirmed
+- **Problem:** Select all can check any number, but the 61st issue is only refused after pressing Plan, in a toast ('Plan at most 60 issues at once'), and bulk actions stop at 200 the same way. The draft draws every item unvirtualized, and Plan and Create sit at the bottom of the scroll, so they leave view around 15 items at 860 tall and with even fewer at 560. menu_box has no max height or scroll, so a long goal list runs past the window, and those goals can't be reached.
+- **Principle:** Owner's rule: long lists virtualized and paged. Constraints stated before the error [NNG-H5]; Frequent in view [SEC-8].
+- **Fix:** Pin the draft's action to the bottom of the card, outside the scroller. Virtualize the draft list. Show the limit as state: at 61 or more, the header reads '64 of 60 max' and Plan is disabled with that label. Give the Move menu max-height 320pt with its own scroll.
+
+### R16 · 2 Minor · While Claude plans, the draft loses its issues and can't be cancelled
+- **Element:** Backlog › New backlog goal, planning state (from code)
+- **Evidence:** Confirmed
+- **Problem:** draft() empties unplanned while planning, so the picked issues vanish from the draft, leaving only 'Claude is planning the waves…'. The header still says 'not planned' and a disabled 'Create goal' sits below. Issues checked meanwhile don't appear at all, so they seem ignored. There's no cancel and no elapsed time. After a failed plan, the note ('Claude couldn't plan this…') isn't tied to the selection, so it stays on the empty draft and on unrelated picks. Polling also ignores PLAN_EVERY: each answer clears synced while planning, so the next render fetches again at once.
+- **Principle:** Visibility of system status [NNG-H1]; User control and freedom [NNG-H3]. Judged from code.
+- **Fix:** Keep the issue list visible, dimmed, under the planning line, and show the header as '2 issues · planning'. List newly checked issues under 'Added since the last plan' right away. Add a Cancel link that drops the plan id, since the server already ignores stale seq answers. Show the note only when count > 0 and the picks overlap plan.ids. Remove the synced reset so polling stays at 1.5 s.
+
+### R17 · 2 Minor · Rule-made plans read as Claude's, and the goal name can mislead
+- **Element:** Backlog › Plan waves with Claude, lens help, wave reason, goal name; planning.png; AI off in vol captures
+- **Evidence:** Confirmed
+- **Problem:** With AI off, the button still says 'Plan waves with Claude' and the page says Claude groups issues, though the waves follow priority. The plan's by: rules and the triage ai flag never reach the screen, so the owner may trust a dependency analysis that never happened. Wave 1 in planning.png says 'Independent of each other, so they run side by side' over one issue, because wave_why is fixed text per priority. The goal 'Follow-ups' contains a bug: suggest_name takes the first group on a tie. The name is fixed at Create, and the waves show no sign of it being a guess.
+- **Principle:** Match between system and real world [NNG-H2]; Visibility of system status [NNG-H1].
+- **Fix:** When ai is false, label the button 'Plan waves by priority', and show the header status as '2 waves · by priority' when by = rules. Only use the 'side by side' reason when a wave has two or more items, and leave why empty for one. On a tie, join the names ('Bugs and Follow-ups'). This keeps the read-only rule. An editable name field before Create would break it unless the owner allows it.
+
+### R18 · 2 Minor · After a plan, one more issue forces a full re-plan, and the real action is the quieter one
+- **Element:** Backlog › New backlog goal › 'Added since the last plan' (from code; no capture)
+- **Evidence:** Confirmed
+- **Problem:** Checking one extra issue blocks Create until the whole plan is rebuilt, which replaces waves the owner has already reviewed and costs another Claude run. The working Re-plan button is outlined, while the disabled 'Re-plan before creating' below it is the full filled primary, so emphasis points at the button that does nothing. Setting a priority after planning doesn't flag anything, so a priority-ordered plan can keep the wrong order with a corrected pill beside it.
+- **Principle:** Flexibility and efficiency [NNG-H7]; one emphasis [SEC-5]; Visibility of system status [NNG-H1].
+- **Fix:** Offer two actions in the box: 'Add to last wave', primary, and 'Re-plan with Claude', secondary. Adding appends the items to the last wave client-side, which is what checked_plan already does with missing issues. This is a one-click signal, so it keeps the read-only rule. Hide the disabled Create while stale. Count a priority change on a planned issue as stale, and say 'Priority changed since the plan'.
+
+### R19 · 2 Minor · The triaged state ends in a dead end
+- **Element:** Backlog › empty state; after-defer.png, after-drop.png
+- **Evidence:** Confirmed
+- **Problem:** With nothing left, the page still shows 'Check issues on the left to add them to this goal', with no issues on the left, plus kind chips, lenses and the 'Claude groups…' line that all act on nothing. Two different actions land on an identical green 'Backlog triaged', with no link to what was just removed. The copy 'Every open issue is in a goal, deferred or dropped' is also contradictory, since dropped issues aren't open.
+- **Principle:** Empty states offer a way forward [mobile:NNG-EMPTY]; no dead ends [NNG-H3]; Match with the real world [NNG-H2].
+- **Fix:** When untriaged is 0, hide the draft card, chips, lenses and help line. Show 'Backlog triaged' with counts as links: '3 deferred · 5 won't do'. Each opens a list on this page whose rows open the same issue panel, with a one-click Reopen. That keeps one home per object and also gives R1 somewhere to recover from at any later time.
+
+### R20 · 2 Minor · Drop and Defer use their own words
+- **Element:** Backlog › bar Drop, toast 'Dropped N issues'; page title vs sidebar 'Backlog'
+- **Evidence:** Confirmed
+- **Problem:** The same action is 'Won't do' and 'Closed as won't do' on Home, the issue panel, search and Ideas, but 'Drop' here, so a dropped issue reappears in search under a word the owner never pressed. Defer and Drop sit side by side with nothing saying how they differ; the only definition is the log's 'Deferred: not for now'. The page is 'Backlog' in the sidebar and 'Plan from the backlog' in its title.
+- **Principle:** Consistency and standards [NNG-H4].
+- **Fix:** Label the bar button 'Won't do' (key X) and the toast 'Closed 2 as won't do'. Put the difference in tooltips: Defer 'Not for now, reopen later' and Won't do 'Close it'. Title the page 'Backlog'.
+
+## What works
+
+- The screen leads the eye correctly: tinted rows, the bar and the single purple Plan button mark selection and the next step. The page reads as organised at 1360x860 in both themes.
+- Bar actions show their keys inline, and P's menu repeats 1-3, so shortcuts can be learned from the bar itself. Typing in the project filter is guarded, with a test.
+- The server keeps state safe: Create and bulk actions run in one transaction and say 'so nothing changed' when an issue is no longer open. Removing an issue keeps the plan valid, and only additions ask for a re-plan.
+- The list itself is virtualized and paged, and waves are stacked cards rather than tabs, as LESSONS L2 asks. After Create the app goes straight to the goal, where Start lives.
+
+## Not checked
+
+- Real input: this is a native GPUI app with no page for the driver, so no control was used. Behaviour findings come from reading code and layout findings from captures; the wrap widths (about 1140 and 1150) are estimated from capture measurements and the fixed sizes in code.
+- Contrast was computed by hand from theme.rs hex values, because the shell refused a script for it. Kind and priority pill colours, the goal colour on tinted rows, and focus indicators (none exist to measure) weren't computed.
+- VoiceOver and accessibility tree: not tested. Div-based controls expose no role or state in this code, but GPUI's accessibility output couldn't be observed.
+- Goal page and Start: no capture, and only the button labels in goal.rs were seen. The issue panel's Reopen for deferred issues, and whether keys survive closing the panel, weren't confirmed.
+- Planning, grouping and stale-plan states were judged from code only: no captures. Claude's real plan and failure messages weren't seen.
+- Windows above 1360 wide, 200% text, maximum window, and light theme beyond backlog-light.png. Hover states, kind chips switched off, Area, Impact and Priority lenses, and the project filter menu weren't captured.
+- Error toasts for failed bulk actions, the offline state and very long goal names: not seen.
+- Motion and toast timing in practice.
+- Whether renaming a goal exists on the goal page, which affects R17.
+- One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE].
