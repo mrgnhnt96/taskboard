@@ -84,6 +84,7 @@ mod releases;
 mod reply_questions;
 mod reproject;
 mod request_reads;
+mod research_tasks;
 mod retro;
 mod run_time;
 mod running_goal_joins;

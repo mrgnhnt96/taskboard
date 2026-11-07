@@ -32,7 +32,7 @@ const MARKETPLACE: &str = "taskboard";
 const WAIT_HINT: &str = "task-board/bin/wait-hint";
 
 /// Tools whose PreToolUse the board sees.
-const TOOLS: &str = "Bash|Agent|Task|EnterWorktree|mcp__.*|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob";
+const TOOLS: &str = "Bash|Agent|Task|Workflow|EnterWorktree|mcp__.*|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob";
 
 /// What a hook entry runs: `tb hook <arg>`, or the plugin's wait-hint script.
 #[derive(Clone, Copy)]

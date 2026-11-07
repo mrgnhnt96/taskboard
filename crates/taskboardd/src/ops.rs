@@ -123,7 +123,14 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let ships = projects::ships_prs(app, &project)?;
     if body_has(body, "ships_pr") && projects::clean_ships_pr(&body["ships_pr"])? == Some(1) {
         if kind.is_some() {
-            return err(400, if human { "A human task ships no PR." } else { "A design task ships no PR: it ends with its design attached." });
+            return err(
+                400,
+                match kind {
+                    Some(crate::human::KIND) => "A human task ships no PR.",
+                    Some(crate::research::KIND) => "A research task ships no PR: it ends with its findings attached.",
+                    _ => "A design task ships no PR: it ends with its design attached.",
+                },
+            );
         }
         projects::refuse_without_prs(app, &project)?;
     }

@@ -487,6 +487,9 @@ enum Cmd {
         goal: Option<String>,
         #[arg(long, value_parser = ["planned", "queued", "working", "needs", "review", "done"])]
         status: Option<String>,
+        /// Only tasks of this kind
+        #[arg(long, value_parser = ["design", "human", "research"])]
+        kind: Option<String>,
         /// Print the board's answer as JSON
         #[arg(long)]
         json: bool,
@@ -1666,8 +1669,9 @@ enum TaskCmd {
         #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "same_pr", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
         human: bool,
         /// design: its work is a design (concepts, a canvas, mockups). It ends without a PR once its design
-        /// is attached (tb attach <link> --kind design), and in a goal the other tasks wait for it
-        #[arg(long, value_parser = ["design", "none"], conflicts_with = "pr")]
+        /// is attached (tb attach <link> --kind design), and in a goal the other tasks wait for it.
+        /// research: its work is answering a question. It ends without a PR once its findings are attached
+        #[arg(long, value_parser = ["design", "research", "none"], conflicts_with = "pr")]
         kind: Option<String>,
         /// Only when the open backlog items whose titles look like it name different work: the board refuses it otherwise and says which item to take
         #[arg(long = "not-backlog", conflicts_with = "issue")]
@@ -1739,8 +1743,8 @@ enum TaskCmd {
         /// Whether it ends in a PR: yes, no, or auto (its project's default)
         #[arg(long, value_parser = ["yes", "no", "auto"])]
         pr: Option<String>,
-        /// design (it ends with its design attached, not a PR) or none
-        #[arg(long, value_parser = ["design", "none"])]
+        /// design or research (it ends with its design or findings attached, not a PR) or none
+        #[arg(long, value_parser = ["design", "research", "none"])]
         kind: Option<String>,
         /// Planned (waits for its goal's run) or queued (picked up on its own); only a task in one of these two
         #[arg(long, value_parser = ["planned", "queued"])]
@@ -6867,10 +6871,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
         },
-        Cmd::Tasks { project, goal, status, json } => {
+        Cmd::Tasks { project, goal, status, kind, json } => {
             let mut q = list_query(c, project, goal)?;
-            if let Some(s) = status {
-                q.push(format!("status={}", qv(&s)));
+            for (k, v) in [("status", status), ("kind", kind)] {
+                if let Some(v) = v {
+                    q.push(format!("{k}={}", qv(&v)));
+                }
             }
             let v = c.call("GET", &format!("/tasks?{}", q.join("&")), None)?;
             if json {
@@ -8612,7 +8618,7 @@ mod tests {
 
     #[test]
     fn tb_tasks_and_backlog_list_parse_and_print_one_line_each() {
-        let Cmd::Tasks { project, goal, status, json } = Cli::try_parse_from(["tb", "tasks", "--goal", "G41", "--status", "queued", "--json"]).unwrap().cmd else { panic!("not tb tasks") };
+        let Cmd::Tasks { project, goal, status, json, .. } = Cli::try_parse_from(["tb", "tasks", "--goal", "G41", "--status", "queued", "--json"]).unwrap().cmd else { panic!("not tb tasks") };
         assert_eq!((project, goal.as_deref(), status.as_deref(), json), (None, Some("G41"), Some("queued"), true));
         assert!(Cli::try_parse_from(["tb", "tasks", "--status", "busy"]).is_err(), "an unknown status");
         let Cmd::Backlog { action: BacklogCmd::List { project, kind, state, sort, .. } } = Cli::try_parse_from(["tb", "backlog", "list", "--project", "all", "--kind", "gap", "--state", "all", "--sort", "old"]).unwrap().cmd else {

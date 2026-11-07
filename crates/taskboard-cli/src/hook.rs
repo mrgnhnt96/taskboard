@@ -986,6 +986,82 @@ fn stray_worktree_refused(payload: &Value, session: &str, cfg: &Config, cwd: &st
     true
 }
 
+/// Subagent types that go and find things out; reviewers and the like work on the change at hand.
+const RESEARCH_AGENTS: &[&str] = &["", "general-purpose", "Explore", "claude"];
+/// How many subagents in `FAN_OUT_WINDOW` seconds are a batch.
+const FAN_OUT: usize = 3;
+const FAN_OUT_WINDOW: f64 = 120.0;
+/// Calls this soon after the refusal are the same batch; later ones, up to `TOLD_FOR`, are the agent
+/// going ahead having read it.
+const TOLD_GAP: f64 = 10.0;
+const TOLD_FOR: f64 = 600.0;
+const FAN_OUT_LOG_CAP: u64 = 4096;
+
+/// What a call that starts subagents is, for the fan-out check: None when it can't be research.
+fn fan_out_call(tool: &str, input: &Value) -> Option<(&'static str, bool)> {
+    if tool == "Workflow" {
+        return Some(("this workflow", true));
+    }
+    let kind = input["subagent_type"].as_str().unwrap_or("");
+    if !SUBAGENT_TOOLS.contains(&tool) || !RESEARCH_AGENTS.contains(&kind) {
+        return None;
+    }
+    let worded = taskboardd::research::SOUNDS_LIKE.is_match(input["description"].as_str().unwrap_or(""));
+    Some(if worded { ("this subagent", true) } else { ("this batch of subagents", false) })
+}
+
+#[derive(Debug, PartialEq)]
+enum Told {
+    Refuse,
+    SameBatch,
+    GoAhead,
+}
+
+fn told(at: Option<f64>, now: f64) -> Told {
+    match at.map(|t| now - t) {
+        Some(gap) if gap < TOLD_GAP => Told::SameBatch,
+        Some(gap) if gap < TOLD_FOR => Told::GoAhead,
+        _ => Told::Refuse,
+    }
+}
+
+/// Notes this call in `file` and counts the calls in the window, itself included. Appending keeps a
+/// parallel batch's hooks from losing each other's lines.
+fn calls_in_window(file: &Path, now: f64) -> usize {
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    append_capped(file, &format!("{now}\n"), FAN_OUT_LOG_CAP);
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    text.lines().filter_map(|l| l.parse::<f64>().ok()).filter(|t| now - t < FAN_OUT_WINDOW).count()
+}
+
+/// `PreToolUse`: stops a batch of subagents or a workflow outside a research task once, and tells the
+/// agent to put the research on the board. Running it again goes through, so work that isn't research
+/// is only slowed by one call. No board: carry on.
+fn fan_out_refused(payload: &Value, session: &str, cfg: &Config) -> bool {
+    let Some((what, always)) = fan_out_call(payload["tool_name"].as_str().unwrap_or(""), &payload["tool_input"]) else { return false };
+    if session.is_empty() {
+        return false;
+    }
+    let file = cfg.data.join("fan-out").join(session.replace('/', "_"));
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    let count = calls_in_window(&file, now);
+    if !always && count < FAN_OUT {
+        return false;
+    }
+    let told_file = file.with_extension("told");
+    let state = told(std::fs::read_to_string(&told_file).ok().and_then(|t| t.trim().parse().ok()), now);
+    if state == Told::GoAhead || judged(cfg, session, "", |v| (v["kind"] != taskboardd::research::KIND).then_some(())).is_none() {
+        return false;
+    }
+    if state == Told::Refuse {
+        let _ = std::fs::write(&told_file, now.to_string());
+    }
+    deny(&taskboardd::research::fan_out_refusal(&tb_path(), what));
+    true
+}
+
 /// `git commit` or `git push` and the rest of its command, up to the next `;`, `&` or `|`.
 static COMMIT_PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(commit|push)\b([^;&|]*)").unwrap());
 static SWITCH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:switch|checkout)\b").unwrap());
@@ -1130,7 +1206,7 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
     if default_branch_refused(payload, &cfg, here) {
         return true;
     }
-    if elsewhere_refused(payload, session, &cfg, here) || stray_worktree_refused(payload, session, &cfg, here) || shared_branch_refused(payload, session, &cfg, here) || shared_checkout_refused(payload, session, &cfg, here) {
+    if elsewhere_refused(payload, session, &cfg, here) || stray_worktree_refused(payload, session, &cfg, here) || shared_branch_refused(payload, session, &cfg, here) || shared_checkout_refused(payload, session, &cfg, here) || fan_out_refused(payload, session, &cfg) {
         return true;
     }
     let opening = opens_pr(tool, &payload["tool_input"]);
@@ -2423,6 +2499,39 @@ mod tests {
         assert_eq!(bg["tool_use_id"], call("Agent", json!({"prompt": "x", "run_in_background": true}), None).unwrap()["tool_use_id"], "the same call, the same id");
         assert!(call("Read", json!({"file_path": "/a"}), Some("toolu_2")).is_none());
         assert_eq!(bg["tool_use_id"].as_str(), Some(taskboardd::transcript::call_key("Agent", &json!({"prompt": "x", "run_in_background": true})).as_str()), "the board can find it in the transcript");
+    }
+
+    #[test]
+    fn only_subagents_that_find_things_out_count_towards_a_batch() {
+        assert_eq!(fan_out_call("Agent", &json!({"subagent_type": "Explore", "description": "Find the auth code"})), Some(("this batch of subagents", false)));
+        assert_eq!(fan_out_call("Task", &json!({"description": "Find the auth code"})), Some(("this batch of subagents", false)));
+        assert_eq!(fan_out_call("Agent", &json!({"subagent_type": "qa-reviewer"})), None);
+        assert_eq!(fan_out_call("Bash", &json!({"command": "ls"})), None);
+    }
+
+    #[test]
+    fn a_workflow_or_a_subagent_named_research_is_stopped_on_its_own() {
+        assert_eq!(fan_out_call("Workflow", &json!({})), Some(("this workflow", true)));
+        assert_eq!(fan_out_call("Agent", &json!({"subagent_type": "general-purpose", "description": "Research queue libraries"})), Some(("this subagent", true)));
+    }
+
+    #[test]
+    fn a_batch_is_refused_together_and_a_later_retry_goes_through() {
+        assert_eq!(told(None, 100.0), Told::Refuse);
+        assert_eq!(told(Some(100.0), 103.0), Told::SameBatch);
+        assert_eq!(told(Some(100.0), 130.0), Told::GoAhead);
+        assert_eq!(told(Some(100.0), 800.0), Told::Refuse);
+    }
+
+    #[test]
+    fn calls_are_counted_inside_the_window_only() {
+        let dir = std::env::temp_dir().join(format!("tb-fan-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("fan-out").join("s1");
+        assert_eq!(calls_in_window(&file, 1000.0), 1);
+        assert_eq!(calls_in_window(&file, 1001.0), 2);
+        assert_eq!(calls_in_window(&file, 1200.0), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
