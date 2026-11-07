@@ -1,0 +1,88 @@
+{
+ "rechecked": {
+  "R8": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked in the code. The board looks for a tag, a release, a merged pull request or commits naming the task since the terminal closed, so this is strong evidence, not proof. The sample's Opened a PR line is sample data. The terminal that finishes the task is told to check first and not redo the work, which is why that action should lead."
+  },
+  "R26": {
+   "severity": 2,
+   "evidence": "Confirmed",
+   "note": "Lowered from Major to Minor. The box is 6% narrower and about 10% shorter than coded. The note's area is set to scroll in the code, so the cut text can probably be reached, though scrolling wasn't tried."
+  },
+  "R9": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked on the current app with a new capture. Stopped now has a quiet grey banner, and the Now row under it still says Waiting on you in orange, so dropping that line matters more. The Needs you page already says when the terminal closed, so the panel can use the same words."
+  },
+  "R4": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Reading the app's key bindings and focus code settled this: none of these controls takes focus."
+  },
+  "R5": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked in the code."
+  },
+  "R67": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Raised from Minor to Major and from Likely to Confirmed: no dialog takes focus, and no key confirms."
+  },
+  "R1": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked in the code."
+  },
+  "R2": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked in the code, including the tab drawing the reviewer didn't have."
+  },
+  "R65": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Corrected: its fix of adding an Overview tab is wrong. Overview is the Timeline tab, hidden while it's selected. Folded into the tab row finding."
+  },
+  "R6": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked in the code. Its last part, that reopening shows the menu still open, stays inferred."
+  },
+  "R24": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Rechecked in the code."
+  },
+  "R12": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Confirmed from the colour values. Corrected fix: its #3563e9 is too faint against the dark card; #4166ea replaces it."
+  },
+  "R27": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Merged with the other dark button findings."
+  },
+  "R23": {
+   "severity": 2,
+   "evidence": "Likely",
+   "note": "Rating lowered from Major to Minor. The dark button part moved to the dark button finding (not #4468e6, use #4166ea), and the count part to the Full log count finding."
+  },
+  "R57": {
+   "severity": 3,
+   "evidence": "Confirmed",
+   "note": "Merged into the stopped pull request finding."
+  }
+ },
+ "fix_replaced": {
+  "R1": "The design also moves the tab row from the footer to the top of the panel.",
+  "R3": "The design puts this line under Now, not above it, and words it Then.",
+  "R7": "The design uses Focus in Midna for the live terminal, the same words as every other banner.",
+  "R13": "The design uses the vertical list in every state, not only above four steps, so the panel has one layout.",
+  "R16": "The design moves it to the pull request's menu as Merge anyway…, not into the Pending merge row.",
+  "R22": "The first press on an empty note counts as a change to a one-click signal, so it's a proposal here, not a default.",
+  "R55": "The name is for screen readers only, with no visible placeholder, since the field sits right under its question."
+ }
+}

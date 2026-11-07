@@ -1,0 +1,1007 @@
+[
+ {
+  "area": "Banners and answers",
+  "title": "An open question offers only a quiet link",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The state that most needs a next step has the weakest control, and that link does three different things.",
+  "fix": "Make it the primary button, named for what it does: Focus in Midna or Reopen to answer. With the owner's OK, a field with Send answer as the primary takes its place.",
+  "findings": [
+   "R7"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Human tasks",
+  "title": "The banner sends the owner to Midna for a task with no terminal",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The first line points the wrong way, repeats the box and pushes Done down.",
+  "fix": "Show no banner on a human task unless there's a real question.",
+  "findings": [
+   "R19"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "A pull request has no single next action",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Mark reviewed, Terminal, Merge and status links all look alike, so nothing reads as the move to make.",
+  "fix": "Put the owner's action first in one box, with the step list under it.",
+  "findings": [
+   "R15"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "The pull request link sits below the actions",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The panel orders it mark reviewed, merge, then open. At the smallest window the link is out of view.",
+  "fix": "Add Open PR to the owner's row, before Mark reviewed.",
+  "findings": [
+   "R18"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Looks finished recommends restarting the task",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The banner lists signs the work is done, yet Resume is the primary, the box is alarm red, and Mark done only starts a terminal.",
+  "fix": "Put the finish action first and call it Check and finish. Use a calm green box, and make Resume plain.",
+  "findings": [
+   "R8"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Empty future rows come before Now",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Three rows with no data take about 180px above the Now card, half the body at the smallest window.",
+  "fix": "Until a pull request exists, replace them with one quiet line under Now saying what comes next.",
+  "findings": [
+   "R3"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The tab row moves and doesn't mark the selected tab",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Timeline disappears while selected, so labels jump 72px, and hover looks the same as selected.",
+  "fix": "Move the tabs to the top of the panel, always draw all four, mark the selected one with an accent bar and weight, and keep hover different.",
+  "findings": [
+   "R1",
+   "R2",
+   "R65"
+  ],
+  "spot_checked": true,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Tabs, close, menus and dialogs can't be reached from the keyboard",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Only text fields take focus, so every other control in the panel needs a pointer.",
+  "fix": "Add tab stops and a visible focus ring, arrow keys in tabs and menus, and focus inside dialogs.",
+  "findings": [
+   "R4",
+   "R5",
+   "R67"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "The step row runs off the panel",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "With six steps the last one reads Merg and To d, and a seventh is out of view.",
+  "fix": "Draw a vertical list, one row per step, in every state.",
+  "findings": [
+   "R13"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Primary buttons fail contrast in dark",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "White on the dark blue is 4.22:1, under the 4.5:1 this text size needs, on every main action.",
+  "fix": "Change the dark button blue to #4166ea: 4.87:1 with white, and still 3.40:1 against the card.",
+  "findings": [
+   "R12",
+   "R27",
+   "R23"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Closed-terminal banners don't say what happened or when",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Five headings share the agent's last progress line, which reads as current activity, and a Waiting on you line with no data follows.",
+  "fix": "Lead with what happened and the time, then the last update as small text. Drop the Waiting on you line.",
+  "findings": [
+   "R9"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Orange also marks work that isn't the owner's",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Agent work and merge steps use the colour that means the owner must act.",
+  "fix": "Keep orange for what the owner must do, and name the actor elsewhere, such as Agent next.",
+  "findings": [
+   "R14"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Step text and rings fail contrast",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Step names are how the owner follows a pull request, yet not-started and passed labels measure 3.04:1 and 4.38:1, and the empty ring 1.48:1.",
+  "fix": "Use the muted and darker green text colours, and a stronger ring.",
+  "findings": [
+   "R17"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "May be stuck offers no action",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "It's the only warning with no button, and Focus in Midna sits far down the timeline.",
+  "fix": "While the terminal is live, add Focus in Midna as the primary, with Close terminal in a menu beside it.",
+  "findings": [
+   "R10"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "A stopped pull request contradicts itself",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The banner says the fix stopped, the row below says it's still fixing, and six moves compete.",
+  "fix": "Make the banner the one call to action, word the row Fix stopped, and hide Merge while the conflict stands.",
+  "findings": [
+   "R11",
+   "R57"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Merge now shows when it can't work",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "It's offered on stacked pull requests, on open conflicts and while a merge is already running.",
+  "fix": "Hide it in those states, move it to the pull request's menu as Merge anyway…, and name what it skips in the dialog.",
+  "findings": [
+   "R16"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Human tasks",
+  "title": "A blocked task looks ready to do",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "One small line is the only difference, and Done stays live.",
+  "fix": "Use the quiet box, link the task it waits on, and disable Done.",
+  "findings": [
+   "R21"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Human tasks",
+  "title": "Done can't be taken back, and takes an empty note",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "A slip sends agents on without the values they asked for, and nothing reopens it.",
+  "fix": "Ask once when the steps want a note, and add Reopen on the done box. Both need the owner's OK.",
+  "findings": [
+   "R22"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Human tasks",
+  "title": "The steps say note, and nothing on screen is called one",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The steps ask for values in the note, but no label says which field that is.",
+  "fix": "Add a visible Note for the agents label and the same accessible name. The visible label needs the owner's OK.",
+  "findings": [
+   "R20"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Esc closes the panel, not the open menu",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "With the terminal menu or Attached open, Esc closes the whole panel.",
+  "fix": "Close the top overlay first, and clear all three when the panel closes.",
+  "findings": [
+   "R6"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "Closing a busy dialog throws away its result",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The request carries on, but the toast, any failure and the refresh are lost.",
+  "fix": "Hold the dialog until the answer arrives, or show the result as a toast either way.",
+  "findings": [
+   "R24"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "The confirm repeats the title, not what the action does",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Merge now names neither the pull request's title nor what it skips.",
+  "fix": "Add one line of live data, such as the title and Skips: your review.",
+  "findings": [
+   "R25"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Banner buttons wrap around a disabled Reopen",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Three buttons never fit the panel, and Reopen, even when disabled, pushes a real option to a second row.",
+  "fix": "Leave Reopen out when no conversation was saved, and shorten it to Reopen conversation.",
+  "findings": [
+   "R52"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "One action goes by several names",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Resume, start and send each have two or three labels across banners.",
+  "fix": "Use one name each: Resume in a new terminal, Try again, Send answer.",
+  "findings": [
+   "R53"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Option buttons hide what a click will do",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The same button sends at once, picks one or picks several.",
+  "fix": "Add a round or square mark when a Send follows, so a plain option means it sends.",
+  "findings": [
+   "R54"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "The answer field has no name, and empty Send complains late",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Nothing says what the field is for, and Send only objects after the click.",
+  "fix": "Give the field an accessible name, with no visible placeholder, and disable Send until there's text.",
+  "findings": [
+   "R55"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "A question on a human task can lose its result",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "The sent or failed note and any alert have nowhere to show.",
+  "fix": "Let the human-task banner show both, as the other banners do.",
+  "findings": [
+   "R56"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Waits on steps hides who it waits on",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The board's own phase word appears, and one wait is worded three ways.",
+  "fix": "Say Waits on you, or name the first open step.",
+  "findings": [
+   "R58"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "The blocking pull request can't be opened",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Its number is plain text, though the sibling lines link.",
+  "fix": "Send its link with the data and draw it like Stacks on.",
+  "findings": [
+   "R59"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Reviewer rows mislead on time and look like labels",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Asked 7:12 AM reads as when changes were asked, and names look unclickable until hovered.",
+  "fix": "Show Asked only while waiting, with a date, and underline names at rest.",
+  "findings": [
+   "R60",
+   "R47"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Merged without a note is a dead end",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "An orange Waiting offers no action and names nobody.",
+  "fix": "Reword it and link the terminal when there is one. A Write the note signal needs the owner's OK.",
+  "findings": [
+   "R61"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Human tasks",
+  "title": "Links and the field edge are faint on the orange box",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "The link is 4.45:1, and the field edge 1.55:1 against the box.",
+  "fix": "Use the darker link blue, and a field edge of at least 3:1.",
+  "findings": [
+   "R23"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Human tasks",
+  "title": "Done is out of view at the smallest window",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The fold cuts through the note, and long steps do the same at any size.",
+  "fix": "Remove the banner and duplicate link, then pin Done and Talk it over to the bottom of the panel.",
+  "findings": [
+   "R62"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Human tasks",
+  "title": "Numbered steps aren't drawn as a list",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Wrapped lines return under the numbers, so finding your place again is slow.",
+  "fix": "Draw a numbered list with a hanging indent and a small gap between steps.",
+  "findings": [
+   "R63"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Human tasks",
+  "title": "The link button repeats the step, and the two exits look swapped",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The same address appears twice, and Talk it over looks like a link.",
+  "fix": "Drop the button when a step already links it, and give Talk it over a border.",
+  "findings": [
+   "R64",
+   "R66"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The panel stays 480px and covers the page",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Wide windows leave empty page while filters still wrap, and page content sits hidden under the panel.",
+  "fix": "Grow it with the window up to 640px, and reserve its space from 1200px wide.",
+  "findings": [
+   "R28"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "A long title squeezes the body",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "A five-line title takes the fixed header to nearly half the smallest window.",
+  "fix": "Limit it to two lines with a tooltip when cut, and show it whole on the brief.",
+  "findings": [
+   "R29"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "2 of 4 has no label and looks like a button",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The sidebar's 1 of 4 means something else, and a done task keeps an alert-coloured chip.",
+  "fix": "Write Task 2 of 4 as plain muted text, and keep fills for controls.",
+  "findings": [
+   "R30",
+   "R78"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Close has no name or tooltip",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The back button beside it has one, and this one doesn't.",
+  "fix": "Name it Close, with the Esc shortcut in the tooltip.",
+  "findings": [
+   "R31"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Agent text in the Now card shows raw markdown",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Asterisks show as written, and one long update can fill the body.",
+  "fix": "Draw it the way notes are drawn, and limit it to four lines with Show all.",
+  "findings": [
+   "R32"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Timeline times carry no date",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "A task started last week reads like today.",
+  "fix": "Prefix Yesterday or the day, and add the full time as a tooltip.",
+  "findings": [
+   "R33"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The Full log count is faint and outside the tab",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "It measures 3.04:1, and clicking it does nothing.",
+  "fix": "Use the muted colour and draw the count inside the tab.",
+  "findings": [
+   "R34",
+   "R23"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "What to do holds the agent's brief",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The name promises what the owner should do, and the tab shows the agent's instructions.",
+  "fix": "Rename the tab Brief.",
+  "findings": [
+   "R35"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Context has edit controls the read-only rule doesn't allow",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Details has editable fields, and Bits has Mark created.",
+  "fix": "Draw Details as plain rows. Keeping Mark created or editing needs the owner's OK.",
+  "findings": [
+   "R36"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Branch and commit facts differ between tabs",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Timeline and Context read different sources, so one can show a commit the other doesn't.",
+  "fix": "Work out the last commit once, and show these facts in Context only.",
+  "findings": [
+   "R37"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "Seven log filters always wrap",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "They take two rows at every size, some are empty, and some names don't match the rows.",
+  "fix": "Use one Show pop-up with counts, and rename the kinds to match.",
+  "findings": [
+   "R38"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The log's helper sentence is filler",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "It shows no data and repeats on every task.",
+  "fix": "Delete it.",
+  "findings": [
+   "R39"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The log filter probably carries over to the next task",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "A filter set on one task can hide rows on the next.",
+  "fix": "Reset the filter when the task changes.",
+  "findings": [
+   "R40"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Attached stays open across tasks and after use",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The next task can open with its dropdown already covering the timeline.",
+  "fix": "Reset it on task change, close it on an outside click, and close it after a row opens.",
+  "findings": [
+   "R41"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Attached is placed by a fixed offset",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "When the chips wrap, the dropdown covers its own chip.",
+  "fix": "Anchor it to the chip, inside the window.",
+  "findings": [
+   "R42"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Task and goal attachments are mixed in one list",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The owner can't tell what belongs to this task.",
+  "fix": "Put a heading above each owner's rows, and indent the rows under it.",
+  "findings": [
+   "R43"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Close terminal takes effect at once with no undo",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "On a failed task, the terminal may be the best record of why.",
+  "fix": "Ask first on failed tasks and force closes, which needs the owner's OK. Without that, show its last output in the Failed step.",
+  "findings": [
+   "R44"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Menu helper text repeats the label and can be false",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Stops the command that is running shows even when nothing runs.",
+  "fix": "Remove the line, or show real data such as Idle 12m.",
+  "findings": [
+   "R45"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "An empty reviewer popover says the same thing twice",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "0 open and No open reviews fill the card.",
+  "fix": "Collapse the card to the name and the count.",
+  "findings": [
+   "R46"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "The reviewer popover doesn't fit the smallest window",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "Its list is taller than a 560px window allows.",
+  "fix": "Set the list height from the window.",
+  "findings": [
+   "R48"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Reviewer and attachment lists aren't virtualized",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Every row is built up front, which breaks the owner's rule for long lists.",
+  "fix": "Use the virtualized list the log already uses.",
+  "findings": [
+   "R49"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "The reviewer popover has no retry",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "A failed load shows the raw backend message with nothing to press.",
+  "fix": "Use a plain message with Try again, and show Updating while it refreshes.",
+  "findings": [
+   "R50"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "Menu hover is nearly invisible",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Hover measures 1.08:1 against the menu, and rows with no link react too.",
+  "fix": "Add a stronger hover colour, and use it only on rows that do something.",
+  "findings": [
+   "R51"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "Dialogs draw smaller than coded and sit off-centre",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The Note dialog ends mid-line with no scrollbar or fade, so nothing says there's more.",
+  "fix": "Set the size limits once on the dialog's outer frame, let the box shrink inside it, and show a scrollbar on long notes.",
+  "findings": [
+   "R26"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "A failed attempt removes the button",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "A dropped connection looks final, so there's no retry.",
+  "fix": "Keep the button as Try again for errors, and change the title for final results.",
+  "findings": [
+   "R68"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "A confirm opened from a terminal link can show only a task number",
+  "severity": 2,
+  "evidence": "Likely",
+  "problem": "Cancel T6? can sit over another task's panel with no title.",
+  "fix": "Fetch the task first, and keep the button disabled until it arrives.",
+  "findings": [
+   "R69"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Stuck heading repeats the title in capitals",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "The heading restates the task number and title just above it.",
+  "fix": "Use May be stuck as the heading, and fix the mid-sentence capital.",
+  "findings": [
+   "R73"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Banners and answers",
+  "title": "Banner links start off the left edge",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "Two links keep button padding and use two different styles.",
+  "fix": "Align them to the banner text and use one link style.",
+  "findings": [
+   "R74"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Note preview counts source lines",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "One long paragraph shows in full, with no Show all.",
+  "fix": "Limit the preview to three drawn lines.",
+  "findings": [
+   "R75"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Pull request steps",
+  "title": "Merged doesn't say when",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "Started has a time, and Merged has none.",
+  "fix": "Show the merge time, if the board has it.",
+  "findings": [
+   "R76"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Human tasks",
+  "title": "The finished record has no time or steps",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "Checking back later shows only the note.",
+  "fix": "Add the finish time, and put the steps in a closed fold.",
+  "findings": [
+   "R77"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The Now line has an unlabelled number",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "It isn't clear that 3m is run time.",
+  "fix": "Write Running 3m.",
+  "findings": [
+   "R70"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Panel frame and tabs",
+  "title": "The least-used Context block has the most emphasis",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "A long prompt the owner rarely needs gets the only tint and blue heading.",
+  "fix": "Use the neutral box and muted heading.",
+  "findings": [
+   "R71"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Menus and popovers",
+  "title": "A tooltip sits on the open menu",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "The ⋯ button shows no open state, and the Attached chevron never flips.",
+  "fix": "Hide the tooltip while open, and show the open state.",
+  "findings": [
+   "R72"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "The busy button still looks clickable",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "It keeps the pointer cursor and the hover fill.",
+  "fix": "Use the app's usual disabled button look.",
+  "findings": [
+   "R79"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Finish and Note dialogs",
+  "title": "The way out sits apart from the action",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "Close is small and in the heading row, so the pair doesn't read as a choice.",
+  "fix": "Put Keep task or Not now beside the action.",
+  "findings": [
+   "R80"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ }
+]

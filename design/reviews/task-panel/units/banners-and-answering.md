@@ -1,0 +1,120 @@
+## Verdict
+
+macOS desktop app (pointer and keyboard), the right task panel's banner in every scoped state. Reviewed from 15 captures (light at 1360x860 for all ten states, dark for three, 900x560 for two) plus the code excerpts. The app itself couldn't be driven, so behaviour comes from code and nothing was used with real input. Contrast was computed from theme.rs. First impression: the banner is the clear focal point of the panel in every state. A tinted full-bleed band at the top separates each state well, and the panel reads as organised, except in the PR state, where the banner and the timeline compete. The weakness is what each banner offers. Several states don't give the owner the one thing that moves the task on: the open-ended question sends them elsewhere through a quiet link, may-be-stuck has no action, Looks finished recommends the wrong action, and the lost forms don't say what happened or when. Counts: 0 catastrophes, 6 major, 5 minor, 2 cosmetic. Top problem: the open-ended question, the core of flow 1, can't be answered from its own banner, and its only action is a low-emphasis link that does one of three different things under the same label.
+
+## Findings
+
+### R1 · 3 Major · Open-ended question has no answer here, only a quiet link that does three different things
+- **Element:** Task panel › banner › Write an answer, question state, all sizes and themes (question-open__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** The banner's only action is a borderless orange link, so the state that most needs a next step has the weakest control on the panel. It is also the only route: the banner holds no field, although the PR banner has one. The same label runs a different action by state (view.rs:1595-1600): it focuses the live terminal, reopens a terminal that asks again, or starts a fresh terminal from the handoff. The owner can't tell which will happen, and the ↗ icon suggests a web link.
+- **Principle:** Walkthrough Q2 and Q3 (notice the action, associate it with the result) [NNG-CW]; one primary action per screen [NNG-H8]; label says what it does [NNG-H2]
+- **Fix:** In view.rs:1600, when the question has no options, use Look::Primary instead of Look::Out. Name it by what it does: 'Answer in Midna' for focus, 'Reopen to answer' for a question with no live terminal, 'Resume in a new terminal' for the fresh case. Keep the quiet look only as the secondary route under one-click options, worded 'Write a different answer'. Better still, reuse answer_field and answer_btns (view.rs:1010, view.rs:912) so the open-ended question matches the PR banner: needs the owner's OK if a typed answer counts as outside the one-click rule, though the PR banner already does this.
+
+### R2 · 3 Major · Looks finished recommends Resume, is alarm red, and its Mark done doesn't mark it done
+- **Element:** Task panel › banner › Looks finished (lost-looks-finished__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** The banner shows evidence the work shipped ('Opened a PR · 8:40 AM'), yet the blue primary is still 'Resume in a new terminal' and 'Mark done' is a plain button on a second row. Following the emphasis restarts finished work. The state is the good outcome but uses the same red as Terminal lost (view.rs:1551). 'Mark done' sends resume mode finish, which opens a new terminal to check the work and run tb submit (view.rs:1545-1546), so the label promises an instant result it doesn't deliver.
+- **Principle:** Walkthrough Q3 [NNG-CW]; match with the real world [NNG-H2]; one emphasis on the likely action [SEC-5]
+- **Fix:** When looks_finished is non-empty, make the finish action Look::Primary and first in the row, and Resume Look::Plain. Rename it 'Check and finish' on all lost forms, since a terminal does that work. Use a non-alarm tone for this form: BoxTone::Quiet, or a new tone on up_soft (#e3f4ea light, #16301f dark).
+
+### R3 · 3 Major · Lost banners don't say what happened or when, and the timeline adds an empty Waiting on you
+- **Element:** Task panel › banner body and timeline bubble, Terminal lost, Stopped, Looks finished, Couldn't start, Couldn't compact (lost-terminal, lost-stopped, lost-looks-finished, start-failed, compact-failed captures)
+- **Evidence:** Confirmed
+- **Problem:** Under five different headings the body is the same sentence, 'Wiring the assertion check into the session middleware.', the agent's last progress line. It reads as current activity, not as what went wrong. The helpful line 'The terminal closed before the task was done.' only appears when latest is empty (view.rs:1525), so it is hidden in the common case. No time is given, while may-be-stuck does give one. Stopped doesn't say that the owner closed it, which is the only real difference from Terminal lost apart from the tint. The timeline bubble below reads just 'Waiting on you', with no data, against the owner's no-filler rule. The start and compact bodies depend on whether the server rewrites latest on failure, which the excerpts don't show.
+- **Principle:** Visibility of system status [NNG-H1]; recognise and diagnose errors [NNG-H9]; walkthrough Q1 [NNG-CW]; owner's rule: no labels that show no data
+- **Fix:** Lead with a state sentence and a time, then show latest as context in St::Small. Terminal lost: 'The terminal closed at 8:41 AM before the task was done.' Stopped: 'You closed its terminal at 8:41 AM.' Looks finished: 'The terminal closed at 8:41 AM, but its work shipped:' followed by the evidence lines. Second line: 'Last update: Wiring the assertion check…'. This needs a closed-at time on the task, in 12-hour form through fmt::hhmm. For the two failure banners, show the failure reason, not the progress line. Drop the bare timeline bubble when a banner already covers the state, or give it the same time.
+
+### R4 · 3 Major · May be stuck has no action
+- **Element:** Task panel › banner › may be stuck, light and dark (stuck__light__1360x860.png, stuck__dark__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** This is the only warning banner with no button: it says something is wrong and shows the terminal's last lines, then stops (view.rs:1604-1609). The owner has to work out what to do. With a live terminal, Focus in Midna sits in the timeline's actions (view.rs:1647-1649), well away from the warning, and Close terminal is behind a ⋯ menu. The capture shows neither.
+- **Principle:** Walkthrough Q2 [NNG-CW]; no dead ends [NNG-H3]; frequent in view [SEC-8]
+- **Fix:** Add a row after the tail fold, using the group note as the other banners do: 'Focus in Midna' as Look::Primary (Act focus) and 'Close terminal' as Look::Plain (Act close-term, same force rule as view.rs:1655), with c.note(&grp). Stop is one of the allowed signals, so no rule changes. Show the row only when session_live(t); otherwise offer 'Resume in a new terminal'.
+
+### R5 · 3 Major · PR banner and timeline contradict each other and offer competing next steps
+- **Element:** Task panel › banner › terminal asks about the PR, with the Checks and review section below it (pr-stopped__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** The banner says 'The fix agent stopped', while the row just below says 'Fixing the merge conflict' as if it were still running. The heading calls it asking, but the message states a stop and asks nothing. The owner sees six possible moves at once: Send answer, Focus in Midna, Terminal ›, Mark reviewed ›, Merge now ›, plus a second 'Waiting on you' cut off by the footer. Focus in Midna and Terminal › lead to the same place. Merge now stays on offer while the branch has a conflict. 'Waiting on you' appears twice, plus 'Waiting 12h 25m' on the reviewer. The heading's fallback 'Its terminal' (view.rs:1612) also names nothing useful.
+- **Principle:** One fact, one place [SEC-7]; one emphasis [SEC-5]; visibility of status [NNG-H1]; a primary surface with contradictory readouts is 3 Major [severity guide]
+- **Fix:** Make the banner the single call to action while pr_stopped is set. Change the stage row to 'Fix stopped' with the same tone as the banner and remove its Terminal › link, since the banner has Focus in Midna. Hide Merge now while the conflict is unresolved. Drop the lower Waiting on you bubble in this state. Word the heading by the message: 'Stopped on the PR' unless the message really asks something, and use the stage name instead of 'Its terminal'.
+
+### R6 · 3 Major · Primary button text falls under AA in dark mode
+- **Element:** Task panel › banner › every Look::Primary button in dark, such as Resume in a new terminal (lost-terminal__dark__1360x860.png)
+- **Evidence:** Likely
+- **Problem:** White on the dark accent_btn #4d72f0 computes to 4.22:1, under the 4.5:1 needed for text this size, and it is the main action on every banner. Light mode passes at 5.11:1. It is Likely because the button code isn't in the excerpts; the pairing is read from the token names (theme.rs:144, theme.rs:169) and the capture.
+- **Principle:** Contrast minimum [WCAG 1.4.3]
+- **Fix:** Set dark accent_btn in theme.rs:144 to #3563e9, the light value, which gives 5.11:1 with white. Check it still stands out on down_soft #3b1a19 and warn_soft #3a2415.
+
+### R7 · 2 Minor · Lost banner's action row wraps, with a dead button taking the space
+- **Element:** Task panel › banner › action row, all lost forms, at 1360x860 and 900x560 (lost-terminal__light__900x560.png)
+- **Evidence:** Confirmed
+- **Problem:** The panel stays about 480 wide at every window size, so three buttons never fit and Mark done always drops to its own row. The space goes to 'Reopen the old conversation', which is disabled when nothing was saved, with its reason only in a hover tip (view.rs:1538-1544). A control that can't work for this task pushes a real option out of line, and the banner ends up as four stacked rows.
+- **Principle:** Everything earns its place [SCR-5]; frequent in view, rare behind [SEC-8]
+- **Fix:** Leave out the Reopen button when claude_session_id is missing, instead of disabling it, so the two remaining buttons sit on one row. When it does exist, shorten it to 'Reopen conversation' and 'Resume in a new terminal' stays, with the finish action moved first or last per R2, and check the widths at 480.
+
+### R8 · 2 Minor · The same action has different names across banners
+- **Element:** Task panel › banner buttons, lost, compact-failed, start-failed and question states
+- **Evidence:** Confirmed
+- **Problem:** Resume mode fresh is 'Resume in a new terminal' (view.rs:1537), 'Start fresh with the handoff' (view.rs:1575) and 'Write an answer' (view.rs:1598). Start mode new is 'New Midna terminal' (view.rs:1554) and 'Try again now' (view.rs:1565). The answer button is 'Send' in one banner and 'Send answer' in another (view.rs:972, view.rs:915). The owner has to relearn the same recovery in each state.
+- **Principle:** Consistency and standards [NNG-H4]; consistent labels [SEC-6]
+- **Fix:** Use one name per action: 'Resume in a new terminal' for resume fresh everywhere, 'Try again' for both start-failed variants with 'Queue in Midna' kept as the alternative, and 'Send answer' for both answer buttons.
+
+### R9 · 2 Minor · Option buttons look identical whether they send, pick one or pick many
+- **Element:** Task panel › banner › options, question-options and question-multi states (question-multi__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** All options use Look::Opt (view.rs:949, view.rs:951, view.rs:954). In one banner a click sends the answer at once. In another it only selects, and nothing shows whether a question takes one choice or several, though toggle_pick treats them differently. So 'Which sign-in methods stay on?' gives no clue that several can be chosen, and a click on a single-select question silently replaces the earlier choice. Send is greyed out with no sign of what's missing.
+- **Principle:** Looks like what it is [NNG-H4]; recognition over recall [NNG-H6]; error prevention [NNG-H5]
+- **Fix:** In select-then-Send banners, draw a leading indicator inside Look::Opt: a round radio mark for single-select and a square check for multi. Keep one-click options plain, so plain means it sends. This adds no helper text. When Send is disabled, name the question still unanswered in its tip, such as 'Answer “Where does the setting live?” first'.
+
+### R10 · 2 Minor · Answer field has no label, and empty Send only complains afterwards
+- **Element:** Task panel › banner › answer field and Send answer (pr-stopped__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** The field is created with an empty placeholder and no name (view.rs:1012), so nothing says what it's for, and Node::Field has no way to carry an accessible name. Send answer stays enabled when empty and only then says 'Write an answer first.' (task_panel.rs:478-481), while the picker's Send is disabled until ready (view.rs:972).
+- **Principle:** Labels or instructions [WCAG 3.3.2]; name, role, value [WCAG 4.1.2]; error prevention [NNG-H5]
+- **Fix:** Add a name to Node::Field and pass 'Your answer to <terminal>' as both the accessible name and the placeholder, so it carries real data. Disable Send answer and Send at … while the trimmed draft is empty, matching the picker, and keep the note as a fallback.
+
+### R11 · 2 Minor · Human-task question drops the result note and any alert
+- **Element:** Task panel › banner, question on a human task (not captured)
+- **Evidence:** Likely
+- **Problem:** For a human task the banner returns early (view.rs:1590-1592), before c.note(&grp) and before the alert text is added (view.rs:1627-1629). An option click on a human task therefore has nowhere to show its sent or failed note, and an alert on that task never appears. It is Likely because the excerpts don't show whether human tasks carry ask options or how run reports failures.
+- **Principle:** Visibility of system status [NNG-H1]; feedback after the action, walkthrough Q4 [NNG-CW]
+- **Fix:** Replace the early return with a branch that extends bx with c.note(&grp) and falls through to the alert code, returning the tone as (BoxTone::Ask, bx).
+
+### R12 · 1 Cosmetic · Stuck heading repeats the task title, in capitals
+- **Element:** Task panel › banner › may be stuck heading (stuck__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** 'T2 SIGN IN WITH A PASSKEY MAY BE STUCK' repeats the ref and title shown just above it, and a long title will wrap in capitals. The body also has a capital in mid-sentence: 'Since 8:20 AM: Its terminal hasn't moved on' (fmt.rs:209-211).
+- **Principle:** One fact, one place [SEC-7]
+- **Fix:** Use 'May be stuck' as the heading at view.rs:1605, and lower-case the default reason in fmt.rs:209 to 'its terminal hasn’t moved on'.
+
+### R13 · 1 Cosmetic · Banner links sit 14px off the left edge, in two link styles, under a stray gap
+- **Element:** Task panel › banner › Write an answer, See what the new terminal gets, top edge (lost-looks-finished__light__1360x860.png)
+- **Evidence:** Confirmed
+- **Problem:** These two links keep button padding and start right of every other banner row. In Looks finished, 'Opened a PR' and 'See what the new terminal gets' are both links but start on different edges. One link style is orange without an underline and the other blue with one. An empty white strip also sits between the header's divider and the banner's top border.
+- **Principle:** Alignment [SCR-4]; one look per role [SEC-4]
+- **Fix:** Remove the left padding from Look::Out and Look::Link inside a banner so they align with the text at the banner's 24px inset. Use one link style in banners. Remove the top gap so the banner's top border replaces the header divider.
+
+## What works
+
+- The banner is the first thing the eye reaches in every state, and its full-bleed band separates it cleanly from the timeline.
+- One-click options with a short description beside each one make a decision fast, and fit the owner's one-click rule. Options sit under their question, as lesson L1 asks.
+- Tone carries meaning: Stopped is quiet grey while Terminal lost is red, and each state also has a text heading, so colour isn't the only signal.
+- Banners hold up at 900x560: the panel stays about 480 wide and nothing is clipped in the two captures. Times use the 12-hour format with AM/PM. Banner text on its tint computes above AA (8.46:1 light and 9.6:1 dark for warn_text, 5.6:1 and 5.46:1 for the red headings).
+
+## Not checked
+
+- Real input: the app wasn't available to drive, so no control was clicked, typed in or tabbed to. The browser was only used to compute contrast.
+- Keyboard use: tab order, focus visible, Enter and Space on banner buttons, Esc on the panel, and shortcuts for options. The button and focus code isn't in the excerpts.
+- VoiceOver output, status announcements (WCAG 4.1.3) and role and state on GPUI controls.
+- In-flight and after-click states: selected options, the sent note, failure notes, double-click protection, and how long a banner stays after an action. No capture shows them.
+- What happens when Midna isn't running and an action needs it (Write an answer, Focus in Midna, Resume). The pill in the captures is sample data.
+- Not captured: the retry form of Couldn't start ('Trying again at'), the Send at work-hours button, the alert line, the saved line in lost banners, the stopped-on-the-PR heading, and dark mode or 900x560 for most states.
+- Long content: a long question, many options, or a long message at 900x560, including whether Send stays reachable and whether the banner scrolls away. The tail fold shows open in the captures though its default in code is false, so its real starting state is unknown.
+- Whether a non-picker ask can hold several questions. If it can, each option click at view.rs:949 sends only that one label as the whole answer.
+- Whether a stale pick draft can carry over to a later question on the same task, since the draft is only cleared on a successful send.
+- Whether Stopped offers a way to leave the task alone, such as Detach or requeue: the capture shows no ⋯ menu and the data behind it wasn't available.
+- Option button edges: if warn_line is the border it measures about 1.6:1 against the banner. Their text identifies them, so this isn't reported as a failure, and the button styling isn't in the excerpts.
+- The Needs you list row for lost and failed tasks: the captures overlay the panel only, so the list still shows T3's question.
+- Motion, real displays, and windows larger than 1360x860.
+- One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE].
