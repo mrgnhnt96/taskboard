@@ -1,0 +1,637 @@
+[
+ {
+  "area": "Accounts",
+  "title": "Disconnect happens on one click",
+  "severity": 4,
+  "evidence": "Confirmed",
+  "problem": "One slip forgets a sign-in, and running agents lose access.",
+  "fix": "Confirm inside the row, and move Disconnect away from Check.",
+  "findings": [
+   "AC-R1"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Accounts",
+  "title": "A refused sign-in still looks healthy",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "A green row says agents can push when the service refused them.",
+  "fix": "Turn the row amber, say pushes will fail, offer Replace token.",
+  "findings": [
+   "AC-R16",
+   "FL-R100",
+   "AC-R48",
+   "AC-R49"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Accounts",
+  "title": "Account status is buried in open forms",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Every unconnected service shows its whole form, so status is hard to scan.",
+  "fix": "One status row per service; a form opens only on Connect.",
+  "findings": [
+   "AC-R13",
+   "FL-R101",
+   "AC-R54",
+   "AC-R55"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Accounts",
+  "title": "Sign-in forms lose text and can't be closed",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Esc wipes typed text, opened forms stay open, errors sit far away.",
+  "fix": "Add Cancel, keep text on Esc, show errors under the field.",
+  "findings": [
+   "AC-R52",
+   "AC-R53",
+   "SH-R47"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Accounts",
+  "title": "Clicks and checks give no answer",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Check reports nothing, and clicks during another action are silently dropped.",
+  "fix": "Show 'Token works, checked 2:41 PM'; disable controls while busy.",
+  "findings": [
+   "AC-R50",
+   "AC-R51",
+   "HU-R60"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "History and Usage",
+  "title": "History's two retention controls are empty",
+  "severity": 4,
+  "evidence": "Confirmed",
+  "problem": "The app reads the wrong field names, so neither setting shows or changes.",
+  "fix": "Read the field names the board sends; add a test; use pop-ups.",
+  "findings": [
+   "HU-R2",
+   "SH-R10",
+   "QW-R24"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "History and Usage",
+  "title": "History deletion comes with no warning",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Shortening retention or Clean up now removes history at once, with no preview.",
+  "fix": "Say what will go and ask first; report the true total.",
+  "findings": [
+   "HU-R19",
+   "QW-R65"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "History and Usage",
+  "title": "Daily limit settings surprise the owner",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Changing one restarts today's count; rows and percents don't explain themselves.",
+  "fix": "Keep today's count, move Today first, make notes follow the choice.",
+  "findings": [
+   "HU-R57",
+   "HU-R58",
+   "HU-R59",
+   "HU-R61"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "Buttons and menus can't be reached from the keyboard",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Buttons, the sidebar, the hours menu and the pill take no focus.",
+  "fix": "Fix once in the shared controls: tab stops, Enter, Space, focus ring.",
+  "findings": [
+   "SH-R8",
+   "AC-R14",
+   "FL-R43",
+   "HU-R20",
+   "QW-R26",
+   "SU-R28",
+   "HM-R30",
+   "UP-R92",
+   "HM-R89"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "A stopped board reads as signed out",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Accounts says Not signed in with live forms; System looks calm.",
+  "fix": "One shared banner says the board is down, with Try again.",
+  "findings": [
+   "SH-R4",
+   "AC-R15",
+   "SH-R5",
+   "SU-R29",
+   "FL-R95"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "Pages go stale in a window left open",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Usage, History, QA and Reviewers load once, or hang on 'Asking the board\u2026'.",
+  "fix": "Reload the visible page on click, on a timer and on focus.",
+  "findings": [
+   "SH-R6",
+   "HU-R17",
+   "QW-R23"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "Controls are cut off in a small window",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Below about 830 wide, Sign in, Connect and the 25% choice disappear.",
+  "fix": "Let rows wrap, shrink the fields, shorten the pinned header.",
+  "findings": [
+   "SH-R7",
+   "AC-R12",
+   "FL-R41",
+   "HU-R18",
+   "SU-R77",
+   "SH-R44"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "Several colours fail contrast",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Placeholders, field edges, pill labels and dark badges fall under the minimums.",
+  "fix": "Darken all four until each meets its minimum on its own background, then recheck the main window.",
+  "findings": [
+   "SH-R11",
+   "FL-R42",
+   "AC-R56",
+   "HM-R83",
+   "UP-R34"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "The selected choice is hard to see",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Selected segments and hours days barely differ from unselected ones.",
+  "fix": "Stronger fill or edge, plus semibold text on the selected item.",
+  "findings": [
+   "HU-R21",
+   "HM-R82"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "Sections are in the wrong order and aren't remembered",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Daily sections sit below rare ones; size and section reset on each open.",
+  "fix": "Reorder by use and restore size, position and section.",
+  "findings": [
+   "SH-R45",
+   "SH-R46"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "The whole window",
+  "title": "Content stretches across wide windows",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Rows spread out, so labels end up far from their controls.",
+  "fix": "Cap content near 720 wide, aligned left under the title.",
+  "findings": [
+   "HU-R62",
+   "QW-R69"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Usage pill and footer",
+  "title": "The Today part of the pill is cut off",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The pill overflows the sidebar, so the daily figure never shows.",
+  "fix": "Make it a full-width block with one column per window.",
+  "findings": [
+   "UP-R3",
+   "UP-R91",
+   "HM-R85"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Usage pill and footer",
+  "title": "The pill opens Days, not the limits",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Clicking the pill lands on the wrong page for changing limits.",
+  "fix": "Open Settings on Usage, and say so in the tooltip.",
+  "findings": [
+   "UP-R33"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Usage pill and footer",
+  "title": "Stale usage is too faint and unexplained",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Old numbers just fade, with no sign they are old.",
+  "fix": "Drop the fade and add 'Last read 3h ago' in the pill.",
+  "findings": [
+   "UP-R35"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Usage pill and footer",
+  "title": "Warm and hot look alike, and Today counts the other way",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The pill barely changes as limits near; Today counts down, others up.",
+  "fix": "Tint the whole pill by its worst level; show used percent everywhere.",
+  "findings": [
+   "UP-R90",
+   "UP-R93"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Hours menu",
+  "title": "Today until can run agents 12 hours too long",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Typing 1 at 11 PM means 1 PM tomorrow, with little sign.",
+  "fix": "Pick the soonest matching time and show the resolved end time.",
+  "findings": [
+   "HM-R31"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Hours menu",
+  "title": "A failed save or bad time goes unexplained",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Unsaved values stay on show, and an invalid time snaps back silently.",
+  "fix": "Put back the saved value, name the failure, offer Retry.",
+  "findings": [
+   "HM-R32",
+   "HM-R79"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Hours menu",
+  "title": "Work hours have no place in Settings",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Half the owner's job lives only in a menu off a footer pill.",
+  "fix": "Move the hours to a section under Accounts, and let the pill open it.",
+  "findings": [
+   "SH-R9"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "Hours menu",
+  "title": "The menu's wording and placing mislead",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "'No work hours' reads backwards, and the menu opens at the pointer.",
+  "fix": "Say 'Agents start any time'; anchor the menu to the pill.",
+  "findings": [
+   "HM-R81",
+   "HM-R86",
+   "HM-R87",
+   "HM-R88"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Hours menu",
+  "title": "All seven days can be switched off with no warning",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "With no days picked, agents may never start and the pill can end on 'until'.",
+  "fix": "Warn in the menu; make the pill say 'Agents off: no days picked'.",
+  "findings": [
+   "HM-R80"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Hours menu",
+  "title": "Times break the 12-hour AM/PM rule",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The pill and tooltips show '9am' and 'pm' instead of '9 AM'.",
+  "fix": "Change the one shared time formatter to '9 AM' and '9:30 AM'.",
+  "findings": [
+   "HM-R84",
+   "UP-R94"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "First launch",
+  "title": "First launch has no home, order or progress",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Setup steps are scattered over banners, pills and pages.",
+  "fix": "A Setup section lists every step in order, with a count.",
+  "findings": [
+   "FL-R36",
+   "FL-R99"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "First launch",
+  "title": "The Login Items banner stays after approval",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The app never rechecks, so the banner keeps asking after it's done.",
+  "fix": "Recheck every few seconds and on focus; confirm when it's on.",
+  "findings": [
+   "FL-R37"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "First launch",
+  "title": "Blocked, failed and Midna states are dead ends",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "The messages conflict and give a new owner no next step.",
+  "fix": "One row per cause, with the action that fixes it.",
+  "findings": [
+   "FL-R38",
+   "FL-R40"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "First launch",
+  "title": "Hook and link failures vanish",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Errors disappear after 6 seconds; a failed tb link says nothing.",
+  "fix": "Keep the last error on the Setup row, with Copy.",
+  "findings": [
+   "FL-R39",
+   "FL-R97"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "First launch",
+  "title": "Reinstall can lose a working plugin",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "It removes the plugin first; if adding it back fails, only a toast says so.",
+  "fix": "Check Claude Code runs first, and put the old setup back on failure.",
+  "findings": [
+   "FL-R98"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "First launch",
+  "title": "One service goes by four names",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Board, daemon, service and taskboardd all mean the same thing.",
+  "fix": "Call it the board everywhere: Board version, Restart board. Login item names only the macOS setting. This replaces 'daemon' and 'background service' in every other fix here.",
+  "findings": [
+   "FL-R96"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Update",
+  "title": "Every update failure says Check failed",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Install failures read as check failures, with a raw, faint reason.",
+  "fix": "Name the failed stage; keep it visible outside Settings.",
+  "findings": [
+   "SU-R27",
+   "SU-R75"
+  ],
+  "spot_checked": false,
+  "needs_new_design": true,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Update",
+  "title": "Update progress is thin and can go backwards",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "No download progress, and a ready update vanishes when a newer one starts.",
+  "fix": "Show MB progress, keep the ready version, guard double clicks.",
+  "findings": [
+   "SU-R71",
+   "SU-R73",
+   "SU-R74",
+   "SU-R78"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Update",
+  "title": "Restart notes overpromise",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The update note says the board keeps running, but it restarts; success is silent.",
+  "fix": "Say 'Agents keep running in Midna through a restart' (Midna runs them, not the board); report when the board is back.",
+  "findings": [
+   "SU-R72",
+   "SU-R76"
+  ],
+  "spot_checked": true,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "QA, Reviewers and Worktrees",
+  "title": "QA unlocks only by editing a config file",
+  "severity": 3,
+  "evidence": "Confirmed",
+  "problem": "Jira has no home in Accounts, so QA can't be turned on here.",
+  "fix": "Add a Jira card to Accounts, built like Bitbucket's.",
+  "findings": [
+   "QW-R22"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "QA, Reviewers and Worktrees",
+  "title": "Pool settings show as one sentence pointing at the CLI",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Settings can't be read at a glance, and 'Pool' is a filler label.",
+  "fix": "Show named rows; leave editing to the CLI unless the owner says otherwise.",
+  "findings": [
+   "QW-R25",
+   "QW-R70"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": true
+ },
+ {
+  "area": "QA, Reviewers and Worktrees",
+  "title": "Lists hide what matters and aren't virtualized",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "Empty states hide facts, tasks show as bare refs, rows aren't virtualized.",
+  "fix": "Show titles in rows, keep project headings, use a virtual list.",
+  "findings": [
+   "QW-R64",
+   "QW-R66",
+   "QW-R67",
+   "QW-R68"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "QA, Reviewers and Worktrees",
+  "title": "QA's Off/On looks live when it's dead",
+  "severity": 2,
+  "evidence": "Confirmed",
+  "problem": "The switch can stick on and shows no saving state.",
+  "fix": "Disable it properly, and show saving.",
+  "findings": [
+   "QW-R63"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ },
+ {
+  "area": "Cosmetic",
+  "title": "Small visual polish",
+  "severity": 1,
+  "evidence": "Confirmed",
+  "problem": "Uneven glyphs, meaningless green dots, no pressed states, small shifts.",
+  "fix": "Tidy in passing when these files are next touched.",
+  "findings": [
+   "AC-R104",
+   "FL-R115",
+   "HU-R105",
+   "HU-R106",
+   "HM-R113",
+   "QW-R107",
+   "QW-R108",
+   "SH-R102",
+   "SH-R103",
+   "SU-R109",
+   "SU-R110",
+   "SU-R111",
+   "SU-R112",
+   "UP-R114"
+  ],
+  "spot_checked": false,
+  "needs_new_design": false,
+  "needs_owner_ok": false
+ }
+]

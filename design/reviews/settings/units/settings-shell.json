@@ -1,0 +1,187 @@
+{
+  "brief": "/Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-1/design/reviews/settings.json",
+  "unit": "Settings shell",
+  "model": "opus",
+  "effort": null,
+  "ok": true,
+  "error": null,
+  "turns": 43,
+  "seconds": 287,
+  "costUsd": 1.3777268,
+  "tokens": {
+    "input": 18,
+    "output": 28181,
+    "cacheWrite": 132156,
+    "cacheRead": 766274
+  },
+  "firstTurn": {
+    "cacheWrite": 30353,
+    "cacheRead": 0
+  },
+  "systemPrompt": "ultrahand-review-f668883d4485.md",
+  "compactions": 0,
+  "peakContext": 132158,
+  "report": {
+    "verdict": "macOS desktop Settings window, reviewed for a single pointer-and-keyboard owner at 1400x1000, 900x680 and 720x460, in light and dark, with the board live and stopped. Evidence is 10 captures plus code: the listed excerpts and the full settings.rs, main.rs, app.rs, text_input.rs and days.rs in the worktree. The native app wasn't driven, so no control was used with real input. Behaviour findings are read from code, and ratios are computed from theme.rs. First impression: the live shell reads as organised. The sidebar is quiet, the page title is clear and the content sits in tidy cards, so this is not a clutter problem. The problems are in the states and edges of the frame. Counts: 0 Catastrophe, 8 Major, 4 Minor, 2 Cosmetic. The top problem is that the stopped-board state misleads. Opened while the board is down, the window says every account is 'Not signed in', sits on 'Connecting…' and 'Asking the board…' forever beside a 'Can't reach' banner, and offers no retry. History, QA and Reviewers then stay stuck even after the sidebar returns to Live. Close behind: below about 830 wide, sign-in buttons are cut off with no way to reach them, and no control in the window works from the keyboard except by clicking into a field first.",
+    "findings": [
+      {
+        "id": "R1",
+        "severity": 3,
+        "title": "Board stopped: Accounts claims every account is signed out and keeps the sign-in forms live",
+        "element": "Settings › Accounts › every account card, board stopped at window open (down-accounts-m.png, down-accounts-s.png)",
+        "evidence": "Confirmed",
+        "problem": "With no answer from the board, accounts_page draws its rows from empty data. Every card says 'Not signed in', the headings fall back to raw ids ('github', 'bitbucket', 'azure'), and Sign in, Connect and the token fields stay active. An owner whose accounts are all fine is told they are gone, may paste a token again, and only then gets an error. The one fact the page exists to show is false.",
+        "principle": "Visibility of system status: don't report a state you don't have [NNG-H1]; the simulated or empty state must not contradict itself [checklist: data states]; the user's words, not internal ids [NNG-H2]",
+        "fix": "In accounts_page, change the early return from `!self.loaded && self.error.is_none()` to `!self.loaded`, so no cards render until a real answer has arrived. Show the shared failed state from R2 instead. Take display names from CARDS ('GitHub', 'Bitbucket', 'Azure DevOps', 'Slack'), never `unwrap_or(id)`. If the board drops after a good load, keep the last accounts on screen, disable Connect, Sign in and Disconnect, and add 'As of 3:05 PM' to the banner."
+      },
+      {
+        "id": "R2",
+        "severity": 3,
+        "title": "Failed state contradicts itself and offers no way forward",
+        "element": "Settings › sidebar status, banner and page body, board stopped (down-history-m.png, down-system-m.png, down-accounts-m.png)",
+        "evidence": "Confirmed",
+        "problem": "One condition is reported five ways at once: banner 'taskboardd: Can't reach the task board server.', sidebar 'Connecting…', body 'Asking the board…', System 'not running' and 'Not connected.'. 'Connecting…' and 'Asking the board…' never end, because `live`/`self.loaded` only reach 'Not connected' after a first success and the load_* functions drop their errors. The banner names a binary, gives no next step and has no retry. The only fix, Restart daemon, sits on System and appears only for an installed bundle (it is absent in down-system-m.png, a dev build). System also shows a green dot beside App version while everything is down. The product is called board, daemon, taskboardd and task board server in different places.",
+        "principle": "Help users recognize, diagnose and recover from errors [NNG-H9]; system status [NNG-H1]; one fact, one place [SEC-7]; same thing, same name [NNG-H4]",
+        "fix": "Make one shared failed state owned by the shell. The banner reads 'The board isn't running. Settings can't be read or changed until it's back.' with a 'Try again' button (reloads every section now) and, when installed_bundle() exists, 'Restart board'. Sidebar status: 'Not connected' as soon as any error arrives; keep 'Connecting…' only until the first failure or for at most 5 seconds. When the failure is known, replace 'Asking the board…' with nothing: the banner alone speaks. Track per-section load errors instead of `if let Ok`. Pick one name, 'the board', for the UI and keep 'daemon' only in the System version row. Drop the green dot on App version."
+      },
+      {
+        "id": "R3",
+        "severity": 3,
+        "title": "Sections don't recover or refresh in a window left open all day",
+        "element": "Settings › section loading: History, QA, Reviewers, Usage, Worktrees, sidebar status",
+        "evidence": "Confirmed",
+        "problem": "load_history, load_qa and load_reviewers run once, in SettingsWindow::new. If the board was down at open, those three show 'Asking the board…' forever even after the sidebar returns to Live; only closing and reopening fixes it. Reviewers can go stale for a whole day although its own text says agents change the roster. Usage reloads only when its sidebar row is clicked, so 'Today' never moves while the owner watches it, and a limit reached in that time isn't shown. Only accounts are polled, every 30 seconds (POLL 2s x IDLE_TICKS 15), so the sidebar can say Live for up to 30 seconds after the board dies.",
+        "principle": "Visibility of system status [NNG-H1]; readouts tell the truth [checklist pass 8]; no dead ends [NNG-H3]",
+        "fix": "Add one `reload_section(sec)` used in three places: on sidebar click for every section, on the poll tick for the visible section (10 seconds is enough for Usage), and on the error-to-live transition for all sections. On the transition, also clear the banner immediately. While an error is showing, poll every 2 seconds instead of 30 so recovery appears quickly. Do the same on window activation, so returning to the window is never stale."
+      },
+      {
+        "id": "R4",
+        "severity": 3,
+        "title": "Below about 830 wide, sign-in controls are cut off with no way to reach them",
+        "element": "Settings › Accounts › GitHub 'Sign in with GitHub', Bitbucket/Azure/Slack token field and Connect, at 720x460 (accounts--light-s.png, accounts--dark-s.png, down-accounts-s.png)",
+        "evidence": "Confirmed",
+        "problem": "At the supported minimum, 'Sign in with GitHub' shows only 'Sign' and the API token field runs out of the card. Connect sits past the edge entirely (field position seen in the capture, Connect's place worked out from the row layout). The row is a non-wrapping flex with a 150px text minimum, flex_none controls and a fixed 260px field, inside a card with overflow_hidden, and the page only scrolls vertically. Measured from the captures, GitHub needs about 546px of card, so anything under a roughly 830px window clips. Enter in the field and widening the window are the only workarounds, and nothing tells the owner to do either.",
+        "principle": "Every control at every size; the layout reflows across the whole window range [HIG-MACOS] [NNG-H6]; primary action must be noticeable at each step [NNG-CW]",
+        "fix": "In `row()` add `.flex_wrap()` and give `line()`'s text block `flex_basis(px(200.))`, so controls drop to their own right-aligned line when they don't fit. In token_row and the email/org fields replace `.w(px(260.))` with `.flex_1().min_w(px(140.)).max_w(px(260.))`. Also check Usage's six-option segmented control at 720, which has the same row. If you would rather not wrap, raising window_min_size to 840 wide also fixes it, but that changes the stated minimum and needs the owner's OK."
+      },
+      {
+        "id": "R5",
+        "severity": 3,
+        "title": "The window can't be used from the keyboard, and nothing shows focus",
+        "element": "Settings › sidebar rows, Agent commands, every kit button, segmented control and link, all sizes",
+        "evidence": "Confirmed",
+        "problem": "Sidebar rows and every button are plain divs with on_click. No tab_index, focus_next or focus_prev exists anywhere in taskboard-app, TextField doesn't handle Tab, and the TaskboardSettings key context has no bindings or actions. So sections can't be switched, a button can't be pressed, and Tab won't even move from Atlassian email to API token. The only focus cue in the kit is a text field's border. ⌘W and ⌘, do work, but Esc does nothing at window level. The owner, a developer who lives on the keyboard, must reach for the pointer for every change.",
+        "principle": "Keyboard [WCAG 2.1.1]; focus visible [WCAG 2.4.7]; arrows move within groups, one tab stop per group [MS-KBD]; flexibility and efficiency [NNG-H7]",
+        "fix": "Give kit::btn, kit::link, kit::seg items and sidebar rows a focus handle with tab_index, plus a 2px t.accent ring on focus (3.04:1 or better on all backgrounds used). Bind tab/shift-tab to window.focus_next/focus_prev in the TaskboardSettings context, and enter/space to the focused control's click. Make the sidebar one tab stop with up/down to change section. Add ⌘1 to ⌘7 for sections in that context, matching the main window's ⌘-number pattern, and show them in row tooltips. Bind esc to close the window when no field has focus, and ⌘] / ⌘[ optional."
+      },
+      {
+        "id": "R6",
+        "severity": 3,
+        "title": "Work hours, half of the primary task, has no place in Settings",
+        "element": "Settings › sidebar and Usage section (whole window)",
+        "evidence": "Confirmed",
+        "problem": "The primary task is to check and adjust work hours and usage limits, and the brief calls this window the owner's only way to set these things. settings.rs has no work-hours section, row or link; they are set from a status-bar pill menu in the main window (ui/hours.rs). An owner who opens Settings for this fails the walkthrough's second question: the action isn't there, and nothing says where it is. The Usage text also doesn't mention that work hours affect when agents run.",
+        "principle": "Will users notice the correct action is available [NNG-CW]; one home per object (project rule); options visible [NNG-H6]",
+        "fix": "Needs the owner's OK, because it moves the home of work hours: add a 'Work hours' section directly under Accounts with start, end, days and today's status in 12-hour times, and make the status-bar pill a read-only readout whose click opens that section. If the pill menu is meant to stay as the home, then the brief's rule needs correcting, and the Usage page should carry one line instead: 'Work hours are set from the status bar' with a link that opens the menu."
+      },
+      {
+        "id": "R7",
+        "severity": 3,
+        "title": "History's retention controls render empty, so neither setting can be changed",
+        "element": "Settings › History › 'Keep every event for' and 'Keep day summaries for', right edge of the rows (history--light-m.png)",
+        "evidence": "Confirmed",
+        "problem": "Where each segmented control belongs there is only a faint 4px dot. history_page looks up `{key}_choices` with key 'detail_days', so it reads `detail_days_choices`; the daemon's GET /history sends `detail_choices` and `summary_choices` (days.rs). The list comes back empty and the control draws its padding alone. The owner can't see the current retention or change it, and this window is the only place to do so. This sits inside a section rather than the frame, but it shows in the shell capture and is too serious to leave out.",
+        "principle": "Visibility of system status [NNG-H1]; feature missing at a size or state [severity guide]",
+        "fix": "In history_page, pass the choices key separately: `pick(\"detail_days\", \"detail_choices\", …)` and `pick(\"summary_days\", \"summary_choices\", …)`. Add a parity test that a real GET /history yields four labels for each row. The summary choices include 0, so confirm days_label shows 'Always'."
+      },
+      {
+        "id": "R8",
+        "severity": 3,
+        "title": "Contrast failures on shared tokens used across the sign-in flow",
+        "element": "Settings › sidebar attention badge (dark), primary buttons (dark), field placeholders and link-row URLs (both themes), field and button borders (both themes)",
+        "evidence": "Confirmed",
+        "problem": "Computed from theme.rs. The sidebar badge, the only summary that an account needs attention, is white on #f59e5b in dark: 2.12:1, at 11px. Primary button text in dark is white on #4d72f0: 4.22:1. Placeholders (t.dim) and URLs (t.faint) are 3.04:1 on card in light and 3.80:1 in dark, and those placeholders carry the token format hints. Field edges are 1.48:1 in light (#cfd5dd on white) and 1.63:1 in dark, so the white field on a white card relies on a border that barely shows.",
+        "principle": "Contrast minimum [WCAG 1.4.3]; non-text contrast [WCAG 1.4.11]",
+        "fix": "Badge text in dark: #0f1216 on #f59e5b, 8.87:1 (add a `on_warn` token). Dark accent_btn: #4468e6, 4.81:1. faint and dim: #6b7686 in light (4.60:1), #8d98a6 in dark (5.66:1). In kit::Input use a dedicated field border: #8a95a3 in light (3.04:1), #6f7a88 in dark (3.80:1). These tokens are shared, so recheck the main window after changing them."
+      },
+      {
+        "id": "R9",
+        "severity": 2,
+        "title": "Fixed page header takes a third of the minimum window",
+        "element": "Settings › page header and banner at 720x460 (accounts--light-s.png, down-accounts-s.png)",
+        "evidence": "Confirmed",
+        "problem": "At minimum size the Accounts description wraps to three lines because Agent commands takes width beside it. The header is flex_none outside the scroller, so it uses about 100px of 460, and with the banner about 150px. Only one card and part of the next are visible, and the content the owner came for gets the leftovers. Agent commands also sits low, aligned to the last text line rather than the title (`items_end`).",
+        "principle": "The work dominates [SCR-1]; short heights leave room for content [checklist pass 7]",
+        "fix": "Keep only the title pinned and move the about text into the top of each page's scroller. Put Agent commands on the title row with `items_center` so the description gets the full width (two lines at 720). That returns about 50px at minimum height, and the text scrolls away after that."
+      },
+      {
+        "id": "R10",
+        "severity": 2,
+        "title": "Sidebar order and landing section don't match how the window is used",
+        "element": "Settings › sidebar order; default view Sec::Accounts",
+        "evidence": "Confirmed",
+        "problem": "Accounts is one-time setup, and the recurring job is checking usage. Yet Usage sits third, below History, a rarely touched retention page, and the window always opens on Accounts. Every daily visit takes an extra click and passes a rarely used item. Usage also has no attention count, so a day that hit its limit isn't visible from the sidebar, though Accounts and System each get one.",
+        "principle": "Frequent in view, rare behind [SEC-8]; members grouped by function then frequency [SEC-1]",
+        "fix": "Reorder SECS to Accounts, Usage, Reviewers, Worktrees, QA, History, System (with Work hours after Accounts if R6 is accepted). Open on the last section used, or on Accounts only while an account is missing or needs_owner is true. Show the amber count on Usage when `limited` is true."
+      },
+      {
+        "id": "R11",
+        "severity": 2,
+        "title": "Window size, position and section are forgotten on every open",
+        "element": "Settings › open(): window bounds and view",
+        "evidence": "Confirmed",
+        "problem": "Each open uses Bounds::centered at 900x680 and resets to Accounts with Agent commands off. An owner who keeps it beside the board on a wide display has to place it again each time. The default also hides the Slack card and the Keychain note below the fold (accounts--light-m.png).",
+        "principle": "Windows can be resized and moved and should behave like standard Mac windows [HIG-MACOS]; flexibility for frequent users [NNG-H7]",
+        "fix": "Save window bounds, the last section and `cli` in prefs.rs on close and on section change, and restore them in open(), clamped to the current display and to 720x460."
+      },
+      {
+        "id": "R12",
+        "severity": 2,
+        "title": "Typed sign-in details vanish on Esc or close without warning",
+        "element": "Settings › Accounts › token, email and organization fields; window close",
+        "evidence": "Confirmed",
+        "problem": "field_keys clears the field on Esc at once, with no undo, including a long pasted token or a filled email. Closing with ⌘W or the red button drops everything typed, because the Inputs live in the window. Getting a token back can mean creating a new one, since services show it only once. Switching sections does keep drafts, which is right.",
+        "principle": "User control and freedom; unsaved input survives or asks first [NNG-H3] [NNG-H5]",
+        "fix": "Make Esc in a field blur it and leave the text. Offer clearing only through a small clear button inside the field. When any token field has text at close, use on_window_should_close to ask 'Discard the token you entered?' with Discard and Keep editing, Keep editing as the default."
+      },
+      {
+        "id": "R13",
+        "severity": 1,
+        "title": "Sidebar glyphs are mixed font characters with uneven weight and size",
+        "element": "Settings › sidebar icons, all sizes and themes (accounts--light-m.png)",
+        "evidence": "Confirmed",
+        "problem": "The icons are Unicode characters from fallback fonts: the ✓ is heavy, the ⑂ is tiny and faint, and ◷ History and ◔ Usage are almost the same shape. Labels carry the meaning, so nothing is lost, but the column looks uneven.",
+        "principle": "One look per role [SEC-4]",
+        "fix": "Draw seven 16px stroked icons with the kit's existing canvas `Icon` set, at one stroke width. Give History a clock and Usage a gauge so they differ."
+      },
+      {
+        "id": "R14",
+        "severity": 1,
+        "title": "Buttons and sidebar rows have no pressed state",
+        "element": "Settings › kit::btn, btn_primary, sidebar rows",
+        "evidence": "Confirmed",
+        "problem": "The kit defines hover but no `.active` style, so a click gives no immediate response until the state changes. Slow calls do show 'Checking…' or 'Starting…', which covers the important cases.",
+        "principle": "Feedback; states are designed [NNG-H1]",
+        "fix": "Add `.active(|s| s.bg(t.seg))` to kit::btn and sidebar rows, and `.active(|s| s.opacity(0.8))` to btn_primary."
+      }
+    ],
+    "what_works": [
+      "The live shell is calm and organised: a quiet sidebar, one clear title per page, and cards that hold their structure from 900 to 1400 wide without stretching awkwardly.",
+      "Opening Settings twice brings the existing window forward rather than making a second one, and ⌘, and ⌘W behave as Mac users expect.",
+      "Group labels sit above their cards (GitHub, Bitbucket, and so on), matching the owner's lesson L1, and the sidebar is a short fixed list, so it doesn't run into lesson L2.",
+      "Field drafts live on the window, so switching sections doesn't lose typed text, and the Mac-style drag areas and zoom on double click are handled.",
+      "The 12-hour rule holds ('after 3 AM'), and the Sample pill makes the sample board clear."
+    ],
+    "not_checked": [
+      "Real input: the app is native and no running build was reachable, so the input driver was used only to compute contrast. Clicks, wheel scrolling, drag areas, ⌘W and closing are read from code, not exercised.",
+      "VoiceOver and accessible names and roles: nothing in the app's code sets them, but whether gpui_kit exposes an accessibility tree wasn't visible. Status announcements (WCAG 4.1.3) are unchecked for the same reason.",
+      "Traffic lights: none appear in any capture, so their fit in the 48px sidebar space and the sidebar's top alignment weren't seen.",
+      "Capture label mismatch: captures.txt lists down-accounts-s.png as light, but the image is dark, so a light stopped-board view at 720x460 wasn't seen.",
+      "Usage, QA, Reviewers and Worktrees pages, the stopped state on them, the sidebar's 'Not connected' wording, the sidebar badge, the acct-*, pill-* and usage-* captures: not in this set of 10, so checked from code only or not at all. Normal loading ('Asking the board…' while the board is healthy) wasn't captured either.",
+      "Long lists: Reviewers and Worktrees build every row in a plain loop rather than a virtualized list, which breaks the project rule if those lists grow. That belongs to those sections' reviews, so it isn't rated here.",
+      "Window maximum and full screen, multiple displays, Dark mode at 1400x1000, macOS Increase Contrast and Reduce Motion: no evidence provided.",
+      "Contrast of the service marks (for example the GitHub tile nearly vanishes on the dark background): decorative beside a text name, so not rated.",
+      "One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE]."
+    ]
+  }
+}

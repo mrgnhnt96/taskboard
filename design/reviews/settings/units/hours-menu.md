@@ -1,0 +1,132 @@
+## Verdict
+
+macOS desktop, pointer and keyboard. Reviewed at 1360x860 and the 900x560 minimum window, in light and dark, using 6 captures plus the code excerpts. The app is native, so no control was used with real input; colours were sampled from the capture pixels. First impression: the menu is compact and reads as organised, and it fits at both sizes. No blurred audit was run; this comes from the captures. The weak spots are behaviour, not layout. Counts: 0 Catastrophe, 3 Major, 11 Minor, 1 Cosmetic. Top problem: the pill, checkbox, days and am/pm chips take no keyboard focus and no menu bar item opens the menu, so the keyboard path in this review's scope doesn't exist in the code seen. Close behind: "Today until" can quietly run agents 12 hours longer than meant, and a save that fails as the menu closes is lost without a message.
+
+## Findings
+
+### R1 · 3 Major · The menu can't be opened or fully used from the keyboard
+- **Element:** Main window › footer › work hours pill, and Hours menu › checkbox, day buttons, am/pm chips; all sizes and schemes
+- **Evidence:** Confirmed
+- **Problem:** The pill, checkbox, seven days and chips are click-only divs with no focus handle or key handler (hours.rs 220-247, 361, 461-488, 509). The menu bar has no work hours item (main.rs 29-70). Opening the menu moves focus nowhere, and Enter or Esc in a field sends focus to the main window (m.focus) while the menu stays open, so focus falls behind it. Rated 3 rather than 4 because the only user has a pointer. Key handling in app.rs and Tab handling in text_input.rs are outside the excerpts; hours.rs itself has no Tab handling.
+- **Principle:** Every function works from the keyboard [WCAG 2.1.1]; focus moves into opened UI and returns to the opener [WCAG 2.4.3]; every command is reachable from a menu [HIG-MACOS] [MS-KBD]
+- **Fix:** Give the pill a FocusHandle with tab_index, opening on Space or Enter, and add a View menu item 'Work Hours…'. On open, focus the checkbox. Make the checkbox, the From and to fields, the days (one tab stop, Left and Right move, Space toggles) and Today until one Tab loop inside the menu. Keep Space on the chips, or rely on typing a or p and take them out of the Tab order. After Enter, keep focus on the field. On close, return focus to the pill.
+
+### R2 · 3 Major · Today until can run agents 12 hours too long, and doesn't say what it will do
+- **Element:** Hours menu › Today until field; hours-today-field-light-m.png, hours-on-light-m.png
+- **Evidence:** Confirmed
+- **Problem:** An unset field always starts on pm (hours.rs 64-65), and a time earlier than now becomes tomorrow's (hours.rs 5-6). At 11pm, typing 1 to mean 1am gives 1pm tomorrow; at 3pm, typing 12 to mean midnight gives noon tomorrow. Agents keep starting overnight, and the only sign is the pm chip and the pill text below the menu. The placeholder 'Usual end' hides the actual time and shows even in a closed state (Agents off until Mon 9am), and clearing an override has no control: you must delete the text and leave the field. What the board does with Today until on a day off isn't in the excerpts.
+- **Principle:** Prevent errors with sensible defaults [NNG-H5]; show the result of the action [NNG-CW] [NNG-H1]; recognition rather than recall [NNG-H6]
+- **Fix:** When no half is typed, pick the half that gives the soonest time after now, so 1 at 11pm is 1 AM and 12 at 3pm is 12 AM, with the chip following. While the field is focused or set, show one line under it with the resolved end, such as 'Until tomorrow 1 AM', in 12.5px muted text. Make the placeholder the real value ('5:00 PM'), or 'Not a work day' when today has no hours. When a value is set, add a 24px ✕ in the field, with the tooltip 'Back to usual end'.
+
+### R3 · 3 Major · A failed save leaves unsaved values on show, or is lost when the menu closes
+- **Element:** Hours menu › every control; the save() error path; any size
+- **Evidence:** Confirmed
+- **Problem:** Every change writes to the menu's copy first. If POST /hours fails, the error text shows but the checkbox, day or time stays in its unsaved state, so the menu and the pill disagree (hours.rs 252-270). When the menu closes, close_fields commits the typed time, but the error then lands in m.hours.err with no menu to show it, and the next open rebuilds from the board. The owner walks away believing the hours changed, which decides whether agents start. How the failure looks with the board stopped wasn't captured.
+- **Principle:** System status is shown and commands never report success they didn't have [NNG-H1]; errors say what happened and how to recover [NNG-H9]; unsaved input survives in-app actions [NNG-H3]
+- **Fix:** On failure, put the failed field back to the value in m.state()['work_hours'] and show 'Couldn't save 7:30 PM: <reason>' with a Retry link in the menu. If the menu has closed, reopen it at the pill with that message, so a failure can't go unseen.
+
+### R4 · 2 Minor · An invalid time snaps back with no message
+- **Element:** Hours menu › From, to and Today until fields; on Enter, on blur, on chip click and on menu close
+- **Evidence:** Confirmed
+- **Problem:** commit() puts the old value back for anything that doesn't parse (hours.rs 315-327). Typing 73 shows 7:3, and typing 1375 shows 13:75; both vanish on Enter or on leaving the field with no explanation. The owner can miss that the time never changed, especially when closing the menu straight after.
+- **Principle:** Errors name the field, say what's wrong and how to fix it, next to the field [WCAG 3.3.1] [WCAG 3.3.3] [NNG-H9]
+- **Fix:** When the text doesn't parse and focus stays, keep it, set the field border to t.down and show 'Enter a time like 7:30' in the existing err row. Only put the old value back on Esc. If the menu is closing, keep the revert, but mention it the next time the menu opens, or commit 7:3 as 7:30, which is the likely intent.
+
+### R5 · 2 Minor · All seven days can be turned off with no warning
+- **Element:** Hours menu › day buttons; footer › pill
+- **Evidence:** Confirmed
+- **Problem:** toggle_day has no guard, so the last selected day can be removed and saved (hours.rs 96-102, 508-514). With the checkbox on, agents then may never start, with nothing said in the menu. Without a next_open the pill label trims to a dangling 'Agents off until' (hours.rs 125-126). The code path is confirmed; whether the board sends no next_open for zero days isn't in the excerpts.
+- **Principle:** Constraints instead of error messages [NNG-H5]; visibility of system status [NNG-H1]
+- **Fix:** When no days are selected, show 'No days picked: agents won't start' in the menu, and make the pill read 'Agents off: no days picked'. In pill_view, use the label 'Agents off' whenever next_open is missing, so it never ends on 'until'.
+
+### R6 · 2 Minor · 'No work hours' reads as the opposite of what it means
+- **Element:** Footer › pill, off state; hours-menu-light-m.png
+- **Evidence:** Confirmed
+- **Problem:** 'No work hours' can be read as agents having no hours to work, but it means agents start any time. Only the tooltip says so, and a glance at the footer is how this pill gets used all day. The green dot helps but is the only visible hint.
+- **Principle:** Match the user's words and the real world [NNG-H2]; hover is never the only path to meaning [NNG-FITTS]
+- **Fix:** Change the label to 'Agents start any time' in pill_view (hours.rs 117), which is the tooltip's own wording, and drop the now redundant tooltip text.
+
+### R7 · 2 Minor · Day selection is shown by a nearly invisible fill and looks like a single-choice control
+- **Element:** Hours menu › day buttons; hours-on-light-m.png, hours-on-dark-m.png, hours-on-dark-s.png
+- **Evidence:** Confirmed
+- **Problem:** Selected and unselected fills measure #ffffff against #e9ecf0 in light (about 1.2:1) and #1a1f26 against #232931 in dark (about 1.1:1). In dark the selected day is the darker one, so it looks pressed away, and the text difference is about 1.9:1 (#ffffff against #b3bdcb). The control copies the segmented look, which usually means pick one, but this is a multi-select.
+- **Principle:** State indicators reach 3:1 and colour isn't the only signal [WCAG 1.4.11] [WCAG 1.4.1]; looks like what it is [NNG-H4]
+- **Fix:** Drop the track background. Draw selected days with a t.accent_btn fill and t.on_accent text, the same pair as the checked checkbox, which measures 5.1:1 in light and 4.2:1 in dark. Draw unselected days with no fill, muted text and a 1px border at 3:1. Keep the seven buttons: the set is fixed, so lesson L2 doesn't apply.
+
+### R8 · 2 Minor · Checkbox edge, field edges and the light placeholder are under contrast minimums
+- **Element:** Hours menu › unchecked checkbox (hours-menu-light-m.png), time fields, Usual end placeholder (hours-on-light-m.png)
+- **Evidence:** Likely
+- **Problem:** Sampled from the captures: the unchecked box border is #cfd5dd on white at 1.48:1, the field border is 1.46:1 in light and 1.63:1 in dark, and the placeholder is #768393 on white at 3.86:1 (dark passes at 4.72:1). The unchecked box is the master switch, and its outline is all that shows it. The numbers come from scaled, antialiased pixels because the theme tokens weren't in the excerpts, so the text figure may read slightly low.
+- **Principle:** Control boundaries reach 3:1 [WCAG 1.4.11]; text reaches 4.5:1 [WCAG 1.4.3]
+- **Fix:** Use a border of #8792a2 in light (3.2:1 on white) and #6b7685 in dark (3.6:1 on #1a1f26) for the checkbox and time fields. Set the placeholder to t.muted, which samples near #4b5869, about 7:1 on white.
+
+### R9 · 2 Minor · Times break the 12-hour AM/PM rule and differ from the rest of the app
+- **Element:** Footer › pill label; Hours menu › am/pm chips; fmt.rs clock12
+- **Evidence:** Confirmed
+- **Problem:** The chips say am and pm, and the pill says 9am, 5:30pm (fmt.rs 178-184, hours.rs 359). The same app writes 3:05 PM in hhmm and log_time (fmt.rs 86, 94). The owner's rule is 12-hour times with AM/PM, so one clock has two spellings.
+- **Principle:** Same thing, same name and look everywhere [NNG-H4]; the brief's rule: 12-hour times with AM/PM
+- **Fix:** Make clock12 return '9 AM' and '9:30 AM', and make the chips read AM and PM. Check other clock12 and day_clock callers, and do this together with R10 because the labels get longer.
+
+### R10 · 2 Minor · The longest pill labels probably run past the sidebar
+- **Element:** Footer › pill, 'Work hours until tomorrow 10:30pm'; any window size
+- **Evidence:** Likely
+- **Problem:** The pill is nowrap with no max width (hours.rs 234). The sidebar is about 247px wide at both captured sizes. Scaling from the captured 24-character label (about 194px) gives about 246px for this 33-character label, starting 12px in, so it ends around 258px, past the sidebar edge. No capture shows this state, and the parent's clipping isn't in the excerpts.
+- **Principle:** Text isn't cut off or lost [WCAG 1.4.4]; every control fits at every window size [NNG-H6]
+- **Fix:** Shorten the labels to 'Until 7:30 PM today' and 'Until tomorrow 10:30 PM', and keep the full sentence in the tooltip. Add max_w to the sidebar width minus its padding, and truncate the label with kit::clipped as a backstop.
+
+### R11 · 2 Minor · The menu opens wherever the pointer is, and the tooltip stays on top of the footer
+- **Element:** Footer › pill and Hours menu position; hours-menu-light-m.png, hours-on-light-m.png
+- **Evidence:** Confirmed
+- **Problem:** The menu is placed from the click position (hours.rs 245-246), so it lands in a different place depending on where the pill was clicked. In the captures it starts about 53px right of the pill and cuts the pill above to 'Midn'. In hours-menu-light-m.png the pill's tooltip also stays up with the menu open, covering the Sample board and Settings row.
+- **Principle:** A popover is anchored to its opener (kit::popover's own comment); consistency [NNG-H4]; hover content doesn't get in the way [WCAG 1.4.13]
+- **Fix:** Anchor the menu to the pill's bounds: left edges aligned, bottom 6px above the pill's top, whatever the click point. Attach the tooltip only when the menu is closed, with .when(!open, …).
+
+### R12 · 2 Minor · The one-day override reads as part of the weekly schedule
+- **Element:** Hours menu › row layout; hours-on-light-m.png
+- **Evidence:** Confirmed
+- **Problem:** Today until only lasts today, but it sits at the same 10px gap as the weekly From, to and days, so the menu reads as one list. The day track also breaks the shared edge: rows are inset 4px and the track isn't (hours.rs 460, 490), so it starts at 87 against 91 and ends at 384 against 379 in the capture.
+- **Principle:** Grouped by space [SEC-2]; alignment [SCR-4]; lesson L1 on showing what belongs to a group
+- **Fix:** Add a 1px t.border divider with 10px above and below Today until, the treatment the keep-awake block already uses. Add .mx(px(4.)) to the day track. If the override is used more than the schedule, keep it last, since that is the row closest to the pill.
+
+### R13 · 2 Minor · The am/pm chip looks like a static suffix, and the menu's controls have no hover or pressed state
+- **Element:** Hours menu › am/pm chips, day buttons, checkbox row
+- **Evidence:** Confirmed
+- **Problem:** The chip is a grey label that gives no sign it flips the half, and only a pointer cursor appears on hover. The chip, day buttons and checkbox have no .hover or .active style (hours.rs 347-365, 461-468, 493-507), unlike kit::btn and kit::seg. Typing a or p also sets the half, but nothing tells you that.
+- **Principle:** Each state is designed, and pressing responds visibly [NNG-H1]; looks like what it is [NNG-H6]
+- **Fix:** Add hover and active styles to all three: the chip goes to t.border_2 background on hover, days to t.panel_2. Give the chip the tooltip 'Switch to PM (or type p)'.
+
+### R14 · 2 Minor · Controls expose no role, name or state to assistive tech
+- **Element:** Hours menu › checkbox, days, chips, fields; footer › pill
+- **Evidence:** Likely
+- **Problem:** The checkbox state is a drawn ✓ in a div, the days are a letter in a div with T and S repeated, and nothing in the excerpts sets a role, label or value. Save errors also appear with no announcement. Rated 2 because the only user is a sighted owner, and because this may be a limit of the whole framework, not of this menu. VoiceOver wasn't run.
+- **Principle:** Name, role and value are exposed [WCAG 4.1.2]; status messages are announced [WCAG 4.1.3]
+- **Fix:** If gpui_kit has an accessibility API, give the checkbox the checkbox role with its state, days the names Monday to Sunday with pressed state, and chips the name 'From: AM'. If it has none, record that as a known app-wide limit with the owner rather than patching this menu.
+
+### R15 · 1 Cosmetic · Keep-awake status may have two homes
+- **Element:** Hours menu › keep-awake block; footer › Midna pill
+- **Evidence:** Likely
+- **Problem:** The menu appends a read-only Midna keep-awake line and schedule (hours.rs 437-449, 538), right next to a footer Midna pill. If that pill shows the same status, this breaks one home per object. The block appears in no capture and the Midna pill's code isn't in the excerpts.
+- **Principle:** One fact, one place [SEC-7]; the brief's rule: one home per object
+- **Fix:** If the Midna pill already carries this status, remove the block from the Hours menu; if it doesn't, move the block into the Midna pill's tooltip or menu.
+
+## What works
+
+- The pill states the outcome in plain words ('Agents off until Mon 9am'), and the closed state stands out from open.
+- Time entry is forgiving: 730, 7p and 17:30 all work, with a grey preview of the rest and the chip following what's typed.
+- Changes save at once, with no Save button, and typed text is committed on close, which suits a small popover. Esc in a field puts the value back without closing the menu.
+- The whole schedule fits in one 280px menu at the 900x560 minimum, dims clearly when off, and the focused field has a clear accent border and chip.
+
+## Not checked
+
+- Real input: the native app wasn't available, so no control was used. Findings come from code and captures, and passes 3 and 7 are incomplete.
+- Composition audit and blurred screenshot: these need a browser page. Composition was judged from the captures only.
+- App-level key handling (app.rs) and text_input.rs: Esc with no field focused, Tab between fields, caret position after the colon is inserted, and macOS editing shortcuts.
+- Click-outside dismissal, including whether clicking the pill while the menu is open closes it or closes and reopens it.
+- Board rules for overnight hours (From later than to), From equal to to, Today until on a day off or before From, and rapid saves arriving out of order.
+- Board stopped and save-error states: no down-* capture or error capture was supplied, so R3 and R4 are from code only.
+- States with no capture: set Today until, 'until tomorrow' and open pill labels, the keep-awake block, and Today until focused in dark or at 900x560.
+- Measured contrast comes from scaled capture pixels, not theme tokens. Pill text in the off state wasn't measured because the tooltip overlapped the sample. Focus ring contrast wasn't computed.
+- Text scaling, zoom and the maximum window size: not captured. Motion: not checked.
+- VoiceOver output and real hardware.
+- The Settings window: out of scope, including whether it also holds these settings, which would affect the one-home rule.
+- Users and task were taken from the brief. One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE].

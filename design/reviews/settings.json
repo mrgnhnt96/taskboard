@@ -1,0 +1,550 @@
+{
+ "version": 1,
+ "platform": "macOS desktop, pointer and keyboard",
+ "users": "The board's owner, one experienced developer who keeps the app open all day while many coding agents run",
+ "primary_task": "Get the board connected and accounts signed in, then check and adjust work hours and usage limits so agents keep working when they should",
+ "lessons": "../LESSONS.md",
+ "units": [
+  {
+   "name": "Settings shell",
+   "scope": "The Settings window frame: sidebar, section switching, page header, window sizes, keyboard use, focus, closing, and the loading, failed, connecting and board-stopped states shared by every section. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/settings.rs.L1-416.rs",
+    "settings-code/settings.rs.L417-744.rs",
+    "settings-code/settings.rs.L1589-1660.rs",
+    "settings-code/kit.rs.L1-596.rs",
+    "../../crates/taskboard-app/src/theme.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/accounts--light-l.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/accounts--light-m.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/accounts--light-s.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/accounts--dark-m.png",
+     "state": "accounts dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/accounts--dark-s.png",
+     "state": "accounts dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/history--light-m.png",
+     "state": "history light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/down-accounts-m.png",
+     "state": "down-accounts",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/down-history-m.png",
+     "state": "down-history",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/down-system-m.png",
+     "state": "down-system",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/down-accounts-s.png",
+     "state": "down-accounts",
+     "theme": "light",
+     "size": "720x460"
+    }
+   ]
+  },
+  {
+   "name": "Accounts",
+   "scope": "The Accounts section: GitHub, Bitbucket, Azure DevOps and Slack sign-in, token forms, the GitHub one-time code panel (code only, not captured), signed-in rows, sign in again, Disconnect, Agent commands. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/settings.rs.L745-1115.rs",
+    "settings-code/settings.rs.L417-744.rs",
+    "settings-code/settings.rs.L1589-1660.rs",
+    "settings-code/kit.rs.L1-596.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/accounts--light-l.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/accounts--light-m.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/accounts--light-s.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/accounts--dark-m.png",
+     "state": "accounts dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/accounts--dark-s.png",
+     "state": "accounts dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/accounts-use-token-light-m.png",
+     "state": "accounts-use-token",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/accounts-agent-commands-light-m.png",
+     "state": "accounts-agent-commands",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/accounts-connect-empty-light-m.png",
+     "state": "accounts-connect-empty",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/acct-normal-light-m.png",
+     "state": "acct-normal",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/acct-warm-light-m.png",
+     "state": "acct-warm",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/down-accounts-m.png",
+     "state": "down-accounts",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/down-accounts-s.png",
+     "state": "down-accounts",
+     "theme": "light",
+     "size": "720x460"
+    }
+   ]
+  },
+  {
+   "name": "History and Usage",
+   "scope": "The History section and the Usage section with its daily limit controls, off, on and lifted. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/settings.rs.L1-416.rs",
+    "settings-code/settings.rs.L1116-1241.rs",
+    "settings-code/settings.rs.L1589-1660.rs",
+    "settings-code/kit.rs.L1-596.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/history--light-l.png",
+     "state": "history light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/history--light-m.png",
+     "state": "history light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/history--light-s.png",
+     "state": "history light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/history--dark-m.png",
+     "state": "history dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/history--dark-s.png",
+     "state": "history dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/usage--light-l.png",
+     "state": "usage light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/usage--light-m.png",
+     "state": "usage light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/usage--light-s.png",
+     "state": "usage light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/usage--dark-m.png",
+     "state": "usage dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/usage--dark-s.png",
+     "state": "usage dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/usage-daily-light-m.png",
+     "state": "usage-daily",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/usage-lifted-dark-m.png",
+     "state": "usage-lifted",
+     "theme": "dark",
+     "size": "900x680"
+    }
+   ]
+  },
+  {
+   "name": "QA Reviewers Worktrees",
+   "scope": "The QA, Reviewers and Worktrees sections, including Clean up now and pool settings. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/settings.rs.L1-416.rs",
+    "settings-code/settings.rs.L1242-1286.rs",
+    "settings-code/settings.rs.L1441-1588.rs",
+    "settings-code/settings.rs.L1589-1660.rs",
+    "settings-code/kit.rs.L1-596.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/qa--light-l.png",
+     "state": "qa light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/qa--light-m.png",
+     "state": "qa light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/qa--light-s.png",
+     "state": "qa light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/qa--dark-m.png",
+     "state": "qa dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/qa--dark-s.png",
+     "state": "qa dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/reviewers--light-l.png",
+     "state": "reviewers light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/reviewers--light-m.png",
+     "state": "reviewers light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/reviewers--light-s.png",
+     "state": "reviewers light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/reviewers--dark-m.png",
+     "state": "reviewers dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/reviewers--dark-s.png",
+     "state": "reviewers dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/worktrees--light-l.png",
+     "state": "worktrees light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/worktrees--light-m.png",
+     "state": "worktrees light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/worktrees--light-s.png",
+     "state": "worktrees light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/worktrees--dark-m.png",
+     "state": "worktrees dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/worktrees--dark-s.png",
+     "state": "worktrees dark",
+     "theme": "dark",
+     "size": "720x460"
+    }
+   ]
+  },
+  {
+   "name": "System and Update",
+   "scope": "The System section and flow 15 Update as seen from Settings: checking, available, downloading, ready, failed, restart, plus Restart daemon. Update states other than idle are code only. The sidebar update pill is part of this flow. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/settings.rs.L1287-1440.rs",
+    "settings-code/updater.rs.L1-384.rs",
+    "settings-code/app.rs.L2090-2233.rs",
+    "settings-code/settings.rs.L1589-1660.rs",
+    "settings-code/kit.rs.L1-596.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/system--light-l.png",
+     "state": "system light",
+     "theme": "light",
+     "size": "1400x1000"
+    },
+    {
+     "path": "../captures/settings/system--light-m.png",
+     "state": "system light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/system--light-s.png",
+     "state": "system light",
+     "theme": "light",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/system--dark-m.png",
+     "state": "system dark",
+     "theme": "dark",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/system--dark-s.png",
+     "state": "system dark",
+     "theme": "dark",
+     "size": "720x460"
+    },
+    {
+     "path": "../captures/settings/down-system-m.png",
+     "state": "down-system",
+     "theme": "light",
+     "size": "900x680"
+    }
+   ]
+  },
+  {
+   "name": "Hours menu",
+   "scope": "The work hours pill in the main window footer and the menu it opens: on/off, from and to times, days, Today until. Includes how the menu is reached, dismissed and used by keyboard. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/hours.rs.L1-541.rs",
+    "settings-code/kit.rs.L1-596.rs",
+    "settings-code/fmt.rs.L1-328.rs",
+    "settings-code/main.rs.L78-185.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/hours-menu-light-m.png",
+     "state": "hours-menu",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/hours-on-light-m.png",
+     "state": "hours-on",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/hours-on-dark-m.png",
+     "state": "hours-on",
+     "theme": "dark",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/hours-on-light-s.png",
+     "state": "hours-on",
+     "theme": "light",
+     "size": "900x560"
+    },
+    {
+     "path": "../captures/settings/hours-on-dark-s.png",
+     "state": "hours-on",
+     "theme": "dark",
+     "size": "900x560"
+    },
+    {
+     "path": "../captures/settings/hours-today-field-light-m.png",
+     "state": "hours-today-field",
+     "theme": "light",
+     "size": "1360x860"
+    }
+   ]
+  },
+  {
+   "name": "Usage pill and footer",
+   "scope": "The usage pill in the main window sidebar footer: normal, warm, hot, daily limit, lifted, stale; where a click goes; how it sits with the other footer pills at 1360x860 and 900x560. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/sidebar.rs.L1-273.rs",
+    "settings-code/app.rs.L1847-1930.rs",
+    "settings-code/app.rs.L2090-2233.rs",
+    "settings-code/fmt.rs.L1-328.rs",
+    "settings-code/kit.rs.L1-596.rs",
+    "../../crates/taskboard-app/src/theme.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/pill-normal-light-m.png",
+     "state": "pill-normal",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/pill-daily-light-m.png",
+     "state": "pill-daily",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/pill-warm-light-m.png",
+     "state": "pill-warm",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/pill-hot-light-m.png",
+     "state": "pill-hot",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/pill-stale-light-m.png",
+     "state": "pill-stale",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/pill-hot-dark-s.png",
+     "state": "pill-hot",
+     "theme": "dark",
+     "size": "900x560"
+    },
+    {
+     "path": "../captures/settings/down-main-light-m.png",
+     "state": "down-main",
+     "theme": "light",
+     "size": "1360x860"
+    }
+   ]
+  },
+  {
+   "name": "First launch",
+   "scope": "Flow 14 First launch, Settings side: what a new owner must set up (background service, the tb command, hooks, Midna, accounts), how the app tells them, what order, and what they see when a step is blocked or fails. The shell banners are reviewed elsewhere; judge them only as steps of this flow. Rules that hold here: the window is the owner's only way to set these things; the app is otherwise read-only apart from one-click signals; one home per object; no filler labels; 12-hour times with AM/PM; long lists virtualized. A proposal that breaks a rule is allowed if marked 'needs the owner's OK'. Say for each finding whether it is Confirmed (seen in a capture or the code) or Likely. Give a concrete fix for every finding rated 2 or higher. The Settings window runs 720x460 minimum, 900x680 default. Captures named down-* have the board stopped; acct-*, pill-*, usage-daily and usage-lifted come from a stand-in board with made-up data, so their numbers and wording of reasons are not the product's. The 'Sample' pill only shows on the sample board. The code files are excerpts; each first line names the source file and lines.",
+   "code": [
+    "settings-code/install.rs.L1-349.rs",
+    "settings-code/hooks.rs.L1-411.rs",
+    "settings-code/app.rs.L1781-1847.rs",
+    "settings-code/app.rs.L1931-2089.rs",
+    "settings-code/app.rs.L2090-2233.rs",
+    "../../crates/taskboard-app/src/main.rs"
+   ],
+   "captures": [
+    {
+     "path": "../captures/settings/down-main-light-m.png",
+     "state": "down-main",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/main-sample-light-m.png",
+     "state": "main-sample",
+     "theme": "light",
+     "size": "1360x860"
+    },
+    {
+     "path": "../captures/settings/accounts--light-m.png",
+     "state": "accounts light",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/acct-warm-light-m.png",
+     "state": "acct-warm",
+     "theme": "light",
+     "size": "900x680"
+    },
+    {
+     "path": "../captures/settings/system--light-m.png",
+     "state": "system light",
+     "theme": "light",
+     "size": "900x680"
+    }
+   ]
+  }
+ ]
+}
