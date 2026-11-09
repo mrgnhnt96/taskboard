@@ -332,6 +332,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "delete"]) => delete_task(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
         ("POST", ["tasks", id, "slot", "claim"]) => slot_claim(app, tid(id)?, body),
+        ("GET", ["tasks", id, "slot"]) => slot_held(app, tid(id)?),
         ("POST", ["tasks", id, "slot", "release"]) => slot_release(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
@@ -3544,6 +3545,11 @@ fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
             format!("{me} is on the alone lane: it runs with nothing else in its goal, in the shared checkout, so it takes no slot. To work in one, put it on the slot lane first: tb task set {me} --lane slot."),
         );
     }
+    if t.s("status") != Some("done") && crate::bring::asked(body)?.is_none() {
+        if let Some(path) = crate::slots::held(app, &t)?.map(|s| s.st("path")) {
+            return Ok(holding(&me, &path));
+        }
+    }
     let bring = match crate::bring::asked(body)? {
         Some(files) => Some(crate::bring::plan(app, &t, &files, &crate::bring::picks(body)?)?),
         None => None,
@@ -3601,6 +3607,25 @@ fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
         board::log_event(app, id, board::BOARD, "note", &format!("{}: claimed {slot}{what}", crate::worklane::text("slot")))?;
     }
     Ok(out)
+}
+
+/// A task working in a slot already gets that slot back from a repeat claim, as it is: no wait behind
+/// other tasks' claims and no git, so a `tb` that stopped waiting on the first claim learns it went
+/// through instead of taking a second slot (#930). A done task's claim still goes the long way, which
+/// marks the slot as claimed for its PR visit.
+fn holding(me: &str, path: &str) -> Value {
+    let slot = path.rsplit('/').next().unwrap_or_default();
+    json!({"ok": true, "task": me, "path": path, "slot": slot, "held": true, "brought": [], "left": []})
+}
+
+/// `GET /tasks/T<n>/slot`: the live slot the task holds, for a `tb slot claim` that stopped waiting.
+fn slot_held(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let me = rf("task", id);
+    Ok(match crate::slots::held(app, &t)? {
+        Some(s) => holding(&me, &s.st("path")),
+        None => json!({"ok": true, "task": me, "path": null, "slot": null, "held": false}),
+    })
 }
 
 fn shared_checkout(app: &App, t: &Row, path: &str) -> bool {

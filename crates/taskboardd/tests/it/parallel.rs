@@ -1390,6 +1390,53 @@ fn a_task_outside_a_goal_claims_a_slot_and_lands_on_the_slot_lane() {
 }
 
 #[test]
+fn a_repeat_claim_hands_back_the_slot_the_task_holds_as_it_is() {
+    let b = new_board();
+    git_repo(&b);
+    let t = b.task("Loose", json!({}));
+    working(&b, t);
+    let first = b.post(&format!("tasks/T{t}/slot/claim"), json!({}));
+    assert_eq!(first["held"], Value::Null, "{first}");
+    std::fs::write(Path::new(&slot(&b, 1)).join("loose"), "x\n").unwrap();
+
+    let again = b.post(&format!("tasks/T{t}/slot/claim"), json!({}));
+    assert_eq!((again["slot"].clone(), again["path"].clone(), again["held"].clone()), (json!("slot-1"), json!(slot(&b, 1)), json!(true)), "{again}");
+    assert_eq!(b.app.db.q("SELECT id FROM worktree_slots", p![]).unwrap().len(), 1, "no second slot");
+    assert!(Path::new(&slot(&b, 1)).join("loose").exists(), "the slot is left as it was");
+    assert!(!b.card(t)["log"].to_string().contains("Back in its worktree slot"), "{}", b.card(t)["log"]);
+    assert_eq!(b.get(&format!("tasks/T{t}/slot"))["path"], json!(slot(&b, 1)));
+}
+
+#[test]
+fn claims_racing_for_one_task_end_in_the_same_slot() {
+    let b = new_board();
+    git_repo(&b);
+    let t = b.task("Loose", json!({}));
+    working(&b, t);
+    let claims: Vec<_> = (0..3)
+        .map(|_| {
+            let app = b.app.clone();
+            std::thread::spawn(move || api::dispatch(&app, "POST", &format!("tasks/T{t}/slot/claim"), &Query::new(), &json!({})).map_err(|e| e.message))
+        })
+        .collect();
+    let paths: Vec<Value> = claims.into_iter().map(|h| h.join().unwrap().unwrap()["path"].clone()).collect();
+    assert_eq!(paths, vec![json!(slot(&b, 1)); 3]);
+    assert_eq!(b.app.db.q("SELECT id FROM worktree_slots WHERE task_id = ?", p![t]).unwrap().len(), 1, "one slot for the task");
+}
+
+#[test]
+fn a_task_holding_no_slot_says_so() {
+    let b = new_board();
+    git_repo(&b);
+    let t = b.task("Loose", json!({}));
+    let none = b.get(&format!("tasks/T{t}/slot"));
+    assert_eq!((none["path"].clone(), none["held"].clone()), (Value::Null, json!(false)));
+    b.post(&format!("tasks/T{t}/slot/claim"), json!({}));
+    b.post(&format!("tasks/T{t}/slot/release"), json!({}));
+    assert_eq!(b.get(&format!("tasks/T{t}/slot"))["path"], Value::Null, "given back");
+}
+
+#[test]
 fn a_task_on_the_alone_lane_takes_no_slot() {
     let b = new_board();
     git_repo(&b);
