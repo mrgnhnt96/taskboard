@@ -1809,19 +1809,17 @@ pub struct Landing {
     pub pending: Vec<String>,
     /// Failed (and not cleared with `tb pr not-ours`) or stopped.
     pub failed: Vec<String>,
-    /// No expected checks, and none has posted within the `no_checks_after` grace.
-    pub unposted: bool,
 }
 
 impl Landing {
     pub fn settled(&self) -> bool {
-        self.pending.is_empty() && !self.unposted
+        self.pending.is_empty()
     }
 }
 
 /// What the head's checks still owe a merged PR, by the merge gates' own rules: a skip (`tb pr
 /// skip-checks`, a hook) or stopped PR builds count as passed, a skip covers failures only when a
-/// hook gave it.
+/// hook gave it. A PR whose project posts no checks has nothing to wait for.
 pub fn landing(app: &App, t: &Row, f: &Row, rec: &Value) -> Landing {
     let mut out = Landing::default();
     if crate::prbuilds::stopped(app) {
@@ -1845,16 +1843,12 @@ pub fn landing(app: &App, t: &Row, f: &Row, rec: &Value) -> Landing {
             list.push(name.to_string());
         }
     }
-    match expected_missing(app, t, rec) {
-        Some(missing) if !expected_wait_over(app, t, f, rec) => {
-            for m in missing {
-                if !out.pending.iter().any(|p| p.eq_ignore_ascii_case(&m)) {
-                    out.pending.push(m);
-                }
+    if let Some(missing) = expected_missing(app, t, rec).filter(|_| !expected_wait_over(app, t, f, rec)) {
+        for m in missing {
+            if !out.pending.iter().any(|p| p.eq_ignore_ascii_case(&m)) {
+                out.pending.push(m);
             }
         }
-        None => out.unposted = checks.is_empty() && !no_checks_wait_over(app, f, rec),
-        _ => {}
     }
     out
 }
