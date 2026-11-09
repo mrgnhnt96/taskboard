@@ -26,6 +26,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check required files
+        run: |
+          for f in CNAME index.html 404.html robots.txt sitemap.xml icon.png og-board-v1.jpg \
+            board-goal-light-1000-v1.webp board-goal-light-1600-v1.webp \
+            board-goal-dark-1000-v1.webp board-goal-dark-1600-v1.webp; do
+            test -s "site/$f" || { echo "::error::site/$f is missing or empty"; exit 1; }
+          done
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

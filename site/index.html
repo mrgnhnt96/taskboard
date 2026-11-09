@@ -3,34 +3,76 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Taskboard</title>
-  <meta name="description" content="A native macOS task board for Claude Code sessions running in Midna.">
+  <title>Taskboard: a Mac task board for Claude Code sessions</title>
+  <meta name="description" content="Taskboard is a native Mac task board for Claude Code. Queue tasks and goals, and it starts a Claude terminal in Midna for each one, shows what every terminal is doing, and hands its context on if a terminal closes early. Beta for Apple Silicon, macOS 13 or later.">
+  <link rel="canonical" href="https://taskboard.mrgnhnt.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Taskboard">
+  <meta property="og:url" content="https://taskboard.mrgnhnt.com/">
+  <meta property="og:title" content="Taskboard: a Mac task board for Claude Code sessions">
+  <meta property="og:description" content="Queue tasks and goals, and Taskboard starts a Claude terminal in Midna for each one, shows what every terminal is doing, and hands its context on if a terminal closes early.">
+  <meta property="og:image" content="https://taskboard.mrgnhnt.com/og-board-v1.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Taskboard's goal page on sample data: four tasks marked done, working, needs you and planned">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="icon.png" type="image/png">
   <link rel="apple-touch-icon" href="icon.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://taskboard.mrgnhnt.com/#website",
+        "url": "https://taskboard.mrgnhnt.com/",
+        "name": "Taskboard"
+      },
+      {
+        "@type": "SoftwareApplication",
+        "name": "Taskboard",
+        "url": "https://taskboard.mrgnhnt.com/",
+        "description": "A native Mac task board for Claude Code sessions running in Midna.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS 13 or later",
+        "downloadUrl": "https://github.com/mrgnhnt96/taskboard/releases",
+        "screenshot": "https://taskboard.mrgnhnt.com/board-goal-light-1600-v1.webp"
+      }
+    ]
+  }
+  </script>
   <style>
     :root {
-      --bg: #f4f6fb; --fg: #1f2a4d; --muted: #5b6583; --accent: #2f5ce0; --accent-fg: #fff; --card: #fff; --line: #dfe4f0;
+      --bg: #f4f6fb; --fg: #1f2a4d; --muted: #5b6583; --accent: #2f5ce0; --button: #2f5ce0; --accent-fg: #fff; --card: #fff; --line: #dfe4f0;
     }
     @media (prefers-color-scheme: dark) {
-      :root { --bg: #0f1320; --fg: #e6eaf5; --muted: #98a2bd; --accent: #5a80f0; --accent-fg: #fff; --card: #171c2c; --line: #262d42; }
+      :root { --bg: #0f1320; --fg: #e6eaf5; --muted: #98a2bd; --accent: #5a80f0; --button: #4169e1; --accent-fg: #fff; --card: #171c2c; --line: #262d42; }
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-      background: var(--bg); color: var(--fg);
+      margin: 0; background: var(--bg); color: var(--fg);
       font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     }
-    main { max-width: 560px; padding: 48px 16px; text-align: center; }
+    main { padding: 56px 16px 40px; text-align: center; }
+    .column { max-width: 560px; margin: 0 auto; }
     img.icon { width: 112px; height: 112px; }
     h1 { font-size: 40px; margin: 12px 0 4px; letter-spacing: -0.02em; }
-    p.lede { color: var(--muted); font-size: 18px; margin: 0 0 28px; }
+    p.lede { font-size: 18px; margin: 0 0 12px; }
+    p.does { color: var(--muted); margin: 0 0 28px; }
     a.button {
-      display: inline-block; padding: 12px 24px; border-radius: 10px; background: var(--accent); color: var(--accent-fg);
+      display: inline-block; padding: 12px 24px; border-radius: 10px; background: var(--button); color: var(--accent-fg);
       font-weight: 600; text-decoration: none;
     }
     a.button:hover { filter: brightness(1.08); }
     p.meta { color: var(--muted); font-size: 14px; margin: 10px 0 36px; }
-    ol { text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 18px 40px; margin: 0 0 28px; }
+    figure { max-width: 1000px; margin: 0 auto 36px; }
+    figure img {
+      display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(15, 19, 32, 0.12);
+    }
+    figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+    h2 { font-size: 20px; margin: 0 0 12px; }
+    ol { text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 18px 40px; margin: 0 0 36px; }
     li + li { margin-top: 6px; }
     footer { color: var(--muted); font-size: 14px; }
     a { color: var(--accent); }
@@ -38,24 +80,39 @@
 </head>
 <body>
   <main>
-    <img class="icon" src="icon.png" alt="">
-    <h1>Taskboard</h1>
-    <p class="lede">A native macOS task board for Claude Code sessions running in <a href="https://midna.mrgnhnt.com">Midna</a>.</p>
+    <div class="column">
+      <img class="icon" src="icon.png" width="112" height="112" alt="">
+      <h1>Taskboard</h1>
+      <p class="lede">A native Mac task board for Claude Code sessions running in <a href="https://midna.mrgnhnt.com">Midna</a>.</p>
+      <p class="does">Queue tasks and goals, and Taskboard starts a Claude terminal in Midna for each one, shows what every terminal is doing, and hands its context to the next terminal if one closes early.</p>
 
-    <a class="button" id="download" href="https://github.com/mrgnhnt96/taskboard/releases">Download for Mac</a>
-    <p class="meta" id="meta">Apple Silicon · macOS 13 or later</p>
+      <a class="button" id="download" href="https://github.com/mrgnhnt96/taskboard/releases">Download for Mac</a>
+      <p class="meta" id="meta">Beta · Apple Silicon · macOS 13 or later</p>
+    </div>
 
-    <ol>
-      <li><b>Open the DMG</b> from your Downloads folder.</li>
-      <li><b>Drag Taskboard into Applications.</b></li>
-      <li><b>Open Taskboard.</b> If macOS asks, allow it in <b>Login Items</b> so its daemon keeps the board running.</li>
-    </ol>
+    <figure>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" type="image/webp" srcset="board-goal-dark-1000-v1.webp 1000w, board-goal-dark-1600-v1.webp 1600w" sizes="(max-width: 1032px) calc(100vw - 32px), 1000px">
+        <img src="board-goal-light-1600-v1.webp" srcset="board-goal-light-1000-v1.webp 1000w, board-goal-light-1600-v1.webp 1600w" sizes="(max-width: 1032px) calc(100vw - 32px), 1000px" width="1600" height="800" fetchpriority="high" alt="Taskboard's goal page: a goal's four tasks marked done, working, needs you and planned, the question one agent is waiting on, and the goal's notes, devices, flags and backlog">
+      </picture>
+      <figcaption>A goal on Taskboard's built-in sample board. Your own board shows your projects and Claude terminals.</figcaption>
+    </figure>
 
-    <footer>
-      <a href="https://github.com/mrgnhnt96/taskboard">Source on GitHub</a> ·
-      <a href="https://github.com/mrgnhnt96/taskboard/releases">All releases</a> ·
-      <a href="https://github.com/mrgnhnt96/taskboard/issues/new">Report an issue</a>
-    </footer>
+    <div class="column">
+      <h2>Install</h2>
+      <ol>
+        <li><b>Open the DMG</b> from your Downloads folder.</li>
+        <li><b>Drag Taskboard into Applications.</b></li>
+        <li><b>Open Taskboard.</b> If macOS asks, allow it in <b>Login Items</b> so its daemon keeps the board running.</li>
+        <li><b>Click Install hooks</b> at the foot of the sidebar, so Claude Code sessions report to the board.</li>
+      </ol>
+
+      <footer>
+        <a href="https://github.com/mrgnhnt96/taskboard">Source on GitHub</a> ·
+        <a href="https://github.com/mrgnhnt96/taskboard/releases">All releases</a> ·
+        <a href="https://github.com/mrgnhnt96/taskboard/issues/new">Report an issue</a>
+      </footer>
+    </div>
   </main>
   <script>
     // Point the button straight at the newest release's DMG, betas included.
@@ -69,7 +126,8 @@
           if (!dmg) continue;
           document.getElementById("download").href = dmg.browser_download_url;
           const version = release.tag_name.replace(/^v/, "");
-          document.getElementById("meta").textContent = `Version ${version} · Apple Silicon · macOS 13 or later`;
+          const beta = release.prerelease ? "Beta · " : "";
+          document.getElementById("meta").textContent = `${beta}Version ${version} · Apple Silicon · macOS 13 or later`;
           return;
         }
       })
