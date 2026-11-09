@@ -2408,7 +2408,10 @@ fn print_pr_status(t: &str, v: &Value) {
                     out(&format!("      couldn't read its steps: {e}"));
                 }
                 if let Some(e) = f["tests_error"].as_str() {
-                    out(&format!("      couldn't read its tests: {e}"));
+                    out(&format!("      test results unreadable: {e}"));
+                }
+                for s in f["stages"].as_array().cloned().unwrap_or_default() {
+                    out(&format!("      {}", s.as_str().unwrap_or("")));
                 }
             }
         }

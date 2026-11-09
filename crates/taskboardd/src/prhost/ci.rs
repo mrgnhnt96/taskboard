@@ -23,6 +23,8 @@ pub struct Failures {
     pub tests: Vec<String>,
     /// Why its failed tests couldn't be read, when its steps could.
     pub tests_error: Option<String>,
+    /// Each stage and job the build ran, with its result: read instead when its tests can't be.
+    pub stages: Vec<String>,
 }
 
 /// One CI system the board can ask about a failed check.
@@ -128,8 +130,9 @@ impl CiProvider for AzurePipelines {
     fn failures(&self, _pr: &PrRef, _head: &str, check: &Check) -> HostResult<Failures> {
         let (base, id) = azure_build(check.url.as_deref().unwrap_or("")).ok_or_else(|| "its link isn't an Azure Pipelines build".to_string())?;
         let tl = self.http.call("GET", &format!("{base}/_apis/build/builds/{id}/timeline?api-version=7.1"), None).map_err(|e| azure_error(e, "the build's steps", "Build (read)"))?;
+        let records = tl["records"].as_array().cloned().unwrap_or_default();
         let mut steps = vec![];
-        for r in tl["records"].as_array().cloned().unwrap_or_default() {
+        for r in records.iter() {
             if r["type"] != "Task" || r["result"] != "failed" {
                 continue;
             }
@@ -140,12 +143,12 @@ impl CiProvider for AzurePipelines {
                 None => name,
             });
         }
-        // Test results need their own scope: a token without it still shows the steps.
-        let (tests, tests_error) = match self.failed_tests(&base, &id) {
-            Ok(t) => (t, None),
-            Err(e) => (vec![], Some(azure_error(e, "the build's test results", "Test Management (read)"))),
-        };
-        Ok(Failures { steps, tests, tests_error })
+        // Test results need their own scope: a token without it still shows the steps, and each stage's
+        // and job's result says whether the tests or a later stage failed.
+        match self.failed_tests(&base, &id) {
+            Ok(tests) => Ok(Failures { steps, tests, ..Default::default() }),
+            Err(e) => Ok(Failures { steps, tests_error: Some(tests_error(e)), stages: stage_results(&records), ..Default::default() }),
+        }
     }
 }
 
@@ -171,6 +174,55 @@ fn azure_error(e: String, what: &str, scope: &str) -> String {
         return format!("{e} reading {what}: the Azure DevOps token needs {scope} (a new one goes in Taskboard ▸ Settings ▸ Accounts)");
     }
     format!("{e} reading {what}")
+}
+
+/// Why a build's test results couldn't be read; a 401 or 403 means the token lacks the Test Management scope.
+fn tests_error(e: String) -> String {
+    if e.contains("answered 401") || e.contains("answered 403") {
+        return format!("the Azure DevOps token lacks Test Management (read): {e} (a new token goes in Taskboard ▸ Settings ▸ Accounts)");
+    }
+    format!("{e} reading the build's test results")
+}
+
+/// A build timeline's stages in order, each followed by its jobs: "stage Build: succeeded",
+/// "job Build › Unit tests: failed". A pipeline without stages lists its jobs alone.
+fn stage_results(records: &[Value]) -> Vec<String> {
+    let by_id: std::collections::HashMap<&str, &Value> = records.iter().filter_map(|r| Some((r["id"].as_str()?, r))).collect();
+    let stage_of = |r: &Value| -> Option<String> {
+        let mut at = by_id.get(r["parentId"].as_str()?).copied();
+        for _ in 0..8 {
+            let p = at?;
+            if p["type"] == "Stage" {
+                return p["id"].as_str().map(str::to_string);
+            }
+            at = by_id.get(p["parentId"].as_str()?).copied();
+        }
+        None
+    };
+    let outcome = |r: &Value| r["result"].as_str().or(r["state"].as_str()).unwrap_or("unknown").to_string();
+    let named = |r: &Value| r["name"].as_str().unwrap_or("?").to_string();
+    let ordered = |kind: &str| {
+        let mut v: Vec<&Value> = records.iter().filter(|r| r["type"] == kind).collect();
+        v.sort_by_key(|r| r["order"].as_i64().unwrap_or(i64::MAX));
+        v
+    };
+    let jobs: Vec<(Option<String>, &Value)> = ordered("Job").into_iter().map(|j| (stage_of(j), j)).collect();
+    let mut out = vec![];
+    for s in ordered("Stage") {
+        let sid = s["id"].as_str().map(str::to_string);
+        let shown = s["name"] != "__default";
+        if shown {
+            out.push(format!("stage {}: {}", named(s), outcome(s)));
+        }
+        for (_, j) in jobs.iter().filter(|(st, _)| *st == sid && sid.is_some()) {
+            out.push(match shown {
+                true => format!("job {} › {}: {}", named(s), named(j), outcome(j)),
+                false => format!("job {}: {}", named(j), outcome(j)),
+            });
+        }
+    }
+    out.extend(jobs.iter().filter(|(st, _)| st.is_none()).map(|(_, j)| format!("job {}: {}", named(j), outcome(j))));
+    out
 }
 
 /// A project's own command (`failures_cmd`).
@@ -287,25 +339,56 @@ mod tests {
         assert_eq!(f.steps, vec!["Run tests: exit 1".to_string()]);
         assert_eq!(f.tests, vec!["Suite.login".to_string(), "logout".to_string()]);
         assert!(calls.lock()[0].starts_with("https://dev.azure.com/org/Proj/_apis/build/builds/55/timeline"));
+        assert!(f.tests_error.is_none() && f.stages.is_empty(), "readable tests need no stage list");
     }
 
-    struct NoTestScope;
+    struct NoTestScope(&'static str);
     impl Http for NoTestScope {
         fn call(&self, _m: &str, url: &str, _b: Option<&Value>) -> HostResult<Value> {
             if url.contains("/_apis/test/") {
-                return Err("Azure DevOps answered 401".into());
+                return Err(format!("Azure DevOps answered {}", self.0));
             }
-            Ok(json!({"records": [{"type": "Task", "name": "Run tests", "result": "failed"}]}))
+            Ok(json!({"records": [
+                {"id": "t1", "parentId": "j2", "type": "Task", "name": "Push image", "result": "failed", "order": 1},
+                {"id": "s2", "type": "Stage", "name": "Deploy", "result": "failed", "order": 2},
+                {"id": "s1", "type": "Stage", "name": "Build", "result": "succeeded", "order": 1},
+                {"id": "p1", "parentId": "s1", "type": "Phase", "name": "Build", "order": 1},
+                {"id": "p2", "parentId": "s2", "type": "Phase", "name": "Deploy", "order": 1},
+                {"id": "j1b", "parentId": "p1", "type": "Job", "name": "Lint", "result": "succeeded", "order": 2},
+                {"id": "j1a", "parentId": "p1", "type": "Job", "name": "Unit tests", "result": "succeeded", "order": 1},
+                {"id": "j2", "parentId": "p2", "type": "Job", "name": "Publish", "result": "failed", "order": 1},
+                {"id": "s3", "type": "Stage", "name": "Notify", "result": null, "state": "pending", "order": 3}
+            ]}))
         }
     }
 
     #[test]
-    fn an_azure_token_without_test_scope_still_reads_the_steps() {
+    fn unreadable_azure_test_results_say_so_and_list_each_stage_s_result() {
         let pr = PrRef { host: "github".into(), repo: "a/b".into(), num: 1, url: String::new() };
-        let f = AzurePipelines { http: Box::new(NoTestScope) }.failures(&pr, "h", &check("https://dev.azure.com/org/Proj/_build/results?buildId=55")).unwrap();
-        assert_eq!(f.steps, vec!["Run tests".to_string()]);
-        assert!(f.tests.is_empty());
-        let e = f.tests_error.unwrap();
-        assert!(e.contains("answered 401 reading the build's test results") && e.contains("Test Management (read)"), "{e}");
+        for code in ["401", "403"] {
+            let f = AzurePipelines { http: Box::new(NoTestScope(code)) }.failures(&pr, "h", &check("https://dev.azure.com/org/Proj/_build/results?buildId=55")).unwrap();
+            assert_eq!(f.steps, vec!["Push image".to_string()]);
+            assert!(f.tests.is_empty());
+            let e = f.tests_error.unwrap();
+            assert!(e.starts_with("the Azure DevOps token lacks Test Management (read)") && e.contains(&format!("answered {code}")), "{e}");
+            assert_eq!(
+                f.stages,
+                vec!["stage Build: succeeded", "job Build › Unit tests: succeeded", "job Build › Lint: succeeded", "stage Deploy: failed", "job Deploy › Publish: failed", "stage Notify: pending"]
+            );
+        }
+        let f = AzurePipelines { http: Box::new(NoTestScope("500")) }.failures(&pr, "h", &check("https://dev.azure.com/org/Proj/_build/results?buildId=55")).unwrap();
+        assert_eq!(f.tests_error.as_deref(), Some("Azure DevOps answered 500 reading the build's test results"));
+        assert_eq!(f.stages.len(), 6, "any unreadable test results fall back to the stages");
+    }
+
+    #[test]
+    fn a_pipeline_without_stages_lists_its_jobs() {
+        let records = vec![
+            json!({"id": "s", "type": "Stage", "name": "__default", "result": "failed", "order": 1}),
+            json!({"id": "p", "parentId": "s", "type": "Phase", "name": "Job", "order": 1}),
+            json!({"id": "j", "parentId": "p", "type": "Job", "name": "Build", "result": "failed", "order": 1}),
+            json!({"id": "k", "type": "Job", "name": "Orphan", "state": "inProgress", "order": 2}),
+        ];
+        assert_eq!(stage_results(&records), vec!["job Build: failed", "job Orphan: inProgress"]);
     }
 }
