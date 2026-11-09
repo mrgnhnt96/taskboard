@@ -1,0 +1,99 @@
+## Verdict
+
+macOS desktop app (GPUI), pointer and keyboard. I reviewed captures at 1360x860 and 1568x1250, plus the code; the live app was not run, so nothing was measured or driven with real input. The Weekly review row and the real pre-checked landing are unseen and judged from code. First impression: the Review page reads as organised. The week and four numbers come first, then Suggested fixes with the only filled button, and the time breakdowns sit quieter below. The handover is the weak part. Findings: 0 Catastrophe, 3 Major, 6 Minor, 1 Cosmetic. Top problem: the person can't tell what Plan a goal will do. The label promises a goal, the card says 3, and only a hover tooltip says 2 fixes get checked on another page. Backlog then gives no sign that the checks came from the review, and no on-screen way back.
+
+## Findings
+
+### R1 · 3 Major · Plan a goal doesn't say what it does or which fixes it takes
+- **Element:** Review › Suggested fixes › Plan a goal, 1360x860 and 1568x1250 (review-dark-m.png, review-tall.png)
+- **Evidence:** Confirmed
+- **Problem:** The button plans nothing and makes no goal: it only moves to Backlog with fixes checked. Plan waves with Claude, Create and Start all still follow. The card's pill says 3, but B4 is already In G1, so only 2 will be checked, and no row shows which ones. The only true description, "Check 2 fixes on the Backlog page", is a hover tooltip.
+- **Principle:** Cognitive walkthrough Q3, will users associate the action with the result [NNG-CW]; visibility of system status [NNG-H1]; recognition rather than recall [NNG-H6]
+- **Fix:** Put the count and destination on the button: "Plan 2 fixes in Backlog" (built from v.plan().len()). Make the pill count what's still open, with the rest in words, e.g. "2 open · 1 in a goal". Keep the "In G1" pill so the excluded row explains itself.
+
+### R2 · 3 Major · Backlog doesn't say the checks came from the review, and has no on-screen way back
+- **Element:** Backlog › header and selection bar on arrival from Plan a goal (backlog-picked-dark-m.png stands in)
+- **Evidence:** Confirmed
+- **Problem:** plan() sets the picks and changes page, passing no origin. The person arrives at "Plan from the backlog" with Backlog lit, "N selected" and no mention of the review, so the checks look like leftovers or something they did themselves. The way back is View › Back or ⌘←, neither shown in the window. The sidebar route, Days then Week, opens the newest review, which is the wrong one if they came from an older week.
+- **Principle:** User control and freedom [NNG-H3]; visibility of system status [NNG-H1]; walkthrough Q4, does the user see progress [NNG-CW]
+- **Fix:** Add one line above the list while the handed-over picks stand: "2 fixes from the Oct 29 – Nov 5 review", with a "Back to review" link that reopens that review id. Keep the origin in a new field such as m.backlog.from: Option<(i64, String)>, and clear it on Clear, Esc or when the goal is made. This is navigation only, so it fits the read-only rule. It touches the Backlog header, so agree it with that page's reviewer.
+
+### R3 · 3 Major · The flow's actions can't be reached from the keyboard
+- **Element:** Needs you › Open review; Review › fix rows, Plan a goal, ‹ › and All weeks, Day | Week
+- **Evidence:** Confirmed
+- **Problem:** taskboard-app/src has no tab_index, tab_stop or focusable call, so Tab can't land on any of these. Review has no key for Plan a goal or for opening a fix. Someone working from the keyboard can go to a page with ⌘1–6 and then has to use the pointer. Runtime behaviour wasn't driven, and gpui_kit's own code wasn't read.
+- **Principle:** Keyboard [WCAG 2.1.1]; every command reachable, Tab order and arrows in groups [MS-KBD]
+- **Fix:** Give kit::btn, kit::seg items and clickable rows a focus handle with a tab index, a visible 2px focus ring, and Enter and Space to activate. Make Suggested fixes one tab stop with Up and Down between rows and Enter to open the issue. The same change in kit covers the rest of the app.
+
+### R4 · 2 Minor · Plan a goal silently replaces what was already checked
+- **Element:** Review › Plan a goal → Backlog selection and project filter
+- **Evidence:** Confirmed
+- **Problem:** plan() assigns m.backlog.picked = refs, so any issues the person had checked on Backlog are gone without a word. It also resets the project filter to all with no notice. Someone halfway through picking a goal who looks at the review loses that work, with no undo.
+- **Principle:** Unsaved input survives in-app actions [NNG-H3] [NNG-H5]
+- **Fix:** Add the fixes to the existing picks instead of replacing them, skipping any already there. Say so in the R2 line: "2 fixes from the Oct 29 – Nov 5 review added to 4 checked".
+
+### R5 · 2 Minor · Fixes not yet loaded drop out of the selection with no notice
+- **Element:** Backlog › selection count and New backlog goal, on a backlog over 100 issues, or with a fix triaged after the review loaded
+- **Evidence:** Confirmed
+- **Problem:** selected() and draft() count only picks among rows already held, and the first fetch holds 100 (PAGE). A fix further down isn't counted until the list is scrolled that far. The tooltip says 3, Backlog says 2 selected, and the goal can be planned without the third. Fixes from older weeks are the likeliest to be affected. How often depends on real backlog size and the board's sort order, which I didn't trace.
+- **Principle:** Visibility of system status [NNG-H1]; error prevention [NNG-H5]
+- **Fix:** On handover, fetch the picked issues by id (Paged::fetch already has an ids path) and add them to held before counting. If one is no longer open, say so in the R2 line: "1 of 3 fixes is no longer open".
+
+### R6 · 2 Minor · The bar's key hints fail on arrival, then one key can drop every handed-over fix
+- **Element:** Backlog › selection bar on arrival: Move to goal M, Set priority P, Defer D, Drop X (backlog-picked-dark-m.png)
+- **Evidence:** Confirmed
+- **Problem:** The page takes focus only on a mouse press, and I found no other code that focuses it, so M, P, D and X should do nothing on arrival even though they're shown. After any click they go live, and X or D acts at once on a selection the app made, not the person. bulk() has no confirm, and its toast has no Undo. The Backlog reviewer owns Drop itself; the handover is what widens its reach.
+- **Principle:** Error prevention [NNG-H5]; user control and freedom [NNG-H3]; destructive actions can be undone or confirmed [NNG-H3]
+- **Fix:** Focus plan-page when arriving from Plan a goal so the hints are true. Add an Undo to the "Dropped 2 issues" and "Deferred 2 issues" toasts for about 8 seconds. If Undo isn't possible, confirm with "Drop 2 issues?" when the picks came from a review.
+
+### R7 · 2 Minor · The page Open review lands on never says it's the review
+- **Element:** Review › header and sidebar, 1360x860 (review-dark-m.png)
+- **Evidence:** Confirmed
+- **Problem:** The person presses Open review and lands on a page titled "Oct 29 – Nov 5" with Days lit in the sidebar. The word review appears nowhere on the page; Week in the Day | Week toggle is the only clue. It reads like a Days view, which also makes the page hard to find again.
+- **Principle:** Headings describe their content [WCAG 2.4.6]; visibility of system status [NNG-H1]; match with the real world [NNG-H2]
+- **Fix:** Title it "Weekly review · Oct 29 – Nov 5", keeping "vs Oct 22 – Oct 29" beside it. Leaving the page under Days is fine once the heading names it.
+
+### R8 · 2 Minor · Opening the review clears the to-do while its fixes are still undone
+- **Element:** Needs you › Your to-dos › Weekly review row; Review › mark_seen
+- **Evidence:** Confirmed
+- **Problem:** mark_seen fires as soon as the review draws, including when it's reached from the Week toggle, so the item goes with no feedback. If the person is interrupted before Plan a goal, nothing on Needs you points back to the fixes. Only the bare Backlog count remains. The reminder ends at reading, not at acting, which is the task this flow exists for.
+- **Principle:** Visibility of system status [NNG-H1]; recognition rather than recall [NNG-H6]
+- **Fix:** Needs the owner's OK, because the board's rule today is that a review stays until opened. Keep the row until no fix is untriaged, reworded after opening to "2 fixes from the Oct 29 – Nov 5 review not planned". Its existing Later menu covers putting it off. If the rule stays, show the same line as a quiet note on the Backlog sidebar row.
+
+### R9 · 2 Minor · When filing fixes fails, the page is a dead end
+- **Element:** Review › Suggested fixes, fixes state failed (from code, not captured)
+- **Evidence:** Confirmed
+- **Problem:** The card shows "Couldn’t file these as backlog issues: {error}" over plain suggestions. With no filed fixes there is no Plan a goal, no retry, and no text on what to do next, so the review's suggestions can't be acted on from here.
+- **Principle:** Help users recover from errors [NNG-H9]; no dead ends [NNG-H3]
+- **Fix:** Add a Retry button in the card head, where Plan a goal sits, and end the line with what happens next: "Couldn’t file these as backlog issues: {error}. Retry to file them again." Retry would be a new one-click signal and may need a board endpoint, so it needs the owner's OK.
+
+### R10 · 1 Cosmetic · Kind pills stretch to a fixed width on Review
+- **Element:** Review › Suggested fixes › kind pill (review-dark-m.png, review-tall.png)
+- **Evidence:** Confirmed
+- **Problem:** The 76px wrapper stretches the pill, so Bug sits in a long red bar with empty space to the right of the word. The same pill on Backlog hugs its text.
+- **Principle:** Consistency and standards [NNG-H4]
+- **Fix:** Keep the 76px column but let the pill hug its content, e.g. flex with items_start on the wrapper.
+
+## What works
+
+- The Weekly review item's board headline names the action, e.g. "12.5 h on builds, 3 fixes suggested", and sits under Your to-dos with one Open review button.
+- Suggested fixes sits straight after the key numbers, and Plan a goal is the only filled button on the page, so the eye goes to what to act on.
+- The handover leaves out fixes already in a goal, shows them with an "In G1" pill, and removes the button when nothing is left. Repeat presses can't double-plan.
+- The handover resets the kind filters and project, so no checked fix is hidden by a stale filter. The draft panel lists what's checked by ref and title, and Clear and Esc undo the checks in one step.
+- After Create, the app goes straight to the new goal with a toast, and the review's row later shows where the fix went. All weeks uses a pop-up menu rather than tabs, as L2 asks.
+
+## Not checked
+
+- The live app: it's a GPUI app and no URL was given, so the browser driver wasn't used. No inspect run, no composition audit or blurred screenshot, and no real clicks, keys, hover or scrolling. Findings come from code and captures.
+- Measured contrast and target sizes, for the same reason.
+- The Weekly review row itself: the sample board has none (needs-dark-m.png). Its group, button and menus are read from code only.
+- The real pre-checked landing: backlog-picked-dark-m.png is a stand-in, and captures.txt says two issues checked but the image shows one (B2, "1 selected"). B3 is unchecked, so the handed-over B2 + B3 state was never seen.
+- review-tall.png is listed as dark but renders light, so the lower Review cards were seen in light only and the top of the page in both themes.
+- Minimum window 900x560 and other sizes: no captures. Review's wrap to one column, and Backlog's list beside its fixed 380px draft panel, were not seen.
+- An open issue or task panel during the handover: the task panel floats over the right edge and stays across go(), so it may cover Plan a goal or the draft panel. Not traced.
+- Whether a dropped issue can be restored elsewhere; I only confirmed that bulk() offers no confirm or Undo.
+- Review loading and error states, and the first-review state, beyond reading the code.
+- Backlog's own triage, planning and Create steps, which are the Backlog reviewer's scope; only the handover was judged.
+- VoiceOver output and GPUI's accessibility exposure, and motion.
+- Whether review-notests.rs matches the shipped review.rs; I treated it as the same code.
+- One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE].

@@ -1,0 +1,178 @@
+{
+  "brief": "/private/tmp/claude-501/-Users-mrgnhnt96-Development-rust-taskboard--claude-worktrees-slot-3/455cfdb3-5359-4bbc-bf49-8e2241fe69c0/scratchpad/reviews/insights.json",
+  "unit": "Project releases",
+  "model": "opus",
+  "effort": null,
+  "ok": true,
+  "error": null,
+  "turns": 25,
+  "seconds": 267,
+  "costUsd": 1.0086178,
+  "tokens": {
+    "input": 28,
+    "output": 23680,
+    "cacheWrite": 72190,
+    "cacheRead": 869779
+  },
+  "firstTurn": {
+    "cacheWrite": 1549,
+    "cacheRead": 28414
+  },
+  "systemPrompt": "ultrahand-review-f668883d4485.md",
+  "compactions": 0,
+  "peakContext": 100606,
+  "report": {
+    "verdict": "macOS desktop app (GPUI), reviewed at 900x560, 1360x860, 1568x1250 and 1728x1084. Dark at all sizes; light at 1360x860 and 1568x1250. The evidence is 10 captures plus releases.rs and the code it calls, so nothing was used with real input: the app can't run in the browser driver, which I used only for contrast maths. First impression: the page reads as organised. The orange Next cut band draws the eye first, then v0.13.0, and the monthly rows are calm and easy to scan. The weakness is inside Unreleased, where the checklist and the work list overlap without saying how they relate, and everything older sits about 1000px down even with sample data. Counts: 0 Catastrophe, 3 Major, 6 Minor, 4 Cosmetic. Top problem: the page doesn't clearly answer \"what is in v0.14.0, and what is it still waiting for?\". Three lists and three kinds of count overlap, and a cut that can no longer happen still reads as an ordinary \"1 of 5 ready\" (R2).",
+    "findings": [
+      {
+        "id": "R1",
+        "severity": 3,
+        "title": "Unreleased doesn't say how the Next cut relates to the work listed under it",
+        "element": "Project page › Unreleased section, all sizes (rel-webapp-dark-m.png, rel-webapp-light-m.png, rel-webapp-dark-s.png)",
+        "evidence": "Confirmed",
+        "problem": "The section holds two overlapping lists with no stated link. The heading says '3 tasks · 1 goal' and the pill says '1 of 3 ready', but those 3s count different things. G4 appears twice, as '2 of 3' in the checklist and '2 tasks' in the card just below. T1 and T68 are in the checklist but in no list under it, which may be the sample's data. The owner can't tell whether T65 to T67 ship in v0.14.0 or whether the checklist is the whole cut. Three levels of nested boxes (section, checklist, goal cards) make it harder to see which list is the main one.",
+        "principle": "Failed checks: one fact, one place [SEC-7]; grouped by space, containers only where space can't do it [SEC-2]; consistent naming [NNG-H4]; progress the user can read [NNG-H1]. A primary surface, so 3 Major.",
+        "fix": "Display only, nothing here edits a cut. (1) Reword the pill to say what remains: '2 still to finish' instead of '1 of 3 ready'. (2) Add one line under the Next cut header stating the rule, for example 'Cuts when these finish, with the work below'. Confirm the wording against how `tb` builds a cut, which I couldn't see. (3) Use one count form for a goal in both places: 'G4 2 of 3 done' in the card header too. (4) Label the lower group, for example 'Finished so far', so it isn't read as more checklist. (5) Remove the outer section box around Unreleased, keeping the heading on the page, so only the checklist and goal cards are boxed."
+      },
+      {
+        "id": "R2",
+        "severity": 3,
+        "title": "A cut that can't happen still reads as ordinary progress",
+        "element": "Project page › Next cut header and checklist rows › Standing::Dead (next_cut, Pending::progress); not in the sample, so not captured",
+        "evidence": "Confirmed",
+        "problem": "The code says a dead item means the cut will be dropped, yet the header keeps its warn band and the pill keeps counting: the test asserts '1 of 5 ready' with a dead item present. The owner could wait on a release that will never come. The only reason is a hover tooltip on the small 'Can't finish' label, so it can't be reached by keyboard and can't be read at a glance.",
+        "principle": "Visibility of system status [NNG-H1]; help users diagnose errors [NNG-H9]; every function from the keyboard [WCAG 2.1.1]; hover is never the only path [desktop:HIG-POINTER]",
+        "fix": "When any item is Dead, use the 'failed' tone with t.down_soft and t.down_line on the header and change the pill to 'Will be dropped'. Print `why` as a second line in the row at 12px in t.down, instead of a tooltip, and list dead items first. No retry or edit control here: that would need the owner's OK."
+      },
+      {
+        "id": "R3",
+        "severity": 3,
+        "title": "The page can't be used from the keyboard",
+        "element": "Project page › release rows, task titles, PR links, goal and checklist refs, 'Releases' back link; all sizes",
+        "evidence": "Confirmed",
+        "problem": "Every control here is a div with on_click. releases.rs has no focus handle, tab stop or key handler, and kit::link adds none. A keyboard user can't expand a month row, open a task or follow a PR, and nothing can show focus. Only the app-wide actions reach this page (Cmd+K search, back and forward).",
+        "principle": "Keyboard [WCAG 2.1.1]; focus visible [WCAG 2.4.7]; arrows move within lists, one tab stop per group [MS-KBD]",
+        "fix": "Follow the pattern backlog.rs already uses (track_focus plus on_key_down). Make the list one tab stop with a focused row drawn with a 2px t.accent ring. Up and Down move between rows, Right and Left open and close a release, Enter or Space toggles a release or opens the focused task, and Cmd+Enter follows the PR. Scroll the focused row into view with scroll_to_reveal_item."
+      },
+      {
+        "id": "R4",
+        "severity": 2,
+        "title": "Unreleased and the newest release are unbounded and not virtualized",
+        "element": "Project page › Item::Top and open release rows (rel-webapp-dark-s.png at 900x560, rel-api-dark-m.png at 1360x860, rel-tall.png)",
+        "evidence": "Confirmed",
+        "problem": "Item::Top renders the header, every Unreleased task and every task in the newest release as one list item, and an open older release is also one item. That breaks the owner's rule that long lists are virtualized: only the month rows are. Neither section can be collapsed. At 900x560 Unreleased alone fills the view and v0.13.0 starts below the fold. With sample data, October starts about 1000px down in rel-tall.png, and a 19-task release pushes it further in rel-api-dark-m.png. A busy board will be worse, and 'what shipped' is half of the task.",
+        "principle": "Owner rule: long lists virtualized. Frequent in view, rare behind [SEC-8]; large displays show more in fewer levels [HIG-MACOS]",
+        "fix": "Split Top into list items: header, Unreleased head, Next cut, one item per goal group, and the same for the newest and any open release, so the list virtualizes them. Show the first 8 tasks of a long group with 'Show all 19 tasks' opening in place. Optional: at content widths of 1400 and up, use the roughly 530px left empty at 1728 for Next cut in a right column, if the task panel leaves room."
+      },
+      {
+        "id": "R5",
+        "severity": 2,
+        "title": "A failed release explains nothing when opened",
+        "element": "Project page › v0.11.1 row, open (capture-failed-open-dark-l.png, rel-low.png); the newest-release section when it has failed",
+        "evidence": "Confirmed",
+        "problem": "The chevron promises detail, but the row opens to its headline repeated and then 'No tasks' (work() when groups are empty; the text is cut off at the bottom of the capture). It doesn't say when it failed, or that its work went back to Unreleased, which the code knows from failed_at and its comment. '0 tasks' reads as if it never held anything. If the newest release fails, the section shows 'Failed' and nothing marks the release that is actually current. The 'Failed 1' stat also gives no way to reach the row.",
+        "principle": "Help users recognize, diagnose and recover from errors [NNG-H9]; visibility of system status [NNG-H1]",
+        "fix": "For a failed release, show 'Failed Oct 21, 9:12 PM · its work went back to Unreleased' in place of 'No tasks', and hide the repeated headline. Listing the tasks it held needs a board API change, so that part needs the owner's OK. Keep the 'Latest' pill on the newest release that hasn't failed. Make the Failed stat scroll to the newest failed row when it is above 0, using scroll_to_reveal_item."
+      },
+      {
+        "id": "R6",
+        "severity": 2,
+        "title": "A failed fetch shows 'Loading…' forever",
+        "element": "Project page › work() and project_page(); app.rs lines 1462-1471; not captured",
+        "evidence": "Confirmed",
+        "problem": "`if let Ok(v)` drops every error from GET /releases and GET /releases/:id. If an open row or the Unreleased detail fails while the board is up, the page keeps saying 'Loading…' with no error or way forward. The owner can't tell a slow answer from a broken one.",
+        "principle": "Visibility of system status [NNG-H1]; plain-language errors with a way forward [NNG-H9]; each area has an error state [tablet:AND-CANON]",
+        "fix": "Record errors by key, as data.errs does for tasks, and show 'Couldn't load v0.11.0.' with a Retry link in place of 'Loading…'. Retry only fetches again, so it stays within the read-only rule. Clear the error on the next good answer."
+      },
+      {
+        "id": "R7",
+        "severity": 2,
+        "title": "Opening a row near the window's bottom shows nothing",
+        "element": "Project page › v0.11.0 row at 1728x1084 (rel-open-dark-l.png); v0.11.1 (capture-failed-open-dark-l.png)",
+        "evidence": "Confirmed",
+        "problem": "In rel-open-dark-l.png the row is open but none of its content is in view: the only change is the chevron. v0.11.1 shows one line and a cut-off second. The click handler doesn't scroll, so the owner has to scroll to see whether anything happened. It will happen more at short windows, where more rows sit near the bottom edge.",
+        "principle": "After the action, users see progress [NNG-CW]; visibility of system status [NNG-H1]",
+        "fix": "After a row opens and its detail lands, call scroll_to_reveal_item for that row, as the linked-release path in project_page already does, so the row and its first lines are in view. Don't scroll on close."
+      },
+      {
+        "id": "R8",
+        "severity": 2,
+        "title": "Task rows highlight as a whole but only part of them clicks, and the two lists disagree",
+        "element": "Project page › task_row and next_cut rows (T64 hovered in rel-webapp-dark-m.png; T15 in rel-api-dark-m.png)",
+        "evidence": "Confirmed",
+        "problem": "A task row highlights across its full width, but only the title text opens the task, so a click on the empty middle does nothing. The title also doesn't look like a link until hovered. In the Next cut the rule flips: the coloured ref opens the task and the title does nothing. The same object behaves two ways a few pixels apart, and the owner uses these all day.",
+        "principle": "Consistency and standards [NNG-H4]; frequent targets are large [NNG-FITTS]; looks like what it is [NNG-H6]",
+        "fix": "Make the whole row the target in both lists, opening the task in the right panel or the goal on its page. Keep the PR link as its own target and stop its click from reaching the row. Apply the same hover to checklist rows."
+      },
+      {
+        "id": "R9",
+        "severity": 2,
+        "title": "Filler labels and facts repeated next to each other",
+        "element": "Project page › newest release and open rows (rel-api-dark-m.png, rel-failed-dark-l.png, rel-webapp-dark-m.png)",
+        "evidence": "Confirmed",
+        "problem": "Against the owner's no-filler rule: 'No goal' heads the only group in v2.3.0 and says nothing. '19 tasks' sits twice within 60px, in the meta line and the group header, and a one-group release always repeats its count. An open row repeats its headline as the first line of notes ('Search, keyboard shortcuts' twice in rel-failed-dark-l.png). The breadcrumb's 'webapp' sits right above the 'webapp' title.",
+        "principle": "Owner rule: no filler labels. One fact, one place [SEC-7]; aesthetic and minimalist design [NNG-H8]",
+        "fix": "In work(), skip the head row when the only group has no goal. Drop the group count when a release has a single group. In release_row, show notes without their first line, since the row already shows it. Drop the current-page crumb and show only the 'Releases' back link above the title."
+      },
+      {
+        "id": "R10",
+        "severity": 1,
+        "title": "Nothing says Unreleased is empty",
+        "element": "Project page › api (rel-api-dark-m.png)",
+        "evidence": "Confirmed",
+        "problem": "With no unreleased work and no pending cut the section disappears, so the page starts at v2.3.0. 'Is anything waiting?' is answered only by something being absent, and it looks the same as a section that hasn't loaded. The overview card does say '0 tasks'.",
+        "principle": "Visibility of system status [NNG-H1]",
+        "fix": "Keep a single muted 13px line above the newest release, 'Nothing unreleased', with no box."
+      },
+      {
+        "id": "R11",
+        "severity": 1,
+        "title": "Stacked lists don't share columns, and the page uses six type sizes",
+        "element": "Project page › Next cut, goal cards, month rows (rel-webapp-dark-m.png, rel-low.png)",
+        "evidence": "Confirmed",
+        "problem": "Stacked boxes start their columns on different edges: the checklist title starts about 28px right of the task title directly under it (459 vs 427 in the 1568px capture), and the '1 of 3 ready' text stops about 9px short of the status column. The page also uses 22, 18, 16, 14, 13 and 12px, plus a mono face.",
+        "principle": "Alignment [SCR-4]; type scale [SCR-3]",
+        "fix": "Give checklist rows the task row's ref and title columns by moving the status mark to the right beside its label, or by indenting task rows to match. Set the pill's right edge to the status column. Fold 16 into 18 and 14 into 13."
+      },
+      {
+        "id": "R12",
+        "severity": 1,
+        "title": "Tasks read oldest first while releases read newest first",
+        "element": "Project page › v2.3.0 task list (rel-api-dark-m.png)",
+        "evidence": "Confirmed",
+        "problem": "Tasks run from Oct 21 to Nov 4 down the list, while releases run newest first, so the most recent work in a long release is at the bottom. The order may come from the board or the sample.",
+        "principle": "Consistency and standards [NNG-H4]",
+        "fix": "Sort tasks in a group by finished_at, newest first, to match the release list."
+      },
+      {
+        "id": "R13",
+        "severity": 1,
+        "title": "Long release names lose the part that tells them apart",
+        "element": "Project page › release row name column (96px, truncated); not in the sample",
+        "evidence": "Likely",
+        "problem": "At 14px mono the column holds about 11 characters, measured from the captures. A name like 'v0.14.0-rc.1' truncates at its end, so rc.1 and rc.2 could look the same, and there is no tooltip.",
+        "principle": "Recognition rather than recall [NNG-H6]",
+        "fix": "Widen the name column to 132px; the headline has room to give. Add a tooltip with the full name when it truncates."
+      }
+    ],
+    "what_works": [
+      "The order fits the job: counts, what's coming, what just shipped, then history. The month groups are quick to scan, and their label-above, indented-body layout follows L1.",
+      "Fixed columns keep month rows aligned, and the Failed pill slots in without moving the date or count (rel-low.png).",
+      "Text contrast passes in both themes on every pair computed from theme.rs. The tightest are light accent on the row hover at 4.55:1 and light muted on the hover at 4.84:1. Status never relies on colour alone: each has a word, plus a ring or tick in the checklist. The dark tick is 2.22:1 on its green, but 'Done' sits beside it.",
+      "Dates are 12-hour with AM/PM throughout. The page stays read-only, the 920px column keeps lines readable at 1728, and nothing clips at the 900x560 minimum."
+    ],
+    "not_checked": [
+      "Real input: the native app couldn't be driven, so no control was clicked, hovered, scrolled or dragged. Hover, click and keyboard findings come from code and captured hover states.",
+      "The composition audit and inspect measurements: both need a page. Composition was judged by eye, and contrast was computed from theme.rs hex values. I didn't compute the pill text colours warn_fg and accent_fg, so the '1 of 3 ready' and 'Cutting' pills are unchecked.",
+      "VoiceOver and the accessibility tree: names, roles and expanded state weren't checked. Nothing in releases.rs sets them, but whether GPUI exposes any wasn't tested.",
+      "Text scaling, 200% zoom and macOS Increase Contrast or Reduce Motion.",
+      "The tooltip's behaviour (WCAG 1.4.13), the right task panel open over this page, and how the column behaves with it open at each size.",
+      "States not captured: pending cut 'Cutting', a dead item, a failed newest release, loading, board down, 'No releases yet', and paging past 50 releases. Findings on these come from code.",
+      "Light theme at 900x560 and 1728x1084, and the open and failed rows in light.",
+      "How `tb` decides what goes into a cut, so the suggested wording in R1 needs checking. T1's absence from the lists and the Nov 6 finish dates inside an Oct 31 release may be the sample's data, and the repeated task titles in api are too.",
+      "The Releases overview page and its cards, which are outside this unit. The weekly review and day reading also belong to other pages.",
+      "The sidebar at 900x560 clips its goal text above the footer (rel-webapp-dark-s.png). It's outside this unit, and I couldn't tell whether it scrolls.",
+      "One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE]."
+    ]
+  }
+}
