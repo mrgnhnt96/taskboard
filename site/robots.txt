@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://taskboard.mrgnhnt.com/sitemap.xml
