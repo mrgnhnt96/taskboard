@@ -1776,6 +1776,7 @@ fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &st
                     "session_id" => if t.b("lost") { None } else { t.s("session_id").map(|s| s.to_string()) }],
         )?;
         board::log_event(app, id, board::OWNER, "status", started)?;
+        crate::startwatch::start_over(app, &t)?;
         if waits {
             board::update_task(
                 app,
@@ -2103,6 +2104,7 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
             return err(409, "Only a task that lost its terminal is marked done from here.");
         }
         // Read before `lost` is cleared: what the board found goes in the new terminal's prompt.
+        crate::startwatch::start_over(app, &t)?;
         let finish = (mode == "finish").then(|| crate::lost_done::finish_prompt(&t, &board::tb_cmd(app)));
         let ask = (mode == "ask").then(|| ask_again_prompt(&t, &board::tb_cmd(app), &app.cfg.owner));
         let ctx = board::task_context(&t);

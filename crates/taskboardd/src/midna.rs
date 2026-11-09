@@ -168,19 +168,27 @@ pub fn rpc(sock: &Path, method: &str, params: &Value, timeout: f64) -> std::resu
 
 /// The notification kind the board's notifications go as (their `category`).
 pub const NOTIFY_KIND: &str = "board";
+/// The kind start asks go as: it stays on screen until the owner answers, like an approval.
+pub const NOTIFY_ASK_KIND: &str = "board_ask";
 
-/// Sends a notification (`notify.send`). Midna refuses a category it has no kind for, so when the board's
-/// kind isn't there (a Midna that never had it, or the owner removed it) it adds the kind and sends again.
+/// What `notify.kinds.add` makes for one of the board's kinds.
+fn kind_params(kind: &str) -> Option<Value> {
+    match kind {
+        NOTIFY_KIND => Some(json!({"key": NOTIFY_KIND, "label": "Task board", "description": "Alerts, digests and reviews from the task board"})),
+        NOTIFY_ASK_KIND => Some(json!({"key": NOTIFY_ASK_KIND, "label": "Task board asks", "description": "Starts for you to approve; they stay until you answer",
+                                        "settings": {"stay": 0}})),
+        _ => None,
+    }
+}
+
+/// Sends a notification (`notify.send`). Midna refuses a category it has no kind for, so when one of the
+/// board's kinds isn't there (a Midna that never had it, or the owner removed it) it adds the kind and sends again.
 pub fn notify_send(exe: &Path, params: &Value) -> MResult<Value> {
+    let kind = params["category"].as_str().unwrap_or(NOTIFY_KIND);
     match call_exe(exe, "notify.send", params, CALL_TIMEOUT) {
-        Err(MidnaError::Refused(m)) if m.contains(&format!("no kind `{NOTIFY_KIND}`")) => {
+        Err(MidnaError::Refused(m)) if m.contains(&format!("no kind `{kind}`")) && kind_params(kind).is_some() => {
             // Another send may have added it meanwhile; the second send says whether it's there.
-            let _ = call_exe(
-                exe,
-                "notify.kinds.add",
-                &json!({"key": NOTIFY_KIND, "label": "Task board", "description": "Starts to approve, alerts, digests and reviews from the task board"}),
-                CALL_TIMEOUT,
-            );
+            let _ = call_exe(exe, "notify.kinds.add", &kind_params(kind).unwrap_or_default(), CALL_TIMEOUT);
             call_exe(exe, "notify.send", params, CALL_TIMEOUT)
         }
         r => r,
@@ -628,7 +636,8 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                 gone.push(sid);
             }
         }
-        retire_stale_hook_terminals(app, sessions, &mut gone)
+        retire_stale_hook_terminals(app, sessions, &mut gone)?;
+        crate::startwatch::sweep(app, sessions)
     })?;
     if !gone.is_empty() {
         app.debug(format!("midna: {} gone", plural(gone.len() as i64, "terminal")));
@@ -1272,8 +1281,9 @@ pub fn send_panels(app: &App) {
 /// How far back the first look at Midna's event log reaches (the board keeps its place after that).
 const CLOSED_LOOKBACK_SECS: f64 = 60.0;
 
-/// Applies Midna's `session.closed` events (who closed each terminal) and `session.opened` ones from a
-/// trigger (which trigger opened it, for the owner's standing start grants).
+/// Applies Midna's `session.closed` events (who closed each terminal), `session.exited` and
+/// `session.closed` ones for a start terminal whose agent never checked in (`startwatch`), and
+/// `session.opened` ones from a trigger (which trigger opened it, for the owner's standing start grants).
 pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
     let mut last = app.db.get_setting("midna_event_seq")?.and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     app.db.tx(|| {
@@ -1288,10 +1298,14 @@ pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
                 }
                 continue;
             }
-            if e["kind"] != "session.closed" || age_secs(e["at"].as_str()).is_none_or(|a| a > CLOSED_LOOKBACK_SECS) {
+            let kind = e["kind"].as_str().unwrap_or("");
+            if !matches!(kind, "session.closed" | "session.exited") || age_secs(e["at"].as_str()).is_none_or(|a| a > CLOSED_LOOKBACK_SECS) {
                 continue;
             }
-            board::terminal_closed(app, sid, by)?;
+            if kind == "session.closed" {
+                board::terminal_closed(app, sid, by)?;
+            }
+            crate::startwatch::midna_event(app, kind, sid, &e["data"])?;
         }
         app.db.set_setting("midna_event_seq", Some(&last.to_string()))
     })
@@ -1304,7 +1318,7 @@ static CLOSED_FAILED: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None
 /// that then goes missing just ends for an unknown reason.
 fn read_closed(app: &App) {
     let since = app.db.get_setting("midna_event_seq").ok().flatten().and_then(|s| s.parse::<u64>().ok());
-    match call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed", "session.opened"]}}), 10.0) {
+    match call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed", "session.exited", "session.opened"]}}), 10.0) {
         Ok(events) => {
             *CLOSED_FAILED.lock().unwrap_or_else(|e| e.into_inner()) = None;
             if let Err(e) = closed_events(app, events.as_array().map(|a| a.as_slice()).unwrap_or(&[])) {

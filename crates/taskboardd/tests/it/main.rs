@@ -102,6 +102,7 @@ mod stack_defaults;
 mod start_asks;
 mod start_grants;
 mod start_item;
+mod start_terminal;
 mod startword;
 mod state_board;
 mod step_aim;

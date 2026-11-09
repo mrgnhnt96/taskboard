@@ -207,7 +207,7 @@ fn notify(app: &App, a: &Value) {
     let params = json!({
         "title": format!("Grant trigger '{}' a standing start?", a["trigger"].as_str().unwrap_or("")),
         "body": format!("Terminals it opens may start the tasks they make{scope}.\nAsked in {who}"),
-        "category": "board", "sound": true, "id": notification_id(a), "actions": ["Grant", "Not now"],
+        "category": crate::midna::NOTIFY_ASK_KIND, "sound": true, "id": notification_id(a), "actions": ["Grant", "Not now"],
     });
     let (midna, inbox, waiters) = {
         let sh = app.shared.lock();

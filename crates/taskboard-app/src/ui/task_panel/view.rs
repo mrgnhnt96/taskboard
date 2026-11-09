@@ -546,6 +546,11 @@ pub fn scheduled_at(t: &Value) -> Option<String> {
     })
 }
 
+/// The terminal a start opened while no agent has checked in from it (`start_terminal` on its card).
+fn start_terminal(t: &Value) -> Option<&Value> {
+    obj(t, "start_terminal").filter(|_| s(t, "status") == "queued")
+}
+
 fn starts_by_hand(t: &Value) -> bool {
     matches!(s(t, "status"), "queued" | "planned") && obj(t, "goal").is_none() && !b(t, "starting") && start_retry_at(t).is_none()
 }
@@ -649,6 +654,9 @@ pub fn status_pill(t: &Value) -> Node {
     }
     let k = st_key(t);
     if k == "queued" && b(t, "starting") {
+        if let Some(w) = start_terminal(t).and_then(|_| opt_s(t, "waiting")) {
+            return Node::Pill { s: "Starting".into(), tone: Tone::Queued, tip: Some(w.to_string()) };
+        }
         return pill("Starting", Tone::Queued);
     }
     pill(status_label(k), st_tone(k))
@@ -1426,6 +1434,21 @@ fn now_node(c: &Ctx, t: &Value) -> Node {
     let mut out = Vec::new();
     if let Some(latest) = opt_s(t, "latest").filter(|_| working) {
         out.push(txt(latest, St::TlText));
+    }
+
+    if let Some(term) = start_terminal(t) {
+        let name = opt_s(term, "name").unwrap_or("its terminal");
+        let line = opt_s(t, "waiting").map(str::to_string).unwrap_or_else(|| format!("Opened {name}; waiting for its agent to check in"));
+        let tone = if b(term, "folder_trust") { St::WarnHelp } else { St::TlText };
+        let mut st = vec![
+            txt(line, tone),
+            el(
+                K::Row,
+                vec![c.btn("Start over", Act::new("start", "new", &r, &act), Look::SoftWide, false, Some(&format!("Close {name} and start it again")))],
+            ),
+        ];
+        st.extend(c.note(&act));
+        out.push(el(K::Stack, st));
     }
 
     if let Some(at) = fmt::outside(t) {

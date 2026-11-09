@@ -189,6 +189,29 @@ fn a_start_waiting_on_its_retry_can_try_again_now() {
 }
 
 #[::core::prelude::v1::test]
+fn a_start_whose_agent_never_checked_in_says_why_and_can_start_over() {
+    let goal = json!({"ref": "G1", "title": "Checkout"});
+    let trust = "Waiting on the folder-trust prompt in Add logout";
+    for task in [
+        json!({"ref": "T5", "id": 5, "status": "queued", "starting": true, "waiting": trust,
+               "start_terminal": {"session_id": "s9", "name": "Add logout", "folder_trust": true}}),
+        json!({"ref": "T5", "id": 5, "status": "queued", "starting": true, "goal": goal, "waiting": trust,
+               "start_terminal": {"session_id": "s9", "name": "Add logout", "folder_trust": true}}),
+    ] {
+        let n = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+        let (text, acts) = (json!(view::text(&n)).to_string(), view::acts(&n));
+        assert!(text.contains("Starting") && text.contains(trust), "{text}");
+        assert!(text.contains("Start over"), "{text}");
+        assert_eq!(acts.iter().filter(|a| a.starts_with("start:")).collect::<Vec<_>>(), ["start:new"], "{acts:?}");
+    }
+    // Still opening its terminal: no Start over yet.
+    let task = json!({"ref": "T5", "id": 5, "status": "queued", "starting": true});
+    let n = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    assert!(!json!(view::text(&n)).to_string().contains("Start over"));
+    assert!(!view::acts(&n).iter().any(|a| a.starts_with("start:")), "{:?}", view::acts(&n));
+}
+
+#[::core::prelude::v1::test]
 fn a_task_started_by_hand_can_start_at_a_set_time() {
     let task = json!({"ref": "T5", "id": 5, "status": "queued"});
     let n = tree(&json!({"state": {}, "task": task, "tab": "overview"}));

@@ -99,7 +99,7 @@ fn a_refused_start_asks_the_owner_and_tells_the_agent_not_to_retry() {
     assert_eq!(p["id"], start_notification_id(&format!("T{id}")));
     assert_eq!(p["id"], format!("taskboard-start-T{id}"));
     assert_eq!(p["actions"], json!(["Start", "Not now"]));
-    assert_eq!(p["category"], "board");
+    assert_eq!(p["category"], taskboardd::midna::NOTIFY_ASK_KIND, "a start ask stays until answered");
     let body = p["body"].as_str().unwrap();
     assert!(body.contains("Add login"), "{body}");
     assert!(body.contains("“what do you think of the login page?”"), "{body}");
