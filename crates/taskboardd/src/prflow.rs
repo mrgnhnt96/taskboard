@@ -1246,6 +1246,7 @@ pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, Str
 pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
     let t = board::get_task(app, id)?;
     note_expected(app, &t, rec)?;
+    note_stages(app, &board::get_task(app, id)?, rec, false)?;
     let t = board::get_task(app, id)?;
     gate(app, &t, rec)?;
     let t = board::get_task(app, id)?;
@@ -1323,13 +1324,192 @@ fn not_ours_card(f: &Row, rec: &Value) -> Value {
     n
 }
 
-/// The failed checks that still count: those the board didn't stop itself ([`board_stopped`]) and
-/// `tb pr not-ours` didn't clear for this push. The one verdict the stage, the card, `tb pr merge`,
-/// `tb pr status` and `tb pr skip-checks` all go by.
-pub fn failing(app: &App, f: &Row, rec: &Value) -> Vec<String> {
+/// The failed checks that still count: those the board didn't stop itself ([`board_stopped`]),
+/// `tb pr not-ours` didn't clear for this push, and the project's required checks don't leave out
+/// ([`not_required`]). The one verdict the stage, the card, `tb pr merge`, `tb pr status` and `tb pr
+/// skip-checks` all go by.
+pub fn failing(app: &App, t: &Row, f: &Row, rec: &Value) -> Vec<String> {
     let cleared = str_list(&not_ours(f, rec)["checks"]);
     let stopped = board_stopped(app, f, rec);
-    str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().chain(&stopped).any(|x| x.eq_ignore_ascii_case(c))).collect()
+    let optional = not_required(app, t, f, rec);
+    str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().chain(&stopped).chain(&optional).any(|x| x.eq_ignore_ascii_case(c))).collect()
+}
+
+/// The project's required checks, stages and jobs (`tb project set --required-check`), or none.
+fn required(app: &App, t: &Row) -> Vec<String> {
+    crate::projects::pr_rules(app, t.s("project")).required.unwrap_or_default()
+}
+
+/// The required names that aren't a check on this push: stages or jobs inside a check's build.
+fn required_stages(required: &[String], rec: &Value) -> Vec<String> {
+    let posted: Vec<String> = rec["checks"].as_array().into_iter().flatten().filter_map(|c| c["name"].as_str().map(str::to_string)).collect();
+    required.iter().filter(|r| !posted.iter().any(|c| c.eq_ignore_ascii_case(r))).cloned().collect()
+}
+
+/// Failed checks that don't hold the PR because its project names what must pass (#928): a check that
+/// isn't required itself, and whose build's stages show every required stage in it passed. A check
+/// whose stages haven't been read ([`note_stages`]) or can't be still holds it, and so does one when
+/// none of the required names match anything, as a misspelt name would.
+pub fn not_required(app: &App, t: &Row, f: &Row, rec: &Value) -> Vec<String> {
+    let required = required(app, t);
+    if required.is_empty() {
+        return vec![];
+    }
+    let stages = required_stages(&required, rec);
+    let checks_named = stages.len() < required.len();
+    str_list(&rec["failed"])
+        .into_iter()
+        .filter(|c| !required.iter().any(|r| r.eq_ignore_ascii_case(c)))
+        .filter(|c| !stages_hold(&stages, checks_named, stages_of(f, rec, c).as_deref()))
+        .collect()
+}
+
+/// Whether a failed check that isn't required holds the PR by its build's stages: a required stage in
+/// it didn't pass, or it can't tell.
+fn stages_hold(required: &[String], checks_named: bool, stages: Option<&[crate::prhost::ci::Stage]>) -> bool {
+    if required.is_empty() {
+        return false;
+    }
+    let Some(stages) = stages else { return true };
+    let found = |r: &String, failed: bool| stages.iter().any(|s| s.name.eq_ignore_ascii_case(r) && (!failed || !s.passed()));
+    if required.iter().any(|r| found(r, true)) {
+        return true;
+    }
+    !checks_named && !required.iter().any(|r| found(r, false))
+}
+
+/// A failed check's stages and jobs on this push, as [`note_stages`] read them; None when they
+/// haven't been read or couldn't be.
+pub fn stages_of(f: &Row, rec: &Value, check: &str) -> Option<Vec<crate::prhost::ci::Stage>> {
+    let head = rec["head"].as_str().filter(|h| !h.is_empty())?;
+    let by_check = f.get("stages_by_head")?.get(head)?.as_object()?;
+    let entry = by_check.iter().find(|(c, _)| c.eq_ignore_ascii_case(check))?.1;
+    Some(entry["stages"].as_array()?.iter().filter_map(crate::prhost::ci::Stage::from_json).collect())
+}
+
+/// How long a stage read that failed waits before it's tried again.
+const STAGES_RETRY_SECS: f64 = 15.0 * 60.0;
+
+/// Reads the stages and jobs of this push's failed checks from their CI and keeps them in the flow
+/// (`stages_by_head`, this head's only): for the project's required stages ([`not_required`]), or,
+/// with `for_alert`, to name what holds an approved PR ([`held_alerts`]). Outside any transaction: it
+/// asks the CI. A check read before isn't read again; one whose read failed is, after a while.
+pub fn note_stages(app: &App, t: &Row, rec: &Value, for_alert: bool) -> Result<()> {
+    let head = rec["head"].as_str().unwrap_or("");
+    let Some(pr) = crate::prhost::PrRef::of(t) else { return Ok(()) };
+    let required = required(app, t);
+    if head.is_empty() || (required_stages(&required, rec).is_empty() && !for_alert) {
+        return Ok(());
+    }
+    let f = flow(t);
+    let known = f.get("stages_by_head").and_then(|m| m.get(head)).cloned().unwrap_or(json!({}));
+    let fresh = |c: &str| {
+        known.as_object().into_iter().flatten().find(|(k, _)| k.eq_ignore_ascii_case(c)).is_some_and(|(_, e)| {
+            e["stages"].is_array() || e["at"].as_str().and_then(parse_iso).is_some_and(|at| now_ts() - at < STAGES_RETRY_SECS)
+        })
+    };
+    let cleared = str_list(&not_ours(&f, rec)["checks"]);
+    let stopped = board_stopped(app, &f, rec);
+    let skip = |c: &String| cleared.iter().chain(&stopped).any(|x| x.eq_ignore_ascii_case(c)) || (!for_alert && required.iter().any(|r| r.eq_ignore_ascii_case(c)));
+    let want: Vec<String> = str_list(&rec["failed"]).into_iter().filter(|c| !skip(c) && !fresh(c)).collect();
+    if want.is_empty() {
+        return Ok(());
+    }
+    let rules = crate::projects::pr_rules(app, t.s("project"));
+    let mut read = serde_json::Map::new();
+    for name in want {
+        let check = rec["checks"].as_array().into_iter().flatten().find(|c| c["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&name)));
+        let check = check.and_then(|c| serde_json::from_value::<crate::prhost::Check>(c.clone()).ok());
+        let entry = match check.map(|c| (crate::prhost::ci::provider_for(app, &rules, &c), c)) {
+            None => json!({"error": "the check isn't on the push's record", "at": now_iso()}),
+            Some((Ok(Some(ci)), c)) => match ci.stages(&pr, head, &c) {
+                Ok(Some(list)) => json!({"stages": list.iter().map(|s| s.json()).collect::<Vec<_>>(), "at": now_iso()}),
+                Ok(None) => json!({"error": format!("{} can't list a build's stages", ci.name()), "at": now_iso()}),
+                Err(e) => json!({"error": e, "at": now_iso()}),
+            },
+            Some((Ok(None), _)) => json!({"error": "the board can't read this check's CI", "at": now_iso()}),
+            Some((Err(e), _)) => json!({"error": e, "at": now_iso()}),
+        };
+        read.insert(name, entry);
+    }
+    app.db.tx(|| {
+        let f = flow(&board::get_task(app, t.id())?);
+        let mut entries = f.get("stages_by_head").and_then(|m| m.get(head)).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        entries.extend(read.clone());
+        merge_flow(app, t.id(), fields!["stages_by_head" => json!({head: Value::Object(entries)})]).map(|_| ())
+    })
+}
+
+/// How long an approved PR may be held by failed checks before the owner hears (#928).
+pub const HELD_ALERT_SECS: f64 = 24.0 * 3600.0;
+
+/// Approved PRs held by failed checks for over a day ([`HELD_ALERT_SECS`]): the owner hears once per
+/// push, with the failed checks and stages, and the two ways on: rebase and push (a new build) or
+/// merge past them with `tb pr merge --override`. The hold is timed from the first time this sees it
+/// on the push (`held`).
+pub fn held_alerts(app: &App) -> Result<()> {
+    for t in app.db.q("SELECT * FROM tasks WHERE pr_phase = 'fix' AND pr_num IS NOT NULL", p![])? {
+        let f = flow(&t);
+        let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { continue };
+        let head = rec["head"].as_str().unwrap_or("").to_string();
+        if head.is_empty() || !held_approved(app, &t, &f, &rec) {
+            continue;
+        }
+        let since = f.get("held").filter(|h| h["head"] == head.as_str()).and_then(|h| h["at"].as_str()).and_then(parse_iso);
+        let Some(since) = since else {
+            app.db.tx(|| merge_flow(app, t.id(), fields!["held" => json!({"head": head, "at": now_iso()})]).map(|_| ()))?;
+            continue;
+        };
+        if now_ts() - since < HELD_ALERT_SECS || f.s("held_alerted") == Some(head.as_str()) {
+            continue;
+        }
+        note_stages(app, &t, &rec, true)?;
+        let t = board::get_task(app, t.id())?;
+        app.db.tx(|| held_alert(app, &t, &rec, since))?;
+    }
+    Ok(())
+}
+
+/// The PR's review lets it merge, and only failed checks hold it.
+fn held_approved(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
+    let open = rec["state"].as_str().unwrap_or("OPEN").eq_ignore_ascii_case("OPEN");
+    let review = review_of(f, rec);
+    open && !review.changes && (review_skipped(app, t, f, rec) || approved(app, t, &review)) && !skip_hides_failures(f, rec) && !failing(app, t, f, rec).is_empty()
+}
+
+fn held_alert(app: &App, t: &Row, rec: &Value, since: f64) -> Result<()> {
+    let f = flow(t);
+    let head = rec["head"].as_str().unwrap_or("");
+    let failed = failing(app, t, &f, rec);
+    let what: Vec<String> = failed
+        .iter()
+        .map(|c| match stages_of(&f, rec, c).map(|s| s.into_iter().filter(|s| !s.passed()).map(|s| s.line()).collect::<Vec<_>>()) {
+            Some(bad) if !bad.is_empty() => format!("{c} ({})", bad.join("; ")),
+            _ => c.clone(),
+        })
+        .collect();
+    let (num, task) = (t.i0("pr_num"), rf("task", t.id()));
+    let base = rec["base"].as_str().filter(|b| !b.is_empty()).unwrap_or("its base branch");
+    let days = ((now_ts() - since) / 86400.0).floor().max(1.0) as i64;
+    let text = format!(
+        "PR #{num} for {task} is approved but failed checks have held it for {days} day{}: {}. Rebase it onto {base} and push to start a new build, or merge it past them with tb pr merge {task} --override.",
+        if days == 1 { "" } else { "s" },
+        what.join(", "),
+    );
+    let action = |label: &str, prompt: String, command: String| dispatch::AlertAction { label: label.into(), prompt, command }.json();
+    let fields = json!({
+        "title": format!("PR #{num} is approved but held by failed checks"),
+        "detail": what.join(", "),
+        "project": t.v("project"),
+        "actions": [
+            action("Rebase and push", format!("Claim {task}'s slot with `tb slot claim --task {task}`, rebase its branch onto origin/{base} and push it, so a new build runs on PR #{num}."), format!("tb slot claim --task {task}")),
+            action("Merge anyway", format!("Run `tb pr merge {task} --override` to merge PR #{num} past its failed checks."), format!("tb pr merge {task} --override")),
+        ],
+    });
+    dispatch::add_alert_keyed_with(app, &text, Some(t.id()), t.i("goal_id"), &format!("pr-held:{}:{head}", t.id()), fields)?;
+    board::log_event(app, t.id(), "PR", "status", &format!("PR #{num} approved but held by failed checks: {}", what.join(", ")))?;
+    merge_flow(app, t.id(), fields!["held_alerted" => head])?;
+    Ok(())
 }
 
 /// The failed checks that are builds the board stopped, which count as passed: a cancelled build reads
@@ -1662,7 +1842,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     let f = flow(t);
     // While the board's PR builds are stopped (`prbuilds.rs`), checks count as passed.
     let skipped = checks_skipped(&f, rec).is_some() || crate::prbuilds::stopped(app);
-    if !skip_hides_failures(&f, rec) && !failing(app, &f, rec).is_empty() {
+    if !skip_hides_failures(&f, rec) && !failing(app, t, &f, rec).is_empty() {
         return "fix".into();
     }
     let seen = f.i0("comments_seen");
@@ -1826,7 +2006,7 @@ pub fn landing(app: &App, t: &Row, f: &Row, rec: &Value) -> Landing {
         return out;
     }
     if !skip_hides_failures(f, rec) {
-        out.failed = failing(app, f, rec);
+        out.failed = failing(app, t, f, rec);
     }
     if checks_skipped(f, rec).is_some() {
         return out;
@@ -2018,7 +2198,7 @@ pub fn skip_checks(app: &App, t: &Row, reason: &str, all: bool, who: &str) -> Re
     } else {
         vec![]
     };
-    let failed: Vec<String> = failing(app, &f, &rec).into_iter().filter(|c| !stopped.contains(c)).collect();
+    let failed: Vec<String> = failing(app, t, &f, &rec).into_iter().filter(|c| !stopped.contains(c)).collect();
     if !failed.is_empty() {
         return err(
             409,
@@ -2107,10 +2287,10 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     changes.extend(crate::prpace::note(app, t, &f, rec, &phase, phase_changed)?);
     let build = if crate::prbuilds::stopped(app) {
         "Builds stopped"
-    } else if checks_skipped(&f, rec).is_some() && (skip_hides_failures(&f, rec) || failing(app, &f, rec).is_empty()) {
+    } else if checks_skipped(&f, rec).is_some() && (skip_hides_failures(&f, rec) || failing(app, t, &f, rec).is_empty()) {
         "Checks skipped"
-    } else if !str_list(&rec["failed"]).is_empty() && failing(app, &f, rec).is_empty() {
-        "Failed, not this PR"
+    } else if !str_list(&rec["failed"]).is_empty() && failing(app, t, &f, rec).is_empty() {
+        if not_required(app, t, &f, rec).is_empty() { "Failed, not this PR" } else { "Failed, not required" }
     } else {
         build_label(rec)
     };
@@ -2498,6 +2678,7 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool, streams: 
         };
         let t = board::get_task(app, t.id())?;
         note_expected(app, &t, &rec)?;
+        note_stages(app, &board::get_task(app, t.id())?, &rec, false)?;
         gate(app, &board::get_task(app, t.id())?, &rec)?;
         let t = board::get_task(app, t.id())?;
         if app.db.tx(|| step(app, &t, &rec))? {

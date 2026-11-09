@@ -1986,6 +1986,9 @@ enum ProjectCmd {
         /// A check that must post on every push (repeat for more; none: wait for none; default: config.toml's)
         #[arg(long = "expected-check")]
         expected_check: Vec<String>,
+        /// A check, or a stage or job inside a check's build, that must pass to merge: other failed or cancelled ones don't hold its PRs (repeat for more; none: every failed check holds; default: config.toml's)
+        #[arg(long = "required-check")]
+        required_check: Vec<String>,
         /// Minutes to wait for the expected checks before going on without them (default: config.toml's)
         #[arg(long = "expected-wait")]
         expected_wait: Option<String>,
@@ -7570,6 +7573,11 @@ fn project_line(p: &Value) -> String {
         ),
         None => String::new(),
     };
+    let required = match r["required"].as_array() {
+        Some(l) if !l.is_empty() => format!(" · merges once {} pass", l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")),
+        _ => String::new(),
+    };
+    let expected = expected + &required;
     let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review"), ("agents_merge", "agents merge"), ("owner_review", "owner review")]
         .iter()
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
@@ -7615,7 +7623,7 @@ fn project_line(p: &Value) -> String {
 }
 
 /// `tb project set`'s PR-rule flags as the API's body: `default` sends null (back to config.toml's).
-fn project_rules(approvals: Option<String>, expected: Vec<String>, wait: Option<String>) -> Result<serde_json::Map<String, Value>, String> {
+fn project_rules(approvals: Option<String>, expected: Vec<String>, wait: Option<String>, required: Vec<String>) -> Result<serde_json::Map<String, Value>, String> {
     let mut b = serde_json::Map::new();
     let is_default = |s: &str| s.trim().eq_ignore_ascii_case("default");
     if let Some(a) = approvals {
@@ -7633,6 +7641,14 @@ fn project_rules(approvals: Option<String>, expected: Vec<String>, wait: Option<
     if let Some(w) = wait {
         let v = if is_default(&w) { Value::Null } else { json!(w.trim().parse::<f64>().map_err(|_| format!("--expected-wait takes minutes or default, not “{w}”"))?) };
         b.insert("expected_wait_mins".into(), v);
+    }
+    if !required.is_empty() {
+        let v = match required.as_slice() {
+            [one] if is_default(one) => Value::Null,
+            [one] if one.trim().eq_ignore_ascii_case("none") => json!([]),
+            list => json!(list),
+        };
+        b.insert("required".into(), v);
     }
     Ok(b)
 }
@@ -7672,8 +7688,8 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, stack_merge_default, releases, release_tags, release_script, code_review } => {
-            let mut body = project_rules(approvals, expected_check, expected_wait)?;
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, required_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, stack_merge_default, releases, release_tags, release_script, code_review } => {
+            let mut body = project_rules(approvals, expected_check, expected_wait, required_check)?;
             for (key, flag, v) in [
                 ("min_slots", "--min-slots", min_slots),
                 ("max_slots", "--max-slots", max_slots),

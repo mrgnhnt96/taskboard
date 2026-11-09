@@ -744,6 +744,7 @@ pub fn prs(app: &App) -> Result<()> {
     }
     crate::prhost::limit::reader("hint", || prflow::late_reads(app))?;
     prflow::waits_over(app)?;
+    prflow::held_alerts(app)?;
     crate::prcmds::post_held(app)?;
     crate::prcmds::ask_held_rereviews(app)?;
     prflow::prompts_missed(app)?;

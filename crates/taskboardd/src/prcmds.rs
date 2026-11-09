@@ -649,7 +649,7 @@ pub fn merge_gates(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> Res
     // A build the board stopped isn't a failure (`prflow::failing`): it reads as failed on the host. While
     // PR builds are stopped (`prbuilds.rs`) checks count as passed, as the stage counts them.
     let builds_stopped = crate::prbuilds::stopped(app);
-    let failing = prflow::failing(app, &f, rec);
+    let failing = prflow::failing(app, t, &f, rec);
     if !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
         out.push(Gate::soft(format!("checks failed: {}", failing.join(", "))));
     }
@@ -1177,7 +1177,7 @@ pub fn needs_owner(app: &App, id: i64, body: &Value) -> Result<Value> {
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;
     let head = rec["head"].as_str().unwrap_or("").to_string();
-    let failed = prflow::failing(app, &flow(&t), &rec);
+    let failed = prflow::failing(app, &t, &flow(&t), &rec);
     if failed.is_empty() || head.is_empty() {
         return err(409, format!("Nothing fails on PR #{}'s current push, so there's nothing for the owner to fix.", pr.num));
     }
