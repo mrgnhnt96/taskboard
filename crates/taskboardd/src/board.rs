@@ -432,6 +432,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("pr_base".into(), t.v("pr_base"));
         o.insert("start_retry_at".into(), start_retry_at(t, &status));
         o.insert("start_at".into(), t.v("start_at"));
+        // The terminal its start opened, while no agent has checked in from it (`startwatch.rs`).
+        o.insert("start_terminal".into(), crate::startwatch::card(app, t)?);
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("closed_by_hand".into(), json!(closed_by_hand(app, t)?));
         o.insert("ask".into(), crate::ask::card(t));

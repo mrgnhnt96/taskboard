@@ -1056,7 +1056,7 @@ pub fn start_params(app: &App, group: &str, rows: &[Value]) -> Value {
         });
     }
     let (task, goal) = if first["kind"] == "goal" { (None, first["id"].as_i64()) } else { (first["id"].as_i64(), None) };
-    json!({"title": format!("Start {}?", say_refs(&refs)), "body": lines.join("\n"), "category": "board", "sound": true,
+    json!({"title": format!("Start {}?", say_refs(&refs)), "body": lines.join("\n"), "category": midna::NOTIFY_ASK_KIND, "sound": true,
            "open": alert_url(app, task, goal, None), "id": start_notification_id(group), "actions": ["Start", "Not now"]})
 }
 
