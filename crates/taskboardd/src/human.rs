@@ -58,12 +58,53 @@ pub fn refuse_bare(body: &Value) -> Result<()> {
     if body_str(body, "detail").trim().is_empty() {
         return err(400, "A human task needs its steps in --detail: what to do, in order, with the links to open.");
     }
+    if is_release_cut(&body_str(body, "title"), &body_str(body, "detail")) {
+        return err(
+            400,
+            "A release cut is a command an agent runs (tb release cut v<version>), so it's never a human task: \
+             make it an agent task (tb task new \"Cut v<version>\" --no-pr --detail \"…\") and have the task that needs it run tb wait-for T<n> on it.",
+        );
+    }
     for k in ["stack_on", "same_pr", "locks", "alone"] {
         if body_has(body, k) && !body[k].is_null() {
             return err(400, format!("A human task has no terminal, so it takes no {}.", k.replace('_', "-")));
         }
     }
     Ok(())
+}
+
+/// The words of `s`, lowercased, with apostrophes kept (curly ones made straight) so "don't" stays one word.
+fn words(s: &str) -> Vec<String> {
+    s.to_lowercase().replace('’', "'").split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|w| !w.is_empty()).map(|w| w.to_string()).collect()
+}
+
+fn is_release_word(w: &str) -> bool {
+    w == "release" || w == "releases"
+}
+
+/// A task that is a release cut: its detail runs `tb release cut`, or its title names a cut and a release
+/// ("Cut v1.4", "Cut the release"). An agent runs that command, so it's an agent task, never a human one.
+pub fn is_release_cut(title: &str, detail: &str) -> bool {
+    let version = title.split_whitespace().any(|t| {
+        let t = t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+        t.strip_prefix('v').is_some_and(|n| n.contains('.') && n.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    });
+    let title = words(title);
+    let cut = title.iter().any(|w| w == "cut");
+    (cut && (version || title.iter().any(|w| is_release_word(w)))) || words(detail).windows(3).any(|w| w[0] == "tb" && w[1] == "release" && w[2] == "cut")
+}
+
+/// A sentence of a task's detail that tells its agent not to cut a release (or not to release) itself,
+/// like "Don't cut a release yourself": work an agent can do belongs in a task of its own.
+pub fn forbids_release(detail: &str) -> bool {
+    detail.split(['.', '!', '?', ';', '\n']).any(|sentence| {
+        let w = words(sentence);
+        let Some(neg) = w.iter().position(|w| matches!(w.as_str(), "don't" | "dont" | "never" | "not" | "shouldn't" | "mustn't" | "won't")) else {
+            return false;
+        };
+        let after = &w[neg..];
+        after.iter().any(|w| is_release_word(w) || w == "releasing") && after.iter().any(|w| matches!(w.as_str(), "cut" | "cutting" | "yourself" | "itself"))
+    })
 }
 
 /// The refusal for anything that would start a terminal on a human task.

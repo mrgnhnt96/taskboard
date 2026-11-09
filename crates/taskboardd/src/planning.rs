@@ -135,6 +135,24 @@ pub fn tiny_prs_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
     )])
 }
 
+/// Plan-check warning on a goal task whose detail tells its agent not to cut a release itself ("Don't cut
+/// a release yourself"). A release cut is a command an agent runs, so the plan makes it a task of its own
+/// that the task waits for; told not to, the agent asks the owner for it in a human task instead.
+pub fn release_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
+    let mut out = vec![];
+    for t in crate::board::goal_tasks(app, g.id())? {
+        if t.s("status") == Some("done") || crate::human::is(&t) || !crate::human::forbids_release(&t.st("detail")) {
+            continue;
+        }
+        let r = crate::util::rf("task", t.id());
+        out.push(format!(
+            "{r}'s detail tells its agent not to cut a release itself, but a release cut is a command an agent runs (tb release cut v<version>): \
+             plan it as its own --no-pr task and have {r} wait for it (--waits-for), never as a human task."
+        ));
+    }
+    Ok(out)
+}
+
 /// Where a guide came from, and why a file set for it wasn't used.
 struct Pick {
     text: String,

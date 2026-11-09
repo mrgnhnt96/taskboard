@@ -218,6 +218,23 @@ fn it_needs_its_steps() {
 }
 
 #[test]
+fn a_release_cut_is_never_a_human_task() {
+    let b = new_board();
+    b.session("s1");
+    for (title, detail) in [
+        ("Cut a release so T1531 can verify the build", STEPS),
+        ("Cut v1.4.0", STEPS),
+        ("Ship the build", "1. Run tb release cut v1.4.0 in the checkout.\n2. Tell me when it's out."),
+    ] {
+        let (status, msg) = b.report("tb.new_task", "s1", json!({"title": title, "detail": detail, "project": "webapp", "kind": "human"})).unwrap_err();
+        assert_eq!(status, 400, "{title}");
+        assert!(msg.contains("never a human task") && msg.contains("--no-pr") && msg.contains("tb wait-for"), "{title}: {msg}");
+    }
+    let id = id_of(&b.human("s1", json!({"title": "Buy the release domain"})));
+    assert!(taskboardd::human::is(&b.row(id)), "a title with release but no cut is still a human task");
+}
+
+#[test]
 fn talking_it_over_opens_claude_in_its_checkout_with_its_steps() {
     let b = new_board();
     b.session("s1");
