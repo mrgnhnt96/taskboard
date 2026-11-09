@@ -135,7 +135,8 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         projects::refuse_without_prs(app, &project)?;
     }
     // A new ticket for a project whose work gets none is quietly dropped, as the old board did.
-    let quiet_none = jmode == "create" && !ships;
+    let no_pr = !ships || (body_has(body, "ships_pr") && projects::clean_ships_pr(&body["ships_pr"])? == Some(0));
+    let quiet_none = jmode == "create" && no_pr;
     if quiet_none {
         jmode = "none".into();
     }

@@ -1105,3 +1105,49 @@ fn with_a_guide_an_agent_writes_the_ticket_text() {
     assert_eq!(board::job_args(&b.jobs("kind = 'jira'").pop().unwrap()).st("description"), "As a user, I sign in.");
     assert_eq!(b.task(id).st("ticket_text"), "As a user, I sign in.");
 }
+
+#[test]
+fn setting_no_pr_or_no_jira_drops_the_pending_find_or_make_job() {
+    let b = board_with(|_, _| {});
+    let pending = |t: i64| b.jobs(&format!("kind = 'jira' AND state = 'pending' AND json_extract(target, '$.task') = {t}")).len();
+    let t = b.new_task(json!({"jira": "create"}));
+    assert_eq!(pending(t), 1);
+    b.post(&format!("/tasks/T{t}"), json!({"ships_pr": "no"}));
+    assert_eq!(pending(t), 0, "a task that ends without a PR needs no ticket");
+
+    let u = b.new_task(json!({"jira": "create"}));
+    assert_eq!(pending(u), 1);
+    b.post(&format!("/tasks/T{u}"), json!({"jira_key": "none"}));
+    assert_eq!(pending(u), 0, "--jira none drops the ask");
+    assert!(b.task(u).b("jira_none"));
+
+    let keep = b.new_task(json!({"jira": "create"}));
+    assert_eq!(pending(keep), 1, "another task's job stays");
+}
+
+#[test]
+fn a_planned_item_with_pr_no_queues_no_jira_job() {
+    let b = board_with(|_, _| {});
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    let r = taskboardd::reports::handle(
+        &b.app,
+        json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"),
+               "tasks": [{"title": "Plain", "detail": "d", "jira": "create"}, "Notes::write them::pr=no"]}),
+        false,
+    )
+    .unwrap();
+    let r2 = taskboardd::reports::handle(
+        &b.app,
+        json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"),
+               "tasks": [{"title": "Notes two", "detail": "d", "jira": "create", "ships_pr": "no"}]}),
+        false,
+    )
+    .unwrap();
+    let id = |r: &Value, i: usize| -> i64 { r["created"][i].as_str().unwrap()[1..].parse().unwrap() };
+    let notes = id(&r, 1);
+    assert_eq!(b.task(notes).i("ships_pr"), Some(0));
+    assert_eq!(b.task(id(&r2, 0)).i("ships_pr"), Some(0));
+    assert!(b.jobs("kind = 'jira'").iter().all(|j| j.s("target").is_none_or(|t| !t.contains(&format!("\"task\":{notes}")))));
+}

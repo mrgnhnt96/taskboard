@@ -90,6 +90,17 @@ pub fn drop_pending_creates(app: &App, project: &str) -> Result<()> {
     Ok(())
 }
 
+/// The task needs no ticket (it ends without a PR, or opted out with `--jira none`): its find-or-make
+/// job that nothing has started yet is cancelled, so no ticket is made for it.
+pub fn drop_pending_for_task(app: &App, task_id: i64) -> Result<()> {
+    app.db.x(
+        "UPDATE jobs SET state = 'cancelled', updated_at = ? WHERE kind = 'jira' AND state = 'pending' \
+         AND json_extract(args, '$.op') = 'create' AND json_extract(target, '$.task') = ?",
+        p![now_iso(), task_id],
+    )?;
+    Ok(())
+}
+
 pub fn request_create_for_task(app: &App, t: &Row) -> Result<i64> {
     create_for_task(app, t, None)
 }
