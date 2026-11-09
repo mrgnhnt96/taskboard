@@ -1244,6 +1244,9 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
                             if let Some(e) = &fl.tests_error {
                                 row["tests_error"] = json!(e);
                             }
+                            if !fl.stages.is_empty() {
+                                row["stages"] = json!(fl.stages);
+                            }
                             mine = Some(fl);
                         }
                         Err(e) => row["error"] = json!(e),
