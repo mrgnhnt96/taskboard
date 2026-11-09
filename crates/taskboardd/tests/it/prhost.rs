@@ -851,7 +851,7 @@ fn the_owners_override_merges_past_changes_asked_for_and_checks_and_records_what
     assert!(e.contains("B asked for changes") && e.contains("lint") && e.contains("e2e"), "{e}");
     b.post(&url, json!({"override": true}));
     assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
-    assert_eq!(b.phase(id), "merged");
+    assert_eq!(b.phase(id), "landing", "merged with lint running and e2e not posted: it waits for them");
     assert!(logged(&b, id, "overrode the merge gates and merged PR #9 while"), "logged");
     assert!(logged(&b, id, "B asked for changes"), "the gates open then");
     let gates = b.flow(id)["owner_override"]["gates"].as_array().cloned().unwrap_or_default();

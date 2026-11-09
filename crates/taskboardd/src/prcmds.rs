@@ -636,6 +636,15 @@ pub fn merge_gates(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> Res
     if prflow::conflicting(&f, rec) {
         out.push(Gate::hard(format!("it conflicts with its base branch {}: rebase onto it and push first", rec["base"].as_str().unwrap_or("main"))));
     }
+    // Checks read on a head older than the branch's last push are that head's, not what would merge (#933).
+    if let Some(pushed) = prflow::newer_push(app, t, rec) {
+        out.push(Gate::soft(format!(
+            "its branch was pushed at {} but {} still shows {}: wait for that push's checks (tb pr wait)",
+            prflow::short_sha(&pushed),
+            PrRef::of(t).map_or("the host".to_string(), |p| prhost::limit::label(&p.host)),
+            prflow::short_sha(rec["head"].as_str().unwrap_or("")),
+        )));
+    }
     // A failure holds the merge unless the owner's hook skipped it; `tb pr skip-checks` doesn't cover one.
     // A build the board stopped isn't a failure (`prflow::failing`): it reads as failed on the host. While
     // PR builds are stopped (`prbuilds.rs`) checks count as passed, as the stage counts them.

@@ -59,6 +59,7 @@ pub fn label(phase: &str) -> &str {
         "merge" => "Ready to merge",
         "waits" => "Waits on base",
         "stack" => "Waits on stack",
+        "landing" => "Merged, checks still running",
         "merged" => "Merged",
         "declined" => "Closed",
         other => other,
@@ -176,12 +177,17 @@ pub fn late_reads(app: &App) -> Result<()> {
 /// PRs held at `checks` only by a wait that has run out since (the `no_checks_after` grace, or the
 /// expected checks' wait), stepped again with their last record. The wait ends with time, not with a
 /// read: a PR a healthy feed covers isn't polled, and one with no checks sends no event, so nothing
-/// else moves it on to review. The read time (`checked_at`) stays the last read's.
+/// else moves it on to review. The read time (`checked_at`) stays the last read's. A merged PR waiting on
+/// its head's checks (`landing`) moves on to merged the same way.
 pub fn waits_over(app: &App) -> Result<()> {
-    for t in app.db.q("SELECT * FROM tasks WHERE pr_phase = 'checks' AND pr_num IS NOT NULL", p![])? {
+    for t in app.db.q("SELECT * FROM tasks WHERE pr_phase IN ('checks', 'landing') AND pr_num IS NOT NULL", p![])? {
         let f = flow(&t);
         let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { continue };
-        if phase_of(app, &t, &rec) == "checks" {
+        let still = match t.st("pr_phase").as_str() {
+            "landing" => after_merge(app, &t, &rec) == "landing",
+            _ => phase_of(app, &t, &rec) == "checks",
+        };
+        if still {
             continue;
         }
         gate(app, &t, &rec)?;
@@ -1183,7 +1189,7 @@ fn follow_up(app: &App, t: &Row, slot: &Row, left: &Leftovers, branch: &str) -> 
     board::get_task(app, id)
 }
 
-fn short_sha(sha: &str) -> &str {
+pub fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(10)]
 }
 
@@ -1649,7 +1655,7 @@ pub fn skip_hides_failures(f: &Row, rec: &Value) -> bool {
 
 pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     match rec["state"].as_str().unwrap_or("OPEN").to_uppercase().as_str() {
-        "MERGED" => return "merged".into(),
+        "MERGED" => return after_merge(app, t, rec).into(),
         "CLOSED" | "DECLINED" | "SUPERSEDED" => return "declined".into(),
         _ => {}
     }
@@ -1792,6 +1798,117 @@ pub fn missing_wait_mins(app: &App, t: &Row, rec: &Value) -> f64 {
 /// (the stage moves on, and `tb pr merge` doesn't wait on it).
 pub fn expected_wait_over(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
     head_waited(f, rec) >= missing_wait_mins(app, t, rec) * 60.0
+}
+
+/// The checks on the head a PR merged with that haven't finished yet (#933). Its task stays open on
+/// `landing` ("Merged, checks still running") until they do, and the owner hears if they fail: the base
+/// branch now carries that head.
+#[derive(Debug, Default, PartialEq)]
+pub struct Landing {
+    /// Still running, or expected and not posted within their wait.
+    pub pending: Vec<String>,
+    /// Failed (and not cleared with `tb pr not-ours`) or stopped.
+    pub failed: Vec<String>,
+}
+
+impl Landing {
+    pub fn settled(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
+/// What the head's checks still owe a merged PR, by the merge gates' own rules: a skip (`tb pr
+/// skip-checks`, a hook) or stopped PR builds count as passed, a skip covers failures only when a
+/// hook gave it. A PR whose project posts no checks has nothing to wait for.
+pub fn landing(app: &App, t: &Row, f: &Row, rec: &Value) -> Landing {
+    let mut out = Landing::default();
+    if crate::prbuilds::stopped(app) {
+        return out;
+    }
+    if !skip_hides_failures(f, rec) {
+        out.failed = failing(app, f, rec);
+    }
+    if checks_skipped(f, rec).is_some() {
+        return out;
+    }
+    let checks = rec["checks"].as_array().cloned().unwrap_or_default();
+    for c in &checks {
+        let Some(name) = c["name"].as_str() else { continue };
+        let list = match c["state"].as_str() {
+            Some("running") => &mut out.pending,
+            Some("stopped") => &mut out.failed,
+            _ => continue,
+        };
+        if !list.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            list.push(name.to_string());
+        }
+    }
+    if let Some(missing) = expected_missing(app, t, rec).filter(|_| !expected_wait_over(app, t, f, rec)) {
+        for m in missing {
+            if !out.pending.iter().any(|p| p.eq_ignore_ascii_case(&m)) {
+                out.pending.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// A merged PR's phase: `merged` once its head's checks have finished, else `landing`.
+fn after_merge(app: &App, t: &Row, rec: &Value) -> &'static str {
+    if landing(app, t, &flow(t), rec).settled() {
+        "merged"
+    } else {
+        "landing"
+    }
+}
+
+/// Tells the owner, once per head, that checks a PR merged before failed: the base branch now has that head.
+fn landing_alert(app: &App, t: &Row, probe: &Row, rec: &Value) -> Result<Option<Value>> {
+    let f = flow(probe);
+    let head = rec["head"].as_str().unwrap_or("");
+    let failed = landing(app, probe, &f, rec).failed;
+    if failed.is_empty() || f.s("landing_alerted") == Some(head) {
+        return Ok(None);
+    }
+    dispatch::add_alert(
+        app,
+        &format!(
+            "PR #{} for {} was merged before its checks finished, and {} failed on the merged commit {}: {} may be broken. Fix it, or clear the check with tb pr not-ours.",
+            t.i0("pr_num"),
+            rf("task", t.id()),
+            failed.join(", "),
+            short_sha(head),
+            rec["base"].as_str().filter(|b| !b.is_empty()).unwrap_or("the base branch"),
+        ),
+        Some(t.id()),
+        t.i("goal_id"),
+        None,
+        Some("pr"),
+    )?;
+    board::log_event(app, t.id(), "PR", "status", &format!("PR #{}: {} failed after the merge", t.i0("pr_num"), failed.join(", ")))?;
+    Ok(Some(json!(head)))
+}
+
+/// A push to the PR's branch the host's read doesn't show yet (#933): the project checkout's
+/// remote-tracking ref for the branch, which the agent's own `git push` moves, is at a commit the
+/// record's head doesn't build on. A host's read can lag a force-push by a few seconds, and checks
+/// judged on it are an older head's. None when the checkout can't tell, or the host's head is the
+/// newer one (a push from elsewhere).
+pub fn newer_push(app: &App, t: &Row, rec: &Value) -> Option<String> {
+    let head = rec["head"].as_str().filter(|h| !h.is_empty())?;
+    let branch = rec["branch"].as_str().filter(|b| !b.is_empty())?;
+    let repo = crate::worktrees::repo_of(app, t).ok().flatten().filter(|r| Path::new(r).is_dir())?;
+    let commit = |r: &str| {
+        let g = git(&repo, &["rev-parse", "--verify", "-q", &format!("{r}^{{commit}}")], 10.0);
+        (g.code == 0).then(|| g.out.trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let pushed = commit(&format!("refs/remotes/{}/{branch}", app.cfg.pr_body.remote))?;
+    if pushed.starts_with(head) || head.starts_with(&pushed) {
+        return None;
+    }
+    let shown = commit(head)?;
+    let behind = git(&repo, &["merge-base", "--is-ancestor", &pushed, &shown], 10.0).code == 0;
+    (!behind).then_some(pushed)
 }
 
 /// The task's flow with this record's head noted (when it was first seen), as `step` will save it.
@@ -1981,7 +2098,11 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     let old = t.st("pr_phase");
     // A merged PR stays merged: a stream event laid over the record from before the merge still reads open.
-    let phase = if old == "merged" { old.clone() } else { phase_of(app, &probe(t, &f), rec) };
+    let phase = match old.as_str() {
+        "merged" => old.clone(),
+        "landing" => after_merge(app, &probe(t, &f), rec).to_string(),
+        _ => phase_of(app, &probe(t, &f), rec),
+    };
     let phase_changed = phase != old;
     changes.extend(crate::prpace::note(app, t, &f, rec, &phase, phase_changed)?);
     let build = if crate::prbuilds::stopped(app) {
@@ -1993,7 +2114,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     } else {
         build_label(rec)
     };
-    let state = if phase == "merged" { "MERGED".to_string() } else { rec["state"].as_str().unwrap_or("OPEN").to_uppercase() };
+    let state = if phase == "merged" || phase == "landing" { "MERGED".to_string() } else { rec["state"].as_str().unwrap_or("OPEN").to_uppercase() };
     let mut task_fields = fields!["pr_state" => state,
                                   "pr_build" => build, "pr_review" => review_label(&review_of(&f, rec), approvals_needed(app, t))];
     if let Some(title) = rec["title"].as_str() {
@@ -2019,6 +2140,11 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             board::log_event(app, t.id(), "PR", "status", &format!("PR #{} was closed without merging", t.i0("pr_num")))?;
         }
         task_fields.push(("pr_phase", json!(phase)));
+    }
+    if old == "landing" || phase == "landing" {
+        if let Some(alerted) = landing_alert(app, t, &probe(t, &f), rec)? {
+            changes.push(("landing_alerted", alerted));
+        }
     }
     if t.s("status") == Some("done")
         && phase == "review"
@@ -2446,7 +2572,7 @@ fn stamps(app: &App, host: &str, tasks: &[Row], streams: bool) -> Option<Vec<Opt
 /// them without a push).
 fn waits_on_checks(t: &Row) -> bool {
     let rec = flow(t).get("rec").cloned().unwrap_or(Value::Null);
-    t.s("pr_phase") == Some("checks") || rec["running"].as_i64().unwrap_or(0) > 0 || rec["failed"].as_array().is_some_and(|f| !f.is_empty())
+    matches!(t.s("pr_phase"), Some("checks" | "landing")) || rec["running"].as_i64().unwrap_or(0) > 0 || rec["failed"].as_array().is_some_and(|f| !f.is_empty())
 }
 
 /// A wake whose terminal closed before it finished, or whose job failed: try again.
@@ -2572,14 +2698,40 @@ pub fn merged_comment(t: &Row) -> String {
 }
 
 pub fn mark_merged(app: &App, t: &Row, who: &str) -> Result<()> {
-    if t.s("pr_phase") == Some("merged") {
+    if matches!(t.s("pr_phase"), Some("merged" | "landing")) {
         return Ok(());
+    }
+    let f = flow(t);
+    let mut rec = f.get("rec").cloned().filter(Value::is_object).unwrap_or(Value::Null);
+    if !rec.is_null() {
+        rec["state"] = json!("MERGED");
+        let held = landing(app, t, &f, &rec);
+        if !held.settled() {
+            return mark_landing(app, t, who, &held);
+        }
     }
     board::update_task(app, t.id(), fields!["pr_state" => "MERGED", "pr_phase" => "merged"])?;
     merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null])?;
     board::log_event(app, t.id(), who, "status", &format!("Merged PR #{}", t.i0("pr_num")))?;
     dispatch::clear_alerts(app, Some(t.id()), None)?;
     crate::merged_note::ticket_merged(app, &board::get_task(app, t.id())?, &merged_comment(t))?;
+    Ok(())
+}
+
+/// A PR merged while its head's checks are still running: the task stays open on `landing` until
+/// they pass, and the owner hears if they fail (`step`).
+fn mark_landing(app: &App, t: &Row, who: &str, held: &Landing) -> Result<()> {
+    board::update_task(app, t.id(), fields!["pr_state" => "MERGED", "pr_phase" => "landing"])?;
+    merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null])?;
+    let waiting = if held.pending.is_empty() { "its checks".to_string() } else { held.pending.join(", ") };
+    board::log_event(
+        app,
+        t.id(),
+        who,
+        "status",
+        &format!("Merged PR #{} before {waiting} finished: it stays open until they pass", t.i0("pr_num")),
+    )?;
+    dispatch::clear_alerts(app, Some(t.id()), None)?;
     Ok(())
 }
 
