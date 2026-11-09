@@ -13,7 +13,7 @@ const PR_FLOW_SETTING: &str = "project_pr_flow";
 /// `tb project set --approvals / --expected-check / --expected-wait / --ask-stage / --swap / --review / --agents-merge / --owner-review`: name → the rules set on the board.
 const PR_RULES_SETTING: &str = "project_pr_rules";
 /// The PR rules `tb project set` can change, over `[pr.projects.<name>]`.
-pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins", "ask_stage", "swap", "review", "agents_merge", "owner_review"];
+pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins", "required", "ask_stage", "swap", "review", "agents_merge", "owner_review"];
 pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 /// `tb project agents-merge on|off`: the board's own word on `pr.agents_merge`, over config.toml's
 /// (`taskboardd import` turns it on: the old board's agents merged on every project).
@@ -200,6 +200,9 @@ pub fn pr_rules(app: &App, name: Option<&str>) -> crate::config::PrProject {
     if let Some(m) = set.get("expected_wait_mins").and_then(|v| v.as_f64()) {
         r.expected_wait_mins = Some(m);
     }
+    if let Some(list) = set.get("required").and_then(|v| v.as_array()) {
+        r.required = Some(list.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+    }
     if let Some(b) = set.get("swap").and_then(|v| v.as_bool()) {
         r.swap = Some(b);
     }
@@ -235,13 +238,13 @@ pub fn set_pr_rules(app: &App, name: &str, body: &Value) -> Result<bool> {
                 Some(n) if (0..=20).contains(&n) => json!(n),
                 _ => return err(400, "approvals is a count from 0 (the host's own decision) to 20."),
             },
-            "expected" => {
-                let Some(list) = v.as_array() else { return err(400, "expected is a list of check names ([] for none).") };
+            "expected" | "required" => {
+                let Some(list) = v.as_array() else { return err(400, format!("{key} is a list of check names ([] for none).")) };
                 let mut names: Vec<String> = vec![];
                 for x in list {
                     let n = x.as_str().map(|s| one_line(s, 200)).unwrap_or_default();
                     if n.is_empty() {
-                        return err(400, "An expected check needs a name.");
+                        return err(400, format!("A {key} check needs a name."));
                     }
                     if !names.iter().any(|m| m.eq_ignore_ascii_case(&n)) {
                         names.push(n);
@@ -503,6 +506,7 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
         "pr_rules".into(),
         json!({"approvals": approvals, "expected": r.expected,
                "expected_wait_mins": r.expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS),
+               "required": r.required.filter(|l| !l.is_empty()),
                "ask_stage": crate::reviewers::ask_stage_on(app, Some(name)),
                "swap": crate::reviewers::swap_on(app, Some(name)),
                "review": crate::reviewers::review_on(app, Some(name)),

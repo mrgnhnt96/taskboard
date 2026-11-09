@@ -32,6 +32,50 @@ pub trait CiProvider {
     /// For people: "GitHub Actions", "Azure Pipelines", "the project's failures_cmd".
     fn name(&self) -> &'static str;
     fn failures(&self, pr: &PrRef, head: &str, check: &Check) -> HostResult<Failures>;
+    /// Each stage and job the check's build ran, with its result, for a project's required stages
+    /// (#928). None: this CI can't list them.
+    fn stages(&self, _pr: &PrRef, _head: &str, _check: &Check) -> HostResult<Option<Vec<Stage>>> {
+        Ok(None)
+    }
+}
+
+/// One stage or job of a build, with its result ("succeeded", "failed", "canceled", "skipped", or its
+/// state while it hasn't finished).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stage {
+    pub job: bool,
+    pub name: String,
+    /// The stage a job ran in, when the pipeline has stages.
+    pub stage: Option<String>,
+    pub result: String,
+}
+
+impl Stage {
+    pub fn passed(&self) -> bool {
+        matches!(self.result.as_str(), "succeeded" | "succeededWithIssues")
+    }
+
+    /// "stage Build: succeeded", "job Build › Unit tests: failed", "job Build: failed".
+    pub fn line(&self) -> String {
+        match (self.job, &self.stage) {
+            (false, _) => format!("stage {}: {}", self.name, self.result),
+            (true, Some(s)) => format!("job {s} › {}: {}", self.name, self.result),
+            (true, None) => format!("job {}: {}", self.name, self.result),
+        }
+    }
+
+    pub fn json(&self) -> Value {
+        serde_json::json!({"job": self.job, "name": self.name, "stage": self.stage, "result": self.result})
+    }
+
+    pub fn from_json(v: &Value) -> Option<Stage> {
+        Some(Stage {
+            job: v["job"].as_bool().unwrap_or(false),
+            name: v["name"].as_str()?.to_string(),
+            stage: v["stage"].as_str().map(str::to_string),
+            result: v["result"].as_str().unwrap_or("unknown").to_string(),
+        })
+    }
 }
 
 /// Which provider reads a check.
@@ -128,9 +172,7 @@ impl CiProvider for AzurePipelines {
         "Azure Pipelines"
     }
     fn failures(&self, _pr: &PrRef, _head: &str, check: &Check) -> HostResult<Failures> {
-        let (base, id) = azure_build(check.url.as_deref().unwrap_or("")).ok_or_else(|| "its link isn't an Azure Pipelines build".to_string())?;
-        let tl = self.http.call("GET", &format!("{base}/_apis/build/builds/{id}/timeline?api-version=7.1"), None).map_err(|e| azure_error(e, "the build's steps", "Build (read)"))?;
-        let records = tl["records"].as_array().cloned().unwrap_or_default();
+        let (base, id, records) = self.timeline(check)?;
         let mut steps = vec![];
         for r in records.iter() {
             if r["type"] != "Task" || r["result"] != "failed" {
@@ -150,9 +192,19 @@ impl CiProvider for AzurePipelines {
             Err(e) => Ok(Failures { steps, tests_error: Some(tests_error(e)), stages: stage_results(&records), ..Default::default() }),
         }
     }
+    fn stages(&self, _pr: &PrRef, _head: &str, check: &Check) -> HostResult<Option<Vec<Stage>>> {
+        Ok(Some(stage_list(&self.timeline(check)?.2)))
+    }
 }
 
 impl AzurePipelines {
+    fn timeline(&self, check: &Check) -> HostResult<(String, String, Vec<Value>)> {
+        let (base, id) = azure_build(check.url.as_deref().unwrap_or("")).ok_or_else(|| "its link isn't an Azure Pipelines build".to_string())?;
+        let tl = self.http.call("GET", &format!("{base}/_apis/build/builds/{id}/timeline?api-version=7.1"), None).map_err(|e| azure_error(e, "the build's steps", "Build (read)"))?;
+        let records = tl["records"].as_array().cloned().unwrap_or_default();
+        Ok((base, id, records))
+    }
+
     fn failed_tests(&self, base: &str, id: &str) -> HostResult<Vec<String>> {
         let mut tests = vec![];
         let runs = self.http.call("GET", &format!("{base}/_apis/test/runs?buildUri=vstfs:///Build/Build/{id}&api-version=7.1"), None)?;
@@ -187,6 +239,11 @@ fn tests_error(e: String) -> String {
 /// A build timeline's stages in order, each followed by its jobs: "stage Build: succeeded",
 /// "job Build › Unit tests: failed". A pipeline without stages lists its jobs alone.
 fn stage_results(records: &[Value]) -> Vec<String> {
+    stage_list(records).iter().map(Stage::line).collect()
+}
+
+/// [`stage_results`], as stages and jobs.
+fn stage_list(records: &[Value]) -> Vec<Stage> {
     let by_id: std::collections::HashMap<&str, &Value> = records.iter().filter_map(|r| Some((r["id"].as_str()?, r))).collect();
     let stage_of = |r: &Value| -> Option<String> {
         let mut at = by_id.get(r["parentId"].as_str()?).copied();
@@ -207,21 +264,19 @@ fn stage_results(records: &[Value]) -> Vec<String> {
         v
     };
     let jobs: Vec<(Option<String>, &Value)> = ordered("Job").into_iter().map(|j| (stage_of(j), j)).collect();
+    let job = |j: &Value, stage: Option<String>| Stage { job: true, name: named(j), stage, result: outcome(j) };
     let mut out = vec![];
     for s in ordered("Stage") {
         let sid = s["id"].as_str().map(str::to_string);
         let shown = s["name"] != "__default";
         if shown {
-            out.push(format!("stage {}: {}", named(s), outcome(s)));
+            out.push(Stage { job: false, name: named(s), stage: None, result: outcome(s) });
         }
         for (_, j) in jobs.iter().filter(|(st, _)| *st == sid && sid.is_some()) {
-            out.push(match shown {
-                true => format!("job {} › {}: {}", named(s), named(j), outcome(j)),
-                false => format!("job {}: {}", named(j), outcome(j)),
-            });
+            out.push(job(j, shown.then(|| named(s))));
         }
     }
-    out.extend(jobs.iter().filter(|(st, _)| st.is_none()).map(|(_, j)| format!("job {}: {}", named(j), outcome(j))));
+    out.extend(jobs.iter().filter(|(st, _)| st.is_none()).map(|(_, j)| job(j, None)));
     out
 }
 
@@ -235,6 +290,15 @@ impl CiProvider for CommandCi {
         "the project's failures_cmd"
     }
     fn failures(&self, pr: &PrRef, head: &str, check: &Check) -> HostResult<Failures> {
+        Ok(parse_command_output(&self.run(pr, head, check)?))
+    }
+    fn stages(&self, pr: &PrRef, head: &str, check: &Check) -> HostResult<Option<Vec<Stage>>> {
+        Ok(command_stages(&self.run(pr, head, check)?))
+    }
+}
+
+impl CommandCi {
+    fn run(&self, pr: &PrRef, head: &str, check: &Check) -> HostResult<String> {
         let cmd = crate::util::expand_home(self.cmd.trim()).to_string_lossy().to_string();
         let env: Vec<(String, String)> = [
             ("TB_PR_URL", pr.url.clone()),
@@ -251,11 +315,18 @@ impl CiProvider for CommandCi {
         if o.code != Some(0) {
             return Err(format!("failures_cmd failed: {}", o.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("no output")));
         }
-        Ok(parse_command_output(&o.stdout))
+        Ok(o.stdout)
     }
 }
 
-/// `{"steps": [...], "tests": [...]}`, or one step per line with `test: <name>` lines for tests.
+/// The stages and jobs in a command's JSON (`"stages": [{"name": "Lint", "result": "succeeded", "job":
+/// false, "stage": null}]`); None when it printed none.
+pub fn command_stages(out: &str) -> Option<Vec<Stage>> {
+    let v: Value = serde_json::from_str(out.trim()).ok()?;
+    Some(v["stages"].as_array()?.iter().filter_map(Stage::from_json).collect())
+}
+
+/// `{"steps": [...], "tests": [...], "stages": [...]}` (stages: [`command_stages`]), or one step per line with `test: <name>` lines for tests.
 pub fn parse_command_output(out: &str) -> Failures {
     if let Ok(v) = serde_json::from_str::<Value>(out.trim()) {
         if v.is_object() {
@@ -379,6 +450,34 @@ mod tests {
         let f = AzurePipelines { http: Box::new(NoTestScope("500")) }.failures(&pr, "h", &check("https://dev.azure.com/org/Proj/_build/results?buildId=55")).unwrap();
         assert_eq!(f.tests_error.as_deref(), Some("Azure DevOps answered 500 reading the build's test results"));
         assert_eq!(f.stages.len(), 6, "any unreadable test results fall back to the stages");
+    }
+
+    #[test]
+    fn an_azure_build_lists_its_stages_and_jobs_with_their_results() {
+        let pr = PrRef { host: "github".into(), repo: "a/b".into(), num: 1, url: String::new() };
+        let az = AzurePipelines { http: Box::new(NoTestScope("401")) };
+        let stages = az.stages(&pr, "h", &check("https://dev.azure.com/org/Proj/_build/results?buildId=55")).unwrap().unwrap();
+        let tests = stages.iter().find(|s| s.name == "Unit tests").unwrap();
+        assert!(tests.job && tests.passed() && tests.stage.as_deref() == Some("Build"));
+        let publish = stages.iter().find(|s| s.name == "Publish").unwrap();
+        assert!(!publish.passed());
+        assert!(!stages.iter().find(|s| s.name == "Notify").unwrap().passed(), "a stage that hasn't finished hasn't passed");
+        assert_eq!(Stage::from_json(&publish.json()).as_ref(), Some(publish));
+    }
+
+    #[test]
+    fn a_command_can_list_stages_as_json() {
+        let out = r#"{"steps": ["Upload"], "stages": [{"name": "Lint", "result": "succeeded"}, {"name": "Upload", "result": "canceled", "job": true, "stage": "Ship"}]}"#;
+        let stages = command_stages(out).unwrap();
+        assert_eq!(stages.len(), 2);
+        assert!(stages[0].passed() && !stages[0].job);
+        assert_eq!(stages[1].line(), "job Ship › Upload: canceled");
+        assert_eq!(command_stages("Run tests\ntest: a"), None);
+        assert_eq!(command_stages(r#"{"steps": []}"#), None);
+        let pr = PrRef { host: "bitbucket".into(), repo: "w/r".into(), num: 4, url: "u".into() };
+        let cmd = CommandCi { cmd: format!("echo '{out}'") };
+        assert_eq!(cmd.stages(&pr, "abc", &check("x")).unwrap(), Some(stages));
+        assert_eq!(cmd.failures(&pr, "abc", &check("x")).unwrap().steps, vec!["Upload".to_string()]);
     }
 
     #[test]

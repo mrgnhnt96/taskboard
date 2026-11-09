@@ -307,7 +307,7 @@ pub enum RebasePolicy {
 }
 
 /// One project's PR rules. Every key is optional; unset keys keep the board-wide behaviour. `tb project
-/// set` changes `approvals`, `expected` and `expected_wait_mins` on the board, over these
+/// set` changes `approvals`, `expected`, `expected_wait_mins` and `required` on the board, over these
 /// (`projects::pr_rules`).
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -320,6 +320,9 @@ pub struct PrProject {
     pub expected: Option<Vec<String>>,
     /// How long to wait for the expected checks to post, in minutes.
     pub expected_wait_mins: Option<f64>,
+    /// The checks, or stages and jobs inside a check's build, that must pass to merge (#928): another
+    /// failed or cancelled check or stage doesn't hold the PR. Unset or empty: every failed check holds it.
+    pub required: Option<Vec<String>>,
     /// A command that says, per push, which checks that push starts (`prflow::note_expected`): run with
     /// `/bin/sh -c` once per new head with TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD, TB_BASE, TB_BRANCH
     /// and TB_WORKTREE (when the task has one). A JSON list takes the place of `expected` for that push
