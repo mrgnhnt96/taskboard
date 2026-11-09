@@ -1356,7 +1356,98 @@ pub fn note_prompt(app: &App, sid: &str, owners: bool) -> Result<Option<String>>
         }
     }
     let text = without_waits_on(&text, &followed);
-    Ok(holds_only(&text).then(|| "Task board: this prompt is not a start word: don't run tb start on it.".to_string()))
+    if let Some(note) = schedule_note(app, sid, &text)? {
+        return Ok(Some(note));
+    }
+    Ok(holds_only(&text).then(|| no_start_word(&text)))
+}
+
+/// A clock time as a prompt says it: "6am", "6 a.m.", "5:30 PM", "17:30", "noon".
+static CLOCK_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:\d{1,2}(?::\d{2})?\s*[ap]\.?\s?m\b\.?|\d{1,2}:\d{2}\b|noon\b|midnight\b)").unwrap());
+static TOMORROW_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:tomorrow|tmrw|tmr)\b").unwrap());
+/// A reply that only moves a start's time ("make it 6am", "do it at 6am instead", "push it to 7am").
+static RESCHEDULE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)\b(?:make|move|change|switch|set|push|bump|shift|do|start|run|kick\s+off|have)\s+(?:it|that|this|them|the\s+(?:goal|task|start(?:\s+time)?|time))\b|",
+        r"\binstead\b|\breschedul"
+    ))
+    .unwrap()
+});
+/// A question that's a polite ask ("can you start G2 at 6am?").
+static POLITE_ASK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*(?:please\s+)?(?:can|could|would|will)\s+you\b").unwrap());
+
+/// The time prompt `text` says to start at, as `tb start --at` takes it ("Start G154 tomorrow at 6 a.m"
+/// → "tomorrow 6am"): a clock time, with "tomorrow" when it says that.
+pub fn time_said(text: &str) -> Option<String> {
+    let clock = CLOCK_RE.find(text)?;
+    let day = if TOMORROW_RE.is_match(text) { "tomorrow " } else { "" };
+    Some(crate::scheduled::spoken(&format!("{day}{}", clock.as_str())))
+}
+
+/// For a prompt that asks for a start at a clock time ("Start G154 tomorrow at 6 a.m", or a reply that
+/// moves one the conversation scheduled: "Do it tomorrow for 6am", "make it 6am"), what to tell the
+/// agent: schedule it with `tb start --at`, for each item [`schedule_word`] lets it schedule. A no or a
+/// question says nothing.
+fn schedule_note(app: &App, sid: &str, text: &str) -> Result<Option<String>> {
+    let Some(at) = time_said(text) else { return Ok(None) };
+    let asks = text.trim_end().ends_with('?') && !POLITE_ASK_RE.is_match(text);
+    if asks || !negs_in(text).is_empty() || !(holds_only(text) || RESCHEDULE_RE.is_match(text)) {
+        return Ok(None);
+    }
+    let named: Vec<String> = ids_in(&TASKS, text).into_iter().map(|id| rf("task", id)).chain(ids_in(&GOALS, text).into_iter().map(|id| rf("goal", id))).collect();
+    let candidates = if named.is_empty() { conversation_refs(app, sid)? } else { named };
+    let mut refs = vec![];
+    for r in candidates {
+        if !refs.contains(&r) && schedule_word(app, sid, &r)?.is_some() {
+            refs.push(r);
+        }
+    }
+    // "Do it at 6am" after a goal was made with its tasks means the goal.
+    if refs.iter().any(|r| r.starts_with('G')) {
+        refs.retain(|r| r.starts_with('G'));
+    }
+    if refs.is_empty() {
+        return Ok(None);
+    }
+    let runs: Vec<String> = refs.iter().map(|r| format!("tb start {r} --at \"{at}\"")).collect();
+    Ok(Some(format!(
+        "Task board: the owner asks for a start at a set time, not now. Don't start it now; schedule it: {}. That also moves a start already scheduled.",
+        runs.join("; ")
+    )))
+}
+
+/// The tasks and goals terminal `sid`'s conversation made or named, newest first.
+fn conversation_refs(app: &App, sid: &str) -> Result<Vec<String>> {
+    let rows = app.db.q(
+        "SELECT kind, COALESCE(full, text) AS text, data FROM session_events WHERE session_id = ? AND kind IN ('prompt', ?)
+           AND id > COALESCE((SELECT MAX(id) FROM session_events WHERE session_id = ? AND kind = 'start'), 0)
+         ORDER BY id DESC LIMIT 200",
+        p![sid, MADE, sid],
+    )?;
+    let mut refs = vec![];
+    for r in &rows {
+        let data = r.st("data");
+        if r.s("kind") == Some(MADE) {
+            refs.push(if data.starts_with(['G', 'g']) { data.to_uppercase() } else { format!("T{data}") });
+        } else if data != BOARD_PROMPT {
+            let text = r.st("text");
+            refs.extend(ids_in(&GOALS, &text).into_iter().map(|id| rf("goal", id)));
+            refs.extend(ids_in(&TASKS, &text).into_iter().map(|id| rf("task", id)));
+        }
+    }
+    Ok(refs)
+}
+
+/// What to tell the agent about a prompt that holds a start back: no start word, and the wording that
+/// would be one, to pass on to the owner once if they meant a start.
+fn no_start_word(text: &str) -> String {
+    let named = ids_in(&GOALS, text).first().map(|&id| rf("goal", id)).or_else(|| ids_in(&TASKS, text).first().map(|&id| rf("task", id)));
+    let r = named.unwrap_or_else(|| "T8".into());
+    format!(
+        "Task board: this prompt is not a start word: it holds a start back (a no, a question, a condition, or a time with no task or goal named), so don't run tb start on it. \
+         If the owner meant a start, tell them once what works: \"start {r}\" or /start {r} starts it now, and \"start {r} tomorrow 6am\" schedules it."
+    )
 }
 
 /// Whether the latest prompt in terminal `sid` granted the start of task (or, with `goal`, the run of

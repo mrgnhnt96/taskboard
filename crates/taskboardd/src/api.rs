@@ -1640,7 +1640,10 @@ fn schedule_start(app: &App, what: &str, query: &Query, via: &str, at: &str, app
             log_miss(app, what, via)?;
             return err(
                 403,
-                format!("Only a human can schedule {what}: nobody in this terminal's conversation named it with a time to start. {} can use Start at… on the board, or tell you when to start it.", app.cfg.owner),
+                format!(
+                    "Only a human can schedule {what}: nobody in this terminal's conversation named it with a time to start. {} can use Start at… on the board, or say \"start {what} tomorrow 6am\" here; tell them that once.",
+                    app.cfg.owner
+                ),
             );
         }
         format!("{verb} by {} via {}", app.cfg.owner, board::session_name(app, Some(via), None))

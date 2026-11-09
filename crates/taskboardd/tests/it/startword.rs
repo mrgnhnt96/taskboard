@@ -1825,3 +1825,75 @@ fn a_wait_on_a_followed_goal_isnt_called_no_start_word() {
     let said = b.told("If the tests pass, create a goal for the mobile app and start it");
     assert!(said.contains("not a start word"), "{said}");
 }
+
+impl Board {
+    /// What `tb start G<g> --at <at>` sends from terminal s1.
+    fn tb_run_at(&self, g: i64, at: &str) -> Result<Value, (u16, String)> {
+        api::dispatch(&self.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({"at": at, "via_session": "s1"})).map_err(|e| (e.status, e.message))
+    }
+}
+
+/// T1639: the owner moved a goal they'd scheduled for 9am to 6am three times, and each prompt was told
+/// "not a start word", so the agent never ran `tb start --at`. A start at a clock time, named or a reply
+/// that moves the one this conversation scheduled, is told to schedule it with the time as `--at` reads it.
+#[test]
+fn a_start_at_a_time_or_a_move_of_one_is_told_to_schedule_it() {
+    let b = board();
+    b.typed("Yeah, let's do the second one on 1. And then we can fix 2. Create tasks for this within a goal and lets start the goal tomorrow");
+    let g = b.goal_new();
+    assert!(b.tb_run_at(g, "tomorrow 9am").is_ok());
+    let schedule = format!("tb start G{g} --at \"tomorrow 6am\"");
+
+    let said = b.told("Do it tomorrow for 6am");
+    assert!(said.contains(&schedule), "{said}");
+    assert!(!said.contains("not a start word"), "{said}");
+    assert!(b.told("Yes, add that one to the goal too").is_empty());
+    for prompt in [format!("Start G{g} tomorrow at 6 a.m"), format!("start G{g} tomorrow 6am"), format!("Start G{g} tomorrow for 6am")] {
+        let said = b.told(&prompt);
+        assert!(said.contains(&schedule), "{prompt}: {said}");
+    }
+    let said = b.told("make it 6am");
+    assert!(said.contains(&format!("tb start G{g} --at \"6am\"")), "{said}");
+    let said = b.told("do it at 6 a.m. instead");
+    assert!(said.contains(&format!("tb start G{g} --at \"6am\"")), "{said}");
+
+    b.told(&format!("Start G{g} tomorrow at 6 a.m"));
+    let card = b.tb_run_at(g, "tomorrow at 6 a.m").unwrap();
+    assert!(card.to_string().contains("T06:00"), "{card}");
+}
+
+#[test]
+fn a_named_start_at_a_time_is_told_to_schedule_it_in_a_fresh_conversation() {
+    let b = board();
+    let id = b.new_task();
+    let said = b.told(&format!("start T{id} at 6am"));
+    assert!(said.contains(&format!("tb start T{id} --at \"6am\"")), "{said}");
+
+    let b = board();
+    let g = b.goal();
+    let said = b.told(&format!("Start G{g} tomorrow at 6 a.m"));
+    assert!(said.contains(&format!("tb start G{g} --at \"tomorrow 6am\"")), "{said}");
+}
+
+#[test]
+fn a_time_alone_or_a_no_is_not_told_to_schedule() {
+    let b = board();
+    let g = b.goal();
+    let said = b.told("make it 6am");
+    assert!(!said.contains("--at"), "nothing scheduled or named here: {said}");
+    let said = b.told(&format!("don't start G{g} tomorrow at 6am"));
+    assert!(!said.contains("--at"), "{said}");
+    assert!(said.contains("not a start word"), "{said}");
+    assert!(said.contains(&format!("\"start G{g} tomorrow 6am\" schedules it")), "the refusal says what wording works: {said}");
+    let said = b.told(&format!("should we start G{g} tomorrow at 6am?"));
+    assert!(!said.contains("--at"), "{said}");
+}
+
+#[test]
+fn the_time_said_is_as_start_at_reads_it() {
+    assert_eq!(startword::time_said("Start G154 tomorrow at 6 a.m").as_deref(), Some("tomorrow 6am"));
+    assert_eq!(startword::time_said("Do it tomorrow for 6am").as_deref(), Some("tomorrow 6am"));
+    assert_eq!(startword::time_said("make it 6 A.M.").as_deref(), Some("6am"));
+    assert_eq!(startword::time_said("start it at 17:30").as_deref(), Some("17:30"));
+    assert_eq!(startword::time_said("start it tomorrow").as_deref(), None);
+}

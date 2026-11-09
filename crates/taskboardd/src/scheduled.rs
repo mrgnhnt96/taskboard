@@ -6,6 +6,8 @@
 //! it back. A goal's `start_at` runs it at that minute as Start now does.
 
 use chrono::NaiveDateTime;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -29,7 +31,24 @@ pub fn parse_at(v: &str, now: &NaiveDateTime) -> Result<NaiveDateTime> {
         }
         return Ok(dt);
     }
-    hours::next_time(now, s).map_err(|_| ApiError::new(400, "The start time should look like 5pm, 17:30 or tomorrow 9am."))
+    hours::next_time(now, &spoken(s)).map_err(|_| ApiError::new(400, "The start time should look like 5pm, 17:30 or tomorrow 9am."))
+}
+
+static DOTTED_MERIDIEM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*\b([ap])\.?\s?m\b\.?").unwrap());
+static FILLER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:at|for|by|on|around|about|today|tmrw|tmr|noon|midnight)\b").unwrap());
+
+/// A time as the owner says it ("tomorrow at 6 a.m", "tomorrow for 6am", "tmrw 6 AM", "noon") in the
+/// form [`hours::next_time`] reads ("tomorrow 6am", "12pm").
+pub fn spoken(v: &str) -> String {
+    let s = v.trim().to_lowercase();
+    let s = DOTTED_MERIDIEM_RE.replace_all(&s, "${1}m");
+    let s = FILLER_RE.replace_all(&s, |c: &regex::Captures| match &c[0] {
+        "tmrw" | "tmr" => "tomorrow",
+        "noon" => "12pm",
+        "midnight" => "12am",
+        _ => "",
+    });
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Whether a task waits for its scheduled minute.
@@ -156,6 +175,18 @@ mod tests {
         assert_eq!(parse_at("9am", &now).unwrap(), at("2026-11-04T09:00"));
         assert_eq!(parse_at("tomorrow 5pm", &now).unwrap(), at("2026-11-04T17:00"));
         assert_eq!(parse_at("2026-11-05T08:30", &now).unwrap(), at("2026-11-05T08:30"));
+    }
+
+    #[test]
+    fn the_owners_spellings_of_a_time_are_read() {
+        let now = at("2026-11-09T15:25");
+        let six = at("2026-11-10T06:00");
+        for v in ["tomorrow at 6 a.m", "tomorrow at 6 a.m.", "tomorrow for 6am", "tomorrow 6am", "Tomorrow 6 AM", "tmrw 6am", "6am", "6 a.m.", "at 6am"] {
+            assert_eq!(parse_at(v, &now).unwrap(), six, "{v}");
+        }
+        assert_eq!(parse_at("tomorrow at noon", &now).unwrap(), at("2026-11-10T12:00"));
+        assert_eq!(parse_at("5:30 p.m.", &now).unwrap(), at("2026-11-09T17:30"));
+        assert_eq!(spoken("tomorrow at 6 a.m"), "tomorrow 6am");
     }
 
     #[test]
