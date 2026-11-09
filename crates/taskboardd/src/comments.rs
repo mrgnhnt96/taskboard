@@ -513,17 +513,8 @@ pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value) -> Vec<Found> {
 fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
     let (base, branch) = (pr_side(rec, "base"), pr_side(rec, "branch"));
     let here = git.run(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).is_some_and(|b| b.trim() == branch);
-    let head_of = |names: &[String]| if here { Some("HEAD".to_string()) } else { git.commit(dir, names) };
-    let host = || Some((git.commit(dir, &[pr_side(rec, "base_head")])?, head_of(&[pr_side(rec, "head")])?));
-    let refs = || Some((git.commit(dir, &[format!("origin/{base}"), base.clone()])?, head_of(&[format!("origin/{branch}"), branch.clone()])?));
-    let (b, h) = host()
-        .or_else(|| {
-            for r in [&base, &branch] {
-                git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", r.as_str()], FETCH_SECS);
-            }
-            host()
-        })
-        .or_else(refs)?;
+    let b = tip(git, dir, &base, &pr_side(rec, "base_head"))?;
+    let h = if here { "HEAD".to_string() } else { tip(git, dir, &branch, &pr_side(rec, "head"))? };
     let fork = git.run(dir, &["merge-base", &b, &h])?.trim().to_string();
     let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", fork.as_str()];
     if !here {
@@ -532,8 +523,18 @@ fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
     git.run(dir, &args)
 }
 
+/// Where `branch` is now: origin's tip once fetched, since the host's `recorded` SHA goes stale when
+/// the branch moves (a stacked base rebased onto a newer default branch); else that SHA, else what
+/// git in `dir` already has.
+fn tip(git: &Git, dir: &str, branch: &str, recorded: &str) -> Option<String> {
+    let fetched = !branch.is_empty() && git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", branch], FETCH_SECS).is_some();
+    let (remote, local, recorded) = (format!("origin/{branch}"), branch.to_string(), recorded.to_string());
+    let order = if fetched { [remote, recorded, local] } else { [recorded, remote, local] };
+    git.commit(dir, &order)
+}
+
 /// Where the branch at `dir` forked from the nearest of `bases` (the branches its PR may go into),
-/// fetching one git doesn't have yet; else from its default branch.
+/// each fetched first; else from its default branch.
 fn fork_point(git: &Git, dir: &str, bases: &[String]) -> Option<String> {
     let forks: Vec<String> = bases.iter().filter(|b| !b.is_empty()).filter_map(|b| fork_from(git, dir, b)).collect();
     let past = |f: &String| git.run(dir, &["rev-list", "--count", &format!("{f}..HEAD")]).and_then(|n| n.trim().parse::<u64>().ok()).unwrap_or(u64::MAX);
@@ -552,16 +553,19 @@ fn merge_base(git: &Git, dir: &str, of: &str) -> Option<String> {
     git.run(dir, &["merge-base", "HEAD", of]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Where HEAD forked from `base` (`release/x`, `origin/release/x` or a commit), fetching it from origin
-/// when git doesn't have it.
+/// Where HEAD forked from `base` (`release/x`, `origin/release/x` or a commit), fetching a branch from
+/// origin first so a base that moved is judged at its current tip.
 fn fork_from(git: &Git, dir: &str, base: &str) -> Option<String> {
     let name = base.strip_prefix("origin/").unwrap_or(base);
     let names = [format!("origin/{name}"), name.to_string()];
-    let found = git.commit(dir, &names).or_else(|| {
+    if !is_sha(name) {
         git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", name], FETCH_SECS);
-        git.commit(dir, &names)
-    })?;
-    merge_base(git, dir, &found)
+    }
+    merge_base(git, dir, &git.commit(dir, &names)?)
+}
+
+fn is_sha(name: &str) -> bool {
+    (7..=40).contains(&name.len()) && name.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// The comments a unified diff (`-U0`) adds, by file.
