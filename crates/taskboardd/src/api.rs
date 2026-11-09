@@ -1365,6 +1365,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push(("jira_status", Value::Null));
                 f.push(("jira_status_at", Value::Null));
                 f.push(("jira_none", json!(1)));
+                jira::drop_pending_for_task(app, id)?;
             } else if k.eq_ignore_ascii_case("new") {
                 projects::refuse_without_prs(app, &t.st("project"))?;
                 f.push(("jira_none", json!(0)));
@@ -1431,6 +1432,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if has_key("ships_pr") {
             planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], &who)?;
+            if !projects::task_ships_pr(app, &board::get_task(app, id)?)? {
+                jira::drop_pending_for_task(app, id)?;
+            }
         }
         if has_key("landed") {
             planned |= crate::declined::set_landed(app, &board::get_task(app, id)?, &body["landed"], &who)?;
