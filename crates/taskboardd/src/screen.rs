@@ -182,38 +182,8 @@ fn screen(app: &App, t: Option<&Row>, text: &str, reply: bool) -> Option<Value> 
     if !app.cfg.questions.screen {
         return None;
     }
-    let claude = proc::which(&app.cfg.claude)?;
     let p = prompt(app, t, text, reply).ok()?;
-    let q = &app.cfg.questions;
-    let args: Vec<String> = vec![
-        "-p".into(),
-        p,
-        "--model".into(),
-        q.model.clone(),
-        "--setting-sources".into(),
-        "".into(),
-        "--no-session-persistence".into(),
-        "--tools".into(),
-        "".into(),
-        "--strict-mcp-config".into(),
-        "--max-budget-usd".into(),
-        q.budget_usd.clone(),
-        "--json-schema".into(),
-        verdict_schema(reply).to_string(),
-        "--output-format".into(),
-        "json".into(),
-    ];
-    let out = match crate::progress::waiting("claude to screen the question", crate::progress::WAITING_EVERY, || {
-        proc::run(&claude, &args, Some(&app.cfg.data), q.timeout_secs as f64)
-    }) {
-        Ok(o) => o,
-        Err(_) => {
-            app.info("screen: claude didn't answer in time; the question goes to the owner as written");
-            return None;
-        }
-    };
-    let d: Value = serde_json::from_str(out.stdout.trim()).ok()?;
-    let v = d.get("structured_output").cloned().or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))?;
+    let v = ask_claude(app, p, &app.cfg.questions.model, &verdict_schema(reply), "the question")?;
     match v["verdict"].as_str() {
         Some("answered") if v["answer"].as_str().map(|a| !a.trim().is_empty()).unwrap_or(false) => Some(json!({
             "verdict": "answered", "answer": v["answer"], "source": v["source"].as_str().filter(|s| !s.is_empty()).unwrap_or("the rules")})),
@@ -226,9 +196,152 @@ fn screen(app: &App, t: Option<&Row>, text: &str, reply: bool) -> Option<Value> 
     }
 }
 
+/// Runs a headless `claude -p` with no tools on `p` and returns its structured output, or None when
+/// claude isn't there, doesn't answer in time or answers out of shape. `what` names the screened thing.
+fn ask_claude(app: &App, p: String, model: &str, schema: &Value, what: &str) -> Option<Value> {
+    let claude = proc::which(&app.cfg.claude)?;
+    let q = &app.cfg.questions;
+    let args: Vec<String> = vec![
+        "-p".into(),
+        p,
+        "--model".into(),
+        model.to_string(),
+        "--setting-sources".into(),
+        "".into(),
+        "--no-session-persistence".into(),
+        "--tools".into(),
+        "".into(),
+        "--strict-mcp-config".into(),
+        "--max-budget-usd".into(),
+        q.budget_usd.clone(),
+        "--json-schema".into(),
+        schema.to_string(),
+        "--output-format".into(),
+        "json".into(),
+    ];
+    let out = match crate::progress::waiting(&format!("claude to screen {what}"), crate::progress::WAITING_EVERY, || {
+        proc::run(&claude, &args, Some(&app.cfg.data), q.timeout_secs as f64)
+    }) {
+        Ok(o) => o,
+        Err(_) => {
+            app.info(format!("screen: claude didn't answer in time; {what} goes to the owner as written"));
+            return None;
+        }
+    };
+    let d: Value = serde_json::from_str(out.stdout.trim()).ok()?;
+    d.get("structured_output").cloned().or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))
+}
+
+fn human_schema() -> Value {
+    json!({"type": "object", "required": ["verdict"], "properties": {
+        "verdict": {"enum": ["owner", "agent", "answered"]}, "why": {"type": "string"},
+        "answer": {"type": "string"}, "source": {"type": "string"}}})
+}
+
+/// The prompts the owner typed in terminal `sid` lately, newest last: a human task they asked for there
+/// is theirs to do whatever it is.
+fn owner_prompts(app: &App, sid: Option<&str>) -> Vec<String> {
+    let Some(sid) = sid else { return vec![] };
+    let rows = app
+        .db
+        .q(
+            "SELECT COALESCE(full, text) AS prompt FROM session_events WHERE session_id = ? AND kind = 'prompt' AND COALESCE(data, '') != ? ORDER BY id DESC LIMIT 6",
+            crate::p![sid, crate::startword::BOARD_PROMPT],
+        )
+        .unwrap_or_default();
+    rows.iter().rev().map(|r| format!("- {}", clip(&one_line(&r.st("prompt"), 1500), 1500))).collect()
+}
+
+fn human_prompt(app: &App, t: Option<&Row>, sid: Option<&str>, title: &str, detail: &str) -> Result<String> {
+    let owner = &app.cfg.owner;
+    let mut parts = vec![format!(
+        "An agent on {owner}'s task board wants to give {owner} a human task: a to-do only {owner} can do, which waits \
+         on {owner}'s list until they press Done. {owner} gets far too many of these. Decide whether this one must \
+         reach {owner}.\n\
+         - owner: only {owner} can do it. They need {owner}'s hands or presence (a physical device, a phone in hand, \
+         signing in with {owner}'s password or 2FA, a captcha), {owner}'s money or signature (a purchase, an \
+         agreement, a legal or tax form), or a decision that is {owner}'s alone (a business, legal, pricing, privacy \
+         or product call, or a fact only {owner} knows) that the rules below don't settle. Also owner when {owner}'s \
+         own prompts below ask for this human task.\n\
+         - agent: an agent could do it. Agents have a shell, git, gh, the repos, every tb command, Claude in Chrome \
+         driving {owner}'s own browser where {owner} is already signed in to most sites, and MCP connectors (Amplitude, \
+         Atlassian and others). So looking up a setting, a plan, a retention period or a fact in a dashboard or the \
+         code, checking what a page says, running any command, or changing a setting behind a sign-in {owner} already \
+         has is agent work. In why, say in one or two sentences how the agent can do it.\n\
+         - answered: the rules or the task already settle what it asks {owner} to decide or confirm. Give the answer \
+         in plain words and name its source (a file name or 'the task').\n\
+         When a task mixes both, it's owner only when its own steps truly need {owner}; then say in why which steps \
+         an agent should do first instead. When you're unsure, answer owner. Never invent a rule or a tool."
+    )];
+    parts.push(format!("The human task:\n{title}\n\n{}", clip(detail, 6000)));
+    let prompts = owner_prompts(app, sid);
+    if !prompts.is_empty() {
+        parts.push(format!("{owner}'s latest prompts in the agent's terminal, oldest first:\n{}", prompts.join("\n")));
+    }
+    if let Some(t) = t {
+        parts.push(format!("The agent's own task's handoff:\n{}", clip(&handoff::build(app, t.id())?, 5000)));
+    }
+    parts.push(format!("Rules:\n{}", rules(app)));
+    Ok(parts.join("\n\n"))
+}
+
+/// Screens an agent's new human task: `{verdict: "owner"}` lets it through, `{verdict: "agent", why}` and
+/// `{verdict: "answered", answer, source}` mean it needn't reach the owner. None when screening is off or
+/// fails, and the task goes through as before.
+pub fn human_task(app: &App, t: Option<&Row>, sid: Option<&str>, title: &str, detail: &str) -> Option<Value> {
+    if !app.cfg.questions.screen {
+        return None;
+    }
+    let p = human_prompt(app, t, sid, title, detail).ok()?;
+    let q = &app.cfg.questions;
+    let model = if q.human_model.trim().is_empty() { &q.model } else { &q.human_model };
+    human_verdict(&ask_claude(app, p, model, &human_schema(), "the human task")?)
+}
+
+fn human_verdict(v: &Value) -> Option<Value> {
+    let text = |k: &str| v[k].as_str().map(str::trim).filter(|s| !s.is_empty());
+    match v["verdict"].as_str() {
+        Some("owner") => Some(json!({"verdict": "owner"})),
+        Some("agent") => Some(json!({"verdict": "agent", "why": text("why").unwrap_or("an agent can do it with the tools it has")})),
+        Some("answered") => text("answer").map(|a| json!({"verdict": "answered", "answer": a, "source": text("source").unwrap_or("the rules")})),
+        _ => None,
+    }
+}
+
+/// The refusal for a human task the screen found needn't reach the owner, or None to let it through.
+pub fn human_refusal(app: &App, screened: &Value) -> Option<String> {
+    let owner = &app.cfg.owner;
+    match screened["verdict"].as_str() {
+        Some("agent") => Some(format!(
+            "Not a human task: an agent can do this, so it never reaches {owner}. {} Do it yourself, or make it an \
+             agent task (--no-pr) and tb wait-for T<n> on it. When only part of it needs {owner}, make a human task \
+             of just that part.",
+            screened["why"].as_str().unwrap_or("")
+        )),
+        Some("answered") => Some(format!(
+            "Not a human task: {owner}'s rules already settle it ({}): {} Carry on with that.",
+            screened["source"].as_str().unwrap_or("the rules"),
+            screened["answer"].as_str().unwrap_or("")
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_human_verdict_needs_its_answer() {
+        assert_eq!(human_verdict(&json!({"verdict": "owner", "why": "x"})), Some(json!({"verdict": "owner"})));
+        assert_eq!(human_verdict(&json!({"verdict": "agent", "why": " Use the Amplitude MCP. "}))
+                   .unwrap()["why"], "Use the Amplitude MCP.");
+        assert_eq!(human_verdict(&json!({"verdict": "agent"})).unwrap()["verdict"], "agent");
+        assert_eq!(human_verdict(&json!({"verdict": "answered", "answer": "  "})), None, "no answer: it goes through");
+        assert_eq!(human_verdict(&json!({"verdict": "answered", "answer": "MRGNHNT, LLC"}))
+                   .unwrap()["source"], "the rules");
+        assert_eq!(human_verdict(&json!({"verdict": "maybe"})), None);
+    }
 
     #[test]
     fn rules_take_folders_and_globs() {
