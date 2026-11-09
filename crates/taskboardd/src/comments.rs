@@ -3,7 +3,7 @@
 //! hook refuses an Edit, Write, MultiEdit or NotebookEdit that adds one, and the board refuses the
 //! PR, a review round and `tb submit` while the branch adds any.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde_json::Value;
@@ -30,6 +30,8 @@ struct Syntax {
     word_start: bool,
     /// Python: a triple-quoted string that starts a statement is a docstring, a comment.
     docstrings: bool,
+    /// JavaScript: `/…/` regex literals, and `${…}` code inside a `` ` `` template.
+    scripted: bool,
 }
 
 const C_BLOCK: &[(&str, &str)] = &[("/*", "*/")];
@@ -38,11 +40,11 @@ const HASH: &[&str] = &["#"];
 const DASHES: &[&str] = &["--"];
 
 fn syntax(lang: &str) -> Option<Syntax> {
-    let s = |line, block, quotes, triple, char_lit| Syntax { line, block, quotes, triple, char_lit, raw: false, word_start: false, docstrings: false };
+    let s = |line, block, quotes, triple, char_lit| Syntax { line, block, quotes, triple, char_lit, raw: false, word_start: false, docstrings: false, scripted: false };
     Some(match lang {
         "rust" => Syntax { raw: true, ..s(SLASHES, C_BLOCK, &['"'], false, true) },
         "dart" => s(SLASHES, C_BLOCK, &['"', '\''], true, false),
-        "typescript" | "javascript" => s(SLASHES, C_BLOCK, &['"', '\'', '`'], false, false),
+        "typescript" | "javascript" => Syntax { scripted: true, ..s(SLASHES, C_BLOCK, &['"', '\'', '`'], false, false) },
         "swift" => s(SLASHES, C_BLOCK, &['"'], true, false),
         "kotlin" | "java" | "scala" => s(SLASHES, C_BLOCK, &['"'], true, true),
         "go" => s(SLASHES, C_BLOCK, &['"', '`'], false, true),
@@ -113,6 +115,11 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
     let mut block: Option<(&str, usize, String)> = None;
     // In a docstring: its quotes, where it started, its text so far with its opening quotes.
     let mut doc: Option<(&str, usize, String)> = None;
+    // Each open `${` in a template: how many `{` deep its code is.
+    let mut templates: Vec<usize> = vec![];
+    // The last code character and the word it ends, which tell a regex's `/` from a division.
+    let mut prev = ';';
+    let mut word = String::new();
     for (n, line) in text.lines().enumerate() {
         let c: Vec<char> = line.chars().collect();
         let mut i = 0;
@@ -145,9 +152,16 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
             if let Some((close, escapes)) = &string {
                 if *escapes && c[i] == '\\' {
                     i += 2;
+                } else if sx.scripted && close == "`" && at(&c, i, "${") {
+                    templates.push(0);
+                    string = None;
+                    (prev, i) = ('{', i + 2);
+                    word.clear();
                 } else if at(&c, i, close) {
                     i += close.chars().count();
                     string = None;
+                    prev = '"';
+                    word.clear();
                 } else {
                     i += 1;
                 }
@@ -167,6 +181,14 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
                 }
                 i += 1;
                 continue;
+            }
+            if sx.scripted && c[i] == '/' && regex_may_start(prev, &word) {
+                if let Some(end) = regex_end(&c, i) {
+                    i = end;
+                    prev = '/';
+                    word.clear();
+                    continue;
+                }
             }
             if sx.raw && c[i] == 'r' && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_')) {
                 let hashes = c[i + 1..].iter().take_while(|x| **x == '#').count();
@@ -204,6 +226,27 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
                 }
                 continue;
             }
+            if let Some(depth) = templates.last_mut() {
+                match (c[i], *depth) {
+                    ('{', _) => *depth += 1,
+                    ('}', 0) => {
+                        templates.pop();
+                        string = Some(("`".to_string(), true));
+                    }
+                    ('}', _) => *depth -= 1,
+                    _ => {}
+                }
+            }
+            if is_word_char(c[i]) {
+                if !(is_word_char(prev) && i > 0 && c[i - 1] == prev) {
+                    word.clear();
+                }
+                word.push(c[i]);
+                prev = c[i];
+            } else if !c[i].is_whitespace() {
+                word.clear();
+                prev = c[i];
+            }
             i += 1;
         }
         if let Some((_, _, buf)) = block.as_mut().or(doc.as_mut()) {
@@ -217,6 +260,38 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
         out.push((from, docstring_text(&buf, close)));
     }
     out
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// A `/` after `prev` (the last code character, ending `word`) starts a regex, not a division: it
+/// follows an operator, an opening bracket or a keyword, where a value is due.
+fn regex_may_start(prev: char, word: &str) -> bool {
+    const BEFORE_VALUE: &[&str] = &["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"];
+    if is_word_char(prev) {
+        return BEFORE_VALUE.contains(&word);
+    }
+    "(,=:[!&|?{};+-*%<>~^".contains(prev)
+}
+
+/// Where the regex literal opening at `i` ends, flags and all: its closing `/` outside a `[…]` class
+/// on the same line. None when the line has none, so the `/` was a division after all.
+fn regex_end(c: &[char], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    let mut class = false;
+    while j < c.len() {
+        match c[j] {
+            '\\' => j += 1,
+            '[' => class = true,
+            ']' => class = false,
+            '/' if !class => return Some(j + 1 + c[j + 1..].iter().take_while(|x| x.is_ascii_alphabetic()).count()),
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 /// The string prefix (`r`, `b`, `f`, `u`, or two of them) before the quotes at `i`, when only it and
@@ -278,7 +353,38 @@ fn added_over(olds: &[&str], new: &str, lang: &str, pragmas: &[String]) -> Vec<(
 /// The guard watches this file: it's on, and the file's language is one of its languages.
 pub fn watched(c: &CommentsConfig, path: &str) -> Option<&'static str> {
     let lang = language_of(path)?;
-    (c.guard && c.languages.iter().any(|l| l.trim().eq_ignore_ascii_case(lang))).then_some(lang)
+    (c.guard && !is_build_output(path) && c.languages.iter().any(|l| l.trim().eq_ignore_ascii_case(lang))).then_some(lang)
+}
+
+/// A bundler wrote this file, so nobody writes its comments: a minified file (`app.min.js`), or one
+/// in a build folder whose name carries a content hash (`dist/assets/api.md.Bx3kR9aQ.js`,
+/// `build/static/js/main-3f2a1b9c.js`).
+pub fn is_build_output(path: &str) -> bool {
+    const BUILD_DIRS: &[&str] = &["dist", "build", "out", ".output", ".next", "_next", ".nuxt", ".svelte-kit", "_app"];
+    let mut parts: Vec<&str> = path.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    let Some(name) = parts.pop() else { return false };
+    let pieces: Vec<&str> = name.split('.').collect();
+    if pieces.len() < 2 {
+        return false;
+    }
+    let stem = &pieces[..pieces.len() - 1];
+    if stem.len() > 1 && stem.last().is_some_and(|p| p.eq_ignore_ascii_case("min")) {
+        return true;
+    }
+    let hashed = stem.iter().skip(1).any(|p| is_content_hash(p))
+        || stem.iter().any(|p| p.char_indices().filter(|(_, ch)| *ch == '-').any(|(k, _)| is_content_hash(&p[k + 1..])));
+    hashed && parts.iter().any(|d| BUILD_DIRS.contains(&d.to_ascii_lowercase().as_str()))
+}
+
+/// A bundler's content hash, which a word in a file name doesn't look like: 8 base64url characters
+/// (Vite, Rollup, esbuild) or 8 or more hex digits (webpack, Next), mixing digits and letters, or both
+/// cases.
+fn is_content_hash(s: &str) -> bool {
+    let has = |f: fn(&char) -> bool| s.chars().any(|ch| f(&ch));
+    let mixed = (has(char::is_ascii_digit) && has(char::is_ascii_alphabetic)) || (has(char::is_ascii_uppercase) && has(char::is_ascii_lowercase));
+    let base64 = s.len() == 8 && s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+    let hex = s.len() >= 8 && s.chars().all(|ch| ch.is_ascii_hexdigit());
+    mixed && (base64 || hex)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -506,11 +612,17 @@ pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value) -> Vec<Found> {
         return vec![];
     }
     let git = Git(crate::proc::which("git"));
-    let diff = dirs.iter().filter(|d| Path::new(d.as_str()).is_dir()).find_map(|d| pr_diff(&git, d, rec));
-    diff_adds(c, &diff.unwrap_or_default())
+    let Some((dir, head, diff)) = dirs.iter().filter(|d| Path::new(d.as_str()).is_dir()).find_map(|d| pr_diff(&git, d, rec).map(|(h, diff)| (d, h, diff))) else {
+        return vec![];
+    };
+    diff_adds_in(c, &diff, |f| match &head {
+        Some(h) => git.run(dir, &["show", &format!("{h}:{f}")]),
+        None => std::fs::read_to_string(Path::new(dir).join(f)).ok(),
+    })
 }
 
-fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
+/// The PR's diff, and the commit its new side is (None: the checkout's working tree).
+fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<(Option<String>, String)> {
     let (base, branch) = (pr_side(rec, "base"), pr_side(rec, "branch"));
     let here = git.run(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).is_some_and(|b| b.trim() == branch);
     let b = tip(git, dir, &base, &pr_side(rec, "base_head"))?;
@@ -520,7 +632,7 @@ fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<String> {
     if !here {
         args.push(&h);
     }
-    git.run(dir, &args)
+    git.run(dir, &args).map(|diff| ((!here).then_some(h.clone()), diff))
 }
 
 /// Where `branch` is now: origin's tip once fetched, since the host's `recorded` SHA goes stale when
@@ -570,6 +682,28 @@ fn is_sha(name: &str) -> bool {
 
 /// The comments a unified diff (`-U0`) adds, by file.
 pub fn diff_adds(c: &CommentsConfig, diff: &str) -> Vec<Found> {
+    diff_adds_in(c, diff, |_| None)
+}
+
+/// The comments a unified diff (`-U0`) adds, each kept only when `read` (a file's whole new text, by
+/// its path) has a comment on that line too: a hunk read alone can start inside a string that an
+/// earlier line opened, a template spanning lines in a bundle, and take its `//` for a comment.
+fn diff_adds_in(c: &CommentsConfig, diff: &str, read: impl Fn(&str) -> Option<String>) -> Vec<Found> {
+    let found = hunk_adds(c, diff);
+    let mut lines: HashMap<String, Option<HashSet<usize>>> = HashMap::new();
+    found
+        .into_iter()
+        .filter(|f| {
+            let starts = lines.entry(f.file.clone()).or_insert_with(|| {
+                let lang = language_of(&f.file)?;
+                read(&f.file).map(|text| comments_in(&text, lang).into_iter().map(|(n, _)| n).collect())
+            });
+            starts.as_ref().is_none_or(|s| s.contains(&f.line))
+        })
+        .collect()
+}
+
+fn hunk_adds(c: &CommentsConfig, diff: &str) -> Vec<Found> {
     struct Hunk {
         file: String,
         lang: &'static str,
@@ -642,7 +776,7 @@ fn adds_over(c: &CommentsConfig, dir: &str, bases: &[String]) -> Vec<Found> {
     let git = Git(crate::proc::which("git"));
     let Some(base) = fork_point(&git, dir, bases) else { return vec![] };
     let diff = git.run(dir, &["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", &base]).unwrap_or_default();
-    diff_adds(c, &diff)
+    diff_adds_in(c, &diff, |f| std::fs::read_to_string(Path::new(dir).join(f)).ok())
 }
 
 /// Why `what` ("opening the PR", "finishing") can't go ahead: the branch adds comments over `base`.
@@ -777,6 +911,60 @@ mod tests {
         let back = serde_json::json!({"file_path": path, "old_string": "fn b() {}", "new_string": "// moved\nfn b() {}"});
         assert!(edit_adds(&on(), "Edit", &back).is_empty(), "the second half of a move");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slashes_in_js_strings_regexes_and_templates_are_not_comments() {
+        let js = |t: &str| texts(comments_in(t, "javascript"));
+        assert!(js("const a = \"// jump: top, bottom\", b = '// x';").is_empty(), "string literals");
+        assert!(js("const html = `<pre>\n// jump: top\n</pre>`;").is_empty(), "a template");
+        assert!(js("const t = `<code>\n// one line\n// and another\n</code>`\nf(t)").is_empty(), "a template spanning lines");
+        assert_eq!(js("const q = /[\"'`]/g; const u = \"//x\"; // real"), vec!["real"], "a regex with quotes in a class");
+        assert_eq!(js("if (/\\/\\//.test(p)) return /\\/*/; // after"), vec!["after"], "escaped slashes and a /* in a regex");
+        assert_eq!(js("const r = a / b; // halves\nconst s = x/2/y // too"), vec!["halves", "too"], "divisions aren't regexes");
+        assert!(js("return /\"/.test(s) && t === \"//\"").is_empty(), "a regex after a keyword");
+        assert!(js("const s = `${a ? `in ${b} // nested` : '//'} // still text`;").is_empty(), "templates inside a template's code");
+        assert_eq!(js("const s = `${ {a: 1}.a }`; // out"), vec!["out"], "braces inside a template's code");
+        assert!(texts(comments_in("const s: string = `${f({ a: \"//\" })}//`;", "typescript")).is_empty());
+    }
+
+    #[test]
+    fn hashed_build_output_is_not_watched() {
+        let c = on();
+        for p in [
+            "docs/.vitepress/dist/assets/api.md.Bx3kR9aQ.js",
+            "dist/assets/index-Bx-z12ab.js",
+            "build/static/js/main.3f2a1b9c.js",
+            "/repo/.next/static/chunks/page-3f2a1b9c4d5e6f70.js",
+            "dist/assets/style.DcRmPxab.css",
+            "vendor/jquery.min.js",
+        ] {
+            assert!(is_build_output(p), "{p}");
+            assert_eq!(watched(&c, p), None, "{p}");
+        }
+        for p in ["src/api.md.ts", "dist/api-v2-client.js", "dist/index.js", "src/assets/index-Bx-z12ab.js", "build/scripts/release.js", "lib/handler.service.js"] {
+            assert!(!is_build_output(p), "{p}");
+        }
+        let edit = serde_json::json!({"file_path": "/x/dist/assets/api.md.Bx3kR9aQ.js", "old_string": "", "new_string": "a(); // b"});
+        assert!(edit_adds(&c, "Edit", &edit).is_empty(), "edits to a bundle pass too");
+    }
+
+    #[test]
+    fn a_bundle_diff_adds_nothing() {
+        let diff = "diff --git a/docs/.vitepress/dist/assets/api.md.Bx3kR9aQ.js b/docs/.vitepress/dist/assets/api.md.Bx3kR9aQ.js\n\
+                    --- /dev/null\n+++ b/docs/.vitepress/dist/assets/api.md.Bx3kR9aQ.js\n@@ -0,0 +1,2 @@\n+const p=JSON.parse('{}');\n+// jump: top, bottom\n\
+                    diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n@@ -0,0 +1 @@\n+f(); // mine\n";
+        assert_eq!(diff_adds(&on(), diff), vec![Found { file: "src/a.js".into(), line: 1, text: "mine".into() }]);
+    }
+
+    #[test]
+    fn a_hunk_inside_a_template_is_judged_with_the_whole_file() {
+        let file = "export const page = `<pre>\n<code>\n// jump: top, bottom\n</code>\n</pre>`;\nf(); // mine\n";
+        let diff = "diff --git a/site/page.js b/site/page.js\n--- a/site/page.js\n+++ b/site/page.js\n@@ -3 +3 @@\n-// jump: top\n+// jump: top, bottom\n\
+                    @@ -6 +6 @@\n-f();\n+f(); // mine\n";
+        let read = |p: &str| (p == "site/page.js").then(|| file.to_string());
+        assert_eq!(diff_adds(&on(), diff).len(), 2, "alone, the first hunk reads like a comment");
+        assert_eq!(diff_adds_in(&on(), diff, read), vec![Found { file: "site/page.js".into(), line: 6, text: "mine".into() }]);
     }
 
     #[test]
