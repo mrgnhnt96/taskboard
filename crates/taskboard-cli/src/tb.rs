@@ -3728,14 +3728,39 @@ fn slot_claim(c: &Ctx, t: &str, bring: Option<Vec<String>>, hunks: &[String]) ->
     if !hunks.is_empty() {
         body["bring_hunk"] = json!(hunks.iter().map(|h| if h == "none" { h.clone() } else { here.join(h).to_string_lossy().to_string() }).collect::<Vec<_>>());
     }
-    let v = c.call("POST", &format!("/tasks/{t}/slot/claim"), Some(body))?;
-    out(&slot_claimed(t, &v));
+    let bringing = body.get("bring").is_some() || body.get("bring_hunk").is_some();
+    let body = c.credited_here("POST", Some(body));
+    let claimed = client::request_progress(&c.cfg, "POST", &format!("/tasks/{t}/slot/claim"), body.as_ref(), TB_TIMEOUT, |stage| out(&format!("· {stage}")));
+    let quiet = format!("went quiet for {TB_TIMEOUT}s");
+    match claimed {
+        Ok(v) => out(&slot_claimed(t, &v)),
+        Err(e @ CallError::TimedOut(_)) => match c.call("GET", &format!("/tasks/{t}/slot"), None) {
+            Ok(v) if v["path"].is_string() => out(&claimed_quietly(t, &v, bringing)),
+            _ => return Err(unanswered(e, &quiet)),
+        },
+        Err(e) => return Err(unanswered(e, &quiet)),
+    }
     Ok(())
+}
+
+/// A claim the board went quiet on, though the task holds a slot now: that's where it works, so
+/// claiming again would only wait for the same slot.
+fn claimed_quietly(t: &str, v: &Value, bringing: bool) -> String {
+    let (slot, path) = (v["slot"].as_str().unwrap_or(""), v["path"].as_str().unwrap_or(""));
+    let mut line = format!("The board went quiet for {TB_TIMEOUT}s, but {t} holds {slot} ({path}). Work there from now on: cd {path}");
+    if bringing {
+        line += "\nThe files it was bringing may still be on their way: check git status there before carrying on.";
+    }
+    line
 }
 
 fn slot_claimed(t: &str, v: &Value) -> String {
     let path = v["path"].as_str().unwrap_or("");
-    let mut lines = vec![format!("{t} works in {} ({path}). Work there from now on: cd {path}", v["slot"].as_str().unwrap_or(""))];
+    let slot = v["slot"].as_str().unwrap_or("");
+    if v["held"] == true {
+        return format!("{t} already holds {slot} ({path}). Work there: cd {path}");
+    }
+    let mut lines = vec![format!("{t} works in {slot} ({path}). Work there from now on: cd {path}")];
     let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
     if !list("brought").is_empty() {
         lines.push(format!("Brought from the shared checkout: {} (the patch is kept at {}).", list("brought"), v["patch"].as_str().unwrap_or("")));
@@ -8294,6 +8319,20 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repeat_slot_claim_says_the_task_already_holds_it() {
+        let v = json!({"task": "T4", "slot": "slot-2", "path": "/r/.claude/worktrees/slot-2", "held": true, "brought": [], "left": []});
+        assert_eq!(slot_claimed("T4", &v), "T4 already holds slot-2 (/r/.claude/worktrees/slot-2). Work there: cd /r/.claude/worktrees/slot-2");
+    }
+
+    #[test]
+    fn a_claim_the_board_went_quiet_on_names_the_slot_the_task_now_holds() {
+        let v = json!({"task": "T4", "slot": "slot-2", "path": "/r/.claude/worktrees/slot-2", "held": true});
+        let line = claimed_quietly("T4", &v, false);
+        assert!(line.contains("T4 holds slot-2 (/r/.claude/worktrees/slot-2)") && line.ends_with("cd /r/.claude/worktrees/slot-2"), "{line}");
+        assert!(claimed_quietly("T4", &v, true).contains("check git status there"));
+    }
 
     #[test]
     fn a_plan_review_shows_its_findings_with_a_12_hour_time() {
