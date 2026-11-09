@@ -866,3 +866,227 @@ fn follow_line(app: &App, t: &Row, other: &Row, before: &Value, now: &Value) -> 
 fn short_sha(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
+
+/// Queued tasks that hold up others: each one in the queue with nothing on it for a day, that a queued
+/// task waits for or a head-merge parent's PR holds on, raises a `stuck:T<n>` alert naming the chain
+/// ("T1 waits on T2, T2 waits on T3, T3 is queued"). A wait written only in a task's detail can
+/// leave a stack like that standing for days, since the board sees no wait to hold it. Each stuck
+/// spell is raised once, and its alert comes down once nothing waits on the task.
+const STUCK_PREFIX: &str = "stuck:";
+const STUCK_RAISED: &str = "stuck_raised";
+const STUCK_AFTER_SECS: f64 = 24.0 * 3600.0;
+const IDLE_QUEUED: &str = "SELECT t.* FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id WHERE t.status = 'queued' \
+     AND COALESCE(g.paused, 0) = 0 AND COALESCE(g.deprioritized, 0) = 0 AND COALESCE(g.archived, 0) = 0";
+
+fn stuck_key(id: i64) -> String {
+    format!("{STUCK_PREFIX}{}", rf("task", id))
+}
+
+/// When someone last did anything with the task: its newest event not the board's own, else when it was made.
+fn idle_since(app: &App, t: &Row) -> Result<Option<f64>> {
+    let at = app.db.val("SELECT MAX(at) FROM events WHERE task_id = ? AND kind <> 'release' AND who <> ?", p![t.id(), board::BOARD])?;
+    Ok(at.as_str().or(t.s("created_at")).or(t.s("updated_at")).and_then(parse_iso))
+}
+
+/// The tasks `y` holds up: queued tasks that wait for it or stack on it and can't go on without it, and
+/// the done task a head-merge `y` goes into, whose open PR holds until `y`'s merges.
+fn held_by(app: &App, y: &Row) -> Result<Vec<Row>> {
+    let mut out = vec![];
+    for w in waiting_on(app, y)? {
+        if w.s("status") == Some("queued") && !ready_for(app, &w, y.id(), Some(y))? {
+            out.push(w);
+        }
+    }
+    if crate::stack::head(y) && !pr_merged(y) {
+        if let Some(p) = crate::stack::parent(app, y)?.filter(|p| p.s("status") == Some("done") && board::pr_still_open(p)) {
+            out.push(p);
+        }
+    }
+    Ok(out)
+}
+
+/// Each (waiter, what it waits on) pair above `q`, nearest first.
+fn held_chain(app: &App, q: &Row) -> Result<Vec<(i64, i64)>> {
+    let (mut edges, mut seen, mut todo) = (vec![], vec![q.id()], vec![q.clone()]);
+    let mut i = 0;
+    while i < todo.len() && seen.len() < 64 {
+        let y = todo[i].clone();
+        i += 1;
+        for w in held_by(app, &y)? {
+            edges.push((w.id(), y.id()));
+            if !seen.contains(&w.id()) {
+                seen.push(w.id());
+                todo.push(w);
+            }
+        }
+    }
+    Ok(edges)
+}
+
+/// "T1 waits on T2, T2 waits on T3, T3 is queued", from the top of the chain down.
+fn chain_line(q: i64, edges: &[(i64, i64)]) -> String {
+    let mut bits: Vec<String> = edges.iter().rev().map(|(w, y)| format!("{} waits on {}", rf("task", *w), rf("task", *y))).collect();
+    bits.push(format!("{} is queued", rf("task", q)));
+    bits.join(", ")
+}
+
+/// A queued task that can start, isn't set to start later and isn't the owner's to do: the bottom of a chain.
+fn stuck_candidate(app: &App, q: &Row) -> Result<bool> {
+    Ok(!crate::human::is(q) && !crate::scheduled::waiting(q) && blocker(app, q)?.is_none())
+}
+
+/// Raises an alert for each queued task that has held up others for a day, and takes down the ones
+/// whose task no longer does. The number raised.
+pub fn stuck_stacks(app: &App) -> Result<i64> {
+    let now = now_ts();
+    let before = jloads_obj(crate::reqcache::setting(app, STUCK_RAISED).ok().flatten().as_deref());
+    let up = crate::dispatch::alerts(app);
+    let (mut raised, mut stuck, mut sent) = (Row::new(), vec![], 0);
+    for q in app.db.q(IDLE_QUEUED, p![])? {
+        let Some(since) = idle_since(app, &q)?.filter(|s| now - s >= STUCK_AFTER_SECS) else { continue };
+        if !stuck_candidate(app, &q)? {
+            continue;
+        }
+        let edges = held_chain(app, &q)?;
+        if edges.is_empty() {
+            continue;
+        }
+        let key = stuck_key(q.id());
+        stuck.push(key.clone());
+        let r = rf("task", q.id());
+        let spell = json!(iso(since));
+        let shown = up.iter().any(|a| a["key"] == key);
+        if !shown && before.get(&r) != Some(&spell) {
+            raise_stuck(app, &q, since, &chain_line(q.id(), &edges), &key)?;
+            sent += 1;
+        }
+        raised.insert(r, spell);
+    }
+    for a in &up {
+        if let Some(k) = a["key"].as_str().filter(|k| k.starts_with(STUCK_PREFIX) && !stuck.iter().any(|s| s == k)) {
+            crate::dispatch::clear_alert_key(app, k)?;
+        }
+    }
+    if raised != before {
+        crate::reqcache::forget_setting(STUCK_RAISED);
+        app.db.set_setting(STUCK_RAISED, Some(&jdumps(&Value::Object(raised))))?;
+    }
+    Ok(sent)
+}
+
+fn raise_stuck(app: &App, q: &Row, since: f64, chain: &str, key: &str) -> Result<()> {
+    let r = rf("task", q.id());
+    let day = local_dt(since).format("%b %-d");
+    let detail = format!("Queued with no update since {day}, and other work can't move until it does: {chain}.");
+    let text = format!(
+        "{r}: {}. {detail} Start {r}, or if its detail says to wait for one of these, settle that wait so the chain can move.",
+        q.st("title")
+    );
+    let fields = json!({"title": q.st("title"), "detail": detail});
+    board::log_event(app, q.id(), board::BOARD, "note", &format!("Holds up a chain: {chain}"))?;
+    crate::dispatch::add_alert_keyed_with(app, &text, Some(q.id()), q.i("goal_id"), key, fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::fields;
+
+    const OLD: &str = "2026-01-01T12:00:00Z";
+
+    fn app(dir: &std::path::Path) -> std::sync::Arc<App> {
+        App::for_tests(Config::for_tests(dir))
+    }
+
+    fn task(app: &App, f: Vec<(&str, Value)>) -> i64 {
+        let mut all = fields!["title" => "Fix the form", "created_at" => OLD, "updated_at" => OLD];
+        all.extend(f);
+        let id = app.db.insert("tasks", all).unwrap();
+        app.db.insert("events", fields!["task_id" => id, "at" => OLD, "who" => "Terminal", "kind" => "status", "text" => "x"]).unwrap();
+        id
+    }
+
+    fn stuck_alerts(app: &App) -> Vec<Value> {
+        crate::dispatch::alerts(app).into_iter().filter(|a| a["key"].as_str().is_some_and(|k| k.starts_with(STUCK_PREFIX))).collect()
+    }
+
+    /// The reported stack: A's PR holds for B to merge into it, B's for C, and C sits in the queue.
+    fn head_stack(app: &App) -> (i64, i64, i64) {
+        let a = task(app, fields!["status" => "done", "pr_num" => 1, "pr_state" => "OPEN", "pr_phase" => "stack"]);
+        let b = task(app, fields!["status" => "done", "pr_num" => 2, "pr_state" => "OPEN", "pr_phase" => "stack", "pr_after" => a, "stack_merge" => "head"]);
+        let c = task(app, fields!["status" => "queued", "pr_after" => b, "stack_merge" => "head", "detail" => "Don't start until A has merged"]);
+        (a, b, c)
+    }
+
+    #[test]
+    fn a_queued_task_holding_a_head_merge_stack_names_the_chain() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let (a, b, c) = head_stack(&app);
+        assert_eq!(stuck_stacks(&app).unwrap(), 1);
+        let up = stuck_alerts(&app);
+        assert_eq!(up.len(), 1);
+        assert_eq!(up[0]["task_id"].as_i64(), Some(c));
+        let (a, b, c) = (rf("task", a), rf("task", b), rf("task", c));
+        let chain = format!("{a} waits on {b}, {b} waits on {c}, {c} is queued");
+        assert!(up[0]["detail"].as_str().unwrap().contains(&chain), "{up:?}");
+        crate::dispatch::prune_alerts(&app).unwrap();
+        assert_eq!(stuck_alerts(&app).len(), 1);
+    }
+
+    #[test]
+    fn a_wait_for_target_left_in_the_queue_is_flagged() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let target = task(&app, fields!["status" => "queued"]);
+        let waiter = task(&app, fields!["status" => "queued", "waits_for" => format!("[{target}]")]);
+        stuck_stacks(&app).unwrap();
+        let up = stuck_alerts(&app);
+        assert_eq!(up.len(), 1, "only the task at the bottom is flagged: {up:?}");
+        assert_eq!(up[0]["task_id"].as_i64(), Some(target));
+        let chain = format!("{} waits on {}, {} is queued", rf("task", waiter), rf("task", target), rf("task", target));
+        assert!(up[0]["detail"].as_str().unwrap().contains(&chain), "{up:?}");
+    }
+
+    #[test]
+    fn recently_queued_or_unneeded_tasks_stay_quiet() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let fresh = task(&app, fields!["status" => "queued"]);
+        app.db.insert("events", fields!["task_id" => fresh, "at" => now_iso(), "who" => "Terminal", "kind" => "status", "text" => "Queued"]).unwrap();
+        task(&app, fields!["status" => "queued", "waits_for" => format!("[{fresh}]")]);
+        task(&app, fields!["status" => "queued"]);
+        assert_eq!(stuck_stacks(&app).unwrap(), 0);
+        assert!(stuck_alerts(&app).is_empty());
+    }
+
+    #[test]
+    fn a_paused_goal_holds_its_chain_on_purpose() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let g = app.db.insert("goals", fields!["name" => "Paused", "paused" => 1]).unwrap();
+        let target = task(&app, fields!["status" => "queued", "goal_id" => g]);
+        task(&app, fields!["status" => "queued", "waits_for" => format!("[{target}]")]);
+        assert_eq!(stuck_stacks(&app).unwrap(), 0);
+    }
+
+    #[test]
+    fn it_is_raised_once_and_comes_down_when_nothing_waits() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let target = task(&app, fields!["status" => "queued"]);
+        let waiter = task(&app, fields!["status" => "queued", "waits_for" => format!("[{target}]")]);
+        assert_eq!(stuck_stacks(&app).unwrap(), 1);
+        crate::dispatch::clear_alert_key(&app, &stuck_key(target)).unwrap();
+        assert_eq!(stuck_stacks(&app).unwrap(), 0, "a dismissed alert isn't raised again for the same spell");
+        assert!(stuck_alerts(&app).is_empty());
+
+        app.db.set_setting(STUCK_RAISED, None).unwrap();
+        crate::reqcache::forget_setting(STUCK_RAISED);
+        assert_eq!(stuck_stacks(&app).unwrap(), 1);
+        board::update_task(&app, waiter, fields!["waits_for" => null]).unwrap();
+        stuck_stacks(&app).unwrap();
+        assert!(stuck_alerts(&app).is_empty(), "the alert comes down once nothing waits on it");
+    }
+}
