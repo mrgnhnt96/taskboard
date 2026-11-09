@@ -214,6 +214,111 @@ fn a_moved_dependency_is_named_by_its_pr_branch_not_a_detached_head() {
     assert!(!prompt.contains("origin/HEAD"), "{prompt}");
 }
 
+/// A done PR task (on `feat/child`) that waits for a base task whose PR head is `old`, with the base's
+/// first look already recorded. Returns the task and the base.
+fn waits_on_base(b: &Board, old: &str) -> (i64, i64) {
+    let id = b.pr_task();
+    b.add_session("s1", "idle");
+    let base = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Base", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let flow = json!({"head": old, "rec": {"branch": "feat/base"}}).to_string();
+    b.app.db.x("UPDATE tasks SET status = 'done', pr_flow = ? WHERE id = ?", p![flow, base]).unwrap();
+    let own = json!({"rec": {"base": "main", "branch": "feat/child"}}).to_string();
+    b.app.db.x("UPDATE tasks SET waits_for = ?, pr_flow = ? WHERE id = ?", p![json!([base]).to_string(), own, id]).unwrap();
+    assert_eq!(follow(b), 0, "the first look only notes where the base is");
+    (id, base)
+}
+
+fn follow(b: &Board) -> i64 {
+    b.app.db.tx(|| waitsfor::follow_ups(&b.app)).unwrap()
+}
+
+fn move_base(b: &Board, base: i64, head: &str) {
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.head', ?) WHERE id = ?", p![head, base]).unwrap();
+}
+
+fn last_prompt(b: &Board) -> String {
+    let job = b.app.db.q("SELECT * FROM jobs WHERE purpose = 'pr' ORDER BY id DESC", p![]).unwrap().remove(0);
+    board::job_args(&job).st("prompt")
+}
+
+fn sh(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// The project folder as a git repo whose `feat/child` branch holds the commit returned, plus a stray
+/// commit on no branch at all.
+fn child_repo(b: &Board) -> (String, String) {
+    let repo = b.dir.path().join("webapp");
+    sh(&repo, &["init", "-q", "-b", "main"]);
+    sh(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "First"]);
+    let on_branch = sh(&repo, &["rev-parse", "HEAD"]);
+    sh(&repo, &["branch", "feat/child"]);
+    let stray = sh(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "HEAD^{tree}", "-m", "Stray"]);
+    (on_branch, stray)
+}
+
+#[test]
+fn a_base_whose_head_did_not_change_sends_no_rebase_prompt() {
+    let b = board();
+    let (id, base) = waits_on_base(&b, "4147d83907b9aa");
+    let visits = b.visits();
+    // Last seen merged, now not (its stack's merge was dropped): the head is the same, so nothing moved.
+    b.app
+        .db
+        .x(&format!("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.follow.\"{base}\".merged', json('true')) WHERE id = ?"), p![id])
+        .unwrap();
+    assert_eq!(follow(&b), 0);
+    assert_eq!(b.visits(), visits, "no visit to replay onto the same commit");
+    assert_eq!(follow(&b), 0, "and the base's state is recorded, so it stays quiet");
+    move_base(&b, base, "5555aaaa5555bb");
+    assert_eq!(follow(&b), 1, "a real move still reaches it");
+    assert!(last_prompt(&b).contains("moved from 4147d83907b9 to 5555aaaa5555"), "{}", last_prompt(&b));
+}
+
+#[test]
+fn an_old_head_not_on_the_task_s_branch_gets_no_onto_command() {
+    let b = board();
+    let (_, stray) = child_repo(&b);
+    let (id, base) = waits_on_base(&b, &stray);
+    let visits = b.visits();
+    move_base(&b, base, "5555aaaa5555bb");
+    assert_eq!(follow(&b), 0, "its old head isn't on the branch, so there's nothing of it to replay");
+    assert_eq!(b.visits(), visits);
+    let log = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id DESC", p![id]).unwrap();
+    assert!(log.iter().any(|e| e.st("text").contains("isn't on this task's branch")), "{log:?}");
+}
+
+#[test]
+fn an_old_head_on_the_task_s_branch_still_gets_the_onto_command() {
+    let b = board();
+    let (on_branch, _) = child_repo(&b);
+    let (_, base) = waits_on_base(&b, &on_branch);
+    move_base(&b, base, "5555aaaa5555bb");
+    assert_eq!(follow(&b), 1);
+    let old: String = on_branch.chars().take(12).collect();
+    assert!(last_prompt(&b).contains(&format!("git rebase --onto origin/feat/base {old} <your branch>")), "{}", last_prompt(&b));
+}
+
+#[test]
+fn the_base_of_an_open_head_merge_stack_is_told_of_a_move_only_once_the_stack_merges() {
+    let b = board();
+    let (id, base) = waits_on_base(&b, "h1");
+    let kid = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Kid", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    b.app
+        .db
+        .x("UPDATE tasks SET status = 'done', pr_after = ?, stack_merge = 'head', pr_num = 10, pr_state = 'OPEN' WHERE id = ?", p![id, kid])
+        .unwrap();
+    let visits = b.visits();
+    move_base(&b, base, "h2");
+    assert_eq!(follow(&b), 0, "rebasing it now would break its head-merge child's PR");
+    assert_eq!(b.visits(), visits);
+    b.app.db.x("UPDATE tasks SET pr_state = 'MERGED', pr_phase = 'merged' WHERE id = ?", p![kid]).unwrap();
+    assert_eq!(follow(&b), 1, "the move it missed reaches it once the child has merged into it");
+    assert!(last_prompt(&b).contains("git rebase --onto origin/feat/base h1 <your branch>"), "{}", last_prompt(&b));
+}
+
 #[test]
 fn a_merge_visit_while_pr_builds_are_stopped_is_told_to_ignore_the_checks_not_that_they_are_green() {
     let b = board();
