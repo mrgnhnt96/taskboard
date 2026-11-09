@@ -113,6 +113,23 @@ fn the_plan_check_warns_when_many_of_a_goals_prs_look_tiny() {
 }
 
 #[test]
+fn the_plan_check_warns_when_a_task_is_told_not_to_cut_a_release_itself() {
+    let (d, app) = board_with(|_, _| {});
+    let g = api::dispatch(&app, "POST", "/goals", &Query::new(), &json!({"name": "Ship the fix", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let release = |w: &[String]| w.iter().find(|w| w.contains("not to cut a release itself")).cloned();
+
+    let (_, w) = propose(&app, d.path(), g, json!([task("Fix the crash", "Fix it.\nRelease the lock before the await.", &["src/a.rs"])]));
+    assert_eq!(release(&w), None, "releasing a lock isn't a release: {w:?}");
+
+    let (made, w) = propose(&app, d.path(), g, json!([task("Verify the build", "Check the signed build on a Mac.\nDon\u{2019}t cut a release yourself.", &["src/b.rs"])]));
+    assert_eq!(release(&w), Some(format!(
+        "{0}'s detail tells its agent not to cut a release itself, but a release cut is a command an agent runs (tb release cut v<version>): \
+         plan it as its own --no-pr task and have {0} wait for it (--waits-for), never as a human task.",
+        made[0]
+    )));
+}
+
+#[test]
 fn with_models_on_the_built_in_rules_say_which_model_and_tb_planning_names_them() {
     let (_d, app) = board_with(|_, _| {});
     assert!(planning_for(&app, "project", "webapp")["models"].is_null(), "off: no models");
