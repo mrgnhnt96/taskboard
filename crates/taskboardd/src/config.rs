@@ -154,12 +154,16 @@ pub struct Questions {
     pub timeout_secs: u64,
     /// Extra rule files (markdown) the screener reads, e.g. the owner's memory notes.
     pub rules: Vec<String>,
+    /// The model that screens an agent's new human task (`screen` turns it off too): whether only the
+    /// owner can do it. Empty: `model`'s.
+    pub human_model: String,
 }
 
 impl Default for Questions {
     fn default() -> Self {
         Questions {
             screen: true,
+            human_model: "sonnet".into(),
             model: "claude-haiku-5-5".into(),
             budget_usd: "0.30".into(),
             timeout_secs: 75,

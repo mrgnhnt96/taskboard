@@ -27,6 +27,35 @@ fn new_board() -> Board {
     Board { app, dir }
 }
 
+/// A board whose screener is a script that saves the prompt it's given and prints `out` (what claude
+/// would print); `s1` is on T1.
+fn screening_board(out: &str) -> Board {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    let repo = dir.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    let script = dir.path().join("claude");
+    let saved = dir.path().join("prompt.txt");
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$2\" > '{}'\necho '{out}'\n", saved.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    cfg.claude = script.to_string_lossy().to_string();
+    cfg.questions.screen = true;
+    let app = App::for_tests(cfg);
+    app.db
+        .set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string()))
+        .unwrap();
+    let b = Board { app, dir };
+    b.session("s1");
+    b.task("Review the marketing site");
+    b.report("tb.take", "s1", json!({"task": "T1"})).unwrap();
+    b
+}
+
+fn verdict(v: Value) -> String {
+    json!({"structured_output": v}).to_string()
+}
+
 const STEPS: &str = "1. Sign up at https://signup.cloud.oracle.com.\n2. Pick the home region.\n3. Note the tenancy name.";
 
 impl Board {
@@ -268,4 +297,53 @@ fn talking_it_over_opens_claude_in_its_checkout_with_its_steps() {
     let (code, msg) = b.post(&format!("/tasks/{h}/talk"), json!({})).unwrap_err();
     assert_eq!(code, 409);
     assert!(msg.contains("done already"), "{msg}");
+}
+
+#[test]
+fn a_human_task_an_agent_can_do_is_refused_and_noted_on_the_agent_s_task() {
+    let b = screening_board(&verdict(json!({"verdict": "agent", "why": "The Amplitude MCP reads the retention."})));
+    let (status, msg) = b
+        .report("tb.new_task", "s1", json!({"title": "Find how long Amplitude keeps events", "detail": "1. Open Amplitude settings.", "project": "webapp", "kind": "human"}))
+        .unwrap_err();
+    assert_eq!(status, 409);
+    assert!(msg.contains("Not a human task") && msg.contains("Amplitude MCP") && msg.contains("--no-pr"), "{msg}");
+    let humans = b.app.db.q("SELECT id FROM tasks WHERE kind = 'human'", p![]).unwrap();
+    assert!(humans.is_empty(), "nothing reaches the owner");
+    assert!(dispatch::alerts(&b.app).is_empty());
+    let notes = b.app.db.q("SELECT text FROM events WHERE task_id = 1 AND kind = 'note'", p![]).unwrap();
+    assert!(notes.iter().any(|n| n.st("text").contains("refused a human task")), "the refusal is kept on T1");
+}
+
+#[test]
+fn a_human_task_the_rules_settle_is_refused_with_the_answer() {
+    let b = screening_board(&verdict(json!({"verdict": "answered", "answer": "Use MRGNHNT, LLC.", "source": "legal.md"})));
+    let (status, msg) = b.report("tb.new_task", "s1", json!({"title": "Confirm the company name", "detail": STEPS, "project": "webapp", "kind": "human"})).unwrap_err();
+    assert_eq!(status, 409);
+    assert!(msg.contains("legal.md") && msg.contains("Use MRGNHNT, LLC."), "{msg}");
+}
+
+#[test]
+fn a_human_task_only_the_owner_can_do_goes_through_and_the_screen_reads_the_owner_s_prompts() {
+    let b = screening_board(&verdict(json!({"verdict": "owner"})));
+    b.report("hook.prompt", "s1", json!({"prompt": "Make me a human task to sign the Oracle agreement"})).unwrap();
+    let h = b.human("s1", json!({}));
+    assert!(taskboardd::human::is(&b.row(id_of(&h))));
+    let prompt = std::fs::read_to_string(b.dir.path().join("prompt.txt")).unwrap();
+    assert!(prompt.contains("Create an Oracle Cloud account") && prompt.contains("Sign up at"), "it reads the task");
+    assert!(prompt.contains("Make me a human task to sign the Oracle agreement"), "it reads the owner's prompts");
+}
+
+#[test]
+fn a_screen_that_fails_lets_the_human_task_through() {
+    let b = screening_board("not json");
+    let h = b.human("s1", json!({}));
+    assert!(taskboardd::human::is(&b.row(id_of(&h))));
+}
+
+#[test]
+fn an_agent_task_isn_t_screened() {
+    let b = screening_board(&verdict(json!({"verdict": "agent", "why": "x"})));
+    let out = b.report("tb.new_task", "s1", json!({"title": "Fix the footer", "detail": "Do it.", "project": "webapp"})).unwrap();
+    assert!(out["created"][0].as_str().unwrap().starts_with('T'));
+    assert!(!b.dir.path().join("prompt.txt").exists(), "claude isn't run");
 }

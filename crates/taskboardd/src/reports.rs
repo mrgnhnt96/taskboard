@@ -2922,6 +2922,9 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     if title.is_empty() {
         return err(400, "A task needs a title.");
     }
+    if let Some(why) = r.screened.as_ref().and_then(|s| screen::human_refusal(r.app, s)) {
+        return err(409, why);
+    }
     if as_bool(r.body.get("here"), false) {
         if crate::design::clean_kind(r.body.get("kind"))? == Some(crate::human::KIND) {
             return err(400, "A human task isn't done in a terminal; leave out --here.");
@@ -3460,6 +3463,15 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         r.asking = app.db.tx(|| hold_question(&r))?;
         let t = r.task().ok().flatten();
         r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
+    }
+    if r.event == "tb.new_task" && !spooled && crate::design::clean_kind(r.body.get("kind")).ok().flatten() == Some(crate::human::KIND) {
+        // Most human tasks an agent files are work an agent can do: screen it before it reaches the owner.
+        let t = r.task().ok().flatten();
+        r.screened = screen::human_task(app, t.as_ref(), r.sid(), &one_line(&r.b("title"), 300), &r.b("detail"));
+        if let (Some(t), Some(why)) = (&t, r.screened.as_ref().and_then(|s| screen::human_refusal(app, s))) {
+            let text = format!("The board refused a human task, “{}”: {why}", one_line(&r.b("title"), 300));
+            app.db.tx(|| r.log(t.id(), "note", &text, None).map(|_| ()))?;
+        }
     }
     if r.event == "tb.done" {
         let t = r.task().ok().flatten();
