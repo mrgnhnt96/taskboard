@@ -735,6 +735,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
         let seen = flow.get(FOLLOW).and_then(|v| v.as_object()).cloned().unwrap_or_default();
         let mut changes = Row::new();
         let mut notes = vec![];
+        let mut held = None;
         for n in deps(&t) {
             let other = board::find_task(app, Some(n))?;
             if !ready(other.as_ref()) {
@@ -750,7 +751,12 @@ pub fn follow_ups(app: &App) -> Result<i64> {
             if *before == now || (now["head"].is_null() && now["merged"] == false) {
                 continue;
             }
-            notes.push(follow_line(app, &t, &other, before, &now)?);
+            if *held.get_or_insert(stack_base_held(app, &t)?) {
+                continue;
+            }
+            if let Some(line) = follow_line(app, &t, &other, before, &now)? {
+                notes.push(line);
+            }
             changes.insert(key, now);
         }
         if changes.is_empty() {
@@ -791,20 +797,72 @@ pub fn follow_ups(app: &App) -> Result<i64> {
     Ok(sent)
 }
 
-fn follow_line(app: &App, t: &Row, other: &Row, before: &Value, now: &Value) -> Result<String> {
+/// A head-merge child still stacks on the task: rebasing its branch now would break that child's PR,
+/// so a move it builds on is left unrecorded until the stack has merged into it.
+fn stack_base_held(app: &App, t: &Row) -> Result<bool> {
+    Ok(crate::stack::children(app, t.id())?.iter().any(crate::stack::head))
+}
+
+/// Whether git, in the task's checkout, finds `sha` on the task's branch (locally or at origin). None when
+/// there's no checkout or branch to ask.
+fn on_branch(t: &Row, sha: &str) -> Option<bool> {
+    let ctx = board::task_context(t);
+    let worktree = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str());
+    let dir = [worktree, t.s("repo_path")].into_iter().flatten().find(|d| std::path::Path::new(d).is_dir())?;
+    let branch = crate::stack::branch(t).filter(|b| real_branch(b))?;
+    let git = crate::proc::which("git")?;
+    let run = |args: &[&str]| {
+        let mut all: Vec<String> = vec!["-C".into(), dir.into()];
+        all.extend(args.iter().map(|a| a.to_string()));
+        crate::proc::run(&git, &all, None, 5.0).ok().and_then(|o| o.code)
+    };
+    let refs: Vec<String> = [format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}")]
+        .into_iter()
+        .filter(|r| run(&["rev-parse", "--verify", "-q", &format!("{r}^{{commit}}")]) == Some(0))
+        .collect();
+    if refs.is_empty() {
+        return None;
+    }
+    Some(refs.iter().any(|r| run(&["merge-base", "--is-ancestor", sha, r]) == Some(0)))
+}
+
+/// What to tell the task about a dependency's change, if anything: nothing when its head didn't move
+/// and it didn't newly merge, or when its old head isn't on the task's branch, so there's nothing of it
+/// to replay or drop.
+fn follow_line(app: &App, t: &Row, other: &Row, before: &Value, now: &Value) -> Result<Option<String>> {
+    let newly_merged = now["merged"] == true && before["merged"] != true;
+    let (was, is) = (before["head"].as_str().unwrap_or(""), now["head"].as_str().unwrap_or(""));
+    if !newly_merged && (is.is_empty() || was == is) {
+        return Ok(None);
+    }
+    if !was.is_empty() && on_branch(t, was) == Some(false) {
+        let what = if newly_merged { "merged" } else { "moved" };
+        board::log_event(
+            app,
+            t.id(),
+            board::BOARD,
+            "note",
+            &format!("Didn't ask it to rebase when {} {what}: its old last commit {} isn't on this task's branch", rf("task", other.id()), short_sha(was)),
+        )?;
+        return Ok(None);
+    }
     let branch = moved_onto(t, other).unwrap_or_else(|| "<its branch>".into());
-    let old: String = before["head"].as_str().unwrap_or("").chars().take(12).collect();
+    let old = short_sha(was);
     let old = if old.is_empty() { "<its old last commit>".to_string() } else { old };
     let lbl = label(app, other)?;
-    if now["merged"] == true && before["merged"] != true {
-        return Ok(format!(
+    if newly_merged {
+        return Ok(Some(format!(
             "- {lbl} was merged. Drop its commits from your branch and keep only yours: git fetch origin && \
              git rebase --onto origin/<your base, usually main> {old} <your branch>."
-        ));
+        )));
     }
-    let new: String = now["head"].as_str().unwrap_or("").chars().take(12).collect();
-    Ok(format!(
+    let new = short_sha(is);
+    Ok(Some(format!(
         "- {lbl}'s branch {branch} moved from {old} to {new}. Replay your commits on the new tip: \
          git fetch origin && git rebase --onto origin/{branch} {old} <your branch>."
-    ))
+    )))
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(12).collect()
 }
