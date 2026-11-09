@@ -177,9 +177,9 @@ fn pct(n: f64) -> String {
     }
 }
 
-/// A submitted task waits on its PR until it merges or closes; only then is it Done.
+/// A submitted task waits on its PR until it merges or closes, and a merged one on the checks it merged before; only then is it Done.
 fn pr_open(pr: &Value) -> bool {
-    !pr["num"].is_null() && pr["state"].as_str().unwrap_or("OPEN").eq_ignore_ascii_case("open")
+    !pr["num"].is_null() && (pr["state"].as_str().unwrap_or("OPEN").eq_ignore_ascii_case("open") || pr["stage"]["phase"] == "landing")
 }
 
 /// An open PR's stage as the app's task rows show it.
@@ -196,6 +196,7 @@ fn pr_stage(stage: &Value) -> (&'static str, &'static str, &'static str) {
         "rebase" => ("Conflicts", "err", "pr"),
         "comments" => ("Comments", "accent", "pr"),
         "merge" => ("Ready to merge", "ok", "pr"),
+        "landing" => ("Merged, checks running", "accent", "pr"),
         _ => ("In review", "accent", "pr"),
     }
 }

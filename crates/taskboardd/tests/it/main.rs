@@ -55,6 +55,7 @@ mod lost_questions;
 mod live_fix;
 mod merge_carried;
 mod merge_checks_running;
+mod merge_head_checks;
 mod merge_progress;
 mod merge_retry;
 mod merged_note;
