@@ -37,5 +37,8 @@
 - Morgan: say whether Taskboard is free (and under what licence, if any). The repository has no
   LICENSE file, so the page and its structured data state no price and no "open source"; the
   audit warns that `SoftwareApplication` has no `offers` until then.
+- Morgan: say whether to be named as the publisher. If so, the home page's JSON-LD gets a `Person`
+  (name, url, `sameAs` GitHub profile); until then it has no `Organization` or `Person`, because
+  no company is behind the app, and the audit warns about it.
 - Morgan: decide whether the page needs a privacy line. The app checks GitHub releases for updates,
   and the daemon talks to the PR hosts, CI and Jira you configure; it has no analytics.
