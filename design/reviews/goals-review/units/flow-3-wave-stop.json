@@ -1,0 +1,192 @@
+{
+  "brief": "/private/tmp/claude-501/-Users-mrgnhnt96-Development-rust-taskboard--claude-worktrees-slot-4/1fa5c2b4-ce98-4a70-b490-f2600ad9c07b/scratchpad/goals-review/goals-review.json",
+  "unit": "Flow 3: Wave stop",
+  "model": "opus",
+  "effort": null,
+  "ok": true,
+  "error": null,
+  "turns": 66,
+  "seconds": 268,
+  "costUsd": 1.5115916000000005,
+  "tokens": {
+    "input": 32,
+    "output": 28016,
+    "cacheWrite": 128418,
+    "cacheRead": 1545268
+  },
+  "firstTurn": {
+    "cacheWrite": 2190,
+    "cacheRead": 28414
+  },
+  "systemPrompt": "ultrahand-review-f668883d4485.md",
+  "compactions": 0,
+  "peakContext": 156834,
+  "report": {
+    "verdict": "macOS desktop app (GPUI, pointer and keyboard), reviewed from 11 dark captures at 1360×860 and 1360×1240 plus the Rust code. I didn't run the app, and no browser page applied, so the audit, inspect and real-input passes were not run. First impression from the captures: each surface reads as organised and calm, with the work dominant. The flow's problem is coverage, not clutter: the three kinds of stop are not treated alike. A review stop is handled well: it is noticed in sidebar, Needs you and Goals, and it releases from all three. A failed task is missing from Needs you, can't be released from its Goals row, and the sidebar words it like a review stop. A held wave shows nowhere outside the goal page. The owner has to open each goal to find it, and the Needs you badge can read nothing while goals stand still. Counts: 1 Catastrophe, 4 Major, 8 Minor, 1 Cosmetic. Top problem: R1, a held wave stalls its goal silently. 'Waits for you to press Start' is a seed effect and is not rated: `waits_for_start` is true only for manual pickup in a goal with no `ran_at`.",
+    "findings": [
+      {
+        "id": "R1",
+        "severity": 4,
+        "title": "A held wave shows nowhere outside the goal page",
+        "element": "Sidebar › Active goals › G5; Needs you; Goals › G5 row, at 1360×860 and 1360×1240, dark, held wave",
+        "evidence": "Confirmed",
+        "problem": "G5 is stopped until the owner acts, yet the sidebar reads a plain '1 of 2', Needs you has no row, and the Goals row reads 'Queued' with Pause, the same as a healthy waiting goal (r-needs.png, r-goals.png). Only the goal page says 'Held' and offers the release (r-g5.png). In code, `stopped_line` returns None for a held wave, so `goal_sub`, `stop_vm` and `goal_row` all stay silent. Anyone can hold a wave (waves.rs, including `tb goal wave --hold`), so the owner may not know it happened. The only other signs are the 'Held' meta in the row's expanded wave list and, after 2 hours, an amber 'last update' time, which says stale rather than held.",
+        "principle": "Visibility of system status [NNG-H1]; walkthrough question 2, will users notice the action is available [NNG-CW]",
+        "fix": "In taskboardd/waves.rs, make `stopped_line` return 'Wave 2 is held' when the first unpassed wave has `held == true`, and extend `stopped_wave` so `stage_entry` emits a stage for it. In `stop_vm`, read the wave from `stage.wave` rather than parsing ' is done'; title 'Audit log · wave 2 held', act Continue with the label 'Let wave 2 start'. In `goal_row`, set now to 'Wave 2 held' in St::Needs, next to '1 task waits', and offer the same action in place of Pause. In `goal_sub`, show '1 of 2 · wave 2 held'. It lands under Decide, so the agents-only count doesn't change."
+      },
+      {
+        "id": "R2",
+        "severity": 3,
+        "title": "A failed wave has no Needs you row, no release on its Goals row, and reads like a review stop in the sidebar",
+        "element": "Needs you; Goals › G4 row; Sidebar › G4, at 1360×860 and 1360×1240, dark, failed task",
+        "evidence": "Confirmed",
+        "problem": "G4 is stopped by T54, but Needs you has no row for it (r-needs.png). The code explains why: `stage_entry` only uses `stopped_wave` (state 'stopped'), `stop_vm` filters on ' is done', and `on_fail`/`finish_task` raise no alert. The Goals row is red but offers Pause rather than a release (r-goals.png), because `goal_row` only sets Action::Continue for state 'stopped'. The sidebar gives G3 and G4 the same 'stopped for you', so a failure can't be told from a routine review. The owner must open the goal page to release it.",
+        "principle": "Consistency and standards [NNG-H4]; Recognition rather than recall [NNG-H6]; Visibility of system status [NNG-H1]",
+        "fix": "Emit a stage for the first unpassed wave in state 'failed' (`stage:G4:1`). In `stop_vm`, build 'Nightly export · T54 failed' with 'Holds 1 task', linked to T54 and kept in Decide (a kind other than 'Failed', which `kind_of` sends to Stopped). On the Goals row, add an action that opens the gate's choices, and don't leave Pause as the only signal. In `goal_sub`, branch on the line: 'T54 failed' for a failure, 'wave 1 ready for review' for a review stop."
+      },
+      {
+        "id": "R3",
+        "severity": 3,
+        "title": "The Needs you badge reads 1, or nothing, while goals stand still",
+        "element": "Sidebar › nav › Needs you and Goals, all pages",
+        "evidence": "Confirmed",
+        "problem": "The badge is `counts.waiting`, which is agents only. In r-needs.png it reads 1 while Decide holds 3 items and G4 and G5 are stopped too. `(needs > 0).then(...)` removes the number at 0, so after answering one question the nav shows no count and no sign that a goal waits at a stop. The count is accurate for agents, and 'Agents waiting' is honest wording. The result is that the app's one always-visible signal says nothing about stopped goals, and the owner glances at it through the day.",
+        "principle": "Visibility of system status [NNG-H1]; squint test, the attention signal should match what needs attention [SCR-2]",
+        "fix": "Keep the agents-only number. Add a second, quieter signal on the Goals nav item: '8' plus an 8px `t.warn` dot, or '3 stopped' in muted text, when any active goal has a `stopped` line or a held wave. Also draw a plain muted dot on Needs you when Decide has items and the agent count is 0. Neither changes the count rule; changing the number itself would need the owner's OK."
+      },
+      {
+        "id": "R4",
+        "severity": 3,
+        "title": "The failed gate's main action skips the failure, and Try again is out of sight",
+        "element": "Goal page › Wave 1 › gate, r-g4.png, 1360×860, dark, failed task",
+        "evidence": "Confirmed",
+        "problem": "'T54 failed. Wave 2 waits.' offers one blue button: 'Continue anyway'. The daemon's own hold reason says 'Try again, or continue past it', but Try again exists only inside T54's task panel (`done_node`); the row's `retry` covers start failures only. The reason is cut to 'The bucket refused the uplo…', so the owner decides without it. One click runs wave 2 on top of a failed upload, and nothing on this page undoes it.",
+        "principle": "Error prevention [NNG-H5]; Help users recover from errors [NNG-H9]; destructive or risky actions are separated from safe ones [NNG-H3]",
+        "fix": "In `gate()` for the failed case, put the reason in the text: 'T54 failed: the bucket refused the upload. Wave 2 waits.' Add 'Try T54 again' as the btn_primary, calling `POST tasks/T54/requeue`, as the panel's Try again does. Make 'Continue anyway' a plain secondary button. With several failures, use 'Try 2 again'. Both are one-click signals, so no owner rule changes."
+      },
+      {
+        "id": "R5",
+        "severity": 3,
+        "title": "Gate buttons appear to have no keyboard route",
+        "element": "Goal page › gate button; Goals › row Continue; Needs you › Continue",
+        "evidence": "Likely",
+        "problem": "`btn_primary` and `btn_small` are plain clickable divs, and kit.rs has no `track_focus` or `tab_index` anywhere, so Tab can't appear to reach Continue or 'Let wave 2 start'. The releases seem to be mouse-only on a pointer-and-keyboard platform. I read this from code and did not press keys, and an app-level shortcut could still exist.",
+        "principle": "Keyboard [WCAG 2.1.1]; Focus visible [WCAG 2.4.7]; Tab reaches controls [MS-KBD]",
+        "fix": "Give kit's `btn_base` a focus handle or `tab_index(0)`, a visible 2px focus ring in `t.accent`, and Enter and Space activation. Then every gate, row and Needs you button gets it at once. Confirm in the running app by tabbing to 'Continue to wave 2' and pressing Space."
+      },
+      {
+        "id": "R6",
+        "severity": 2,
+        "title": "A failure the owner went past looks the same as one still waiting",
+        "element": "Goal page › Wave 1 and Wave 2, r-g4-continue.png; Goals › G4 row",
+        "evidence": "Confirmed",
+        "problem": "After 'Continue anyway', the gate goes, but Wave 1 still reads 'A task failed' with a red dot, and Wave 2 reads 'After wave 1', as if it still waits on it. `now_line` and `next_line` never read `passed`, so the Goals row keeps red '1 failed · T54 failed' for the rest of the goal. The owner keeps seeing an alarm for something already decided, and can't tell a handled failure from a live one on that row. The sidebar drops the sign, so the surfaces disagree.",
+        "principle": "Visibility of system status [NNG-H1]; one fact, one reading [SEC-7]",
+        "fix": "When `passed` is true on a failed wave, set the head meta to 'T54 failed · went on anyway' with a muted dot. Have Wave 2 read 'Next' or 'Now', not 'After wave 1'. In `now_line`, leave out failures in passed waves so the row shows the live state, and keep the red part of the bar as the record."
+      },
+      {
+        "id": "R7",
+        "severity": 2,
+        "title": "Stopped goals are quieter in the sidebar than questions, and can sit below the fold",
+        "element": "Sidebar › Active goals, r-needs.png, 1360×860, dark",
+        "evidence": "Confirmed",
+        "problem": "The orange dot appears only when `needs > 0`, so G1 has one but stopped G3 and G4 don't. Their only sign is 11px muted text. The list sorts by id, not by attention, so at 860 high G3's line is cut off under the footer and G2 and G1 are out of view (r-needs.png). The sidebar shows far less at this height than at 1240.",
+        "principle": "Frequent in view, rare behind [SEC-8]; Visibility of system status [NNG-H1]",
+        "fix": "In `render`, show `kit::dot(t.warn, 7.)` when `i(g,\"needs\") > 0` or the goal has a `stopped` line or held wave, and `t.down` for a failed one. Sort `active_goals` with waiting-on-you first, then newest. Colour the 'stopped for you' part of the sub line `t.warn_fg`."
+      },
+      {
+        "id": "R8",
+        "severity": 2,
+        "title": "A missed outcome reads Done on the Goals row and full green in the sidebar",
+        "element": "Goals › G13 row; Sidebar › G13; Goal page r-g13.png",
+        "evidence": "Confirmed",
+        "problem": "Needs you says '2 missed · Holds the goal' and the goal page says 'Outcome not met · 2 misses', while the Goals row says 'Done' and the sidebar shows '1 of 1' on a full green bar (r-goals.png). The row also offers Pause on a goal with nothing left to pause, a control the goal page doesn't show. A glance at either surface says this goal is finished when it is held open.",
+        "principle": "Consistency and standards [NNG-H4]; one fact, one place [SEC-7]",
+        "fix": "In `now_line`/`goal_row`, when `misses > 0` and nothing is active, show 'Outcome not met' in St::Needs with next '2 misses hold the goal'. Make `action` None there. In `goal_sub`, show '1 of 1 · 2 misses', and draw the sidebar dot."
+      },
+      {
+        "id": "R9",
+        "severity": 2,
+        "title": "A held wave doesn't say who held it, when or why",
+        "element": "Goal page › Wave 2 › gate, r-g5.png, dark, held wave",
+        "evidence": "Confirmed",
+        "problem": "'Wave 2 is held.' repeats the header's 'Held' and gives nothing to decide with. Agents and the CLI can hold a wave as well as the owner, so 'Let wave 2 start' may undo a hold someone placed on purpose. `held_at` is already in the wave's JSON, and the holder is logged as an event.",
+        "principle": "Help users diagnose [NNG-H9]; walkthrough question 1, will users try the right thing [NNG-CW]",
+        "fix": "Add `held_by` to the wave JSON from the 'held wave N' event. Change the text to 'Claude held wave 2 at 4:12 PM. T57 waits.' using the 12-hour format. An optional reason on `tb goal wave --hold` could follow, shown as a second line."
+      },
+      {
+        "id": "R10",
+        "severity": 2,
+        "title": "Continue on Needs you and Goals skips the look the stop asks for",
+        "element": "Needs you › Checkout on mobile row; Goals › G3 row",
+        "evidence": "Confirmed",
+        "problem": "The stop exists so the owner looks at wave 1 first, and the gate says 'Look it over'. The Goals row gives bare 'Continue' as the page's only blue button, and the Needs you row offers it with no summary. Neither says what it starts, and neither shows what the wave produced. `stop_vm` builds '2 tasks wait in wave 2' and the review line, but r-needs.png shows neither. The title link to the goal has no link look. There's no undo on these surfaces.",
+        "principle": "Walkthrough question 3, does the label match the result [NNG-CW]; Error prevention [NNG-H5]",
+        "fix": "Keep it one click, per the owner's rule. Label both buttons 'Continue to wave 2', as the gate does. Add a 'Review wave 1' link beside it that opens the goal at that wave, and on the Goals row make Continue the secondary look when this link is present."
+      },
+      {
+        "id": "R11",
+        "severity": 2,
+        "title": "The gate's confirmation note never shows, and toasts don't name the goal",
+        "element": "Goal page after release, r-g3-continue.png, r-g4-continue.png, r-g5-start.png; toast in r-goals-continue.png and r-needs-continue.png",
+        "evidence": "Confirmed",
+        "problem": "`continue_wave` sends its success text to the `wgate:G` note with toast off, and that note is drawn only inside `gate_el`, which is gone once the wave releases. The three post-release gate captures show no message. The gate just vanishes and the rows reflow. Elsewhere the toast says 'The goal goes on' without saying which goal or what starts.",
+        "principle": "Visibility of system status [NNG-H1]; Status messages [WCAG 4.1.3]",
+        "fix": "Pass `toast: true` with `grp: None` on success in `continue_wave`, keeping the inline note for errors. Use one message on all three surfaces: 'G3: wave 2 can start', or 'G4: went on past T54'."
+      },
+      {
+        "id": "R12",
+        "severity": 2,
+        "title": "'Stopped' means different things, and a review stop has about five names",
+        "element": "Sidebar sub line; Goals row; Needs you group names; goal page",
+        "evidence": "Confirmed",
+        "problem": "One review stop reads 'stopped for you', 'Stopped for your review', 'wave 1 finished', 'Done · waiting for your review' and 'Wave 1 is done'. Needs you has its own 'Stopped' group for closed terminals (`Kind::Stopped`), yet a goal the sidebar calls stopped is filed under Decide. Looking under Stopped for a stopped goal finds nothing.",
+        "principle": "Consistency and standards [NNG-H4]; Match the real world [NNG-H2]",
+        "fix": "Pick one word per kind and use it everywhere: 'Ready for review', 'Failed', 'Held'. Sidebar: '2 of 4 · ready for review'. Goals row: 'Ready for review'. Needs you: 'Checkout on mobile · wave 1 ready for review'. Keep 'Stopped' for closed terminals only."
+      },
+      {
+        "id": "R13",
+        "severity": 2,
+        "title": "On a goal with many waves the gate can be off screen, and the page top doesn't mention it",
+        "element": "Goal page › header and progress line, r-g3.png; a long goal such as G6 (9 waves)",
+        "evidence": "Likely",
+        "problem": "The header and progress line say only '2 of 4 done · 2 queued' at a review stop. The sole sign is the gate inside the wave's card. With short goals it's in view, but on a 9-wave goal a stop at a later wave likely sits below the fold, and the top of the page gives no hint. `goal_status` already computes 'Waiting on you', but no capture shows it drawn on this page. No long-goal capture exists, so this is inferred.",
+        "principle": "Visibility of system status [NNG-H1]; Focus on what the page is for [SCR-1]",
+        "fix": "Add the stop to the progress line, as 'Outcome not met' already does: 'Stopped at wave 3' in warn colour (red for a failure), clicking scrolls the virtualized list to `goal-wave-w3`. Or scroll to the gate when the page opens on a stopped goal."
+      },
+      {
+        "id": "R14",
+        "severity": 1,
+        "title": "Decide's count doesn't match its visible rows",
+        "element": "Needs you › Decide header, r-needs.png",
+        "evidence": "Confirmed",
+        "problem": "'DECIDE 3' sits above two rows, and 'DECIDE 2' above one after Continue (r-needs-continue.png). It counts items by design, with '2 missed' folded into one row, so it adds up only after working it out.",
+        "principle": "Consistency and standards [NNG-H4]",
+        "fix": "Count rows in the header, or leave it as is if the owner prefers items."
+      }
+    ],
+    "what_works": [
+      "The review stop is the model to copy: it is noticed on all three surfaces, it releases from all three, and each surface clears straight after (r-goals-continue.png, r-needs-continue.png, r-g3-continue.png).",
+      "The goal-page gates are clear and sit at the wave they belong to. Amber against red separates a pause from a failure, and each button names its result ('Continue to wave 2', 'Let wave 2 start').",
+      "Keeping stops under Decide leaves 'Agents waiting' honest: its heading and count mean exactly what they say.",
+      "The Goals row's now and next lines give a stopped goal a clear state at a glance, with 'Wave 1 done · 2 tasks in wave 2' as a good example.",
+      "Times use 12-hour AM/PM throughout, and labels carry no filler."
+    ],
+    "not_checked": [
+      "Real input: the app is a native GPUI window and no running build was reachable, so no control was clicked, typed or tabbed. All behaviour comes from captures and code.",
+      "Composition audit and blurred screenshot, and `inspect` measures: these need a web page. The composition judgement comes from viewing the captures.",
+      "Contrast, target sizes and focus indicators were not measured. Goals-row Continue is 24px high by code, which meets the 2.5.8 floor.",
+      "Light theme: all captures are dark.",
+      "Other window sizes: only 1360×860 and 1360×1240 were captured. The minimum window, short heights and 200% text were not seen.",
+      "VoiceOver and status announcements: not tested.",
+      "Goals row expanded inline: no capture. From code it shows 'Held' and 'A task failed' as wave meta, but what it offers wasn't seen.",
+      "Needs you › Later on a stop, and how the sidebar reads afterwards. From code, Later nulls `stopped` only in the /home entry, so the sidebar may keep 'stopped for you'. Not verified.",
+      "Whether any path other than `on_fail`/`finish_task` raises an alert for a failed task. Searches found none, and the 'Failed' kind in `ask_vm` exists, so a task with such an alert would show under Stopped. The search was not exhaustive.",
+      "Whether a real run shows `goal_blocker`'s line on queued wave 2 tasks. 'Waits for you to press Start' was checked in `waitsfor.rs` and is a seed effect: it comes before `goal_blocker` for manual pickup in a goal with no `ran_at`. Real wording wasn't seen, and neither was real start after a release.",
+      "A paused goal at a stop: `release` silently unpauses it. Not captured or judged.",
+      "Error path for a failed release, slow networks and motion: not captured.",
+      "Long lists at real scale, such as many stopped goals at once.",
+      "One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE]."
+    ]
+  }
+}
