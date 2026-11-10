@@ -43,7 +43,8 @@ pub const BUILT_IN: &str = "\
 - Each task is small enough for one terminal.
 - Aim for PRs that are easy to review and have a small impact, not for as many PRs as possible.
 - Each cut has a cost: every extra PR takes a human review, an agent review round and, into main, a full check run. Cut at a seam only when each side is worth its own review; being able to name the seam isn't enough.
-- Size has two limits. Upper: one person can read the whole diff, since a large PR hides issues. Lower: a piece a reviewer would finish in a couple of minutes, or one that only makes sense next to its neighbour, folds into that neighbour.
+- Size has two limits. Upper: one person can read the whole diff, since a large PR hides issues. Lower: a piece a reviewer would finish in a couple of minutes, or one that only makes sense next to its neighbour, shares that neighbour's PR.
+- One problem, one task, always. Never fold several problems into one task: pieces that belong in one PR are separate tasks that share it (tb task new --same-pr T<n>, or tb task set T<n> --same-pr T<m> after a goal new or propose). Each keeps its own detail and handoff; the PR gets a section per task. Size limits group tasks into PRs, never problems into tasks.
 - A sweep (rename, format pass, comment rewrite) limited to files the task already touches stays in the task, as its own commit. A sweep across many files is its own task.
 - A guard nothing else protects (a permission, auth or security check) is its own task, however small.
 - List the tasks in the order they should run; a task that needs an earlier one's code goes after it.
@@ -53,7 +54,7 @@ pub const BUILT_IN: &str = "\
 - A separate task is a separate review, not a separate PR to main: every PR to main runs the full checks, and so does every push to it.
 - Small, related tasks share one stack: the smallest of them is the head, in the first wave, and each other one stacks on it (--stack-on) with --stack-merge head, so only the head's PR goes to main. Related means the same screen family, the same subsystem or the same kind of fix, even when the tasks don't need each other's code.
 - Fan out, don't chain: stack each sibling on the head, not on the sibling before it, so the siblings still run side by side.
-- A change too small to be worth a full check run (a one-line pin, a doc-only edit) isn't its own PR to main: fold it into a related stack.
+- A change too small to be worth a full check run (a one-line pin, a doc-only edit) isn't its own PR to main: it's still its own task, sharing a related task's PR or stack.
 - The upper limit is for the whole stack: when one person can't read the head's combined diff, start a second stack.
 - Head merge a stack when its pieces belong together or only make sense together (a migration and the code that needs it, a feature that's half there until the last PR): each PR merges into the one below it, review stays small, and main gets it all in one merge.
 - Tail merge a stack (--stack-merge tail) only for a piece that must reach main before the rest, say because another goal waits on it: once its parent merges, each child is retargeted to main and runs the full checks there, so each must build, break nothing and be safe to ship alone.
@@ -82,7 +83,7 @@ fn built_in(app: &App) -> String {
     if app.cfg.models.enabled { format!("{BUILT_IN}\n{MODEL_RULE}") } else { BUILT_IN.to_string() }
 }
 
-/// How many of a goal's PRs that each look tiny make the plan check suggest folding them.
+/// How many of a goal's PRs that each look tiny make the plan check suggest sharing them.
 const TINY_PRS_PER_GOAL: usize = 3;
 
 /// A detail this short, on one line, reads like a one-line change.
@@ -90,13 +91,17 @@ const TINY_DETAIL_CHARS: usize = 120;
 
 /// Plan-check warning on a goal whose open tasks would each open a PR a reviewer finishes in minutes:
 /// a one-line detail, or a single planned file in the same area (else folder) as a sibling task's.
-/// Every PR costs a human review and an agent review round, however small, so these fold into their
-/// neighbours.
+/// Every PR costs a human review and an agent review round, however small, so these share their
+/// neighbours' PRs (`--same-pr`) and stay tasks of their own. A task already sharing a PR, either side, opens
+/// no PR of its own here and isn't counted.
 pub fn tiny_prs_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
     let mut areas: HashMap<String, crate::areas::Areas> = HashMap::new();
     let mut tasks: Vec<(Row, Vec<String>)> = vec![];
     for t in crate::board::goal_tasks(app, g.id())? {
         if t.s("status") == Some("done") || t.s("kind") == Some("design") || crate::human::is(&t) || !crate::projects::task_ships_pr(app, &t)? {
+            continue;
+        }
+        if crate::samepr::anchor_id(&t).is_some() || !crate::samepr::members(app, t.id())?.is_empty() {
             continue;
         }
         let project = t.st("project");
@@ -130,7 +135,7 @@ pub fn tiny_prs_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
     }
     Ok(vec![format!(
         "{} each look like a tiny PR (a one-line detail, or one file beside a sibling's), and every PR takes a human review and an agent review round: \
-         fold each into the neighbour it only makes sense next to, unless it's a guard nothing else protects.",
+         have each share the PR of the neighbour it only makes sense next to (tb task set T<n> --same-pr T<m>), as a task of its own, unless it's a guard nothing else protects.",
         tiny.join(", ")
     )])
 }
