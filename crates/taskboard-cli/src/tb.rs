@@ -3947,6 +3947,9 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
     if let Some(l) = task_lane_line(v) {
         lines.push(l);
     }
+    if let Some(n) = v["same_pr"].as_i64() {
+        lines.push(format!("Same PR as: T{n} (shares its branch and PR)"));
+    }
     if let Some(b) = v["pr_base"].as_str().filter(|b| !b.is_empty()) {
         lines.push(format!("PR into: {b}"));
     }
@@ -8513,6 +8516,9 @@ mod tests {
         assert_eq!(task_lane_line(&json!({"lane": {"lane": "slot", "from": "auto"}})).as_deref(), Some("Lane: slot (the board's pick)"));
         assert_eq!(task_lane_line(&json!({"lane": {"lane": "shared", "from": "task"}})).as_deref(), Some("Lane: shared"));
         assert_eq!(task_lane_line(&json!({"lane": {"lane": "shared", "from": "auto"}})), None);
+        let shows = |v: Value| task_show_lines(&v, 0).iter().any(|l| l == "Same PR as: T1666 (shares its branch and PR)");
+        assert!(shows(json!({"ref": "T1667", "title": "Credits", "same_pr": 1666})));
+        assert!(!shows(json!({"ref": "T1666", "title": "Charges", "same_pr": null})));
         assert_eq!(lane_text("auto"), None);
     }
 
