@@ -56,7 +56,7 @@ fn the_built_in_rules_say_when_to_stack_and_how_to_merge_it() {
 #[test]
 fn the_built_in_rules_plan_stacks_for_ci_cost() {
     for bit in ["every PR to main runs the full checks", "Small, related tasks share one stack", "with --stack-merge head", "Fan out, don't chain",
-                "fold it into a related stack", "Push once per review round", "only when it conflicts or right before it merges", "tb planning names it"] {
+                "it's still its own task, sharing a related task's PR or stack", "Push once per review round", "only when it conflicts or right before it merges", "tb planning names it"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
     }
 }
@@ -64,7 +64,7 @@ fn the_built_in_rules_plan_stacks_for_ci_cost() {
 #[test]
 fn the_built_in_rules_weigh_the_cost_of_each_extra_pr() {
     for bit in ["Each cut has a cost", "only when each side is worth its own review", "being able to name the seam isn't enough",
-                "Size has two limits", "one person can read the whole diff", "folds into that neighbour",
+                "Size has two limits", "one person can read the whole diff", "shares that neighbour's PR", "One problem, one task, always", "never problems into tasks",
                 "limited to files the task already touches stays in the task, as its own commit", "A sweep across many files is its own task",
                 "A guard nothing else protects", "is its own task, however small", "The upper limit is for the whole stack"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
@@ -103,13 +103,21 @@ fn the_plan_check_warns_when_many_of_a_goals_prs_look_tiny() {
     let line = tiny(&w).unwrap_or_else(|| panic!("a third: one file in the folder a sibling's files are in: {w:?}"));
     assert_eq!(line, format!(
         "{} each look like a tiny PR (a one-line detail, or one file beside a sibling's), and every PR takes a human review and an agent review round: \
-         fold each into the neighbour it only makes sense next to, unless it's a guard nothing else protects.",
+         have each share the PR of the neighbour it only makes sense next to (tb task set T<n> --same-pr T<m>), as a task of its own, unless it's a guard nothing else protects.",
         made.join(", ")
     ));
     assert!(!line.contains(&big[0]), "the long two-file task isn't one of them: {line}");
 
     let (lone, w) = propose(&app, d.path(), g, json!([task("Show the count", LONG, &["docs/count.md"])]));
     assert_eq!(tiny(&w).as_deref(), Some(line.as_str()), "one file no sibling's sits beside isn't tiny ({}): {w:?}", lone[0]);
+
+    // Tiny tasks that share one PR stay tasks of their own and open one PR between them: nothing to warn on.
+    let id = |r: &str| r.trim_start_matches('T').parse::<i64>().unwrap();
+    for m in &made[1..] {
+        app.db.x("UPDATE tasks SET same_pr = ? WHERE id = ?", taskboardd::p![id(&made[0]), id(m)]).unwrap();
+    }
+    let goal = board::find_goal(&app, Some(g)).unwrap().unwrap();
+    assert_eq!(planning::tiny_prs_warnings(&app, &goal).unwrap(), Vec::<String>::new(), "they share one PR");
 }
 
 #[test]
