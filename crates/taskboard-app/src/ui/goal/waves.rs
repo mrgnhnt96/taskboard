@@ -124,6 +124,9 @@ pub fn pr_cell(t: &Value) -> String {
     if let Some(br) = fmt::opt_s(t, "branch") {
         return br.to_string();
     }
+    if let Some(n) = t["same_pr"].as_i64() {
+        return format!("Shares T{n}'s PR");
+    }
     match t["ships_pr"].as_bool() {
         Some(true) if s(t, "status") != "done" => "Ships one PR".into(),
         Some(false) => "No PR".into(),
@@ -385,6 +388,8 @@ mod tests {
         assert_eq!(pr_cell(&json!({"pr": {"num": 398, "state": "MERGED"}})), "PR #398 merged");
         assert_eq!(pr_cell(&json!({"pr": {"num": 4, "state": "OPEN", "stage": {"label": "In review"}}})), "PR #4 · In review");
         assert_eq!(pr_cell(&json!({"status": "queued", "ships_pr": true})), "Ships one PR");
+        assert_eq!(pr_cell(&json!({"status": "queued", "ships_pr": true, "same_pr": 1666})), "Shares T1666's PR");
+        assert_eq!(pr_cell(&json!({"status": "queued", "ships_pr": true, "same_pr": null})), "Ships one PR");
         assert_eq!(pr_cell(&json!({"status": "done", "ships_pr": true, "no_pr": "not needed"})), "No PR: not needed");
     }
 
