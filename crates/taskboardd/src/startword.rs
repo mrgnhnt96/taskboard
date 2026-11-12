@@ -1094,6 +1094,9 @@ pub struct Prompt {
     /// The question the agent put to the owner with `tb question`, on the task being read, since the prompt
     /// before this one: this prompt answers it, so "close the PR" there means that task's PR.
     pub asked: Option<String>,
+    /// The tasks the conversation talked over up to and in this prompt: named in the owner's prompts or
+    /// the agent's messages, or made by it. "Start them" in a prompt that asks for no new task means them.
+    pub talked: Vec<i64>,
 }
 
 impl Prompt {
@@ -1203,7 +1206,9 @@ pub fn word_in_own(prompts: &[Prompt], id: i64, own: bool) -> Option<usize> {
         let ours = |a: &Ask| {
             own && *a == Ask::Unnamed && named_asked.is_empty() && unnamed_tasks(prompts, &r, a).is_empty() && bare()
         };
-        let unnamed = |a: &Ask| i == 0 && (unnamed_tasks(prompts, &r, a).contains(&id) || (answers(a) && bare()) || ours(a));
+        // "Start them" that asks for no new task: the tasks talked over, each one the agent names.
+        let talked = |a: &Ask| *a == Ask::Them && !r.makes && p.talked.contains(&id);
+        let unnamed = |a: &Ask| i == 0 && (unnamed_tasks(prompts, &r, a).contains(&id) || (answers(a) && bare()) || ours(a) || talked(a));
         match r.word_for(id, unnamed) {
             Some(true) if p.clipped => {}
             Some(true) => return Some(i),
@@ -1661,21 +1666,36 @@ fn prompts_of(app: &App, sid: &str, item: Option<ItemTask>) -> Result<Vec<Prompt
     )?;
     let mut prompts: Vec<Prompt> = vec![];
     let mut reply: Option<String> = None;
+    let mut talked: Vec<i64> = vec![];
+    let mut talk = |ids: Vec<i64>| {
+        for id in ids {
+            if !talked.contains(&id) {
+                talked.push(id);
+            }
+        }
+        talked.clone()
+    };
     for r in &rows {
         match r.st("kind").as_str() {
-            "reply" => reply = reply_end(r),
+            "reply" => {
+                reply = reply_end(r);
+                talk(named_tasks(&format!("{}\n{}", r.st("text"), r.st("full"))));
+            }
             k if k == MADE => {
                 let Some(p) = prompts.last_mut() else { continue };
                 let data = r.st("data");
                 if let Ok(made) = data.parse() {
                     p.made.push(made);
+                    talk(vec![made]);
                 } else if data.starts_with(['G', 'g']) {
                     p.made_goal = true;
                 }
             }
             _ => {
                 let (text, clipped) = typed_naming(r, item);
-                prompts.push(Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: reply.take(), at: r.st("at"), ..Prompt::default() });
+                let board = r.s("data") == Some(BOARD_PROMPT);
+                let talked = talk(if board || MARKER_RE.is_match(&text) { vec![] } else { named_tasks(&owners_text(&text)) });
+                prompts.push(Prompt { text, clipped, board, reply: reply.take(), at: r.st("at"), talked, ..Prompt::default() });
             }
         }
     }
