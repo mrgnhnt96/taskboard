@@ -1905,6 +1905,14 @@ enum BacklogCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Close backlog issues as fixed by finished work, all or none: tb backlog fixed B3 --by T12
+    Fixed {
+        #[arg(required = true)]
+        issues: Vec<String>,
+        /// The done task (T12) or the PR link that fixed them
+        #[arg(long, required = true)]
+        by: String,
+    },
     /// Open closed backlog issues again, all or none
     Reopen {
         #[arg(required = true)]
@@ -3963,13 +3971,27 @@ fn task_list_line(t: &Value) -> String {
     format!("{:<5}  {:<7}  {:<4}  {}{pr}", t["ref"].as_str().unwrap_or(""), status, goal_word(t), t["title"].as_str().unwrap_or(""))
 }
 
+/// An issue's state as the CLI says it: `fixed` for one closed as fixed, else the board's state.
+fn issue_state_word(b: &Value) -> &str {
+    if b["closed_as"] == "fixed" { "fixed" } else { b["state"].as_str().unwrap_or("") }
+}
+
+/// "Fixed by: T12 (PR #45) https://…" for an issue closed as fixed; nothing for any other.
+fn fixed_line(v: &Value) -> Option<String> {
+    if v["closed_as"] != "fixed" {
+        return None;
+    }
+    let by: Vec<&str> = [v["fixed_by_ref"].as_str(), v["fixed_pr"].as_str()].into_iter().flatten().filter(|s| !s.is_empty()).collect();
+    Some(if by.is_empty() { "Closed as fixed".to_string() } else { format!("Fixed by: {}", by.join(" ")) })
+}
+
 /// "B12  open  bug     G4    Crash on save", for `tb backlog list`.
 fn issue_list_line(b: &Value) -> String {
-    let task = b["task_ref"].as_str().map(|t| format!("  → {t}")).unwrap_or_default();
+    let task = b["task_ref"].as_str().or(b["fixed_by_ref"].as_str()).map(|t| format!("  → {t}")).unwrap_or_default();
     format!(
         "{:<4}  {:<6}  {:<6}  {:<4}  {}{task}",
         b["ref"].as_str().unwrap_or(""),
-        b["state"].as_str().unwrap_or(""),
+        issue_state_word(b),
         b["kind"].as_str().unwrap_or(""),
         goal_word(b),
         b["title"].as_str().unwrap_or("")
@@ -4077,11 +4099,12 @@ fn model_line(v: &Value) -> Option<String> {
 
 /// `tb backlog show`: GET /backlog/<id> with its history (the board sends it oldest first).
 fn issue_show_lines(v: &Value) -> Vec<String> {
-    let state = format!("{} · {}", v["state"].as_str().unwrap_or(""), v["kind"].as_str().unwrap_or(""));
+    let state = format!("{} · {}", issue_state_word(v), v["kind"].as_str().unwrap_or(""));
     let mut lines = vec![show_head(v, &state), v["title"].as_str().unwrap_or("").to_string()];
     if let Some(t) = v["task_ref"].as_str() {
         lines.push(format!("Task: {t}"));
     }
+    lines.extend(fixed_line(v));
     if let Some(k) = v["jira_key"].as_str().filter(|k| !k.is_empty()) {
         lines.push(format!("Jira: {k}"));
     }
@@ -7178,6 +7201,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&format!("Closed {} as won't do.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
+        Cmd::Backlog { action: BacklogCmd::Fixed { issues, by } } => {
+            let refs = issue_refs(&issues)?;
+            let v = c.call("POST", "/backlog/fixed", Some(json!({"ids": refs, "by": by.trim(), "who": c.who()})))?;
+            out(&format!("Closed {} as fixed by {}.", refs.join(", "), v["by"].as_str().unwrap_or(by.trim())));
+            Ok(0)
+        }
         Cmd::Backlog { action: BacklogCmd::Tidy { on, off, every, now, reset } } => {
             let mut b = json!({});
             if on || off {
@@ -8934,6 +8963,29 @@ mod tests {
                        "task_ref": null, "jira_key": "", "from": "Found by T12", "detail": "tb can't list tasks.",
                        "history": [{"at": "", "who": "T12", "kind": "found", "text": "Filed"}]});
         assert_eq!(issue_show_lines(&b), ["B7 · open · gap · taskboard", "No readers", "Found by T12", "", "Detail:", "  tb can't list tasks.", "", "History:", "   · T12 · found: Filed"]);
+    }
+
+    #[test]
+    fn tb_backlog_fixed_closes_issues_by_a_task_or_a_pr_and_shows_them_as_fixed() {
+        let Cmd::Backlog { action: BacklogCmd::Fixed { issues, by } } = Cli::try_parse_from(["tb", "backlog", "fixed", "B3", "B4", "--by", "T12"]).unwrap().cmd else {
+            panic!("not tb backlog fixed")
+        };
+        assert_eq!((issues, by.as_str()), (vec!["B3".to_string(), "B4".to_string()], "T12"));
+        assert!(Cli::try_parse_from(["tb", "backlog", "fixed", "B3", "--by", "https://github.com/o/r/pull/45"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "fixed", "B3"]).is_err(), "--by is required");
+        assert!(Cli::try_parse_from(["tb", "backlog", "fixed", "--by", "T12"]).is_err(), "at least one issue");
+        let b = json!({"ref": "B3", "state": "drop", "closed_as": "fixed", "kind": "bug", "project": "taskboard", "goal": null, "title": "Crash on save",
+                       "task_ref": null, "fixed_by_ref": "T12", "fixed_pr": "https://github.com/o/r/pull/45", "history": []});
+        assert_eq!(issue_list_line(&b), "B3    fixed   bug     -     Crash on save  → T12");
+        assert_eq!(issue_show_lines(&b)[..3], ["B3 · fixed · bug · taskboard", "Crash on save", "Fixed by: T12 https://github.com/o/r/pull/45"]);
+        let mut wont = b.clone();
+        wont["closed_as"] = json!("wont_do");
+        assert!(issue_list_line(&wont).starts_with("B3    drop "), "a won't-do close keeps its state");
+        assert!(!issue_show_lines(&wont).iter().any(|l| l.starts_with("Fixed by")));
+        let mut tidied = b.clone();
+        tidied["fixed_by_ref"] = Value::Null;
+        tidied["fixed_pr"] = Value::Null;
+        assert_eq!(issue_show_lines(&tidied)[2], "Closed as fixed");
     }
 
     #[test]

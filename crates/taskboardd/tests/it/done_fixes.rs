@@ -97,4 +97,6 @@ fn a_named_fix_waits_for_the_pr_to_merge() {
     prflow::mark_merged(&b.app, &board::get_task(&b.app, id).unwrap(), "test").unwrap();
     assert_eq!(b.issue_row(quill).st("state"), "drop");
     assert_eq!(b.closed_line(quill).unwrap(), format!("Closed as fixed by T{id} (PR #9)"));
+    let q = b.issue_row(quill);
+    assert_eq!((q.st("closed_as"), q.i("fixed_by"), q.st("fixed_pr")), ("fixed".to_string(), Some(id), "https://github.com/acme/webapp/pull/9".to_string()));
 }

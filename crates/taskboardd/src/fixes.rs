@@ -205,21 +205,116 @@ pub fn on_change(app: &App, before: &Row, after: &Row) -> Result<()> {
     }
     let me = rf("task", after.id());
     let by = if merged { format!("{me} (PR #{})", after.i0("pr_num")) } else { format!("{me}, which finished without a PR") };
+    let pr = if merged { after.s("pr_url").filter(|u| !u.is_empty()) } else { None };
     let mut closed = vec![];
     for id in ids {
         let Some(b) = board::find_issue(app, Some(id))? else { continue };
         if !matches!(b.s("state"), Some("open" | "defer")) {
             continue;
         }
-        app.db.update("issues", &json!(id), crate::fields!["state" => "drop", "updated_at" => now_iso()])?;
-        board::add_issue_event(app, id, board::BOARD, "drop", &format!("Closed as fixed by {by}"), None)?;
-        board::miss_settled(app, &b)?;
+        close_fixed(app, &b, Some(after.id()), pr, board::BOARD, &format!("Closed as fixed by {by}"))?;
         closed.push(rf("issue", id));
     }
     if !closed.is_empty() {
         board::log_event(app, after.id(), board::BOARD, "status", &format!("Closed {} as fixed", closed.join(", ")))?;
     }
     Ok(())
+}
+
+/// Closes an issue as fixed (`closed_as`), linking the task that fixed it and its PR when they're known,
+/// with `text` in its history.
+pub fn close_fixed(app: &App, b: &Row, by: Option<i64>, pr: Option<&str>, who: &str, text: &str) -> Result<()> {
+    app.db.update(
+        "issues",
+        &json!(b.id()),
+        crate::fields!["state" => "drop", "closed_as" => "fixed", "fixed_by" => by, "fixed_pr" => pr, "updated_at" => now_iso()],
+    )?;
+    board::add_issue_event(app, b.id(), who, "drop", text, None)?;
+    board::miss_settled(app, b)
+}
+
+/// The work `tb backlog fixed --by` names: a task (`T12`) or a PR link, with the board's task for that PR
+/// when there is one. Returns the task and the PR link, at least one of them set.
+fn fixer(app: &App, by: &str) -> Result<(Option<Row>, Option<String>)> {
+    let by = by.trim();
+    if by.is_empty() {
+        return err(400, "Say what fixed it: --by T<n> for a task, or a PR link.");
+    }
+    if let Some(l) = find_pr(by) {
+        let t = crate::feed::task_of_event(app, &json!({"url": l.url}))?;
+        return Ok((t, Some(l.url)));
+    }
+    let Some(id) = parse_ref(&json!(by), "task").ok().flatten() else {
+        return err(400, format!("--by takes a task (T12) or a PR link, not “{by}”."));
+    };
+    let t = board::get_task(app, id)?;
+    let me = rf("task", id);
+    if t.b("failed") {
+        return err(409, format!("{me} failed, so it can't have fixed anything."));
+    }
+    if t.s("status") != Some("done") {
+        return err(
+            409,
+            format!("{me} isn't done yet. Close the issue once it is, or have {me} name it with tb submit --fixes so it closes as its work ships."),
+        );
+    }
+    let pr = t.s("pr_url").filter(|u| !u.is_empty()).map(str::to_string);
+    Ok((Some(t), pr))
+}
+
+/// `POST /backlog/fixed {ids, by, who}` (`tb backlog fixed B<n> --by T<n>|<PR link>`): closes open or
+/// deferred issues as fixed by finished work, all or none. Each links the task and its PR, says so in its
+/// history, and the task's log lists them.
+pub fn close_by(app: &App, body: &Value, who: &str) -> Result<Value> {
+    let mut ids: Vec<i64> = vec![];
+    for x in body["ids"].as_array().cloned().unwrap_or_default() {
+        let id = need_ref(&x, "issue")?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return err(400, "Pick at least one issue.");
+    }
+    if ids.len() > 200 {
+        return err(400, "Close at most 200 issues at once.");
+    }
+    app.db.tx(|| {
+        let (task, pr) = fixer(app, &body_str(body, "by"))?;
+        let mut issues = vec![];
+        for &id in &ids {
+            let b = board::get_issue(app, id)?;
+            let r = rf("issue", id);
+            match (b.s("state"), b.i("task_id")) {
+                (Some("open" | "defer"), _) => {}
+                (Some("task"), Some(other)) if task.as_ref().is_none_or(|t| t.id() != other) => {
+                    return err(409, format!("{r} is already {}: it closes with that task.", rf("task", other)));
+                }
+                (Some("task"), _) => {}
+                _ => return err(409, format!("{r} isn't open any more, so nothing changed.")),
+            }
+            if let Some(t) = task.as_ref().filter(|t| t.s("project") != b.s("project")) {
+                return err(400, format!("{r} is in {}'s backlog, not {}'s, so {} didn't fix it.", b.st("project"), t.st("project"), rf("task", t.id())));
+            }
+            issues.push(b);
+        }
+        let by = match (&task, &pr) {
+            (Some(t), _) if t.i("pr_num").is_some() => format!("{} (PR #{})", rf("task", t.id()), t.i0("pr_num")),
+            (Some(t), _) => rf("task", t.id()),
+            (None, Some(u)) => u.clone(),
+            (None, None) => String::new(),
+        };
+        let mut refs = vec![];
+        for b in &issues {
+            close_fixed(app, b, task.as_ref().map(|t| t.id()), pr.as_deref(), who, &format!("Closed as fixed by {by}"))?;
+            refs.push(rf("issue", b.id()));
+        }
+        if let Some(t) = &task {
+            board::log_event(app, t.id(), who, "status", &format!("Closed {} as fixed", refs.join(", ")))?;
+        }
+        Ok(json!({"ok": true, "count": refs.len(), "issues": refs, "by": by,
+                  "task": task.as_ref().map(|t| rf("task", t.id())), "pr": pr}))
+    })
 }
 
 #[cfg(test)]

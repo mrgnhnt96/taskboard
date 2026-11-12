@@ -461,6 +461,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["backlog"]) => list_backlog(app, query),
         ("POST", ["backlog"]) => post_issue(app, body),
         ("POST", ["backlog", "bulk"]) => backlog_bulk(app, body),
+        ("POST", ["backlog", "fixed"]) => crate::fixes::close_by(app, body, &issue_actor(body)),
         ("GET", ["backlog", "triage"]) => triage::list(app, query),
         ("GET", ["backlog", "plan"]) => Ok(triage::plan_get(app)),
         ("POST", ["backlog", "plan"]) => triage::plan_start(app, body),
@@ -3395,7 +3396,7 @@ fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     if b.s("state") == Some("open") {
         return err(409, format!("{} is already open.", rf("issue", id)));
     }
-    app.db.update("issues", &json!(id), fields!["state" => "open", "updated_at" => now_iso()])?;
+    app.db.update("issues", &json!(id), fields!["state" => "open", "closed_as" => null, "fixed_by" => null, "fixed_pr" => null, "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, &issue_actor(body), "note", "Opened again", None)?;
     issue_detail(app, id)
 }

@@ -10,6 +10,7 @@ mod areas;
 mod away_waits;
 mod background;
 mod backlog_actions;
+mod backlog_fixed;
 mod backlog_blocks;
 mod backlog_match;
 mod backlog_models;
