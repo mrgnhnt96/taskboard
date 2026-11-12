@@ -673,3 +673,81 @@ fn a_running_task_is_lent_a_free_device_when_its_need_is_set_later() {
     assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["arc_keepalive_a", "dev-a"]), "it keeps what it had and gains");
     assert_eq!(b.get("devices")["waiting"], json!([]));
 }
+
+#[test]
+fn a_project_s_default_need_is_lent_to_its_tasks_from_the_one_pool() {
+    let b = new_board();
+    b.post("devices", json!({"name": "sim-a", "tags": "ios"}));
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    let p = b.post("projects/webapp", json!({"devices": "ios"}));
+    assert_eq!(p["devices"], "ios");
+    let t = b.task("Sim test", json!({}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "ios", "no need of its own: its project's");
+    let h = handoff::build(&b.app, t).unwrap();
+    assert!(h.contains("This task asks for devices (ios)"), "{h}");
+    let pool = b.get("devices");
+    assert_eq!(pool["projects"], json!([{"name": "webapp", "needs": [{"tag": "ios", "n": 1}], "needs_text": "ios"}]));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![t]);
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["sim-a"]));
+
+    // One pool: the next task waits for the same simulator, then gets it.
+    let w = b.task("Waits", json!({}));
+    assert_eq!(b.waiting(w), format!("Waits for an ios device (sim-a is with T{t})"));
+    b.set(t, "done");
+    runner::tick(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{w}"))["devices"]["lent"], json!(["sim-a"]));
+
+    assert_eq!(b.post("projects/webapp", json!({"devices": []}))["devices"], "");
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_needs WHERE owner LIKE 'project:%'", p![]).unwrap(), 0);
+}
+
+#[test]
+fn a_task_s_own_need_or_none_wins_over_its_project_s() {
+    let b = new_board();
+    b.post("devices", json!({"name": "sim-a", "tags": "ios"}));
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("projects/webapp", json!({"devices": "ios"}));
+    let a = b.task("Android only", json!({"devices": "android"}));
+    let n = b.task("Docs only", json!({"devices": "none"}));
+    assert_eq!(b.get(&format!("tasks/T{a}"))["devices"]["needs_text"], "android");
+    assert!(b.get(&format!("tasks/T{n}"))["devices"].is_null(), "its own [] needs none, over the project's ios");
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![a, n]);
+    assert_eq!(b.get(&format!("tasks/T{a}"))["devices"]["lent"], json!(["pixel-7"]));
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_loans WHERE task_id = ?", p![n]).unwrap(), 0);
+    let h = handoff::build(&b.app, n).unwrap();
+    assert!(h.contains("don't pick one yourself"), "{h}");
+    b.post(&format!("tasks/T{n}"), json!({"devices": "goal"}));
+    assert_eq!(b.get(&format!("tasks/T{n}"))["devices"]["lent"], json!(["sim-a"]), "back to its project's need, lent at once");
+}
+
+#[test]
+fn a_goal_s_need_wins_over_its_project_s() {
+    let b = new_board();
+    b.post("projects/webapp", json!({"devices": "ios"}));
+    let g = b.goal();
+    let t = b.task("Phone test", json!({"goal_id": g}));
+    assert_eq!(b.get(&format!("goals/G{g}"))["devices"]["needs_text"], "ios");
+    assert_eq!(b.get(&format!("goals/G{g}"))["devices"]["needs_from_project"], "webapp");
+    b.post(&format!("goals/G{g}"), json!({"devices": "android"}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "android", "the goal's need over the project's");
+    let card = b.get(&format!("goals/G{g}"))["devices"].clone();
+    assert_eq!((card["needs_text"].clone(), card["needs_from_project"].clone()), (json!("android"), Value::Null));
+    b.post(&format!("goals/G{g}"), json!({"devices": "none"}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "ios", "a goal asking for nothing leaves the project's");
+    let h = b.task("Sign it", json!({"goal_id": g, "kind": "human"}));
+    assert!(b.get(&format!("tasks/T{h}"))["devices"].is_null(), "a human task asks only for its own");
+}
+
+#[test]
+fn removing_a_device_a_project_needs_by_name_is_refused_unless_forced() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("projects/webapp", json!({"devices": "pixel-7"}));
+    let (code, msg) = b.post_err("devices/pixel-7/remove", json!({}));
+    assert_eq!(code, 409, "{msg}");
+    assert!(msg.contains("project webapp still needs pixel-7"), "{msg}");
+    assert_eq!(b.post("devices/pixel-7/remove", json!({"force": true}))["dropped_from"], json!(["project:webapp"]));
+    assert_eq!(b.get("projects")["projects"][0]["devices"], "");
+}

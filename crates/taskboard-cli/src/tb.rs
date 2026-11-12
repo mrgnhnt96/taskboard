@@ -2032,6 +2032,9 @@ enum ProjectCmd {
         /// How its stacked tasks merge when tb task new|set --stack-on gives no --stack-merge (default: tail)
         #[arg(long = "stack-merge-default", value_parser = ["head", "tail", "default"])]
         stack_merge_default: Option<String>,
+        /// Devices from the one shared pool each of its tasks asks for when neither it nor its goal says: ios, android:2. Repeat for more, none for none
+        #[arg(long = "device", value_name = "TAG[:N]|none")]
+        devices: Vec<String>,
         /// Releases (tb release cut) for this project (default: config.toml's [releases] on)
         #[arg(long, value_parser = ["on", "off", "default"])]
         releases: Option<String>,
@@ -6281,6 +6284,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             for d in devices {
                 out(&device_line(&d));
             }
+            for p in v["projects"].as_array().cloned().unwrap_or_default() {
+                out(&format!("{}'s tasks ask for {} unless they or their goal say otherwise", p["name"].as_str().unwrap_or(""), p["needs_text"].as_str().unwrap_or("")));
+            }
             for w in v["waiting"].as_array().cloned().unwrap_or_default() {
                 out(&format!("{} {} · needs {} — {}", w["ref"].as_str().unwrap_or(""), w["title"].as_str().unwrap_or(""), w["needs"].as_str().unwrap_or(""), w["why"].as_str().unwrap_or("")));
             }
@@ -7612,6 +7618,7 @@ fn project_line(p: &Value) -> String {
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
     let stacks = p["stack_merge_set"].as_str().map(|m| format!(" · stacks {m}-merge")).unwrap_or_default();
+    let devices = p["devices"].as_str().filter(|d| !d.is_empty()).map(|d| format!(" · its tasks ask for {d}")).unwrap_or_default();
     let review = match (p["code_review"].as_str(), p["code_review_set"].as_str()) {
         (Some(cmd), _) => format!(" · code review {cmd}"),
         (None, Some(_)) => " · no code review".to_string(),
@@ -7626,7 +7633,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().filter_map(|w| w.as_str()).map(|w| format!("\n  Worktree no task claims (left for you): {w}")).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{review}{waits_on}{stacks}{approvals}{expected}{switches}{gaps}{stray}",
+        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{review}{waits_on}{stacks}{devices}{approvals}{expected}{switches}{gaps}{stray}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -7699,7 +7706,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, required_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, stack_merge_default, releases, release_tags, release_script, code_review } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, required_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, stack_merge_default, devices, releases, release_tags, release_script, code_review } => {
             let mut body = project_rules(approvals, expected_check, expected_wait, required_check)?;
             for (key, flag, v) in [
                 ("min_slots", "--min-slots", min_slots),
@@ -7721,6 +7728,9 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             if let Some(m) = stack_merge_default {
                 body.insert("stack_merge_default".into(), if m == "default" { Value::Null } else { json!(m) });
+            }
+            if !devices.is_empty() {
+                body.insert("devices".into(), json!(lock_arg(&devices)));
             }
             if let Some(m) = max_terminals {
                 let v = if m.trim().eq_ignore_ascii_case("default") {
