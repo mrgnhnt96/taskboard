@@ -176,6 +176,8 @@ fn closes_issues_left_in_finished_goals() {
     assert!(never.contains(&format!("B{target}")) && never.contains(&format!("B{kept}")), "{prompt}");
     let states: Vec<String> = [fixed, stale, dup, target, kept].iter().map(|id| b.state(*id)).collect();
     assert_eq!(states, ["drop", "drop", "drop", "open", "open"], "issues in a finished or archived goal close; a running goal's stay");
+    let closed_as: Vec<String> = [fixed, stale, dup].iter().map(|id| b.get(&format!("/backlog/B{id}"))["closed_as"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(closed_as, ["fixed", "wont_do", "wont_do"], "only an already-fixed close shows as fixed");
     assert!(b.log(target).iter().any(|l| l == &format!("The backlog tidy closed B{dup} as a duplicate of this")));
 }
 

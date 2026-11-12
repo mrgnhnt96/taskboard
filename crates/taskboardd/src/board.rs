@@ -1311,6 +1311,15 @@ fn blocks_now<'a>(app: &App, b: &'a Row) -> Result<&'a str> {
     Ok(if holds { b.s("blocks").unwrap_or(crate::blocks::NONE) } else { crate::blocks::NONE })
 }
 
+/// How a closed issue was closed: `fixed` or `wont_do`; null while it isn't closed.
+fn closed_as(b: &Row) -> Value {
+    match (b.s("state"), b.s("closed_as")) {
+        (Some("drop"), Some("fixed")) => json!("fixed"),
+        (Some("drop"), _) => json!("wont_do"),
+        _ => Value::Null,
+    }
+}
+
 pub fn issue_card(app: &App, b: &Row) -> Result<Value> {
     let g = find_goal(app, b.i("goal_id"))?;
     let blocks = blocks_now(app, b)?;
@@ -1324,6 +1333,7 @@ pub fn issue_card(app: &App, b: &Row) -> Result<Value> {
         "jira_key": b.v("jira_key"), "jira_url": jira_url(app, b.s("jira_key").unwrap_or("")),
         "task_id": b.v("task_id"), "task_ref": rf_opt("task", b.i("task_id")),
         "from": issue_from_line(b),
+        "closed_as": closed_as(b), "fixed_by": b.v("fixed_by"), "fixed_by_ref": rf_opt("task", b.i("fixed_by")), "fixed_pr": b.v("fixed_pr"),
     }))
 }
 

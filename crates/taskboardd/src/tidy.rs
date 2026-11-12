@@ -399,7 +399,8 @@ fn close(app: &App, picks: &[Pick]) -> Result<Vec<Value>> {
             _ => "not a real problem".to_string(),
         };
         let reason = if pk.reason.is_empty() { String::new() } else { format!(": {}", pk.reason) };
-        app.db.update("issues", &json!(pk.id), crate::fields!["state" => "drop", "updated_at" => now_iso()])?;
+        let closed_as = (pk.why == "fixed").then_some("fixed");
+        app.db.update("issues", &json!(pk.id), crate::fields!["state" => "drop", "closed_as" => closed_as, "updated_at" => now_iso()])?;
         board::add_issue_event(app, pk.id, board::BOARD, "drop", &format!("The backlog tidy closed it as {what}{reason}"), None)?;
         board::miss_settled(app, &b)?;
         if let Some(o) = pk.of {

@@ -207,6 +207,16 @@ pub fn found_task(b: &Value) -> Option<String> {
     }
 }
 
+/// The task that fixed an issue closed as fixed, as a ref.
+fn fixed_task(b: &Value) -> Option<String> {
+    (s(b, "closed_as") == "fixed").then(|| b.get("fixed_by").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}"))
+}
+
+/// The task an issue leads to: the one it was made into, or the one that fixed it.
+fn issue_task(b: &Value) -> Option<String> {
+    (s(b, "state") == "task").then(|| b.get("task_id").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}")).or_else(|| fixed_task(b))
+}
+
 /// `issueState`: (short, text) for an issue that isn't open; None while open.
 pub fn issue_state(b: &Value) -> Option<(String, String)> {
     let tr = b.get("task_id").and_then(Value::as_i64).map(|n| format!("T{n}"));
@@ -215,6 +225,11 @@ pub fn issue_state(b: &Value) -> Option<(String, String)> {
         "ticket" => {
             let key = fmt::opt_s(b, "jira_key");
             Some((key.unwrap_or("Ticket asked for").to_string(), key.map(|k| format!("Jira {k}")).unwrap_or_else(|| "Jira ticket being created".into())))
+        }
+        "drop" if s(b, "closed_as") == "fixed" => {
+            let pr = fmt::opt_s(b, "fixed_pr").and_then(|u| u.trim_end_matches('/').rsplit('/').next()).filter(|n| n.parse::<u64>().is_ok());
+            let by = fixed_task(b).or_else(|| pr.map(|n| format!("PR #{n}")));
+            Some(("Fixed".into(), by.map(|r| format!("Closed as fixed by {r}")).unwrap_or_else(|| "Closed as fixed".into())))
         }
         "drop" => Some(("Won’t do".into(), "Closed as won’t do".into())),
         "defer" => Some(("Deferred".into(), "Deferred: not for now".into())),
@@ -488,7 +503,7 @@ fn panel_head(cx: &Ctx, b: &Value) -> PanelView {
         title: s(b, "title").to_string(),
         project: s(b, "project").to_string(),
         state_line,
-        open_task: (s(b, "state") == "task").then(|| b.get("task_id").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}")),
+        open_task: issue_task(b),
         open_box: open.then(|| {
             let what = format!("Not part of any task yet. Make it a task to queue it{}.", if cx.jira { ", or send it to Jira" } else { "" });
             (what, issue_actions(cx, &r, "board"))
@@ -541,7 +556,7 @@ pub fn aside_view(b: &Value) -> AsideView {
         kind: kind_label(s(b, "kind")),
         help: issue_state(b).map(|x| x.1).unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at")))),
         title: s(b, "title").to_string(),
-        open_task: (s(b, "state") == "task").then(|| b.get("task_id").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}")),
+        open_task: issue_task(b),
         detail: detail_view(b),
     }
 }
@@ -1417,7 +1432,7 @@ pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Ctx, drop_issue, filter_items, issue_from, issue_how, issue_state, kind_label, panel_view, picker_items, picker_label, promote, search, snap_rows, ticket};
+    use super::{Ctx, drop_issue, filter_items, issue_from, issue_how, issue_state, issue_task, kind_label, panel_view, picker_items, picker_label, promote, search, snap_rows, ticket};
     use crate::app::Panel;
     use crate::backend::Backend;
     use crate::fmt::{self, arr, s};
@@ -1469,6 +1484,21 @@ mod tests {
             let (text, acts) = panel_view(&fix.ctx(), &i["issue"]).text_and_acts();
             json!({"text": text, "acts": acts})
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_fixed_issue_says_fixed_and_opens_the_task_that_fixed_it() {
+        let b = json!({"id": 3, "state": "drop", "closed_as": "fixed", "fixed_by": 12, "fixed_pr": "https://github.com/o/r/pull/45"});
+        assert_eq!(issue_state(&b), Some(("Fixed".to_string(), "Closed as fixed by T12".to_string())));
+        assert_eq!(issue_task(&b).as_deref(), Some("T12"));
+        let pr_only = json!({"state": "drop", "closed_as": "fixed", "fixed_pr": "https://github.com/o/r/pull/45"});
+        assert_eq!(issue_state(&pr_only).map(|x| x.1).as_deref(), Some("Closed as fixed by PR #45"));
+        assert!(issue_task(&pr_only).is_none());
+        let tidied = json!({"state": "drop", "closed_as": "fixed"});
+        assert_eq!(issue_state(&tidied).map(|x| x.1).as_deref(), Some("Closed as fixed"));
+        let wont = json!({"state": "drop", "fixed_by": 12});
+        assert_eq!(issue_state(&wont).map(|x| x.0).as_deref(), Some("Won’t do"));
+        assert!(issue_task(&wont).is_none(), "only a fixed close links a task");
     }
 
     #[::core::prelude::v1::test]

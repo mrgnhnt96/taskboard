@@ -350,6 +350,12 @@ const ADDED: &[(&str, &str, &str)] = &[
     // a lost one (`board::set_working`, `board::claim`). `started_at` stays the first pickup. Null on
     // a task from before it, which reads `started_at`.
     ("tasks", "picked_up_at", "TEXT"),
+    // How a closed (`drop`) backlog issue was closed: `fixed` for one finished work fixed (`tb backlog
+    // fixed`, a task's `--fixes`, the tidy); null for won't do. `fixed_by` is the task that fixed it and
+    // `fixed_pr` its PR link, either one null when it isn't known (`fixes::close_fixed`).
+    ("issues", "closed_as", "TEXT"),
+    ("issues", "fixed_by", "INT"),
+    ("issues", "fixed_pr", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

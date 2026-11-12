@@ -314,6 +314,7 @@ fn issue_status(b: &Value) -> Value {
     match s(b, "state") {
         "task" => status("Now a task", "ok"),
         "ticket" => status(b["jira_key"].as_str().unwrap_or("Ticket asked for"), "busy"),
+        "drop" if s(b, "closed_as") == "fixed" => status("Fixed", "ok"),
         "drop" => status("Won’t do", "idle"),
         "defer" => status("Deferred", "idle"),
         "closed" => status("Closed", "ok"),

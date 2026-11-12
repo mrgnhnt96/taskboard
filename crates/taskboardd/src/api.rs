@@ -461,6 +461,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["backlog"]) => list_backlog(app, query),
         ("POST", ["backlog"]) => post_issue(app, body),
         ("POST", ["backlog", "bulk"]) => backlog_bulk(app, body),
+        ("POST", ["backlog", "fixed"]) => crate::fixes::close_by(app, body, &issue_actor(body)),
         ("GET", ["backlog", "triage"]) => triage::list(app, query),
         ("GET", ["backlog", "plan"]) => Ok(triage::plan_get(app)),
         ("POST", ["backlog", "plan"]) => triage::plan_start(app, body),
@@ -1449,6 +1450,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if has_key("pr_link") {
             planned |= crate::declined::set_pr_link(app, &board::get_task(app, id)?, &body["pr_link"], &who)?;
+        }
+        if has_key("issues") {
+            planned |= link_issues(app, &board::get_task(app, id)?, &issue_ids(body, "issues")?, &who)?;
         }
         if planned && f.is_empty() {
             return board::bump_ctx(app, id);
@@ -3308,6 +3312,69 @@ pub(crate) fn issue_tasked(app: &App, id: i64, task_id: i64, who: &str, text: &s
     board::miss_settled(app, &board::get_issue(app, id)?)
 }
 
+/// The backlog issues a request names under `key` (`"B3"`, `["B3", "B4"]` or ids), each once, in order.
+pub(crate) fn issue_ids(body: &Value, key: &str) -> Result<Vec<i64>> {
+    let list = match body.get(key) {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(a)) => a.clone(),
+        Some(x) => vec![x.clone()],
+    };
+    let mut ids = vec![];
+    for x in &list {
+        if let Some(id) = parse_ref(x, "issue")? {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// Refuses a backlog issue task `task` (None for one not made yet) can't link: one that isn't open, is
+/// another task's, or is in another project than `project`. One already linked to `task` passes.
+pub(crate) fn need_linkable(b: &Row, task: Option<i64>, project: &str) -> Result<()> {
+    let r = rf("issue", b.id());
+    match (b.s("state"), b.i("task_id")) {
+        (Some("open"), _) => {}
+        (Some("task"), Some(t)) if Some(t) == task => {}
+        (Some("task"), Some(t)) => return err(409, format!("{r} is already {}.", rf("task", t))),
+        _ => return err(409, format!("{r} isn't open any more, so nothing changed.")),
+    }
+    if b.st("project") != project {
+        return err(400, format!("{r} is in {}'s backlog, not {project}'s: a task links issues from its own project.", b.st("project")));
+    }
+    Ok(())
+}
+
+/// Links more open backlog issues to task `t` (`--issue` past the first on `tb task new`, or `tb task set
+/// --issue`), all or none: each becomes the task the way the one it's made from does, so it closes with it.
+/// Returns whether it linked any.
+pub(crate) fn link_issues(app: &App, t: &Row, ids: &[i64], who: &str) -> Result<bool> {
+    let mut issues = vec![];
+    for &id in ids {
+        let b = board::get_issue(app, id)?;
+        need_linkable(&b, Some(t.id()), &t.st("project"))?;
+        if b.s("state") == Some("open") {
+            issues.push(b);
+        }
+    }
+    if issues.is_empty() {
+        return Ok(false);
+    }
+    let me = rf("task", t.id());
+    if t.s("status") == Some("done") {
+        let refs: Vec<String> = issues.iter().map(|b| rf("issue", b.id())).collect();
+        return err(409, format!("{me} is done, so linking can't close anything. If it fixed them: tb backlog fixed {} --by {me}", refs.join(" ")));
+    }
+    let text = format!("Linked to {me}, which fixes it too; it closes with that task.");
+    for b in &issues {
+        issue_tasked(app, b.id(), t.id(), who, &text)?;
+    }
+    let refs: Vec<String> = issues.iter().map(|b| rf("issue", b.id())).collect();
+    board::log_event(app, t.id(), who, "status", &format!("Linked {}: {} with this task", refs.join(", "), if refs.len() == 1 { "it closes" } else { "they close" }))?;
+    Ok(true)
+}
+
 pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     let who = issue_actor(body);
     let where_ = { let w = body_str(body, "where"); if w.is_empty() { "board".to_string() } else { w } };
@@ -3395,7 +3462,7 @@ fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     if b.s("state") == Some("open") {
         return err(409, format!("{} is already open.", rf("issue", id)));
     }
-    app.db.update("issues", &json!(id), fields!["state" => "open", "updated_at" => now_iso()])?;
+    app.db.update("issues", &json!(id), fields!["state" => "open", "closed_as" => null, "fixed_by" => null, "fixed_pr" => null, "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, &issue_actor(body), "note", "Opened again", None)?;
     issue_detail(app, id)
 }

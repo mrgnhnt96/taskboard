@@ -2940,7 +2940,9 @@ fn on_goal(r: &mut Report) -> Result<Value> {
 
 fn on_new_task(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
-    let issue = named_issue(r)?;
+    let issues = named_issues(r)?;
+    let issue = issues.first().cloned();
+    let more: Vec<i64> = issues.iter().skip(1).map(|b| b.id()).collect();
     let mut title = one_line(&r.b("title"), 300);
     if let (true, Some(b)) = (title.is_empty(), &issue) {
         title = one_line(&b.st("title"), 300);
@@ -2955,7 +2957,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         if crate::design::clean_kind(r.body.get("kind"))? == Some(crate::human::KIND) {
             return err(400, "A human task isn't done in a terminal; leave out --here.");
         }
-        return new_task_here(r, &title, issue.as_ref());
+        return new_task_here(r, &title, issue.as_ref(), &more);
     }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
@@ -2980,6 +2982,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         if let (Some(b), Some(t)) = (&issue, created.first()) {
             let text = format!("Made into {t}, a {status} task in {}. Its handoff starts with this report and snapshot.", rf("goal", g.id()));
             crate::api::issue_tasked(r.app, b.id(), ref_id(t), &r.name(), &text)?;
+            crate::api::link_issues(r.app, &board::get_task(r.app, ref_id(t))?, &more, &r.name())?;
         }
         note_made(r, &created)?;
         return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})));
@@ -3007,19 +3010,27 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     if let Some(b) = &issue {
         let text = format!("Made into {}, a queued task. Its handoff starts with this report and snapshot.", c["ref"].as_str().unwrap_or(""));
         crate::api::issue_tasked(r.app, b.id(), c["id"].as_i64().unwrap_or(0), &r.name(), &text)?;
+        crate::api::link_issues(r.app, &board::get_task(r.app, c["id"].as_i64().unwrap_or(0))?, &more, &r.name())?;
     }
     note_made(r, &[c["ref"].as_str().unwrap_or("").to_string()])?;
     Ok(with(ok(None, None), json!({"created": [c["ref"]], "title": title, "status": c["status"], "project": c["project"],
                                    "warnings": c.get("warnings").cloned().unwrap_or(json!([]))})))
 }
 
-/// `--issue B<n>`: the backlog issue the new task is made from, when one is named. Only an open issue can be;
-/// one that's closed or already a task is refused before anything changes.
-fn named_issue(r: &Report) -> Result<Option<Row>> {
-    let Some(id) = parse_ref(r.body.get("issue").unwrap_or(&Value::Null), "issue")? else { return Ok(None) };
-    let b = board::get_issue(r.app, id)?;
-    crate::api::need_open(&b)?;
-    Ok(Some(b))
+/// `--issue B<n>` (repeated): the backlog issues the new task fixes. The first is the one it's made from; the
+/// rest link to it too. Only open issues from one project can be; any other is refused before anything changes.
+fn named_issues(r: &Report) -> Result<Vec<Row>> {
+    let ids = crate::api::issue_ids(&r.body, "issue")?;
+    let mut out: Vec<Row> = vec![];
+    for id in ids {
+        let b = board::get_issue(r.app, id)?;
+        match out.first() {
+            None => crate::api::need_open(&b)?,
+            Some(first) => crate::api::need_linkable(&b, None, &first.st("project"))?,
+        }
+        out.push(b);
+    }
+    Ok(out)
 }
 
 /// A new task's fields filled from the backlog issue it's made from, the way `tb backlog task` makes one:
@@ -3053,7 +3064,7 @@ fn note_made(r: &Report, refs: &[String]) -> Result<()> {
 /// `tb task new … --here`: a task for the work this terminal is already doing, claimed at once. With `goal` it
 /// sits in that goal (design work whose build tasks follow there); held by this terminal, the goal's runner
 /// never starts it elsewhere.
-fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Value> {
+fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>, more: &[i64]) -> Result<Value> {
     let app = r.app;
     let Some(sid) = r.sid.clone() else { return err(400, "--here only works inside a Midna terminal.") };
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
@@ -3125,6 +3136,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     if let Some(b) = issue {
         let text = format!("Taken as {} on {name}. Its handoff starts with this report and snapshot.", rf("task", t.id()));
         crate::api::issue_tasked(app, b.id(), t.id(), &name, &text)?;
+        crate::api::link_issues(app, &t, more, &name)?;
     }
     if let (Some(mine), "next") = (&current, place.as_str()) {
         lines::enqueue(app, &t, &sid, lines::Place::Back)?;
