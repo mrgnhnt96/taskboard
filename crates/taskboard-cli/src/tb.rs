@@ -1578,9 +1578,10 @@ enum TaskCmd {
         /// Its title; with --issue, the item's title when left out
         #[arg(required_unless_present = "issue")]
         title: Option<String>,
-        /// The open backlog item it's made from (B12): linked to it, with its detail, and the item becomes this task
+        /// The open backlog item it's made from (B12): linked to it, with its detail, and the item becomes this task.
+        /// Repeat for each issue it fixes: the rest link to it too, and all close with it
         #[arg(long, value_name = "B12")]
-        issue: Option<String>,
+        issue: Vec<String>,
         #[arg(long)]
         detail: Option<String>,
         /// The goal it's in; with --here, this terminal does it and the goal's runner leaves it alone
@@ -1772,6 +1773,9 @@ enum TaskCmd {
         /// its merge follow that PR, even one another task owns
         #[arg(long = "pr-link", value_name = "LINK")]
         pr_link: Option<String>,
+        /// An open backlog issue it fixes (B12): linked to it, so it closes with it. Repeat for more
+        #[arg(long, value_name = "B12")]
+        issue: Vec<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
         #[arg(long, value_name = "NAME|none")]
         area: Option<String>,
@@ -2806,6 +2810,65 @@ fn item_task(c: &Ctx, issue: &str) -> Result<String, String> {
     let t = v["tasks"][0]["ref"].as_str().ok_or_else(|| format!("The board didn't say which task {b} became."))?.to_string();
     out(&format!("Made {b} into {t}."));
     Ok(t)
+}
+
+/// The backlog refs (`B12`) a task's detail names, each once, in order: a `B` and digits standing as a word
+/// of their own, not inside a longer one (`AB12`, `B12x`).
+fn detail_issue_refs(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut refs: Vec<String> = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == 'B' && (i == 0 || !word(chars[i - 1])) {
+            let end = (i + 1..chars.len()).find(|&j| !chars[j].is_ascii_digit()).unwrap_or(chars.len());
+            if end > i + 1 && (end == chars.len() || !word(chars[end])) {
+                let r: String = chars[i..end].iter().collect();
+                if !refs.contains(&r) {
+                    refs.push(r);
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    refs
+}
+
+/// The warning for open backlog issues a task's detail names but doesn't link (`open`, in order), with the
+/// command that links them; None when there are none.
+fn unlinked_text(task: &str, open: &[String]) -> Option<String> {
+    if open.is_empty() {
+        return None;
+    }
+    let them = if open.len() == 1 { "it" } else { "them" };
+    let flags: Vec<String> = open.iter().map(|r| format!("--issue {r}")).collect();
+    Some(format!(
+        "Note: the detail names {} without linking {them}, so finishing {task} won't close {them}. If {task} fixes {them}: tb task set {task} {}",
+        open.join(", "),
+        flags.join(" ")
+    ))
+}
+
+/// After `tb task new` or `tb task set --detail`: says which open backlog issues in the task's project its
+/// detail names without linking them, and how to link them. Quiet when the board can't say.
+fn unlinked_note(c: &Ctx, task: &str, detail: Option<&str>, linked: &[String]) {
+    let refs: Vec<String> = detail.map(detail_issue_refs).unwrap_or_default().into_iter().filter(|r| !linked.contains(r)).collect();
+    if refs.is_empty() || task.is_empty() {
+        return;
+    }
+    let Ok(t) = c.call("GET", &format!("/tasks/{task}"), None) else { return };
+    let open: Vec<String> = refs
+        .into_iter()
+        .filter(|r| {
+            c.call("GET", &format!("/backlog/{r}"), None)
+                .is_ok_and(|b| b["state"] == "open" && b["project"] == t["project"])
+        })
+        .collect();
+    if let Some(line) = unlinked_text(task, &open) {
+        out(&line);
+    }
 }
 
 fn issue_ref(v: &str) -> Result<String, String> {
@@ -6772,9 +6835,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
                 let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
                 let title = title.as_deref().map(short_title).transpose()?.unwrap_or_default();
-                let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned, "area": area, "not_backlog": not_backlog});
-                if let Some(i) = issue {
-                    body["issue"] = json!(issue_ref(&i)?);
+                let mut body = json!({"title": title, "detail": &detail, "goal": goal, "project": project, "planned": planned, "area": area, "not_backlog": not_backlog});
+                let linked = issue_refs(&issue)?;
+                match linked.as_slice() {
+                    [] => {}
+                    [one] => body["issue"] = json!(one),
+                    many => body["issue"] = json!(many),
                 }
                 if !also.is_empty() {
                     body["also"] = json!(also);
@@ -6862,6 +6928,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
+                        unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                         if lane.as_deref() == Some("slot") {
                             slot_claim(c, &r, bring, &[])?;
@@ -6876,19 +6943,24 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         };
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
+                        unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                     }
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, area, model, effort, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, issue, area, model, effort, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
                     b["title"] = json!(short_title(&x)?);
                 }
-                if let Some(x) = detail {
+                if let Some(x) = &detail {
                     b["detail"] = json!(x);
+                }
+                let linked = issue_refs(&issue)?;
+                if !linked.is_empty() {
+                    b["issues"] = json!(linked);
                 }
                 if let Some(x) = goal {
                     b["goal_id"] = if x.eq_ignore_ascii_case("none") { Value::Null } else { json!(goal_ref(&x)?) };
@@ -7009,8 +7081,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(why) = v["why"].as_str() {
                     bits += &format!(" · {why}");
                 }
+                if !linked.is_empty() {
+                    bits += &format!(" · fixes {}", linked.join(", "));
+                }
                 out(&format!("Changed {t} “{}”{bits}.", v["title"].as_str().unwrap_or("")));
                 print_warnings(&v);
+                unlinked_note(c, &t, detail.as_deref(), &linked);
                 Ok(0)
             }
             TaskCmd::Delete { task } => {
@@ -9616,7 +9692,7 @@ mod tests {
         let Cmd::Task { action: TaskCmd::New { title, issue, .. } } = Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here"]).unwrap().cmd else {
             panic!("task new")
         };
-        assert_eq!((title, issue.as_deref()), (None, Some("B7")));
+        assert_eq!((title, issue), (None, vec!["B7".to_string()]));
         assert!(Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here", "--next"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here", "--now"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "Own title", "--issue", "B7", "--goal", "G2"]).is_ok());
@@ -9985,5 +10061,43 @@ mod tests {
     fn release_sh_pushes_the_branch_and_tag_atomically() {
         let script = include_str!("../../../scripts/release.sh");
         assert!(script.contains("git push --atomic "), "a rejected branch must not leave a pushed tag");
+    }
+
+    #[test]
+    fn issue_takes_several_backlog_items_on_task_new_and_set() {
+        match Cli::try_parse_from(["tb", "task", "new", "--issue", "B3", "--issue", "b4"]).unwrap().cmd {
+            Cmd::Task { action: TaskCmd::New { title, issue, .. } } => {
+                assert_eq!(title, None, "the first item's title when none is given");
+                assert_eq!(issue_refs(&issue).unwrap(), vec!["B3", "B4"]);
+            }
+            _ => panic!("not a task new"),
+        }
+        match Cli::try_parse_from(["tb", "task", "set", "T1", "--issue", "B5", "--issue", "B6"]).unwrap().cmd {
+            Cmd::Task { action: TaskCmd::Set { issue, .. } } => assert_eq!(issue_refs(&issue).unwrap(), vec!["B5", "B6"]),
+            _ => panic!("not a task set"),
+        }
+        assert!(Cli::try_parse_from(["tb", "task", "new", "--issue", "B3", "--not-backlog"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new"]).is_err(), "a title or an issue");
+    }
+
+    #[test]
+    fn a_detail_names_backlog_refs_standing_as_words() {
+        assert_eq!(detail_issue_refs("Fixes B333, B562 and (B12). B333 again."), vec!["B333", "B562", "B12"]);
+        assert!(detail_issue_refs("AB12 B12x B Bx b14 T12 B-1").is_empty(), "{:?}", detail_issue_refs("AB12 B12x B Bx b14 T12 B-1"));
+        assert_eq!(detail_issue_refs("B7"), vec!["B7"]);
+        assert_eq!(detail_issue_refs("see B8: also B9/B10"), vec!["B8", "B9", "B10"]);
+    }
+
+    #[test]
+    fn the_unlinked_warning_offers_issue_for_each_ref() {
+        assert_eq!(unlinked_text("T4", &[]), None);
+        assert_eq!(
+            unlinked_text("T4", &["B3".into()]).unwrap(),
+            "Note: the detail names B3 without linking it, so finishing T4 won't close it. If T4 fixes it: tb task set T4 --issue B3"
+        );
+        assert_eq!(
+            unlinked_text("T4", &["B3".into(), "B9".into()]).unwrap(),
+            "Note: the detail names B3, B9 without linking them, so finishing T4 won't close them. If T4 fixes them: tb task set T4 --issue B3 --issue B9"
+        );
     }
 }
