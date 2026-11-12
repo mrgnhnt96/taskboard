@@ -4,9 +4,11 @@
 //! the code. It runs in the project's checkout with Claude's read-only tools, so it can look before it
 //! calls a finding false; without a checkout it only closes repeats.
 //!
-//! A project with no issue added since its last tidy is skipped. Each issue it closes is closed as
-//! won't do with the reason in its log (`tb backlog reopen` undoes it), and the issue a repeat
-//! repeats gets a note. `tb backlog tidy` turns it on or off, changes how often, or runs it now.
+//! A project is tidied when an issue was added or its checkout's code moved (a PR merged) since its
+//! last tidy, else skipped. Each tidy reads the issues it read longest ago (never read first, up to
+//! [`MOST`]) and marks them read, so over a few tidies it goes through the whole backlog against the
+//! code as it is now. Each issue it closes is closed as won't do with the reason in its log
+//! (`tb backlog reopen` undoes it), and the issue a repeat repeats gets a note. `tb backlog tidy` turns it on or off, changes how often, or runs it now.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,13 +20,17 @@ use crate::{board, p, projects, triage};
 
 /// The owner's changes to `[backlog] tidy` and `tidy_every_hours`: `{"on", "every_hours"}`.
 const KEY: &str = "backlog_tidy";
-/// What the tidy has done: `checked_at`, `seen` (each project's newest issue id it read) and `last`.
+/// What the tidy has done: `checked_at`, `seen` (each project's newest issue id it read), `heads` (the
+/// commit each project's checkout was at) and `last`.
 const STATE: &str = "backlog_tidy_state";
 /// A tidy reads code, so it may take longer than grouping.
 const TIMEOUT_SECS: u64 = 900;
 /// The most issues of one project read in one tidy.
 const MOST: usize = 150;
 pub const MAX_EVERY_HOURS: f64 = 24.0 * 30.0;
+
+/// `issues.tidied_at`: when a tidy last read the issue. Null when none has yet.
+pub const ADDED: &[(&str, &str, &str)] = &[("issues", "tidied_at", "TEXT")];
 
 fn saved(app: &App, key: &str) -> Value {
     app.db.get_setting(key).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}))
@@ -156,28 +162,52 @@ fn start(app: &App, all: bool) {
     }));
 }
 
-/// The projects with an issue added since their last tidy, each with its newest issue's id.
-pub fn due(app: &App, all: bool) -> Result<Vec<(String, i64)>> {
-    let seen = saved(app, STATE)["seen"].clone();
+/// A project due a tidy: its newest issue's id, and the commit its checkout is at (none without one).
+pub struct Due {
+    pub project: String,
+    pub newest: i64,
+    pub head: Option<String>,
+}
+
+/// The projects with an issue added, or whose checkout moved (a PR merged), since their last tidy.
+pub fn due(app: &App, all: bool) -> Result<Vec<Due>> {
+    let st = saved(app, STATE);
     let mut out = vec![];
     for r in app.db.q("SELECT project, MAX(id) AS newest FROM issues WHERE project IS NOT NULL AND project != '' GROUP BY project ORDER BY project", p![])? {
-        let (name, newest) = (r.st("project"), r.i0("newest"));
-        if all || seen[&name].as_i64().is_none_or(|s| newest > s) {
-            out.push((name, newest));
+        let (project, newest) = (r.st("project"), r.i0("newest"));
+        let head = checkout(app, &project).and_then(|repo| head(&repo));
+        let added = st["seen"][&project].as_i64().is_none_or(|s| newest > s);
+        let moved = head.as_deref().is_some_and(|h| st["heads"][&project].as_str() != Some(h));
+        if all || added || moved {
+            out.push(Due { project, newest, head });
         }
     }
     Ok(out)
 }
 
+/// The project's checkout, when it has one on this machine.
+fn checkout(app: &App, project: &str) -> Option<std::path::PathBuf> {
+    projects::project_path(app, Some(project)).ok().flatten().map(std::path::PathBuf::from).filter(|p| p.is_dir())
+}
+
+/// The commit a checkout is at: the code a tidy reads.
+fn head(repo: &std::path::Path) -> Option<String> {
+    let g = crate::worktrees::git(&repo.to_string_lossy(), &["rev-parse", "--verify", "--quiet", "HEAD"], crate::worktrees::GIT_SECS);
+    Some(g.out.trim().to_string()).filter(|h| g.code == 0 && !h.is_empty())
+}
+
 fn run(app: &App, all: bool) -> Result<()> {
     let mut closed: Vec<Value> = vec![];
     let mut errors: Vec<String> = vec![];
-    for (project, newest) in due(app, all)? {
+    for Due { project, newest, head } in due(app, all)? {
         match tidy_project(app, &project) {
             Ok(c) => {
                 closed.extend(c);
                 let mut st = saved(app, STATE);
                 st["seen"][&project] = json!(newest);
+                if let Some(h) = head {
+                    st["heads"][&project] = json!(h);
+                }
                 app.db.set_setting(STATE, Some(&jdumps(&st)))?;
             }
             Err(e) => {
@@ -206,8 +236,12 @@ fn schema() -> Value {
 
 /// Open issues nobody is working on: no task, and no goal or one that's over (finished, archived or gone).
 /// These are the ones a tidy may close; an issue left in a finished goal is as stale as a loose one.
+/// The [`MOST`] read longest ago come first: never read (newest first), then the oldest reads.
 fn loose(app: &App, project: &str) -> Result<Vec<Row>> {
-    let rows = app.db.q("SELECT * FROM issues WHERE project = ? AND state = 'open' AND task_id IS NULL ORDER BY id DESC", p![project])?;
+    let rows = app.db.q(
+        "SELECT * FROM issues WHERE project = ? AND state = 'open' AND task_id IS NULL ORDER BY tidied_at IS NOT NULL, tidied_at, id DESC",
+        p![project],
+    )?;
     let mut over = GoalsOver::default();
     let mut out = vec![];
     for b in rows {
@@ -266,7 +300,7 @@ fn tidy_project(app: &App, project: &str) -> std::result::Result<Vec<Value>, Str
         return Ok(vec![]);
     }
     let planned = planned(app, project).map_err(|e| e.message)?;
-    let repo = projects::project_path(app, Some(project)).ok().flatten().map(std::path::PathBuf::from).filter(|p| p.is_dir());
+    let repo = checkout(app, project);
     let owner = &app.cfg.owner;
     let mut parts = vec![format!(
         "You tidy {owner}'s backlog for {project}: issues coding agents reported while working, not yet planned or left in a goal that's finished. \
@@ -282,7 +316,8 @@ fn tidy_project(app: &App, project: &str) -> std::result::Result<Vec<Value>, Str
     match &repo {
         Some(_) => parts.push(
             "You're in the project's checkout and may read its code (Read, Grep, Glob). Close an issue as fixed or false \
-             only after reading the code it's about."
+             only after reading the code it's about. Some of these were read in an earlier tidy: the code may have \
+             changed since, so read it again."
                 .into(),
         ),
         None => parts.push("You can't see the project's code, so close duplicates only.".into()),
@@ -298,7 +333,15 @@ fn tidy_project(app: &App, project: &str) -> std::result::Result<Vec<Value>, Str
     let loose_ids: HashSet<i64> = loose.iter().map(|b| b.id()).collect();
     let known: HashSet<i64> = loose_ids.iter().copied().chain(planned.iter().map(|b| b.id())).collect();
     let picks = checked(&v, &loose_ids, &known, repo.is_some());
-    app.db.tx(|| close(app, &picks)).map_err(|e| e.message)
+    app.db
+        .tx(|| {
+            let at = now_iso();
+            for id in &loose_ids {
+                app.db.x("UPDATE issues SET tidied_at = ? WHERE id = ?", p![at.as_str(), *id])?;
+            }
+            close(app, &picks)
+        })
+        .map_err(|e| e.message)
 }
 
 /// One issue Claude would close: why (`duplicate`, `fixed`, `false`), the issue it repeats, and its reason.
