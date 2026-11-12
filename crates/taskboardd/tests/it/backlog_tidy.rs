@@ -141,3 +141,39 @@ fn leaves_planned_issues_alone() {
     tidy::tick(&b.app).unwrap();
     assert_eq!((b.state(planned).as_str(), b.state(dup).as_str()), ("open", "drop"));
 }
+
+#[test]
+fn closes_issues_left_in_finished_goals() {
+    let b = board();
+    let goal = |name: &str| b.post("/goals", json!({"name": name, "project": "webapp"}))["id"].as_i64().unwrap();
+    let in_goal = |g: i64, title: &str| {
+        let id = b.issue(title);
+        b.app.db.x("UPDATE issues SET goal_id = ? WHERE id = ?", p![g, id]).unwrap();
+        id
+    };
+    let (done, archived, live) = (goal("Runner"), goal("Retries"), goal("Logs"));
+    b.app.db.x("INSERT INTO tasks(title, project, goal_id, status) VALUES('Fix the runner', 'webapp', ?, 'done')", p![done]).unwrap();
+    b.app.db.x("UPDATE goals SET archived = 1 WHERE id = ?", p![archived]).unwrap();
+    b.app.db.x("INSERT INTO tasks(title, project, goal_id, status) VALUES('Tidy the logs', 'webapp', ?, 'working')", p![live]).unwrap();
+    let fixed = in_goal(done, "Runner drops the last line of output");
+    let stale = in_goal(archived, "Retry never backs off");
+    let target = in_goal(live, "Log lines lose their timestamp");
+    let dup = in_goal(done, "Timestamps go missing from log lines");
+    let kept = in_goal(live, "Logs rotate too often");
+    b.answer(json!({"close": [
+        {"id": fixed, "why": "fixed", "reason": "run.rs flushes the last line"},
+        {"id": stale, "why": "false", "reason": "retry.rs doubles the wait"},
+        {"id": dup, "why": "duplicate", "of": target, "reason": "Same missing timestamp"},
+        {"id": kept, "why": "fixed", "reason": "in a goal still running"}]}));
+    tidy::tick(&b.app).unwrap();
+
+    let prompt = b.calls();
+    let (may, never) = prompt.split_once("never close them").expect("the live goal's issues are listed as planned");
+    for id in [fixed, stale, dup] {
+        assert!(may.contains(&format!("B{id}")), "B{id} may be closed: {prompt}");
+    }
+    assert!(never.contains(&format!("B{target}")) && never.contains(&format!("B{kept}")), "{prompt}");
+    let states: Vec<String> = [fixed, stale, dup, target, kept].iter().map(|id| b.state(*id)).collect();
+    assert_eq!(states, ["drop", "drop", "drop", "open", "open"], "issues in a finished or archived goal close; a running goal's stay");
+    assert!(b.log(target).iter().any(|l| l == &format!("The backlog tidy closed B{dup} as a duplicate of this")));
+}
