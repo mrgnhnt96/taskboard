@@ -12,6 +12,7 @@ pub mod asks;
 pub mod bits;
 pub mod blocks;
 pub mod board;
+pub mod buried;
 pub mod botrun;
 pub mod breaks;
 pub mod bring;

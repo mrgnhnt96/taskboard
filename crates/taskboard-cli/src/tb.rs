@@ -388,6 +388,11 @@ enum Cmd {
         #[command(subcommand)]
         action: GoalCmd,
     },
+    /// Whether a task's turn that asks the owner something above its reply's last paragraph is sent back once to ask it properly (no action: whether it's on); on or off only on the owner's word
+    BuriedQuestions {
+        #[arg(value_parser = ["on", "off"])]
+        action: Option<String>,
+    },
     /// QA testers' Jira comments on board tickets: list, waiting, show Q3, settings, or on the owner's word task Q3 / ignore Q3 / on / off
     Qa {
         /// list (default), waiting, Q3, task, ignore, on, off or settings
@@ -2557,6 +2562,14 @@ fn pr_check_line(v: &Value) -> String {
 }
 
 /// `tb qa on|off|settings`: whether QA comments are read, from `GET`/`POST /qa`.
+fn buried_questions_line(v: &Value) -> &'static str {
+    if v["on"] == false {
+        "Buried questions are let through: a reply that asks the owner something above its last paragraph ends its turn as it is."
+    } else {
+        "Buried questions are sent back: a task's reply that asks the owner something above its last paragraph is sent back once to ask it with tb question or a final Questions block."
+    }
+}
+
 fn qa_settings_line(v: &Value) -> String {
     if v["on"] != true {
         return if v["jira"] == true { "QA comments are off.".into() } else { "QA comments are off. They need Jira: set up [jira] in the board's config first.".into() };
@@ -6604,6 +6617,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
         },
+        Cmd::BuriedQuestions { action } => {
+            let v = match action {
+                Some(a) => c.call("POST", "/buried-questions", Some(json!({"on": a == "on"})))?,
+                None => c.call("GET", "/buried-questions", None)?,
+            };
+            out(buried_questions_line(&v));
+            Ok(0)
+        }
         Cmd::Qa { what, r#ref, note, pr, no_pr, limit, goal } => {
             let what = what.unwrap_or_default();
             if matches!(what.as_str(), "on" | "off" | "settings") {

@@ -26,6 +26,7 @@ const MAX_CONTEXT: usize = 9900;
 #[cfg(test)]
 const MAX_PROMPT: usize = taskboardd::board::PROMPT_FULL_KEEP;
 const MAX_LAST_MESSAGE: usize = 2000;
+const MAX_REPLY: usize = 20_000;
 const MAX_OUTPUT: usize = 1000;
 
 /// A command that opens a pull request: `gh pr create`, `glab mr create`, or a POST to GitHub's
@@ -1625,6 +1626,8 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
             // Its end too, where the agent asks whether to go on ("Want me to run G4?").
             extra.insert("last_message_end".into(), json!(clip_end(&s("last_assistant_message"), taskboardd::startword::REPLY_END_KEEP)));
+            // The whole reply (up to a cap), for a question asked above its last paragraph.
+            extra.insert("reply".into(), json!(clip(&s("last_assistant_message"), MAX_REPLY)));
             extra.insert("transcript_path".into(), json!(s("transcript_path")));
             extra.insert("stop_hook_active".into(), json!(payload["stop_hook_active"] == true));
         }
@@ -1700,9 +1703,12 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         vec![]
     };
     let mut message = if ids.is_empty() { String::new() } else { deliver["text"].as_str().unwrap_or("").to_string() };
-    if hook == "Stop" && message.is_empty() {
-        // The board's own reason to keep the turn going (code changed with no task to track it).
-        message = resp["block"].as_str().map(|b| b.trim().to_string()).unwrap_or_default();
+    if hook == "Stop" {
+        // The board's own reason to keep the turn going (code changed with no task to track it, or a
+        // question asked above the reply's last paragraph), after anything it delivers.
+        if let Some(block) = resp["block"].as_str().map(str::trim).filter(|b| !b.is_empty()) {
+            message = if message.is_empty() { block.to_string() } else { format!("{message}\n\n{block}") };
+        }
     }
     let out = if hook == "Stop" && !message.is_empty() {
         Some(json!({"decision": "block", "reason": clip(&message, MAX_CONTEXT)}))
