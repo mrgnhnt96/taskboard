@@ -28,6 +28,7 @@ mod days;
 mod design_tasks;
 mod device_fields;
 mod done_leftovers;
+mod doneword;
 mod duplicate_visits;
 mod feed;
 mod flow;

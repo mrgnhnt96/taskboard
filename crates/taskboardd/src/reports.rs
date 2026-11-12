@@ -3527,7 +3527,8 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 let prompt = r.body["prompt"].as_str().unwrap_or("");
                 let owners = !crate::startword::MARKER_RE.is_match(prompt) && owners_ask(prompt);
                 let research = if owners { crate::research::prompt_note(prompt, r.task()?.as_ref()) } else { None };
-                for c in crate::startword::note_prompt(app, &sid, owners)?.into_iter().chain(research) {
+                let done = crate::doneword::note_prompt(app, &sid, owners)?;
+                for c in crate::startword::note_prompt(app, &sid, owners)?.into_iter().chain(done).chain(research) {
                     out["context"] = match out["context"].as_str() {
                         Some(had) if !had.is_empty() => json!(format!("{had}\n\n{c}")),
                         _ => json!(c),

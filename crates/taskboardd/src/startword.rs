@@ -64,9 +64,9 @@ pub const CLEARED: &str = "Cleared its conversation and started again";
 pub static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[^\]\n]*\]").unwrap());
 
 /// The tasks an ask names: "T4", "task T4", "T4, T5 and T6".
-const NAMED: &str = r"(?:task\s+)?[Tt]\d+(?:\s*,?\s*(?:and\s+|&\s*|\+\s*)?(?:task\s+)?[Tt]\d+)*";
+pub(crate) const NAMED: &str = r"(?:task\s+)?[Tt]\d+(?:\s*,?\s*(?:and\s+|&\s*|\+\s*)?(?:task\s+)?[Tt]\d+)*";
 /// What may come between the start word and the tasks it names: "both", "them:".
-const LISTED: &str = r"(?:(?:them|these|those|both|all\s+of\s+them)\s*[:—–-]\s*|both\s+)?";
+pub(crate) const LISTED: &str = r"(?:(?:them|these|those|both|all\s+of\s+them)\s*[:—–-]\s*|both\s+)?";
 /// The task an ask doesn't name: "it", "this", "the new task", "them", "both of them", "the first one".
 const UNNAMED: &str = concat!(
     r"(?:(?:both|all|each)\s+of\s+(?:them|these|those|the\s+(?:new\s+)?(?:tasks|ones))|them\s+(?:all|both)|",
@@ -172,11 +172,11 @@ const GOAL_VERB: &str = r"(?:start|queue|begin|launch|kick\s+off|run|ship|get\s+
 /// What a start is read on: tasks (`tb start T4`) or goals (`tb start G2`).
 pub struct Kind {
     /// A start word on one anywhere: an ask, or (when it's no ask) a mention that takes the start back.
-    mention: Regex,
+    pub(crate) mention: Regex,
     /// One named, with its number.
-    ids: Regex,
+    pub(crate) ids: Regex,
     /// Goals: an unnamed "it" is [`Ask::It`].
-    goal: bool,
+    pub(crate) goal: bool,
 }
 
 fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &str, goal: bool) -> Kind {
@@ -436,7 +436,7 @@ pub struct Reading {
 impl Reading {
     /// Whether the prompt is the word to start task `id` (`Some(true)`), takes it back (`Some(false)`),
     /// or says nothing on it. `unnamed` says whether an unnamed ask means `id`.
-    fn word_for(&self, id: i64, unnamed: impl Fn(&Ask) -> bool) -> Option<bool> {
+    pub(crate) fn word_for(&self, id: i64, unnamed: impl Fn(&Ask) -> bool) -> Option<bool> {
         self.steps.iter().rev().find_map(|s| match s {
             Step::Hold(Ask::Named(ids)) => ids.contains(&id).then_some(false),
             Step::Hold(_) => Some(false),
@@ -1100,7 +1100,7 @@ impl Prompt {
     pub fn new(text: &str) -> Prompt {
         Prompt { text: text.to_string(), ..Prompt::default() }
     }
-    fn boards(&self) -> bool {
+    pub(crate) fn boards(&self) -> bool {
         self.board || MARKER_RE.is_match(&self.text)
     }
 }
@@ -1552,7 +1552,7 @@ pub fn start_command(text: &str) -> Option<String> {
 /// prompt's start and end ([`keep_ends`]); the hook before beta.16 kept its first 7999 characters and
 /// "…", so a stored prompt of just that length ending in "…" is one of those, and so is a line that
 /// filled the history's 600.
-fn typed(row: &Row) -> (String, bool) {
+pub(crate) fn typed(row: &Row) -> (String, bool) {
     typed_naming(row, None)
 }
 
@@ -1921,12 +1921,6 @@ pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     note_questions(app, id, &mut prompts)?;
     let own = owns_done_or_open(app, sid, id)?;
     Ok(close_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
-}
-
-/// The owner's word in terminal `sid` that human task `id` is done (`tb needs done`): the prompt that says
-/// so. The board reads no prompt as one yet, so there's none and an agent's Done is always refused.
-pub fn owners_done_word(_app: &App, _sid: &str, _id: i64) -> Result<Option<String>> {
-    Ok(None)
 }
 
 /// Whether task `id` is terminal `sid`'s own: its open task, else (once it's on none) the done task it's
