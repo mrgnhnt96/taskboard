@@ -1,8 +1,8 @@
 //! Tidying the backlog. On a timer (`[backlog] tidy_every_hours`, a day unless changed), a headless
-//! `claude -p` reads each project's open issues that aren't planned yet and closes the ones that
-//! repeat another issue, or that aren't real: already fixed, or wrong about the code. It runs in the
-//! project's checkout with Claude's read-only tools, so it can look before it calls a finding false;
-//! without a checkout it only closes repeats.
+//! `claude -p` reads each project's open issues that aren't planned yet, or sit in a goal that's over,
+//! and closes the ones that repeat another issue, or that aren't real: already fixed, or wrong about
+//! the code. It runs in the project's checkout with Claude's read-only tools, so it can look before it
+//! calls a finding false; without a checkout it only closes repeats.
 //!
 //! A project with no issue added since its last tidy is skipped. Each issue it closes is closed as
 //! won't do with the reason in its log (`tb backlog reopen` undoes it), and the issue a repeat
@@ -204,20 +204,60 @@ fn schema() -> Value {
                        "of": {"type": "integer"}, "reason": {"type": "string"}}}}}})
 }
 
-/// Open issues nobody has planned yet: the ones a tidy may close.
+/// Open issues nobody is working on: no task, and no goal or one that's over (finished, archived or gone).
+/// These are the ones a tidy may close; an issue left in a finished goal is as stale as a loose one.
 fn loose(app: &App, project: &str) -> Result<Vec<Row>> {
-    app.db.q(
-        "SELECT * FROM issues WHERE project = ? AND state = 'open' AND goal_id IS NULL AND task_id IS NULL ORDER BY id DESC LIMIT ?",
-        p![project, MOST as i64],
-    )
+    let rows = app.db.q("SELECT * FROM issues WHERE project = ? AND state = 'open' AND task_id IS NULL ORDER BY id DESC", p![project])?;
+    let mut over = GoalsOver::default();
+    let mut out = vec![];
+    for b in rows {
+        if over.free(app, &b)? {
+            out.push(b);
+            if out.len() == MOST {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// Issues already planned (in a goal, or a task): a loose one may repeat them, but they stay.
+/// Issues still planned (in a goal that isn't over, or a task): a loose one may repeat them, but they stay.
 fn planned(app: &App, project: &str) -> Result<Vec<Row>> {
-    app.db.q(
-        "SELECT * FROM issues WHERE project = ? AND ((state = 'open' AND goal_id IS NOT NULL) OR state IN ('task', 'ticket')) ORDER BY id DESC LIMIT ?",
-        p![project, MOST as i64],
-    )
+    let rows = app.db.q(
+        "SELECT * FROM issues WHERE project = ? AND ((state = 'open' AND (goal_id IS NOT NULL OR task_id IS NOT NULL)) OR state IN ('task', 'ticket')) ORDER BY id DESC",
+        p![project],
+    )?;
+    let mut over = GoalsOver::default();
+    let mut out = vec![];
+    for b in rows {
+        if b.s("state") != Some("open") || !over.free(app, &b)? {
+            out.push(b);
+            if out.len() == MOST {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether each goal is over, asked once per goal.
+#[derive(Default)]
+struct GoalsOver(HashMap<i64, bool>);
+
+impl GoalsOver {
+    /// An open issue no task holds and no live goal plans.
+    fn free(&mut self, app: &App, b: &Row) -> Result<bool> {
+        if b.i("task_id").is_some() {
+            return Ok(false);
+        }
+        let Some(g) = b.i("goal_id") else { return Ok(true) };
+        if let Some(o) = self.0.get(&g) {
+            return Ok(*o);
+        }
+        let o = crate::dispatch::goal_over(app, g)?;
+        self.0.insert(g, o);
+        Ok(o)
+    }
 }
 
 fn tidy_project(app: &App, project: &str) -> std::result::Result<Vec<Value>, String> {
@@ -229,7 +269,7 @@ fn tidy_project(app: &App, project: &str) -> std::result::Result<Vec<Value>, Str
     let repo = projects::project_path(app, Some(project)).ok().flatten().map(std::path::PathBuf::from).filter(|p| p.is_dir());
     let owner = &app.cfg.owner;
     let mut parts = vec![format!(
-        "You tidy {owner}'s backlog for {project}: issues coding agents reported while working, not yet planned. \
+        "You tidy {owner}'s backlog for {project}: issues coding agents reported while working, not yet planned or left in a goal that's finished. \
          Close only what is clearly not worth keeping:\n\
          - duplicate: it reports the same problem as another issue (open or planned). Give that issue's number in \
          `of`. Of two open repeats, keep the one that says more, or the older one when they say the same.\n\
@@ -305,9 +345,9 @@ fn close(app: &App, picks: &[Pick]) -> Result<Vec<Value>> {
     let mut out = vec![];
     let mut noted: HashMap<i64, Vec<String>> = HashMap::new();
     for pk in picks {
-        // Still loose: it may have been planned or closed while Claude read.
+        // Still loose: it may have been planned, its goal reopened, or closed while Claude read.
         let Some(b) = board::find_issue(app, Some(pk.id))? else { continue };
-        if b.s("state") != Some("open") || b.i("goal_id").is_some() || b.i("task_id").is_some() {
+        if b.s("state") != Some("open") || !GoalsOver::default().free(app, &b)? {
             continue;
         }
         let what = match (pk.why.as_str(), pk.of) {
