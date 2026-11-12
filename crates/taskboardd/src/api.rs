@@ -289,6 +289,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             }
             Ok(v)
         }
+        ("POST", ["tasks", "start"]) => start_many(app, body),
         ("POST", ["tasks", id]) => patch_task(app, tid(id)?, body),
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
         ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, query, body),
@@ -1618,6 +1619,90 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
     launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
+}
+
+/// `tb start T4 T5 T6` from terminal `via_session`: each task starts on the owner's word there, all or none.
+/// Every task is checked before any starts: one that waits on unfinished work, is done or is already on a
+/// terminal refuses them all, and so does one nobody asked for, which asks the owner to start them all.
+fn start_many(app: &App, body: &Value) -> Result<Value> {
+    let mode = { let m = body_str(body, "mode"); if m.is_empty() { "new".to_string() } else { m } };
+    if !["new", "queue"].contains(&mode.as_str()) {
+        return err(400, "Start mode must be new or queue.");
+    }
+    let mut ids: Vec<i64> = vec![];
+    for r in body["tasks"].as_array().into_iter().flatten() {
+        let id = match r {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) => parse_ref_str(s, "task")?,
+            _ => None,
+        };
+        let Some(id) = id else { return err(400, format!("{r} isn't a task.")) };
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return err(400, "Name the tasks to start.");
+    }
+    let via = body_str(body, "via_session");
+    let all = alerts::say_refs(&ids.iter().map(|&id| rf("task", id)).collect::<Vec<_>>());
+    if via.is_empty() {
+        return err(403, format!("Only a human can start {all}: {} can press Start on each on the board, or tell an agent in a terminal to start them (tb start).", app.cfg.owner));
+    }
+    let name = board::session_name(app, Some(&via), None);
+    let (mut go, mut no_word, mut cant) = (vec![], vec![], vec![]);
+    for &id in &ids {
+        let t = board::get_task(app, id)?;
+        let by = if crate::startword::granted(app, &via, id, false)? || crate::startword::owners_word(app, &via, id)?.is_some() {
+            Some(format!("Started by {} via {name}", app.cfg.owner))
+        } else {
+            crate::start_grants::honored(app, &via, &t)?.map(|g| format!("{g} via {name}"))
+        };
+        if let Some(b) = crate::waitsfor::blocker(app, &t)? {
+            cant.push(format!("{} can't start yet. {b}.", rf("task", id)));
+        } else if t.s("status") == Some("done") {
+            cant.push(format!("{} is done.", rf("task", id)));
+        } else if matches!(t.s("status"), Some("working") | Some("needs")) && board::live_session(app, &t)?.is_some() && !t.b("lost") {
+            cant.push(format!("{} is already on {}.", rf("task", id), t.s("session_name").unwrap_or("a terminal")));
+        }
+        match by {
+            Some(by) => go.push((id, by)),
+            None => no_word.push(id),
+        }
+    }
+    if !cant.is_empty() {
+        return err(409, format!("Started none of {all}. {} Leave those out and run tb start again for the rest.", cant.join(" ")));
+    }
+    if !no_word.is_empty() {
+        let missing = alerts::say_refs(&no_word.iter().map(|&id| rf("task", id)).collect::<Vec<_>>());
+        let mut asked = false;
+        for &id in &ids {
+            if no_word.contains(&id) {
+                log_miss(app, &rf("task", id), &via)?;
+            }
+            asked |= alerts::ask_start(app, "task", id, &via, json!({"mode": mode}))?;
+        }
+        return err(
+            403,
+            format!(
+                "Only a human can start {all}: nobody asked for {missing} in this terminal's conversation, so none of them started. {}",
+                owner_asked(app, asked, "start", "Start")
+            ),
+        );
+    }
+    // A start that fails past the checks above (a hook stops it, no worktree) leaves the ones before it started.
+    let (mut started, mut done) = (vec![], vec![]);
+    for (id, by) in go {
+        match launch(app, id, &mode, None, &by, &via) {
+            Ok(v) => {
+                started.push(v);
+                done.push(rf("task", id));
+            }
+            Err(e) if done.is_empty() => return Err(e),
+            Err(e) => return err(e.status, format!("{} didn't start: {} {} started before it.", rf("task", id), e.message, alerts::say_refs(&done))),
+        }
+    }
+    Ok(json!({"tasks": started}))
 }
 
 /// A standing start grant (`tb start-grant add`): only the owner's. From the app it's added; from a terminal

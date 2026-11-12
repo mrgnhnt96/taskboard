@@ -174,9 +174,11 @@ enum Cmd {
     },
     /// Start a task, or run a goal (G<n>), only when the human told you to in this conversation (the board
     /// checks their prompts for a task). A goal runs its tasks in their waves; never start them one by one.
+    /// Several tasks (tb start T4 T5 T6) start together or not at all
     Start {
-        /// T<n>, G<n> for a goal, or B<n> for a backlog item (made into its task first)
-        task: String,
+        /// T<n>, G<n> for a goal, or B<n> for a backlog item (made into its task first); several T<n> start each
+        #[arg(required = true, num_args = 1..)]
+        task: Vec<String>,
         /// Queue the task to start once its project has a free terminal (tb project set --max-terminals), instead of now in a new terminal
         #[arg(long)]
         queue: bool,
@@ -3102,6 +3104,31 @@ fn schedule_start(c: &Ctx, task: &str, at: &str) -> Result<i32, String> {
 /// After `tb submit` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
 /// What `tb start T<n>` did, from the task the board sends back: a `task.starting` hook may have
 /// skipped it, so it's only "opening" when the board says it's starting.
+/// `tb start T4 T5 T6`: each task starts on the human's word, all or none (the board checks every one first).
+fn start_several(c: &Ctx, refs: &[String], queue: bool, now: bool, at: bool) -> Result<i32, String> {
+    if refs.iter().any(|r| !r.trim().starts_with(['T', 't'])) {
+        return Err("tb start takes several tasks (T<n>), not goals or backlog items: start a goal or an item on its own.".into());
+    }
+    if now {
+        return Err("--now only applies to a goal (tb start G<n> --now).".into());
+    }
+    if at {
+        return Err("--at schedules one at a time: run tb start T<n> --at <time> for each.".into());
+    }
+    let mut refs = refs.iter().map(|r| task_ref(r)).collect::<Result<Vec<_>, _>>()?;
+    let mut seen = std::collections::HashSet::new();
+    refs.retain(|r| seen.insert(r.clone()));
+    if c.session.is_empty() {
+        return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {} on the board.", refs.join(", ")));
+    }
+    let mode = if queue { "queue" } else { "new" };
+    let v = c.call_progress("POST", "/tasks/start", Some(json!({"tasks": refs, "mode": mode, "via_session": c.session})))?;
+    for (r, t) in refs.iter().zip(v["tasks"].as_array().into_iter().flatten()) {
+        out(&start_said(r, queue, t));
+    }
+    Ok(0)
+}
+
 fn start_said(r: &str, queue: bool, v: &Value) -> String {
     let status = v["status"].as_str().unwrap_or("");
     let why = v["summary"].as_str().or(v["latest"].as_str()).filter(|s| !s.is_empty());
@@ -6064,6 +6091,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Start { task, queue, now, at } => {
+            if task.len() > 1 {
+                return start_several(c, &task, queue, now, at.is_some());
+            }
+            let task = task.into_iter().next().unwrap_or_default();
             if let Some(at) = at {
                 return schedule_start(c, &task, &at);
             }
@@ -9350,6 +9381,8 @@ mod tests {
         assert_eq!(issue_refs(&["b4".into(), "B5".into(), "B4".into()]).unwrap(), vec!["B4", "B5"]);
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "start", "G1", "--now"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "start", "T4", "T5", "T6"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "start"]).is_err());
         assert!(Cli::try_parse_from(["tb", "start", "G1", "--now", "--queue"]).is_err());
         assert!(Cli::try_parse_from(["tb", "review", "--week", "last"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "review", "T12"]).is_ok());

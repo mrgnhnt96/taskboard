@@ -1019,7 +1019,7 @@ pub fn drop_start_ask(app: &App, r: &str) -> Result<()> {
 }
 
 /// "T12", "T12 and T13", "T12, T13 and G2".
-fn say_refs(refs: &[String]) -> String {
+pub fn say_refs(refs: &[String]) -> String {
     match refs {
         [] => String::new(),
         [one] => one.clone(),

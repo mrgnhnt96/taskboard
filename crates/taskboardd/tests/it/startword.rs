@@ -330,6 +330,86 @@ fn a_plural_unnamed_ask_covers_every_task_made_in_reply_to_it() {
 }
 
 #[test]
+fn start_them_covers_each_task_talked_over() {
+    let b = board();
+    let (a, c, other) = (b.new_task(), b.new_task(), b.new_task());
+    b.said(&format!("what's left on T{a}?"));
+    b.replied(&format!("T{a} adds the login form and T{c} the reset link. Both are ready to go."));
+    b.said("ok, start them");
+    // Each task the conversation named; never one it didn't.
+    assert_eq!(b.tb_start(other).unwrap_err().0, 403);
+    assert!(b.tb_start(a).unwrap()["starting"] == true);
+    assert!(b.tb_start(c).unwrap()["starting"] == true);
+
+    // "Start those" too, and a hold in the same prompt keeps its task back.
+    let b = board();
+    let (a, c) = (b.new_task(), b.new_task());
+    b.said(&format!("T{a} and T{c} look good"));
+    b.said(&format!("start those, but not T{c}"));
+    assert!(b.tb_start(a).unwrap()["starting"] == true);
+    assert_eq!(b.tb_start(c).unwrap_err().0, 403);
+
+    // Only in the latest prompt: one after it ends the word.
+    let b = board();
+    let a = b.new_task();
+    b.said(&format!("T{a} is next"));
+    b.said("start them");
+    b.said("thanks");
+    assert_eq!(b.tb_start(a).unwrap_err().0, 403);
+
+    // A prompt that makes tasks means the ones it makes, not the ones talked over before.
+    let b = board();
+    let a = b.new_task();
+    b.said(&format!("T{a} is done"));
+    b.said("make tasks for the header and the footer and start them");
+    let (h, f) = (b.new_task(), b.new_task());
+    assert_eq!(b.tb_start(a).unwrap_err().0, 403);
+    assert!(b.tb_start(h).unwrap()["starting"] == true);
+    assert!(b.tb_start(f).unwrap()["starting"] == true);
+
+    // A task named only in the board's prompt or in pasted text wasn't talked over.
+    let b = board();
+    let (a, c) = (b.new_task(), b.new_task());
+    b.said(&format!("[task-board:T{a}] You are picking up the login form."));
+    b.said(&format!("here's the log:\n```\nT{c} failed\n```"));
+    b.said("start them");
+    assert_eq!(b.tb_start(a).unwrap_err().0, 403);
+    assert_eq!(b.tb_start(c).unwrap_err().0, 403);
+}
+
+#[test]
+fn several_tasks_start_together_or_not_at_all() {
+    let b = board();
+    let start = |ids: &[i64], via: &str| {
+        let refs: Vec<String> = ids.iter().map(|id| format!("T{id}")).collect();
+        api::dispatch(&b.app, "POST", "/tasks/start", &Query::new(), &json!({"tasks": refs, "mode": "queue", "via_session": via})).map_err(|e| (e.status, e.message))
+    };
+    let (a, c, other, done) = (b.new_task(), b.new_task(), b.new_task(), b.new_task());
+    board::update_task(&b.app, done, vec![("status", json!("done"))]).unwrap();
+    b.said(&format!("T{a}, T{c} and T{done} are the ones left"));
+    b.said("start them");
+
+    // One nobody asked for refuses them all.
+    let (code, why) = start(&[a, other], "s1").unwrap_err();
+    assert_eq!(code, 403);
+    assert!(why.contains(&format!("nobody asked for T{other}")) && why.contains("none of them started"), "{why}");
+    // One that can't start refuses them all.
+    let (code, why) = start(&[a, done], "s1").unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.contains(&format!("Started none of T{a} and T{done}")), "{why}");
+    // Not from a terminal: no one's word.
+    assert_eq!(start(&[a, c], "").unwrap_err().0, 403);
+    assert_eq!((b.status(a), b.status(c)), ("queued".to_string(), "queued".to_string()));
+
+    let v = start(&[a, c, a], "s1").unwrap();
+    assert_eq!(v["tasks"].as_array().unwrap().len(), 2);
+    let by = format!("Started by {} via Term", b.app.cfg.owner);
+    for id in [a, c] {
+        assert!(b.log(id).contains(&by), "T{id}: {:?}", b.log(id));
+    }
+}
+
+#[test]
 fn queue_it_after_the_task_was_made_is_the_word() {
     let b = board();
     b.said("make a task for the footer");
