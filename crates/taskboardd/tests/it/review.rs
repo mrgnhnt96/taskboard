@@ -110,6 +110,24 @@ fn report_counts_categories_repeats_timeouts_reruns_and_owner_wait() {
 }
 
 #[test]
+fn owner_wait_counts_work_hours_once_however_many_tasks_wait() {
+    let (app, _dir) = board();
+    taskboardd::hours::set(&app, &json!({"on": true, "start": "09:00", "end": "17:00", "days": "all"})).unwrap();
+    let day = Local::now().date_naive() - chrono::Duration::days(3);
+    let at = |h: u32| Local.from_local_datetime(&day.and_hms_opt(h, 0, 0).unwrap()).earliest().unwrap().timestamp() as f64;
+    // Both wait from 8 PM the night before until 11 AM: only 9 to 11 is in the work hours.
+    add_state(&app, 7, at(0) - 4.0 * 3600.0, "needs", "question");
+    add_state(&app, 8, at(0) - 4.0 * 3600.0, "needs", "review");
+    add_state(&app, 7, at(11), "working", "");
+    add_state(&app, 8, at(11), "working", "");
+
+    let r = review::report(&app, at(0) - 86400.0, at(0) + 86400.0).unwrap();
+    assert_eq!(r["owner_wait"]["seconds"], 7200.0, "9 to 11 once, not overnight and not once per task");
+    assert_eq!(r["owner_wait"]["reasons"], json!([{"name": "question", "seconds": 7200.0}, {"name": "review", "seconds": 7200.0}]));
+    assert_eq!(r["owner_wait"]["tasks"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn a_kept_review_stays_in_needs_you_until_it_is_opened() {
     let (app, _dir) = board();
     week_of_spans(&app, now_ts() - 86400.0);

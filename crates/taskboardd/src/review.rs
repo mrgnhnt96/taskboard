@@ -226,7 +226,10 @@ fn rerun_chains(spans: &[&Span]) -> Vec<Value> {
     out
 }
 
-/// The time tasks spent waiting on the owner (status `needs`, other than lost terminals), within the period.
+/// The time tasks spent waiting on the owner (status `needs`, other than lost terminals), within the
+/// period. Like the day view, it counts only while the owner could answer: not while the Mac slept, the
+/// owner was away from it, or outside the work hours. The total is the time at least one task waited, so
+/// tasks waiting side by side count once; the reasons and tasks keep each task's own wait.
 fn owner_wait(app: &App, start: f64, end: f64) -> Result<Value> {
     let rows = app.db.q(
         "SELECT task_id, at, status, needs_reason FROM task_states WHERE at < ?2 AND task_id IN (
@@ -238,6 +241,8 @@ fn owner_wait(app: &App, start: f64, end: f64) -> Result<Value> {
     )?;
     let mut by_reason: HashMap<String, f64> = HashMap::new();
     let mut by_task: HashMap<i64, f64> = HashMap::new();
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    let away = days::away(app, start, end);
     for (i, r) in rows.iter().enumerate() {
         if r.s("status") != Some("needs") || r.s("needs_reason") == Some("lost") {
             continue;
@@ -245,13 +250,18 @@ fn owner_wait(app: &App, start: f64, end: f64) -> Result<Value> {
         let Some(from) = r.s("at").and_then(parse_iso) else { continue };
         let task = r.i0("task_id");
         let to = rows.get(i + 1).filter(|n| n.i0("task_id") == task).and_then(|n| n.s("at")).and_then(parse_iso).unwrap_or(end);
-        let secs = to.min(end) - from.max(start);
+        let (a, b) = (from.max(start), to.min(end));
+        if b <= a {
+            continue;
+        }
+        spans.push((a, b));
+        let secs = days::counted(a, b, &away);
         if secs > 0.0 {
             *by_reason.entry(r.s("needs_reason").filter(|s| !s.is_empty()).unwrap_or("other").to_string()).or_default() += secs;
             *by_task.entry(task).or_default() += secs;
         }
     }
-    let total: f64 = by_task.values().sum();
+    let total: f64 = crate::clock::merge(spans).iter().map(|&(a, b)| days::counted(a, b, &away)).sum();
     let mut tasks: Vec<(i64, f64)> = by_task.into_iter().collect();
     tasks.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     let tasks: Vec<Value> = tasks.into_iter().take(TOP).map(|(t, s)| json!({"task": rf("task", t), "title": title(app, t), "seconds": round1(s)})).collect();

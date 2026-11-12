@@ -90,7 +90,7 @@ const AWAY_BACK_SECS: f64 = 14.0 * 86400.0;
 
 /// The stretches in `[from, to)` that don't count as waiting on the owner, merged and in order: the
 /// Mac asleep, the owner away from it (no input), and outside the work hours when they're on.
-fn away(app: &App, from: f64, to: f64) -> Vec<(f64, f64)> {
+pub(crate) fn away(app: &App, from: f64, to: f64) -> Vec<(f64, f64)> {
     let from = from.max(to - AWAY_BACK_SECS);
     let mut v = clock::away_spans(from, to);
     let h = hours::get(app);
@@ -138,7 +138,7 @@ fn cut(a: f64, b: f64, gaps: &[(f64, f64)]) -> Vec<(f64, f64, bool)> {
 }
 
 /// Seconds of `[a, b)` outside `gaps`.
-fn counted(a: f64, b: f64, gaps: &[(f64, f64)]) -> f64 {
+pub(crate) fn counted(a: f64, b: f64, gaps: &[(f64, f64)]) -> f64 {
     cut(a, b, gaps).iter().filter(|p| !p.2).map(|p| p.1 - p.0).sum()
 }
 
