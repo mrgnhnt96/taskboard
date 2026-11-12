@@ -121,7 +121,8 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
     }
     let mut list = div().flex().flex_col().gap(px(8.)).text_size(px(13.));
     if let Some(n) = fmt::opt_s(&g["devices"], "needs_text") {
-        list = list.child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}")));
+        let from = fmt::opt_s(&g["devices"], "needs_from_project").map(|p| format!(" ({p}'s default)")).unwrap_or_default();
+        list = list.child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}{from}")));
     }
     if let Some(why) = fmt::opt_s(&g["devices"], "empty_why") {
         list = list.child(div().text_size(px(12.)).text_color(t.muted).child(why.to_string()));

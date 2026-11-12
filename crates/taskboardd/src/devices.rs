@@ -31,8 +31,8 @@ pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS devices(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, tags TEXT DEFAULT '[]', focus TEXT, note TEXT,
   off INT DEFAULT 0, created_at TEXT, updated_at TEXT);
--- What a task (T12) or a goal (G3) asks for: [{"tag": "android", "n": 2}]. A task without its own asks for its goal's;
--- a task's [] needs none, whatever its goal asks for.
+-- What a task (T12), a goal (G3) or a project (project:picto) asks for: [{"tag": "android", "n": 2}]. A task without
+-- its own asks for its goal's, else its project's; a task's [] needs none, whatever its goal or project asks for.
 CREATE TABLE IF NOT EXISTS device_needs(owner TEXT PRIMARY KEY, needs TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS device_loans(
   id INTEGER PRIMARY KEY, device TEXT NOT NULL, task_id INT NOT NULL, at TEXT, released_at TEXT);
@@ -237,8 +237,9 @@ fn read_needs(app: &App, owner: &str) -> Result<Option<Vec<Need>>> {
     Ok(Some(clean_needs(Some(&serde_json::from_str::<Value>(&v).unwrap_or(json!([]))))?))
 }
 
-/// What the task asks for: its own needs, else its goal's. A human task asks only for its own: no
-/// agent runs it, so a device lent from its goal's needs would sit unused while agent tasks wait.
+/// What the task asks for: its own needs, else its goal's, else its project's. A human task asks only
+/// for its own: no agent runs it, so a device lent from its goal's needs would sit unused while agent
+/// tasks wait.
 pub fn needs(app: &App, t: &Row) -> Result<Vec<Need>> {
     if let Some(n) = read_needs(app, &rf("task", t.id()))? {
         return Ok(n);
@@ -246,14 +247,58 @@ pub fn needs(app: &App, t: &Row) -> Result<Vec<Need>> {
     if crate::human::is(t) {
         return Ok(vec![]);
     }
-    match t.i("goal_id") {
-        Some(g) => Ok(read_needs(app, &rf("goal", g))?.unwrap_or_default()),
-        None => Ok(vec![]),
+    if let Some(n) = t.i("goal_id").map(|g| read_needs(app, &rf("goal", g))).transpose()?.flatten() {
+        return Ok(n);
     }
+    project_needs(app, t.s("project"))
 }
 
 pub fn goal_needs(app: &App, goal_id: i64) -> Result<Vec<Need>> {
     Ok(read_needs(app, &rf("goal", goal_id))?.unwrap_or_default())
+}
+
+/// A project's device_needs owner: `project:picto`.
+fn project_owner(name: &str) -> String {
+    format!("project:{name}")
+}
+
+/// What a project's tasks ask for when neither they nor their goal say (`tb project set --device`).
+pub fn project_needs(app: &App, name: Option<&str>) -> Result<Vec<Need>> {
+    match name.filter(|n| !n.is_empty()) {
+        Some(n) => Ok(read_needs(app, &project_owner(n))?.unwrap_or_default()),
+        None => Ok(vec![]),
+    }
+}
+
+/// Sets a project's default needs from `body.devices` (when the body has it; none, [] or null: none).
+/// The pool stays one pool: this only says what kind of device its tasks borrow. True when they changed.
+pub fn set_project_needs(app: &App, name: &str, body: &Value) -> Result<bool> {
+    let Some(given) = body.get("devices") else { return Ok(false) };
+    let new = clean_needs(Some(given))?;
+    let owner = project_owner(name);
+    if new == read_needs(app, &owner)?.unwrap_or_default() {
+        return Ok(false);
+    }
+    if new.is_empty() {
+        app.db.x("DELETE FROM device_needs WHERE owner = ?", p![owner])?;
+    } else {
+        app.db.x(
+            "INSERT INTO device_needs(owner, needs) VALUES(?, ?) ON CONFLICT(owner) DO UPDATE SET needs = excluded.needs",
+            p![owner, jdumps(&needs_json(&new))],
+        )?;
+    }
+    // Its unfinished tasks that ask for its need hear the new one, and running ones get what they now ask for.
+    for t in app.db.q("SELECT * FROM tasks WHERE project = ? AND status != 'done'", p![name])? {
+        let goal = t.i("goal_id").map(|g| read_needs(app, &rf("goal", g))).transpose()?.flatten();
+        if crate::human::is(&t) || goal.is_some() || read_needs(app, &rf("task", t.id()))?.is_some() {
+            continue;
+        }
+        board::bump_ctx(app, t.id())?;
+        if is_active(app, t.id())? {
+            relend(app, &t, true)?;
+        }
+    }
+    Ok(true)
 }
 
 /// Sets a task's or goal's needs from `body.devices` (when the body has it); true when they changed.
@@ -280,7 +325,7 @@ pub fn take_needs(app: &App, kind: &str, id: i64, body: &Value, who: &str) -> Re
         )?,
     };
     let text = match &new {
-        None if kind == "task" => "Needs its goal's devices".to_string(),
+        None if kind == "task" => "Needs its goal's or project's devices".to_string(),
         Some(n) if !n.is_empty() => format!("Needs devices: {}", needs_text(n)),
         _ => "Needs no devices".to_string(),
     };
@@ -687,13 +732,25 @@ pub fn overview(app: &App) -> Result<Value> {
                                 "needs": needs_text(&needs(app, &t)?), "why": why}));
         }
     }
-    Ok(json!({"devices": devices, "waiting": waiting}))
+    let mut projects = vec![];
+    for r in app.db.q("SELECT owner FROM device_needs WHERE owner LIKE 'project:%' ORDER BY owner", p![])? {
+        let owner = r.st("owner");
+        let needs = read_needs(app, &owner)?.unwrap_or_default();
+        if !needs.is_empty() {
+            projects.push(json!({"name": owner.trim_start_matches("project:"), "needs": needs_json(&needs), "needs_text": needs_text(&needs)}));
+        }
+    }
+    Ok(json!({"devices": devices, "waiting": waiting, "projects": projects}))
 }
 
 /// A goal page's devices aside: what the goal asks for and the pool, with who has each device.
 /// Empty pools and goals that ask for nothing give null.
 pub fn goal_card(app: &App, goal_id: i64) -> Result<Value> {
-    let needs = goal_needs(app, goal_id)?;
+    // The goal's own needs, else its project's default, which its tasks then ask for.
+    let own = goal_needs(app, goal_id)?;
+    let project = board::find_goal(app, Some(goal_id))?.and_then(|g| g.s("project").map(|s| s.to_string()));
+    let (needs, from_project) = if own.is_empty() { (project_needs(app, project.as_deref())?, project) } else { (own, None) };
+    let from_project = from_project.filter(|_| !needs.is_empty());
     let all = pool(app)?;
     let tasks: Vec<Row> = board::goal_tasks(app, goal_id)?;
     let mut asks = !needs.is_empty();
@@ -728,7 +785,8 @@ pub fn goal_card(app: &App, goal_id: i64) -> Result<Value> {
     } else {
         "None picked yet, so tasks here can use any free device in the pool. Each task gets its own while it runs."
     });
-    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "devices": devices, "lent_here": lent, "pool": mine.len(), "empty_why": empty_why}))
+    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "needs_from_project": from_project,
+              "devices": devices, "lent_here": lent, "pool": mine.len(), "empty_why": empty_why}))
 }
 
 /// Per device, the goal's tasks that have it now, can get it when they start, or had it before, each
@@ -961,14 +1019,18 @@ fn needing(app: &App, d: &Row) -> Result<Vec<(String, Vec<Need>)>> {
     Ok(out)
 }
 
-/// A device_needs owner ("T4", "G2") as a task or goal id.
+/// A device_needs owner ("T4", "G2", "project:picto") as a task or goal id, or a project.
 enum Owner {
     Task(i64),
     Goal(i64),
+    Project,
     Other,
 }
 
 fn owner_of(owner: &str) -> Owner {
+    if owner.starts_with("project:") {
+        return Owner::Project;
+    }
     let id = owner.get(1..).and_then(|n| n.parse().ok());
     match (owner.chars().next(), id) {
         (Some('T'), Some(id)) => Owner::Task(id),
@@ -984,6 +1046,7 @@ fn still_needing(app: &App, owners: &[(String, Vec<Need>)]) -> Result<Vec<String
         let live = match owner_of(owner) {
             Owner::Task(t) => board::find_task(app, Some(t))?.is_some_and(|t| !matches!(t.s("status"), Some("done")) && !t.b("failed")),
             Owner::Goal(g) => board::find_goal(app, Some(g))?.is_some_and(|g| !g.b("archived")),
+            Owner::Project => true,
             Owner::Other => false,
         };
         if live {
@@ -1007,7 +1070,11 @@ fn remove(app: &App, name: &str, body: &Value) -> Result<Value> {
     if !live.is_empty() && !force {
         return err(
             409,
-            format!("{} still {} {dev}. Change what they need first, or remove it anyway with tb device remove {dev} --force, which drops it from their needs.", and_list(&live), if live.len() == 1 { "needs" } else { "need" }),
+            format!(
+                "{} still {} {dev}. Change what they need first, or remove it anyway with tb device remove {dev} --force, which drops it from their needs.",
+                and_list(&live.iter().map(|o| o.replace("project:", "project ")).collect::<Vec<_>>()),
+                if live.len() == 1 { "needs" } else { "need" }
+            ),
         );
     }
     let others: Vec<Row> = pool(app)?.into_iter().filter(|o| o.id() != d.id()).collect();
@@ -1034,7 +1101,7 @@ fn remove(app: &App, name: &str, body: &Value) -> Result<Value> {
                     board::bump_ctx(app, t.id())?;
                 }
             }
-            Owner::Other => {}
+            Owner::Project | Owner::Other => {}
         }
     }
     app.db.x("DELETE FROM devices WHERE id = ?", p![d.id()])?;
