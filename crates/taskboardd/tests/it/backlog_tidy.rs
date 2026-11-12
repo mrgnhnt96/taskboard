@@ -1,5 +1,6 @@
-//! The backlog tidy: on a timer, Claude closes open issues that repeat another or aren't real, and
-//! skips a project with nothing added since its last tidy.
+//! The backlog tidy: on a timer, Claude closes open issues that repeat another or aren't real,
+//! reading the ones read longest ago first, and skips a project with nothing added and no merge
+//! since its last tidy.
 
 use std::sync::Arc;
 
@@ -176,4 +177,78 @@ fn closes_issues_left_in_finished_goals() {
     let states: Vec<String> = [fixed, stale, dup, target, kept].iter().map(|id| b.state(*id)).collect();
     assert_eq!(states, ["drop", "drop", "drop", "open", "open"], "issues in a finished or archived goal close; a running goal's stay");
     assert!(b.log(target).iter().any(|l| l == &format!("The backlog tidy closed B{dup} as a duplicate of this")));
+}
+
+impl Board {
+    /// Runs git in the project's checkout.
+    fn git(&self, args: &[&str]) {
+        let repo = self.dir.path().join("webapp");
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    /// A commit on the checkout's main, as a merged PR leaves.
+    fn merge(&self, what: &str) {
+        self.git(&["commit", "-q", "--allow-empty", "-m", what]);
+    }
+}
+
+#[test]
+fn tidies_again_once_main_moves() {
+    let b = board();
+    b.git(&["init", "-q", "-b", "main"]);
+    b.merge("first");
+    let id = b.issue("Runner drops the last line of output");
+    tidy::tick(&b.app).unwrap();
+    assert!(!b.calls().is_empty(), "the first tidy reads the backlog");
+
+    b.time_passes();
+    tidy::tick(&b.app).unwrap();
+    assert!(b.calls().is_empty(), "nothing added and main where it was: skipped");
+
+    b.merge("Merge pull request #2: flush the last line");
+    tidy::tick(&b.app).unwrap();
+    assert!(b.calls().is_empty(), "main moved, but not a day since the last tidy");
+
+    b.time_passes();
+    tidy::tick(&b.app).unwrap();
+    let prompt = b.calls();
+    assert!(prompt.contains(&format!("B{id} [bug]")), "main moved: the issue is read again against the new code: {prompt}");
+    assert!(prompt.contains("read it again"), "{prompt}");
+
+    b.time_passes();
+    tidy::tick(&b.app).unwrap();
+    assert!(b.calls().is_empty(), "main hasn't moved since that tidy");
+}
+
+#[test]
+fn reads_the_issues_read_longest_ago_first() {
+    let b = board();
+    let ids: Vec<i64> = (1..=152)
+        .map(|n| {
+            b.app.db.x("INSERT INTO issues(project, kind, title, state) VALUES('webapp', 'bug', ?, 'open')", p![format!("Problem {n}")]).unwrap();
+            b.app.db.q("SELECT MAX(id) AS id FROM issues", p![]).unwrap()[0].i0("id")
+        })
+        .collect();
+    let read = |prompt: &str| -> Vec<bool> { ids.iter().map(|id| prompt.contains(&format!("B{id} [bug]"))).collect() };
+    let tidied = |id: i64| b.app.db.q("SELECT tidied_at FROM issues WHERE id = ?", p![id]).unwrap()[0].s("tidied_at").map(str::to_string);
+
+    b.post("/backlog/tidy", json!({"now": true}));
+    let first = read(&b.calls());
+    assert_eq!(first.iter().filter(|r| **r).count(), 150, "at most 150 issues a tidy");
+    assert!(!first[0] && !first[1] && first[2..].iter().all(|r| *r), "never read, newest first");
+    assert!(tidied(ids[0]).is_none() && tidied(ids[2]).is_some(), "each issue read is marked");
+
+    b.app.db.x("UPDATE issues SET tidied_at = '2020-01-01T00:00:00Z' WHERE id IN (?, ?, ?)", p![ids[2], ids[3], ids[4]]).unwrap();
+    b.post("/backlog/tidy", json!({"now": true}));
+    let second = read(&b.calls());
+    assert!(second[..5].iter().all(|r| *r), "the two never read, then the three read longest ago");
+    assert!(!second[5] && !second[6], "the rest by newest, up to 150: {second:?}");
+    assert!(tidied(ids[0]).is_some(), "every issue read once over two tidies");
 }
