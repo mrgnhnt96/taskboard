@@ -1,5 +1,6 @@
 //! #795: the comment guard on `tb pr wait` judges the PR's own diff, merge-base(base, head)..head,
 //! whatever branch the task's old checkout is on now. #920, #921: with the base at its current tip.
+//! #962: still so when the board can't fetch the base and the host's base SHA predates the move.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::prhost::{self, FakeHost, Record};
 use taskboardd::util::ApiError;
-use taskboardd::{midna, prflow, reports};
+use taskboardd::{midna, p, prflow, reports};
 
 const PR: &str = "https://bitbucket.org/acme/webapp/pull-requests/9";
 
@@ -111,7 +112,7 @@ impl Board {
 
 /// #920, #921: `feat`'s PR goes into `parent`, which is then rebased onto a `main` that gained a
 /// comment. `feat` follows with `rebase --onto` and pushes; the host still has both old SHAs.
-fn stacked_then_base_moved() -> (Board, i64) {
+fn stacked_then_base_moved() -> (Board, i64, String) {
     let dir = tempfile::tempdir().unwrap();
     let origin = dir.path().join("origin.git");
     git(dir.path(), &["init", "-q", "--bare", "-b", "main", &origin.to_string_lossy()]);
@@ -139,7 +140,7 @@ fn stacked_then_base_moved() -> (Board, i64) {
     git(&repo, &["switch", "-q", "feat"]);
     git(&repo, &["rebase", "-q", "--onto", "origin/parent", &old_parent, "feat"]);
     git(&repo, &["push", "-q", "-f", "origin", "feat"]);
-    (b, id)
+    (b, id, old_parent)
 }
 
 #[test]
@@ -172,7 +173,7 @@ fn tb_pr_wait_refuses_a_comment_the_pr_adds_even_when_pushed_from_another_checko
 
 #[test]
 fn tb_pr_wait_judges_a_stacked_pr_against_its_bases_current_tip_after_the_base_moves() {
-    let (b, id) = stacked_then_base_moved();
+    let (b, id, _) = stacked_then_base_moved();
     b.pr_wait(id).unwrap_or_else(|e| panic!("the PR's own lines add no comments: {}", e.message));
 
     git(&b.repo(), &["switch", "-q", "--detach", "main"]);
@@ -181,7 +182,7 @@ fn tb_pr_wait_judges_a_stacked_pr_against_its_bases_current_tip_after_the_base_m
 
 #[test]
 fn tb_pr_wait_still_refuses_a_stacked_prs_own_comment_after_the_base_moves() {
-    let (b, id) = stacked_then_base_moved();
+    let (b, id, _) = stacked_then_base_moved();
     commit(&b.repo(), "b.rs", "// explains b\nfn b() {}\n");
     git(&b.repo(), &["push", "-q", "origin", "feat"]);
     git(&b.repo(), &["switch", "-q", "--detach", "main"]);
@@ -190,4 +191,32 @@ fn tb_pr_wait_still_refuses_a_stacked_prs_own_comment_after_the_base_moves() {
     assert_eq!(e.status, 409);
     assert!(e.message.contains("this PR adds a code comment") && e.message.contains("b.rs:1"), "{}", e.message);
     assert!(!e.message.contains("base note"), "main's comment came in with the base, not the PR: {}", e.message);
+}
+
+/// The board's daemon can't reach origin: the fetch fails, leaving what the checkout already has.
+fn origin_unreachable(b: &Board) {
+    let gone = b.dir.path().join("gone.git");
+    git(&b.repo(), &["remote", "set-url", "origin", &gone.to_string_lossy()]);
+}
+
+#[test]
+fn tb_pr_wait_judges_a_moved_base_at_the_tip_the_checkout_has_when_the_fetch_fails() {
+    let (b, id, _) = stacked_then_base_moved();
+    origin_unreachable(&b);
+
+    b.pr_wait(id).unwrap_or_else(|e| panic!("the host's base SHA predates the move, so main's comment isn't the PR's: {}", e.message));
+}
+
+#[test]
+fn tb_pr_wait_judges_a_moved_base_at_the_head_the_board_saw_on_its_parent() {
+    let (b, id, old_parent) = stacked_then_base_moved();
+    let new_parent = git(&b.repo(), &["rev-parse", "origin/parent"]);
+    git(&b.repo(), &["update-ref", "refs/remotes/origin/parent", &old_parent]);
+    origin_unreachable(&b);
+    let parent = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Parent", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let flow = json!({"head": new_parent, "rec": {"branch": "parent", "head": new_parent}}).to_string();
+    b.app.db.x("UPDATE tasks SET status = 'done', pr_state = 'OPEN', pr_flow = ? WHERE id = ?", p![flow, parent]).unwrap();
+    b.app.db.x("UPDATE tasks SET waits_for = ? WHERE id = ?", p![json!([parent]).to_string(), id]).unwrap();
+
+    b.pr_wait(id).unwrap_or_else(|e| panic!("the board saw parent move, so main's comment isn't the PR's: {}", e.message));
 }
