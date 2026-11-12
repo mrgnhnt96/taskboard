@@ -47,6 +47,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
         }
         crate::midna::task_changed(app, &before, &after)?;
         crate::midna::panel_changed(app, &before, &after)?;
+        crate::fixes::on_change(app, &before, &after)?;
         if let (Some(g), false) = (goal, goal_was_finished) {
             if goal_finished(app, g)? {
                 on_goal_finished(app, g, Some(&after))?;

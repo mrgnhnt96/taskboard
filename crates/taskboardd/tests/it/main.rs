@@ -29,6 +29,7 @@ mod design_tasks;
 mod device_fields;
 mod done_leftovers;
 mod doneword;
+mod done_fixes;
 mod duplicate_visits;
 mod feed;
 mod flow;

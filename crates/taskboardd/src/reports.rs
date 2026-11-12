@@ -2086,6 +2086,7 @@ fn on_done(r: &mut Report) -> Result<Value> {
         board::update_task(r.app, t.id(), fields!["no_evidence" => no_evidence])?;
         r.log(t.id(), "status", &format!("No evidence: {no_evidence}"), None)?;
     }
+    crate::fixes::record(r.app, &t, &crate::fixes::named(&r.body)?, &r.name())?;
     let pr = if no_pr.is_empty() { pr } else { None };
     if let Some(pr) = pr {
         if !prflow::link_pr(r.app, &t, &pr, &r.name())? && !pr_arg.is_empty() {
@@ -2179,6 +2180,11 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
                 ),
             );
         }
+    }
+    let fixes = crate::fixes::named(&r.body)?;
+    crate::fixes::check(app, t, &fixes)?;
+    if fixes.is_empty() && !r.spooled {
+        crate::fixes::ask_once(app, t, r.cwd.as_deref())?;
     }
     // A design task's design is what it delivers: it needs one attached, and no evidence of building to it.
     if crate::design::is(t) {

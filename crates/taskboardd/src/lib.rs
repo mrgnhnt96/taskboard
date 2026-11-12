@@ -35,6 +35,7 @@ pub mod digest;
 pub mod dispatch;
 pub mod export;
 pub mod feed;
+pub mod fixes;
 pub mod gitattrs;
 pub mod handoff;
 pub mod hooks;
