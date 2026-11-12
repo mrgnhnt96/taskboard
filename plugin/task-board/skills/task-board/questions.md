@@ -13,6 +13,8 @@ Ask the owner only about what the work should do. Make routine calls yourself, n
 
 Still the owner's call? `tb question "<the question>"`, then stop. When it has a few likely answers, give each as `--option "<label>: <what it means>"` (up to 8), so the owner answers with one click; keep labels short.
 
+Never ask the owner something in the middle of a reply: the board reads only its end, so the question never reaches them. Use `tb question`, or put it in the reply's last paragraph under a Questions heading.
+
 Keep it short; the owner reads it in a small banner. The question is one or two sentences: the decision itself, plus the one fact that makes it a decision. Leave out the task's background, how the code works and what you've tried; that's in the task. Each option's meaning is one short clause. The same goes for Claude's question picker (`AskUserQuestion`): the board shows it the same way. The board may check it against the owner's rules, the task and the goal first. If it prints an answer, the question never reached the owner: follow the answer and carry on. If the answer really doesn't fit, ask again and say why.
 
 Got the answer some other way after asking (the owner said it in the terminal, or you found it)? `tb withdraw "<how it got answered>"` takes the question back, so the task stops waiting on the owner. Carry on with the work.
