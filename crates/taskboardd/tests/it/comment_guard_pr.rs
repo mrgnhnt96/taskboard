@@ -1,6 +1,7 @@
 //! #795: the comment guard on `tb pr wait` judges the PR's own diff, merge-base(base, head)..head,
 //! whatever branch the task's old checkout is on now. #920, #921: with the base at its current tip.
 //! #962: still so when the board can't fetch the base and the host's base SHA predates the move.
+//! #977: and when the stacked base is far behind `main` and the branch was rebased onto `main`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -219,4 +220,67 @@ fn tb_pr_wait_judges_a_moved_base_at_the_head_the_board_saw_on_its_parent() {
     b.app.db.x("UPDATE tasks SET waits_for = ? WHERE id = ?", p![json!([parent]).to_string(), id]).unwrap();
 
     b.pr_wait(id).unwrap_or_else(|e| panic!("the board saw parent move, so main's comment isn't the PR's: {}", e.message));
+}
+
+/// #977: `feat`'s PR goes into `parent`, which was cut before `main` gained a comment and never
+/// rebased. `feat` is rebased onto `main` for code that landed there, so it holds `main`'s comment
+/// though neither `feat` nor `parent` added it.
+fn stacked_on_a_stale_base() -> (Board, i64, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin.git");
+    git(dir.path(), &["init", "-q", "--bare", "-b", "main", &origin.to_string_lossy()]);
+    let repo = dir.path().join("webapp");
+    clone(&origin, &repo);
+    commit(&repo, "a.rs", "fn a() {}\n");
+    git(&repo, &["push", "-q", "-u", "origin", "main"]);
+    git(&repo, &["switch", "-q", "-c", "parent"]);
+    let parent = commit(&repo, "parent.rs", "fn parent() {}\n");
+    git(&repo, &["push", "-q", "-u", "origin", "parent"]);
+    git(&repo, &["switch", "-q", "main"]);
+    commit(&repo, "new.rs", "// a new base note\nfn new() {}\n");
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["switch", "-q", "-c", "feat", "parent"]);
+    commit(&repo, "b.rs", "fn b() {}\n");
+    git(&repo, &["rebase", "-q", "main"]);
+    git(&repo, &["push", "-q", "-u", "origin", "feat"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+
+    let b = board(dir);
+    let id = b.hand_in();
+    b.pr_into("parent", &head, &parent);
+    (b, id, head)
+}
+
+#[test]
+fn tb_pr_wait_leaves_out_what_main_has_when_a_stacked_base_is_behind_it() {
+    let (b, id, _) = stacked_on_a_stale_base();
+    b.pr_wait(id).unwrap_or_else(|e| panic!("main's comment was reviewed on main, not in this PR: {}", e.message));
+
+    git(&b.repo(), &["switch", "-q", "--detach", "main"]);
+    b.pr_wait(id).unwrap_or_else(|e| panic!("judged from another checkout too: {}", e.message));
+}
+
+#[test]
+fn tb_pr_wait_still_refuses_a_stacked_prs_own_comment_when_its_base_is_behind_main() {
+    let (b, id, _) = stacked_on_a_stale_base();
+    commit(&b.repo(), "b.rs", "// explains b\nfn b() {}\n");
+    git(&b.repo(), &["push", "-q", "origin", "feat"]);
+    git(&b.repo(), &["switch", "-q", "--detach", "main"]);
+
+    let e = b.pr_wait(id).unwrap_err();
+    assert_eq!(e.status, 409);
+    assert!(e.message.contains("this PR adds a code comment") && e.message.contains("b.rs:1"), "{}", e.message);
+    assert!(!e.message.contains("base note"), "main's comment isn't the PR's: {}", e.message);
+}
+
+#[test]
+fn a_branch_stacked_on_a_base_behind_main_is_judged_from_mains_fork() {
+    let (b, _, _) = stacked_on_a_stale_base();
+    let cfg = &b.app.cfg.comments;
+    let repo = b.repo().to_string_lossy().to_string();
+    assert!(taskboardd::comments::branch_adds(cfg, &repo, Some("parent")).is_empty(), "main's comment isn't the branch's");
+
+    commit(&b.repo(), "b.rs", "// explains b\nfn b() {}\n");
+    let found = taskboardd::comments::branch_adds(cfg, &repo, Some("parent"));
+    assert_eq!(found.len(), 1, "only the branch's own comment counts");
 }

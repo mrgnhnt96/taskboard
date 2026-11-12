@@ -560,7 +560,7 @@ pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&st
 /// The branches a task's branch may have forked from. A PR base (the unmerged parent's branch, with the
 /// last head the board saw on it, else the one the task or its goal is set to) is the only one; without
 /// one, the base its slot started at, its goal's worktree base and the repo's default branch, nearest
-/// first when judged.
+/// first when judged. `fork_point` judges the default branch's fork alongside them either way.
 fn guard_bases(app: &crate::app::App, t: &crate::util::Row) -> crate::util::Result<Vec<String>> {
     if let Some(b) = crate::stack::base_branch(app, t)? {
         let known = known_tips(app, t, &b)?;
@@ -628,7 +628,7 @@ fn pr_side(rec: &Value, key: &str) -> String {
 }
 
 /// The comments the PR in `rec` (`pr_flow.rec`) adds: `merge-base(base, head)..head`, the diff the PR
-/// shows, read in the first of `dirs` that has its commits. `known` holds tips the board saw on the base
+/// shows, or from the default branch's fork when that is nearer the head (see `fork_point`), read in the first of `dirs` that has its commits. `known` holds tips the board saw on the base
 /// since the host last read the PR. A checkout on the PR's branch counts its uncommitted work too.
 pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value, known: &[String]) -> Vec<Found> {
     if !c.guard {
@@ -650,7 +650,9 @@ fn pr_diff(git: &Git, dir: &str, rec: &Value, known: &[String]) -> Option<(Optio
     let here = git.run(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).is_some_and(|b| b.trim() == branch);
     let h = if here { "HEAD".to_string() } else { tip(git, dir, &branch, &pr_side(rec, "head"))? };
     let tips: Vec<String> = known.iter().cloned().chain([pr_side(rec, "base_head")]).collect();
-    let fork = nearest_fork(git, dir, &base, &tips, &h)?;
+    let on_base = nearest_fork(git, dir, &base, &tips, &h);
+    let on_default = default_branch(git, dir).filter(|d| bare(d) != bare(&base)).and_then(|d| nearest_fork(git, dir, &d, &[], &h));
+    let fork = nearest(git, dir, on_base.into_iter().chain(on_default), &h)?;
     let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", fork.as_str()];
     if !here {
         args.push(&h);
@@ -667,23 +669,36 @@ fn tip(git: &Git, dir: &str, branch: &str, recorded: &str) -> Option<String> {
     git.commit(dir, &order)
 }
 
-/// Where the branch at `dir` forked from the nearest of `bases` (the branches its PR may go into),
-/// each fetched first; else from its default branch.
+/// Where the branch at `dir` forked from the nearest of `bases` (the branches its PR may go into) and
+/// its default branch, each fetched first. A stacked base far behind the default branch, with the
+/// branch rebased onto the default branch, forks before every commit the default branch gained since;
+/// those were reviewed where they landed, so the default branch's fork wins when it is nearer.
 fn fork_point(git: &Git, dir: &str, bases: &[String]) -> Option<String> {
-    let forks: Vec<String> = bases.iter().filter(|b| !b.is_empty()).filter_map(|b| nearest_fork(git, dir, b, &[], "HEAD")).collect();
-    if let Some(f) = forks.into_iter().min_by_key(|f| commits_past(git, dir, f, "HEAD")) {
-        return Some(f);
+    let default = default_branch(git, dir);
+    let mut names: Vec<&str> = vec![];
+    for b in bases.iter().map(String::as_str).chain(default.as_deref()).filter(|b| !b.is_empty()) {
+        if !names.iter().any(|n| bare(n) == bare(b)) {
+            names.push(b);
+        }
     }
-    let mut names = vec![];
-    if let Some(h) = git.run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
-        names.push(h.trim().to_string());
-    }
-    names.extend(["origin/main", "origin/master", "main", "master"].iter().map(|s| s.to_string()));
-    names.into_iter().filter(|b| !b.is_empty()).find_map(|b| merge_base(git, dir, &b))
+    let forks: Vec<String> = names.iter().filter_map(|b| nearest_fork(git, dir, b, &[], "HEAD")).collect();
+    nearest(git, dir, forks, "HEAD")
 }
 
-fn merge_base(git: &Git, dir: &str, of: &str) -> Option<String> {
-    git.run(dir, &["merge-base", "HEAD", of]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+/// The repo's default branch as git in `dir` knows it: origin's HEAD, else `main` or `master`.
+fn default_branch(git: &Git, dir: &str) -> Option<String> {
+    let head = git.run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).map(|h| h.trim().to_string());
+    let names = head.into_iter().chain(["origin/main", "origin/master", "main", "master"].map(String::from));
+    names.filter(|n| !n.is_empty()).find(|n| git.commit(dir, std::slice::from_ref(n)).is_some())
+}
+
+fn bare(branch: &str) -> &str {
+    branch.strip_prefix("origin/").unwrap_or(branch)
+}
+
+/// The one of `forks` that `head` has the fewest commits past.
+fn nearest(git: &Git, dir: &str, forks: impl IntoIterator<Item = String>, head: &str) -> Option<String> {
+    forks.into_iter().min_by_key(|f| commits_past(git, dir, f, head))
 }
 
 /// Where `head` forked from `base` (`release/x`, `origin/release/x` or a commit), judged against every
@@ -692,7 +707,7 @@ fn merge_base(git: &Git, dir: &str, of: &str) -> Option<String> {
 /// before the move forks far back, and every commit the new base brought in would count as the
 /// branch's own; a fetch that fails or times out must not leave such a tip to decide.
 fn nearest_fork(git: &Git, dir: &str, base: &str, known: &[String], head: &str) -> Option<String> {
-    let name = base.strip_prefix("origin/").unwrap_or(base);
+    let name = bare(base);
     if !name.is_empty() && !is_sha(name) {
         git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", name], FETCH_SECS);
     }
@@ -705,7 +720,7 @@ fn nearest_fork(git: &Git, dir: &str, base: &str, known: &[String], head: &str) 
             forks.push(f);
         }
     }
-    forks.into_iter().min_by_key(|f| commits_past(git, dir, f, head))
+    nearest(git, dir, forks, head)
 }
 
 /// How many commits `head` has past `fork`; the most there can be when git can't count them.
