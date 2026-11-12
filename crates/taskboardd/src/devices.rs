@@ -1218,24 +1218,27 @@ fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<String> {
     out
 }
 
-/// The handoff's line about the devices lent to the task, how to start and stop each, and which
-/// devices other tasks have. Lent devices are described from their own rows (as the Python board
-/// did from the task's loans), so one reserved for another goal since it was lent keeps its details.
-/// A task that needs devices but has none still hears which ones to leave alone. `starting`: the
-/// handoff it starts with (it has started, though `started_at` isn't set yet).
-/// A task that asks for no devices, while the pool has some: how to get one rather than grabbing one.
+/// A task that asks for no devices, while the pool has some: never hunt for or boot one (pool
+/// devices stay shut down until lent, so a search finds nothing), ask the board for one instead.
 fn pick_none_line(app: &App, t: &Row) -> Result<Vec<String>> {
     if pool(app)?.is_empty() {
         return Ok(vec![]);
     }
     let tb = board::tb_cmd(app);
     Ok(vec![format!(
-        "If this task needs an emulator, simulator or phone, don't pick one yourself: run {tb} task set {} --device tag:<tag> \
-         ({tb} devices lists them) and the board lends you a free one that no other terminal is using.",
+        "Never look for, start or boot an emulator, simulator or phone yourself (no adb devices, xcrun simctl or emulator \
+         commands): the board's devices stay shut down until it lends one. If this task needs one, run {tb} task set {} \
+         --device tag:<tag> ({tb} devices lists the tags) and the board lends you a free one and says how to start it. \
+         Otherwise don't use any.",
         rf("task", t.id())
     )])
 }
 
+/// The handoff's line about the devices lent to the task, how to start and stop each, and which
+/// devices other tasks have. Lent devices are described from their own rows (as the Python board
+/// did from the task's loans), so one reserved for another goal since it was lent keeps its details.
+/// A task that needs devices but has none still hears which ones to leave alone. `starting`: the
+/// handoff it starts with (it has started, though `started_at` isn't set yet).
 pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> {
     let names = lent(app, t.id())?;
     if names.is_empty() {
