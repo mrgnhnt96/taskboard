@@ -141,6 +141,10 @@ enum Cmd {
         /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d. The Days page compares it with the agent's time
         #[arg(long)]
         human: Option<String>,
+        /// A backlog issue this work fixed (repeat for each): it closes as fixed when the PR merges, or as the task
+        /// finishes with no PR
+        #[arg(long = "fixes", value_name = "B<n>")]
+        fixes: Vec<String>,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -6005,8 +6009,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Withdraw { why, t } => c.run_report("tb.withdraw", json!({"why": why}), t.task, true, |v| {
             format!("Withdrew the question on {}; it's no longer waiting on {}.", v["task"].as_str().unwrap_or("the task"), c.cfg.owner)
         }),
-        Cmd::Submit { summary, pr, pr_body, pr_title, pr_branch, pr_base, no_pr, no_evidence, merged_note, human, t } => {
-            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
+        Cmd::Submit { summary, pr, pr_body, pr_title, pr_branch, pr_base, no_pr, no_evidence, merged_note, human, fixes, t } => {
+            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note,
+                               "fixes": issue_refs(&fixes)?});
+            let closes = match issue_refs(&fixes)? {
+                f if f.is_empty() => String::new(),
+                f => format!(" {} close{} as fixed once it ships.", f.join(", "), if f.len() == 1 { "s" } else { "" }),
+            };
             let Some(file) = pr_body else {
                 // The board runs the task.finishing hooks and checks the diff before it answers.
                 let task = t.task.map(|x| task_ref(&x)).transpose()?;
@@ -6014,7 +6023,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     None => out(SAVED),
                     Some(v) if !v["task"].is_string() => out(NO_TASK),
                     Some(v) if v["code_review"] == true => out(v["message"].as_str().unwrap_or("")),
-                    Some(v) => out(&format!("{} is submitted.{}", v["task"].as_str().unwrap_or(""), then_next(&v))),
+                    Some(v) => out(&format!("{} is submitted.{closes}{}", v["task"].as_str().unwrap_or(""), then_next(&v))),
                 }
                 return Ok(0);
             };
@@ -6048,7 +6057,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             }
             let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
-            out(&format!("{} is submitted.{pr}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
+            out(&format!("{} is submitted.{pr}{closes}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
             Ok(0)
         }
         Cmd::Fail { reason, t } => {
@@ -9432,6 +9441,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--title", "Add x"]).is_err());
         assert!(Cli::try_parse_from(["tb", "done", "x", "--no-pr", "covered by T3"]).is_ok(), "tb done still works for agents on an older handoff");
+        match Cli::try_parse_from(["tb", "submit", "x", "--fixes", "B3", "--fixes", "b4", "--no-pr", "why"]).unwrap().cmd {
+            Cmd::Submit { fixes, .. } => assert_eq!(issue_refs(&fixes).unwrap(), vec!["B3", "B4"]),
+            _ => panic!("not a submit"),
+        }
+        assert!(issue_refs(&["T3".to_string()]).is_err(), "--fixes takes backlog issues only");
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "fixed", "--commit", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "gone"]).is_err());
         assert!(Cli::try_parse_from(["tb", "step", "again", "Review"]).is_ok());
