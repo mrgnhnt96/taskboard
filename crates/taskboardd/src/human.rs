@@ -164,7 +164,7 @@ fn mark_done(app: &App, t: &Row, note: &str, by: &str) -> Result<()> {
 
 /// `POST /humans/done` (`tb needs done H3 H4`): the owner's Done on human tasks `tasks`, told to the agent
 /// in terminal `via_session`, with an optional `note` for each. `word` is the owner's word there that a task
-/// is done (`startword::owners_done_word`). Every task must be an open human task with that word, or none
+/// is done (`doneword::owners_word`). Every task must be an open human task with that word, or none
 /// is marked done; each that is goes as Done in the app does.
 pub fn done_on_word(app: &App, body: &Value, word: impl Fn(&str, i64) -> Result<Option<String>>) -> Result<Vec<String>> {
     let via = body_str(body, "via_session");

@@ -122,6 +122,7 @@ pub mod stack;
 pub mod stack_drop;
 pub mod suggest;
 pub mod startwatch;
+pub mod doneword;
 pub mod startword;
 pub mod statusbar;
 pub mod stream;
