@@ -1734,6 +1734,74 @@ fn a_restart_rebases_a_clean_unpushed_branch_onto_the_base() {
     assert!(b.card(one)["log"].to_string().contains("Rebased feature/one in slot-1 onto origin/main: it was 1 commit behind origin/main"), "{}", b.card(one)["log"]);
 }
 
+fn slot_of(b: &Board, t: i64) -> String {
+    b.app.db.q1("SELECT path FROM worktree_slots WHERE task_id = ?", p![t]).unwrap().unwrap().st("path")
+}
+
+fn commit_file(dir: &Path, file: &str) {
+    std::fs::write(dir.join(file), format!("{file}\n")).unwrap();
+    git(dir, &["add", file]);
+    git(dir, &["commit", "-q", "-m", &format!("Add {file}")]);
+}
+
+/// Two head-merges into One's branch: its slot was taken at origin/main (One's branch wasn't pushed
+/// yet), and its own branch, unpushed, sits on One's. One's PR is open. Main then moves on.
+fn head_merge_child(b: &Board, push_parent: bool) -> (String, i64, String) {
+    git_repo(b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    let two = b.task("Two", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    let (one_dir, two_dir) = (slot_of(b, one), slot_of(b, two));
+    let (one_at, two_at) = (Path::new(&one_dir), Path::new(&two_dir));
+    git(one_at, &["switch", "-q", "-c", "feature/one"]);
+    commit_file(one_at, "one.txt");
+    let flow = json!({"rec": {"branch": "feature/one"}}).to_string();
+    b.app.db.x("UPDATE tasks SET status = 'done', pr_num = 1, pr_state = 'OPEN', pr_flow = ? WHERE id = ?", p![flow, one]).unwrap();
+    b.app.db.x("UPDATE tasks SET pr_after = ?, stack_merge = 'head' WHERE id = ?", p![one, two]).unwrap();
+    if push_parent {
+        git(one_at, &["push", "-q", "origin", "feature/one"]);
+        git(two_at, &["fetch", "-q", "origin"]);
+        git(two_at, &["switch", "-q", "-c", "feature/two", "--no-track", "origin/feature/one"]);
+    } else {
+        git(two_at, &["switch", "-q", "-c", "feature/two", "feature/one"]);
+    }
+    commit_file(two_at, "two.txt");
+    advance_main(b, "later.txt", "from main\n");
+    (one_dir, two, two_dir)
+}
+
+#[test]
+fn a_restart_rebases_a_head_merge_task_onto_its_parent_s_branch_not_the_default() {
+    let b = new_board();
+    let (one_dir, two, dir) = head_merge_child(&b, true);
+    let d = Path::new(&dir);
+    commit_file(Path::new(&one_dir), "one-more.txt");
+    git(Path::new(&one_dir), &["push", "-q", "origin", "feature/one"]);
+
+    lose_and_restart(&b, two);
+    assert_eq!(b.start_job(two).st("cwd"), dir, "started again in its slot");
+    assert_eq!(git(d, &["merge-base", "HEAD", "origin/feature/one"]), git(d, &["rev-parse", "origin/feature/one"]), "on top of its parent's branch");
+    assert_eq!(git(d, &["rev-list", "--count", "origin/feature/one..HEAD"]), "1", "its commit kept");
+    assert_ne!(git(d, &["merge-base", "HEAD", "origin/main"]), git(d, &["rev-parse", "origin/main"]), "never moved onto main");
+    let log = b.card(two)["log"].to_string();
+    assert!(log.contains("Rebased feature/two in slot-2 onto origin/feature/one: it was 1 commit behind origin/feature/one"), "{log}");
+}
+
+#[test]
+fn a_restart_leaves_a_head_merge_task_alone_while_its_parent_s_branch_isn_t_pushed() {
+    let b = new_board();
+    let (_, two, dir) = head_merge_child(&b, false);
+    let d = Path::new(&dir);
+    let before = git(d, &["rev-parse", "HEAD"]);
+
+    lose_and_restart(&b, two);
+    assert_eq!(b.start_job(two).st("cwd"), dir, "started again in its slot");
+    assert_eq!(git(d, &["rev-parse", "HEAD"]), before, "left as it was");
+    assert!(!b.card(two)["log"].to_string().contains("onto origin/main"), "{}", b.card(two)["log"]);
+}
+
 #[test]
 fn a_task_holding_extra_slots_gives_back_clean_ones_and_gets_a_terminal_for_the_rest() {
     let b = new_board();
