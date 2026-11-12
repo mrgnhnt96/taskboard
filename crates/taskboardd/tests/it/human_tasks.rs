@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query, FROM};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{Row, RowExt};
-use taskboardd::{board, dispatch, midna, p, reports, runner};
+use taskboardd::{board, dispatch, human, midna, p, reports, runner};
 
 struct Board {
     app: Arc<App>,
@@ -160,6 +160,62 @@ fn only_the_app_marks_it_done() {
     assert_eq!(card["status"], "done");
     assert_eq!(card["owner_note"], "Tenancy acme-dev, region us-ashburn-1");
     assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != format!("human-{}", id_of(&h))), "its alert is cleared");
+}
+
+/// The owner's word that a task is done, for every task in `said`.
+fn said(said: &[i64]) -> impl Fn(&str, i64) -> taskboardd::util::Result<Option<String>> + '_ {
+    move |_, id| Ok(said.contains(&id).then(|| "mark them done".to_string()))
+}
+
+#[test]
+fn an_agent_marks_human_tasks_done_only_on_the_owners_word_all_or_none() {
+    let b = new_board();
+    b.session("s1");
+    let (one, two) = (b.human("s1", json!({})), b.human("s1", json!({"title": "Sign the agreement"})));
+    let (a, z) = (id_of(&one), id_of(&two));
+    runner::start_queued(&b.app).unwrap();
+    let body = json!({"tasks": [one, two], "via_session": "s1", "note": "Both handled"});
+
+    let (status, msg) = b.post("humans/done", json!({"tasks": [one]})).unwrap_err();
+    assert_eq!(status, 403, "no terminal is no one's word: {msg}");
+    let (status, msg) = b.post("humans/done", body.clone()).unwrap_err();
+    assert_eq!(status, 403, "nobody said so in s1: {msg}");
+    assert!(msg.contains(&format!("{one}, {two} are done")) && msg.contains("none was marked"), "{msg}");
+    let (status, msg) = human::done_on_word(&b.app, &body, said(&[a])).map_err(|e| (e.status, e.message)).unwrap_err();
+    assert_eq!(status, 403);
+    assert!(msg.contains(&format!("said {two} is done")) && !msg.contains(&format!("{one},")), "it names only the one not said: {msg}");
+    let task = b.task("Deploy");
+    let (status, _) = human::done_on_word(&b.app, &json!({"tasks": [one, format!("T{task}")], "via_session": "s1"}), said(&[a, task])).map_err(|e| (e.status, e.message)).unwrap_err();
+    assert_eq!(status, 409, "an agent task isn't the owner's to-do");
+    assert!([a, z].iter().all(|&id| b.row(id).st("status") == "needs"), "none was marked done");
+
+    let done = human::done_on_word(&b.app, &body, said(&[a, z])).unwrap();
+    assert_eq!(done, vec![one.clone(), two.clone()]);
+    for id in [a, z] {
+        let card = b.get(&format!("tasks/H{id}"));
+        assert_eq!(card["status"], "done");
+        assert_eq!(card["owner_note"], "Both handled");
+        assert!(dispatch::alerts(&b.app).iter().all(|x| x["key"] != format!("human-{id}")), "its alert is cleared");
+    }
+    let (status, msg) = human::done_on_word(&b.app, &body, said(&[a, z])).map_err(|e| (e.status, e.message)).unwrap_err();
+    assert_eq!(status, 409);
+    assert!(msg.contains("already done"), "{msg}");
+}
+
+#[test]
+fn a_task_waiting_on_one_an_agent_marked_done_carries_on() {
+    let b = new_board();
+    let two = b.task("Deploy to Oracle Cloud");
+    b.session("s2");
+    b.report("tb.take", "s2", json!({"task": format!("T{two}")})).unwrap();
+    let h = b.human("s2", json!({}));
+    assert_eq!(b.report("tb.wait_for", "s2", json!({"tasks": [h.clone()], "why": "Needs the account"})).unwrap()["parked"], true);
+    b.session("s3");
+
+    human::done_on_word(&b.app, &json!({"tasks": [h], "via_session": "s3", "note": "Tenancy acme-dev"}), said(&[id_of(&h)])).unwrap();
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two]);
+    let prompt = board::job_args(&b.starts(two)[0]).st("prompt");
+    assert!(prompt.contains(&format!("{h} “Create an Oracle Cloud account” is done")) && prompt.contains("Tenancy acme-dev"), "{prompt}");
 }
 
 #[test]

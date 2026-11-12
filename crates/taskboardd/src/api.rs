@@ -296,6 +296,10 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "pick"]) => pick(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "did"]) => owner_did(app, tid(id)?, query, body),
+        ("POST", ["humans", "done"]) => {
+            let done = crate::human::done_on_word(app, body, |via, id| crate::startword::owners_done_word(app, via, id))?;
+            Ok(json!({"done": done}))
+        }
         ("POST", ["tasks", id, "owner-answer"]) => {
             let id = tid(id)?;
             crate::human::answer(app, id, body)?;

@@ -1663,7 +1663,8 @@ enum TaskCmd {
         #[arg(long, value_name = "low|medium|high|xhigh|max")]
         effort: Option<String>,
         /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
-        /// starts on it, --detail holds the steps and links, and the owner presses Done in the app.
+        /// starts on it, --detail holds the steps and links, and the owner presses Done in the app (or tells
+        /// an agent to: tb needs done H<n>).
         /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that, with the
         /// owner's note in their prompt
         #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "same_pr", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
@@ -4389,6 +4390,13 @@ fn needs_cmd(c: &Ctx, cmd: crate::needs::NeedsCmd) -> Result<i32, String> {
         return Ok(0);
     }
     let items = needs::items(&home, None);
+    if let NeedsCmd::Done { items: handles, note } = &cmd {
+        let (path, body) = needs::done_request(&items, handles, note.as_deref(), &c.session)?;
+        let v = c.call("POST", &path, Some(body))?;
+        let done: Vec<String> = v["done"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(str::to_string)).collect();
+        out(&needs::marked_done_line(&done));
+        return Ok(0);
+    }
     let item = needs::find(&items, needs::handle_of(&cmd).unwrap_or(""))?;
     let (path, body) = match &cmd {
         NeedsCmd::Show { .. } => {
@@ -9236,6 +9244,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "checkpoint", "--done", "a", "--next", "b", "--decision", "c"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "limits", "--review-gap", "10", "--step", "Author review"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "found", "x", "--kind", "nope"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "needs", "done", "H3", "H4", "--note", "Signed"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "needs", "done"]).is_err(), "it names at least one");
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--goal", "G1", "--also", "G2", "--also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--also", "G2", "--not-also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--detail", "y", "--here"]).is_ok());

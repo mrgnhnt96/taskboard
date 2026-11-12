@@ -1,7 +1,7 @@
 //! Human tasks (`tb task new --human`, shown as H<n>): work only the owner can do, such as making an
 //! account or signing an agreement. Its detail holds the steps and links. No terminal ever starts one:
 //! once nothing holds it back, the runner puts it in Needs you and raises an alert, and it's done when
-//! the owner presses Done in the app (with an optional note). Tasks that wait for it, by `waits_for` or
+//! the owner presses Done in the app (with an optional note), or tells an agent it's done (`tb needs done`). Tasks that wait for it, by `waits_for` or
 //! by their goal's order, then go on, and a parked one is told what the owner did.
 //!
 //! The owner can answer with something other than Done (`answer`): Can't do this hands it back, Not
@@ -139,18 +139,63 @@ fn alert_key(id: i64) -> String {
 /// The owner pressed Done (only from the app): the task is finished with their note, if any.
 pub fn done(app: &App, id: i64, body: &Value) -> Result<()> {
     app.db.tx(|| {
-        let t = board::get_task(app, id)?;
-        if !is(&t) {
-            return err(409, format!("{} isn't a human task.", rf("task", id)));
+        let t = open_human(app, id)?;
+        mark_done(app, &t, &owner_note(body), "Done by you")
+    })
+}
+
+/// A human task that isn't done yet, or the refusal.
+fn open_human(app: &App, id: i64) -> Result<Row> {
+    let t = board::get_task(app, id)?;
+    if !is(&t) {
+        return err(409, format!("{} isn't a human task.", rf("task", id)));
+    }
+    if t.s("status") == Some("done") {
+        return err(409, format!("{} is already done.", task_ref(&t)));
+    }
+    Ok(t)
+}
+
+fn mark_done(app: &App, t: &Row, note: &str, by: &str) -> Result<()> {
+    keep_note(app, t, note)?;
+    board::update_task(app, t.id(), fields!["owner_answer" => null])?;
+    finish(app, t, &if note.is_empty() { by.to_string() } else { format!("{by}: {note}") })
+}
+
+/// `POST /humans/done` (`tb needs done H3 H4`): the owner's Done on human tasks `tasks`, told to the agent
+/// in terminal `via_session`, with an optional `note` for each. `word` is the owner's word there that a task
+/// is done (`startword::owners_done_word`). Every task must be an open human task with that word, or none
+/// is marked done; each that is goes as Done in the app does.
+pub fn done_on_word(app: &App, body: &Value, word: impl Fn(&str, i64) -> Result<Option<String>>) -> Result<Vec<String>> {
+    let via = body_str(body, "via_session");
+    if via.is_empty() {
+        return err(403, format!("Only {} marks a human task done: from the app, or by telling an agent in a terminal.", app.cfg.owner));
+    }
+    let ids = waitsfor::ref_ids(&body["tasks"])?;
+    if ids.is_empty() {
+        return err(400, "Name the human tasks that are done: tb needs done H3 H4.");
+    }
+    let note = owner_note(body);
+    let by = format!("Done by you via {}", board::session_name(app, Some(&via), None));
+    app.db.tx(|| {
+        let tasks = ids.iter().map(|&id| open_human(app, id)).collect::<Result<Vec<_>>>()?;
+        let unsaid: Vec<String> = tasks.iter().filter_map(|t| word(&via, t.id()).map(|w| w.is_none().then(|| task_ref(t))).transpose()).collect::<Result<_>>()?;
+        if !unsaid.is_empty() {
+            let list = unsaid.join(", ");
+            return err(
+                403,
+                format!(
+                    "Only {owner} marks a human task done: nobody in this terminal's conversation said {list} {is} done, so none was marked. \
+                     {owner} can press Done in the app, or say so here (\"mark {list} done\"); tell them that once.",
+                    owner = app.cfg.owner,
+                    is = if unsaid.len() == 1 { "is" } else { "are" },
+                ),
+            );
         }
-        if t.s("status") == Some("done") {
-            return err(409, "It's already done.");
+        for t in &tasks {
+            mark_done(app, t, &note, &by)?;
         }
-        let note = owner_note(body);
-        keep_note(app, &t, &note)?;
-        board::update_task(app, id, fields!["owner_answer" => null])?;
-        let summary = if note.is_empty() { "Done by you".to_string() } else { format!("Done by you: {note}") };
-        finish(app, &t, &summary)
+        Ok(tasks.iter().map(task_ref).collect())
     })
 }
 
