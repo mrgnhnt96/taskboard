@@ -1923,6 +1923,12 @@ pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     Ok(close_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
 }
 
+/// The owner's word in terminal `sid` that human task `id` is done (`tb needs done`): the prompt that says
+/// so. The board reads no prompt as one yet, so there's none and an agent's Done is always refused.
+pub fn owners_done_word(_app: &App, _sid: &str, _id: i64) -> Result<Option<String>> {
+    Ok(None)
+}
+
 /// Whether task `id` is terminal `sid`'s own: its open task, else (once it's on none) the done task it's
 /// visiting or last handed in, as a `tb question` from it is asked on.
 fn owns_done_or_open(app: &App, sid: &str, id: i64) -> Result<bool> {

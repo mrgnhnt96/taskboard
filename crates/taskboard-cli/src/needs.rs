@@ -3,9 +3,9 @@
 //! It reads the same `GET /home` the app's home page does (the alerts, each with its task's card, and
 //! the goals held after a wave for review) and acts through the same endpoints its buttons post to:
 //! an answer or a picker's choices, Restart, Mark done, Continue, Dismiss, Snooze, the answers on a
-//! to-do other than Done, Finish the goal without it and Set goal aside. What only the owner's own
-//! click may do (Start, Done on a human task) it points at instead: `tb start`, which checks the
-//! owner's word, or the app.
+//! to-do other than Done, Finish the goal without it and Set goal aside. Start it points at instead:
+//! `tb start`, which checks the owner's word. Done on the owner's to-dos (`tb needs done`) goes through
+//! only on the owner's word in this terminal, which the board checks.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -79,6 +79,15 @@ pub enum NeedsCmd {
     NotNeeded {
         item: String,
         /// A note for the agents that wait for it
+        note: Option<String>,
+    },
+    /// To-dos the owner did: mark each done as Done in the app does, so what waits carries on, only on the
+    /// owner's word: tb needs done H3 H4. All are marked done or none are
+    Done {
+        #[arg(required = true)]
+        items: Vec<String>,
+        /// A note for the agents that wait for them, in the owner's words
+        #[arg(long)]
         note: Option<String>,
     },
     /// A missed target: leave it in the backlog so the goal can finish, only on the owner's word
@@ -418,6 +427,7 @@ pub fn todo(i: &Item) -> Vec<String> {
         "Wave stop" => out.push(format!("tb needs continue {h}   (wave {} starts)", i.wave.map(|n| n + 1).unwrap_or(0))),
         "Your task" => {
             out.push("Only the owner does a human task: follow its steps, then press Done on its page in the app.".into());
+            out.push(format!("tb needs done {h}   (only once the owner says it's done)"));
             out.push(format!("tb needs cant-do {h} \"<why>\"   (hand it back: what waits finds another way)"));
             out.push(format!("tb needs waiting-on {h} --until <YYYY-MM-DD> \"<who>\"   (off the list until then)"));
             out.push(format!("tb needs dont-wait {h}   (what waits carries on, and it stays listed)"));
@@ -572,6 +582,29 @@ fn owner_answer(i: &Item, answer: &str, note: &Option<String>) -> Result<(String
     }
 }
 
+/// The request that marks the owner's to-dos `handles` done (`tb needs done`), each found in `items`: one
+/// request for all, so all are marked done or none are.
+pub fn done_request(items: &[Item], handles: &[String], note: Option<&str>, via: &str) -> Result<(String, Value), String> {
+    let mut tasks: Vec<String> = vec![];
+    for h in handles {
+        let i = find(items, h)?;
+        match i.task.as_deref().filter(|_| i.kind == "Your task") {
+            Some(t) if !tasks.iter().any(|x| x == t) => tasks.push(t.to_string()),
+            Some(_) => {}
+            None => return Err(format!("{} isn't a to-do of the owner's ({}), so none was marked done.", i.handle, i.kind)),
+        }
+    }
+    Ok(("/humans/done".into(), json!({"tasks": tasks, "note": note.unwrap_or(""), "via_session": via})))
+}
+
+/// What `tb needs done` prints once the board marked `done` (their refs) done.
+pub fn marked_done_line(done: &[String]) -> String {
+    match done {
+        [one] => format!("Marked {one} done. What waits for it carries on."),
+        _ => format!("Marked {} done. What waits for them carries on.", done.join(", ")),
+    }
+}
+
 /// The request for an action on `i`, anything but an answer: (path, body).
 pub fn act_request(cmd: &NeedsCmd, i: &Item) -> Result<(String, Value), String> {
     let lost = matches!(i.kind, "Terminal lost" | "Looks finished" | "Stopped");
@@ -667,6 +700,7 @@ fn when(at: &str, other_day: &str) -> String {
 pub fn handle_of(cmd: &NeedsCmd) -> Option<&str> {
     match cmd {
         NeedsCmd::List { .. } => None,
+        NeedsCmd::Done { items, .. } => items.first().map(String::as_str),
         NeedsCmd::Show { item }
         | NeedsCmd::Answer { item, .. }
         | NeedsCmd::Restart { item }
@@ -820,6 +854,18 @@ mod tests {
     }
 
     #[test]
+    fn done_marks_every_to_do_named_in_one_request_or_none() {
+        let items = items(&home(), None);
+        let (path, body) = done_request(&items, &["H14".into(), "t14".into()], Some("Signed"), "s1").unwrap();
+        assert_eq!(path, "/humans/done");
+        assert_eq!(body, json!({"tasks": ["T14"], "note": "Signed", "via_session": "s1"}));
+        assert!(done_request(&items, &["H14".into(), "T12".into()], None, "s1").unwrap_err().contains("T12 isn't a to-do of the owner's (Question), so none was marked done"));
+        assert!(done_request(&items, &["H14".into(), "H99".into()], None, "s1").unwrap_err().contains("isn't on the Needs you list"));
+        assert_eq!(marked_done_line(&["H14".into()]), "Marked H14 done. What waits for it carries on.");
+        assert_eq!(marked_done_line(&["H3".into(), "H4".into()]), "Marked H3, H4 done. What waits for them carries on.");
+    }
+
+    #[test]
     fn a_to_do_takes_the_other_answers_and_nothing_else_does() {
         let items = items(&home(), None);
         let to_do = find(&items, "H14").unwrap();
@@ -833,7 +879,7 @@ mod tests {
         assert_eq!(done_line(&waiting, to_do, &json!({})), "T14 is off the list until 2026-11-12.");
         assert!(act_request(&cant, find(&items, "T12").unwrap()).unwrap_err().contains("isn't a to-do"));
         let lines = show_lines(to_do);
-        for verb in ["cant-do", "waiting-on", "dont-wait", "not-needed"] {
+        for verb in ["cant-do", "waiting-on", "dont-wait", "not-needed", "done"] {
             assert!(lines.iter().any(|l| l.contains(&format!("tb needs {verb} T14"))), "{lines:#?}");
         }
     }
