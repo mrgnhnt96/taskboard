@@ -53,12 +53,13 @@ enum Sec {
     History,
     Usage,
     Qa,
+    Questions,
     Reviewers,
     Worktrees,
     System,
 }
 
-const SECS: [Sec; 7] = [Sec::Accounts, Sec::History, Sec::Usage, Sec::Qa, Sec::Reviewers, Sec::Worktrees, Sec::System];
+const SECS: [Sec; 8] = [Sec::Accounts, Sec::History, Sec::Usage, Sec::Qa, Sec::Questions, Sec::Reviewers, Sec::Worktrees, Sec::System];
 
 impl Sec {
     fn label(self) -> &'static str {
@@ -67,6 +68,7 @@ impl Sec {
             Sec::History => "History",
             Sec::Usage => "Usage",
             Sec::Qa => "QA",
+            Sec::Questions => "Questions",
             Sec::Reviewers => "Reviewers",
             Sec::Worktrees => "Worktrees",
             Sec::System => "System",
@@ -79,6 +81,7 @@ impl Sec {
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
             Sec::Usage => "A daily share of Claude's weekly limit. Once today's share is used, the board starts no new work until midnight; running agents carry on.",
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
+            Sec::Questions => "Questions agents ask you in their replies, and whether the board sends back one asked above the reply's last paragraph to ask it properly.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
             Sec::Worktrees => "Each project's reusable worktree slots, kept warm between tasks. tb project set sizes a project's pool.",
             Sec::System => "Updates, and the versions of the app and the daemon.",
@@ -91,6 +94,7 @@ impl Sec {
             Sec::History => "◷",
             Sec::Usage => "◔",
             Sec::Qa => "✓",
+            Sec::Questions => "?",
             Sec::Reviewers => "☺",
             Sec::Worktrees => "⑂",
             Sec::System => "⚙",
@@ -164,6 +168,10 @@ pub struct SettingsWindow {
     qa: Option<Value>,
     qa_busy: bool,
     qa_note: Option<(String, bool)>,
+    /// `GET /buried-questions`, a call in flight, and the line under its card.
+    questions: Option<Value>,
+    questions_busy: bool,
+    questions_note: Option<(String, bool)>,
     /// `GET /reviewers?project=all`.
     reviewers: Option<Value>,
     /// `GET /slots`: every project's slots and pool settings.
@@ -211,6 +219,9 @@ impl SettingsWindow {
             qa: None,
             qa_busy: false,
             qa_note: None,
+            questions: None,
+            questions_busy: false,
+            questions_note: None,
             reviewers: None,
             slots: None,
             info: None,
@@ -221,6 +232,7 @@ impl SettingsWindow {
         s.load_history(cx);
         s.load_daily(cx);
         s.load_qa(cx);
+        s.load_questions(cx);
         s.load_reviewers(cx);
         s.load_info(cx);
         cx.spawn(async move |this, cx| {
@@ -351,6 +363,43 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.qa = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_questions(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("buried-questions", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(v) = r {
+                    s.questions = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `POST buried-questions {on}`: answers with its state.
+    fn post_questions(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.questions_busy {
+            return;
+        }
+        self.questions_busy = true;
+        self.questions_note = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.post("buried-questions", json!({"on": on})) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.questions_busy = false;
+                match r {
+                    Ok(v) => s.questions = Some(v),
+                    Err(e) => s.questions_note = Some((e.message, true)),
                 }
                 cx.notify();
             });
@@ -585,6 +634,7 @@ impl Render for SettingsWindow {
             Sec::History => self.history_page(&t, cx).into_any_element(),
             Sec::Usage => self.usage_page(&t, cx).into_any_element(),
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
+            Sec::Questions => self.questions_page(&t, cx).into_any_element(),
             Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
             Sec::Worktrees => self.worktrees_page(&t).into_any_element(),
             Sec::System => self.system_page(&t, cx).into_any_element(),
@@ -1276,6 +1326,32 @@ impl SettingsWindow {
         }
         if let Some((text, bad)) = &self.qa_note {
             card = card.child(row(t, "qa-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
+        }
+        list.child(card)
+    }
+}
+
+// ------------------------------------------------------------------ questions
+
+impl SettingsWindow {
+    fn questions_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = div().id("questions-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let Some(q) = self.questions.clone() else {
+            return list.child(kit::empty(t, "Asking the board…"));
+        };
+        let on = q["on"] != false;
+        let note = "A task's reply that asks you something above its last paragraph is sent back once, to ask it with tb question or in a final Questions block, so it reaches you as a Question card.";
+        let control = kit::seg(t, "buried-on", &["Off", "On"], if on { 1 } else { 0 }, |i, item| {
+            if self.questions_busy {
+                item
+            } else {
+                item.on_click(cx.listener(move |s, _, _, cx| s.post_questions(i == 1, cx)))
+            }
+        });
+        let switch = line(t, "buried-on-row", true, false, "Send back buried questions", note, None).child(controls().child(control));
+        let mut card = kit::card(t).overflow_hidden().child(switch);
+        if let Some((text, bad)) = &self.questions_note {
+            card = card.child(row(t, "buried-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
         }
         list.child(card)
     }

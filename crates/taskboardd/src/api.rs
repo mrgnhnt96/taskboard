@@ -527,6 +527,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["history"]) => days::history(app),
         ("POST", ["history"]) => days::set_history(app, body),
         ("POST", ["history", "cleanup"]) => days::cleanup(app),
+        ("GET", ["buried-questions"]) => crate::buried::settings(app),
+        ("POST", ["buried-questions"]) => app.db.tx(|| crate::buried::set_settings(app, body)),
         ("GET", ["qa"]) => qa::settings(app),
         ("POST", ["qa"]) => app.db.tx(|| qa::set_settings(app, body)),
         ("POST", ["jira", "comment"]) => qa::intake(app, body),

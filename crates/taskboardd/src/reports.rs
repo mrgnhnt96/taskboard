@@ -661,6 +661,18 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     if asked.is_some() || idle_on(r, &t)? != Some(false) {
         r.unshipped = None;
     }
+    let whole = { let all = r.b("reply"); if all.trim().is_empty() { r.b("last_message") } else { all } };
+    let buried = asked
+        .is_none()
+        .then(|| crate::buried::buried_question(&whole, &reply_end))
+        .flatten()
+        .filter(|_| !r.spooled && t.s("status") == Some("working") && !t.b("lost") && !as_bool(r.body.get("stop_hook_active"), false) && crate::buried::on(app));
+    if buried.is_some() {
+        // Sent back to ask it properly: the board's carry-on or ship nudge waits for the turn's real end.
+        r.stalled = false;
+        r.unshipped = None;
+        r.set_session_status("working")?;
+    }
     if let (Some(asked), Some(sid)) = (asked, r.sid.clone()) {
         // The turn ended by asking the owner something in its reply: it's waiting, not stalled.
         r.stalled = false;
@@ -680,7 +692,10 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         }));
     }
     app.wake_runner();
-    Ok(ok(Some(&t), None))
+    match buried {
+        Some(q) => Ok(with(ok(Some(&t), None), json!({"block": crate::buried::reason(app, &q, &board::tb_cmd(app))}))),
+        None => Ok(ok(Some(&t), None)),
+    }
 }
 
 static ASKS_OWNER: Lazy<Regex> = Lazy::new(|| {
@@ -692,9 +707,14 @@ static ASKS_OWNER: Lazy<Regex> = Lazy::new(|| {
 
 /// The question a turn's reply ends on, when its last paragraph asks the owner something: a
 /// sentence ending in "?", or asking for an answer in so many words ("tell me which…").
-fn ends_on_question(reply: &str) -> Option<String> {
+pub(crate) fn ends_on_question(reply: &str) -> Option<String> {
     let last = reply.trim().rsplit("\n\n").map(str::trim).find(|p| !p.is_empty())?;
-    ASKS_OWNER.is_match(last).then(|| one_line(last, 1000))
+    asks_owner(last).then(|| one_line(last, 1000))
+}
+
+/// `text` asks the owner something, by [`ends_on_question`]'s signals.
+pub(crate) fn asks_owner(text: &str) -> bool {
+    ASKS_OWNER.is_match(text)
 }
 
 /// Screens the question a turn's reply ended on, off the hook's clock: when the owner's rules answer
