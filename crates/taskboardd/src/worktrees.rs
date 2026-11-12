@@ -238,7 +238,7 @@ pub fn has_commits(repo: &str) -> bool {
 
 /// Where a stacked task starts: its parent's branch on the remote, else the local one; None when
 /// neither exists yet (not pushed, or the child ran ahead of its parent), so it starts from the base.
-fn stack_start(repo: &str, branch: &str, remote: bool) -> Option<String> {
+pub(crate) fn stack_start(repo: &str, branch: &str, remote: bool) -> Option<String> {
     let has = |r: &str| git(repo, &["rev-parse", "--verify", "--quiet", r], GIT_SECS).code == 0;
     if remote && has(&format!("refs/remotes/origin/{branch}")) {
         return Some(format!("origin/{branch}"));

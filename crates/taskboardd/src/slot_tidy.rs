@@ -163,10 +163,8 @@ fn clear_stale(app: &App, t: &Row, s: &Row) -> Result<()> {
 /// log says how far behind it is.
 fn catch_up(app: &App, t: &Row, s: &Row) -> Result<()> {
     let (path, n) = (s.st("path"), s.i0("n"));
-    let Some(base) = board::task_context(t).s("worktree_base").filter(|b| *b != "HEAD").map(str::to_string) else { return Ok(()) };
-    if base.starts_with("origin/") {
-        git(&path, &["fetch", "-q", "origin"], FETCH_SECS);
-    }
+    let Some(taken_at) = board::task_context(t).s("worktree_base").filter(|b| *b != "HEAD").map(str::to_string) else { return Ok(()) };
+    let Some(base) = catch_up_base(app, t, &path, taken_at)? else { return Ok(()) };
     let count = git(&path, &["rev-list", "--count", &format!("HEAD..{base}")], GIT_SECS);
     let behind: i64 = count.out.trim().parse().unwrap_or(0);
     if count.code != 0 || behind == 0 {
@@ -198,6 +196,24 @@ fn catch_up(app: &App, t: &Row, s: &Row) -> Result<()> {
     };
     board::log_event(app, t.id(), board::BOARD, "midna", &text)?;
     Ok(())
+}
+
+/// What a slot's branch catches up to, fetched first when it's on origin: the branch its PR goes into
+/// while that's another task's open PR (a stack, or a same-PR group), as the slot would start from it
+/// now, and None when that branch isn't there yet, so the branch is left as it is. Else the base the
+/// slot was taken at.
+fn catch_up_base(app: &App, t: &Row, path: &str, taken_at: String) -> Result<Option<String>> {
+    let Some(b) = crate::samepr::start_branch(app, t)?.or(crate::stack::base_branch(app, t)?) else {
+        if taken_at.starts_with("origin/") {
+            git(path, &["fetch", "-q", "origin"], FETCH_SECS);
+        }
+        return Ok(Some(taken_at));
+    };
+    let remote = git(path, &["remote", "get-url", "origin"], GIT_SECS).code == 0;
+    if remote {
+        git(path, &["fetch", "-q", "origin"], FETCH_SECS);
+    }
+    Ok(crate::worktrees::stack_start(path, &b, remote))
 }
 
 fn clean_and_pushed(path: &str) -> bool {
