@@ -2669,6 +2669,35 @@ fn question_unconfirmed(e: CallError, owner: &str) -> String {
     }
 }
 
+/// How an agent finds a task it asked for once the board has it: `tb search` by its title, in every
+/// project since a goal's task lands in the goal's.
+fn find_new_task(title: &str, human: bool) -> String {
+    let words = if title.trim().is_empty() { "<words from its title>" } else { title };
+    let kind = if human { " --kind human" } else { "" };
+    format!("tb search \"{words}\" --all{kind}")
+}
+
+/// A `tb task new` the board took but didn't confirm (#965). It goes on with the request after tb stops
+/// waiting, and skips a saved copy of one it already has, so saving it would only claim the board is down.
+fn new_task_unconfirmed(e: CallError, title: &str, human: bool) -> String {
+    match e {
+        CallError::TimedOut(e) => format!(
+            "the board went quiet for {TB_TIMEOUT}s before it confirmed the task ({e}). It has the request and may still add it, \
+             so don't run tb task new again yet: in a minute, look for it with {} and run it again only if it isn't there.",
+            find_new_task(title, human)
+        ),
+        e => unanswered(e, ""),
+    }
+}
+
+/// A human task saved while the board is down gets its H id only once the board is back.
+fn human_task_saved(title: &str) -> String {
+    format!(
+        "{SAVED} The human task gets its H id then: once tb status answers, find it with {} and tb wait-for H<n> on it.",
+        find_new_task(title, true)
+    )
+}
+
 fn out(line: &str) {
     out_to(&mut std::io::stdout(), &STDOUT_GONE, line);
 }
@@ -6802,7 +6831,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if !bits.is_empty() {
                     body["bits"] = json!(lock_arg(&bits));
                 }
-                match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
+                // On the progress stream (#965): the board screens a human task with claude before it adds it,
+                // which can run past TB_TIMEOUT, and says it's still screening every couple of seconds meanwhile.
+                match c.report_progress_or("tb.new_task", body, None, |e| new_task_unconfirmed(e, &title, human))? {
+                    None if human => out(&human_task_saved(&title)),
                     None => out(SAVED),
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
@@ -8684,6 +8716,100 @@ mod tests {
         assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "submit", "Shipped it"]).unwrap().cmd), Ok(0));
         assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "question", "Which base?"]).unwrap().cmd), Ok(0));
         assert_eq!(std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0), 2, "both go to the spool");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// Points `c` at a board on a local port that answers one request on the progress stream with each of
+    /// `lines`, `gap` before each, then hangs up. Hands back the request it got, head and body.
+    fn streaming_board(c: &mut Ctx, lines: &[&str], gap: std::time::Duration) -> std::sync::mpsc::Receiver<String> {
+        use std::io::{BufRead, Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        c.cfg.port = l.local_addr().unwrap().port();
+        let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+            let (mut head, mut len) = (String::new(), 0);
+            loop {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap();
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                if h.trim().is_empty() {
+                    break;
+                }
+                head.push_str(&h);
+            }
+            let mut body = vec![0; len];
+            let _ = r.read_exact(&mut body);
+            let _ = tx.send(format!("{head}\n{}", String::from_utf8_lossy(&body)));
+            let _ = write!(s, "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n");
+            for line in lines {
+                std::thread::sleep(gap);
+                let _ = writeln!(s, "{line}");
+                let _ = s.flush();
+            }
+        });
+        rx
+    }
+
+    fn spooled(c: &Ctx) -> usize {
+        std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0)
+    }
+
+    const NEW_HUMAN: [&str; 7] = ["tb", "task", "new", "Sign the agreement", "--human", "--detail", "1. Open https://x.test/sign and sign it"];
+
+    #[test]
+    fn tb_task_new_human_waits_out_a_screen_slower_than_its_time_limit() {
+        // #965: the board screens a human task with claude for 5-8s. Past TB_TIMEOUT in all, tb used to give
+        // up, save it and say the board was down while the board went on and added it.
+        let (mut c, data) = board_down_ctx("human-slow");
+        let still = r#"{"progress":"still waiting on claude to screen the human task"}"#;
+        let added = r#"{"result":{"ok":true,"created":["H9"],"title":"Sign the agreement"}}"#;
+        let gap = std::time::Duration::from_secs_f64(TB_TIMEOUT * 0.4);
+        let got = streaming_board(&mut c, &[still, still, added], gap);
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(NEW_HUMAN).unwrap().cmd), Ok(0));
+        let req = got.recv().unwrap();
+        assert!(req.to_ascii_lowercase().contains("x-task-board-progress: 1"), "on the progress stream: {req}");
+        assert!(req.contains(r#""event":"tb.new_task""#) && req.contains(r#""kind":"human""#), "{req}");
+        assert_eq!(spooled(&c), 0, "the board answered, so nothing is saved for later");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_task_new_human_prints_the_screens_refusal() {
+        let (mut c, data) = board_down_ctx("human-refused");
+        let why = "Not a human task: an agent can do this, so it never reaches Morgan.";
+        let refused = json!({"error": why, "status": 409}).to_string();
+        let _got = streaming_board(&mut c, &[r#"{"progress":"still waiting on claude to screen the human task"}"#, &refused], std::time::Duration::from_millis(10));
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(NEW_HUMAN).unwrap().cmd), Err(why.to_string()));
+        assert_eq!(spooled(&c), 0, "a refusal is never saved for later");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_task_new_the_board_took_but_never_confirmed_isnt_saved() {
+        // The board has the request and skips a saved copy of it, so saving it would only claim it's down.
+        let (mut c, data) = board_down_ctx("human-quiet");
+        let _got = streaming_board(&mut c, &[r#"{"progress":"still waiting on claude to screen the human task"}"#], std::time::Duration::from_millis(10));
+        let e = run_cmd(&c, Cli::try_parse_from(NEW_HUMAN).unwrap().cmd).unwrap_err();
+        assert!(e.starts_with("the board went quiet"), "{e}");
+        assert!(e.contains(r#"tb search "Sign the agreement" --all --kind human"#), "says how to find it: {e}");
+        assert_eq!(spooled(&c), 0);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_task_new_human_with_the_board_down_is_saved_and_says_how_to_find_its_id() {
+        let (c, data) = board_down_ctx("human-down");
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(NEW_HUMAN).unwrap().cmd), Ok(0));
+        assert_eq!(spooled(&c), 1, "saved for when the board is back");
+        let line = human_task_saved("Sign the agreement");
+        assert!(line.starts_with(SAVED), "{line}");
+        assert!(line.contains(r#"tb search "Sign the agreement" --all --kind human"#) && line.contains("tb wait-for H<n>"), "{line}");
+        assert!(human_task_saved("").contains(r#"tb search "<words from its title>" --all --kind human"#));
         let _ = std::fs::remove_dir_all(&data);
     }
 
