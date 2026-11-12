@@ -553,15 +553,18 @@ pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&st
     };
     let repo = crate::projects::project_path(app, t.s("project"))?.or_else(|| t.s("repo_path").map(|s| s.to_string()));
     let dirs: Vec<String> = dir.into_iter().chain(repo).collect();
-    Ok(refusal(&app.cfg, pr_adds(&app.cfg.comments, &dirs, &rec), "this PR", what))
+    let known = known_tips(app, t, &pr_side(&rec, "base"))?;
+    Ok(refusal(&app.cfg, pr_adds(&app.cfg.comments, &dirs, &rec, &known), "this PR", what))
 }
 
-/// The branches a task's branch may have forked from. A PR base (the unmerged parent's branch, else the
-/// one the task or its goal is set to) is the only one; without one, the base its slot started at, its
-/// goal's worktree base and the repo's default branch, nearest first when judged.
+/// The branches a task's branch may have forked from. A PR base (the unmerged parent's branch, with the
+/// last head the board saw on it, else the one the task or its goal is set to) is the only one; without
+/// one, the base its slot started at, its goal's worktree base and the repo's default branch, nearest
+/// first when judged. `fork_point` judges the default branch's fork alongside them either way.
 fn guard_bases(app: &crate::app::App, t: &crate::util::Row) -> crate::util::Result<Vec<String>> {
     if let Some(b) = crate::stack::base_branch(app, t)? {
-        return Ok(vec![b]);
+        let known = known_tips(app, t, &b)?;
+        return Ok([b].into_iter().chain(known).collect());
     }
     if let Some(b) = crate::steps::chosen_base(app, t)? {
         return Ok(vec![b]);
@@ -573,6 +576,26 @@ fn guard_bases(app: &crate::app::App, t: &crate::util::Row) -> crate::util::Resu
     for b in slot.into_iter().chain(goal).chain([default]).filter(|b| !b.is_empty()) {
         if !out.contains(&b) {
             out.push(b);
+        }
+    }
+    Ok(out)
+}
+
+/// The heads the board last saw on `branch` from the tasks this one builds on (its stack parent and the
+/// tasks it waits for): what it told the task to rebase onto when that branch moved. The host's
+/// `base_head` on this task's own PR stays at the old tip until the PR is read again.
+fn known_tips(app: &crate::app::App, t: &crate::util::Row, branch: &str) -> crate::util::Result<Vec<String>> {
+    let mut out = vec![];
+    if branch.is_empty() {
+        return Ok(out);
+    }
+    for n in crate::waitsfor::deps(t) {
+        let Some(o) = crate::board::find_task(app, Some(n))? else { continue };
+        if crate::stack::branch(&o).as_deref() != Some(branch) {
+            continue;
+        }
+        if let Some(h) = crate::waitsfor::head_of(&o).filter(|h| !h.is_empty() && !out.contains(h)) {
+            out.push(h);
         }
     }
     Ok(out)
@@ -605,14 +628,14 @@ fn pr_side(rec: &Value, key: &str) -> String {
 }
 
 /// The comments the PR in `rec` (`pr_flow.rec`) adds: `merge-base(base, head)..head`, the diff the PR
-/// shows, read in the first of `dirs` that has its commits. A checkout on the PR's branch counts its
-/// uncommitted work too.
-pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value) -> Vec<Found> {
+/// shows, or from the default branch's fork when that is nearer the head (see `fork_point`), read in the first of `dirs` that has its commits. `known` holds tips the board saw on the base
+/// since the host last read the PR. A checkout on the PR's branch counts its uncommitted work too.
+pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value, known: &[String]) -> Vec<Found> {
     if !c.guard {
         return vec![];
     }
     let git = Git(crate::proc::which("git"));
-    let Some((dir, head, diff)) = dirs.iter().filter(|d| Path::new(d.as_str()).is_dir()).find_map(|d| pr_diff(&git, d, rec).map(|(h, diff)| (d, h, diff))) else {
+    let Some((dir, head, diff)) = dirs.iter().filter(|d| Path::new(d.as_str()).is_dir()).find_map(|d| pr_diff(&git, d, rec, known).map(|(h, diff)| (d, h, diff))) else {
         return vec![];
     };
     diff_adds_in(c, &diff, |f| match &head {
@@ -622,12 +645,14 @@ pub fn pr_adds(c: &CommentsConfig, dirs: &[String], rec: &Value) -> Vec<Found> {
 }
 
 /// The PR's diff, and the commit its new side is (None: the checkout's working tree).
-fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<(Option<String>, String)> {
+fn pr_diff(git: &Git, dir: &str, rec: &Value, known: &[String]) -> Option<(Option<String>, String)> {
     let (base, branch) = (pr_side(rec, "base"), pr_side(rec, "branch"));
     let here = git.run(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).is_some_and(|b| b.trim() == branch);
-    let b = tip(git, dir, &base, &pr_side(rec, "base_head"))?;
     let h = if here { "HEAD".to_string() } else { tip(git, dir, &branch, &pr_side(rec, "head"))? };
-    let fork = git.run(dir, &["merge-base", &b, &h])?.trim().to_string();
+    let tips: Vec<String> = known.iter().cloned().chain([pr_side(rec, "base_head")]).collect();
+    let on_base = nearest_fork(git, dir, &base, &tips, &h);
+    let on_default = default_branch(git, dir).filter(|d| bare(d) != bare(&base)).and_then(|d| nearest_fork(git, dir, &d, &[], &h));
+    let fork = nearest(git, dir, on_base.into_iter().chain(on_default), &h)?;
     let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U0", "--diff-filter=AMR", fork.as_str()];
     if !here {
         args.push(&h);
@@ -636,8 +661,7 @@ fn pr_diff(git: &Git, dir: &str, rec: &Value) -> Option<(Option<String>, String)
 }
 
 /// Where `branch` is now: origin's tip once fetched, since the host's `recorded` SHA goes stale when
-/// the branch moves (a stacked base rebased onto a newer default branch); else that SHA, else what
-/// git in `dir` already has.
+/// the branch is pushed again; else that SHA, else what git in `dir` already has.
 fn tip(git: &Git, dir: &str, branch: &str, recorded: &str) -> Option<String> {
     let fetched = !branch.is_empty() && git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", branch], FETCH_SECS).is_some();
     let (remote, local, recorded) = (format!("origin/{branch}"), branch.to_string(), recorded.to_string());
@@ -645,35 +669,63 @@ fn tip(git: &Git, dir: &str, branch: &str, recorded: &str) -> Option<String> {
     git.commit(dir, &order)
 }
 
-/// Where the branch at `dir` forked from the nearest of `bases` (the branches its PR may go into),
-/// each fetched first; else from its default branch.
+/// Where the branch at `dir` forked from the nearest of `bases` (the branches its PR may go into) and
+/// its default branch, each fetched first. A stacked base far behind the default branch, with the
+/// branch rebased onto the default branch, forks before every commit the default branch gained since;
+/// those were reviewed where they landed, so the default branch's fork wins when it is nearer.
 fn fork_point(git: &Git, dir: &str, bases: &[String]) -> Option<String> {
-    let forks: Vec<String> = bases.iter().filter(|b| !b.is_empty()).filter_map(|b| fork_from(git, dir, b)).collect();
-    let past = |f: &String| git.run(dir, &["rev-list", "--count", &format!("{f}..HEAD")]).and_then(|n| n.trim().parse::<u64>().ok()).unwrap_or(u64::MAX);
-    if let Some(f) = forks.iter().min_by_key(|f| past(f)) {
-        return Some(f.clone());
+    let default = default_branch(git, dir);
+    let mut names: Vec<&str> = vec![];
+    for b in bases.iter().map(String::as_str).chain(default.as_deref()).filter(|b| !b.is_empty()) {
+        if !names.iter().any(|n| bare(n) == bare(b)) {
+            names.push(b);
+        }
     }
-    let mut names = vec![];
-    if let Some(h) = git.run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
-        names.push(h.trim().to_string());
-    }
-    names.extend(["origin/main", "origin/master", "main", "master"].iter().map(|s| s.to_string()));
-    names.into_iter().filter(|b| !b.is_empty()).find_map(|b| merge_base(git, dir, &b))
+    let forks: Vec<String> = names.iter().filter_map(|b| nearest_fork(git, dir, b, &[], "HEAD")).collect();
+    nearest(git, dir, forks, "HEAD")
 }
 
-fn merge_base(git: &Git, dir: &str, of: &str) -> Option<String> {
-    git.run(dir, &["merge-base", "HEAD", of]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+/// The repo's default branch as git in `dir` knows it: origin's HEAD, else `main` or `master`.
+fn default_branch(git: &Git, dir: &str) -> Option<String> {
+    let head = git.run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).map(|h| h.trim().to_string());
+    let names = head.into_iter().chain(["origin/main", "origin/master", "main", "master"].map(String::from));
+    names.filter(|n| !n.is_empty()).find(|n| git.commit(dir, std::slice::from_ref(n)).is_some())
 }
 
-/// Where HEAD forked from `base` (`release/x`, `origin/release/x` or a commit), fetching a branch from
-/// origin first so a base that moved is judged at its current tip.
-fn fork_from(git: &Git, dir: &str, base: &str) -> Option<String> {
-    let name = base.strip_prefix("origin/").unwrap_or(base);
-    let names = [format!("origin/{name}"), name.to_string()];
-    if !is_sha(name) {
+fn bare(branch: &str) -> &str {
+    branch.strip_prefix("origin/").unwrap_or(branch)
+}
+
+/// The one of `forks` that `head` has the fewest commits past.
+fn nearest(git: &Git, dir: &str, forks: impl IntoIterator<Item = String>, head: &str) -> Option<String> {
+    forks.into_iter().min_by_key(|f| commits_past(git, dir, f, head))
+}
+
+/// Where `head` forked from `base` (`release/x`, `origin/release/x` or a commit), judged against every
+/// tip git has for it: origin's (fetched first, else the local branch) and the `known` SHAs. The fork
+/// nearest `head` wins. After the base moves and the branch follows with `rebase --onto`, a tip from
+/// before the move forks far back, and every commit the new base brought in would count as the
+/// branch's own; a fetch that fails or times out must not leave such a tip to decide.
+fn nearest_fork(git: &Git, dir: &str, base: &str, known: &[String], head: &str) -> Option<String> {
+    let name = bare(base);
+    if !name.is_empty() && !is_sha(name) {
         git.run_for(dir, &["fetch", "-q", "--no-tags", "origin", name], FETCH_SECS);
     }
-    merge_base(git, dir, &git.commit(dir, &names)?)
+    let branch = (!name.is_empty()).then(|| git.commit(dir, &[format!("origin/{name}"), name.to_string()])).flatten();
+    let known = known.iter().filter_map(|k| git.commit(dir, std::slice::from_ref(k)));
+    let mut forks: Vec<String> = vec![];
+    for tip in branch.into_iter().chain(known) {
+        let Some(f) = git.run(dir, &["merge-base", &tip, head]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { continue };
+        if !forks.contains(&f) {
+            forks.push(f);
+        }
+    }
+    nearest(git, dir, forks, head)
+}
+
+/// How many commits `head` has past `fork`; the most there can be when git can't count them.
+fn commits_past(git: &Git, dir: &str, fork: &str, head: &str) -> u64 {
+    git.run(dir, &["rev-list", "--count", &format!("{fork}..{head}")]).and_then(|n| n.trim().parse().ok()).unwrap_or(u64::MAX)
 }
 
 fn is_sha(name: &str) -> bool {
