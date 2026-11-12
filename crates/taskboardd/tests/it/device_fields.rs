@@ -353,18 +353,20 @@ fn a_task_with_no_device_lent_still_hears_which_to_leave_alone() {
 }
 
 #[test]
-fn a_task_with_no_device_needs_hears_how_to_ask_for_one_once_the_pool_has_any() {
+fn a_task_with_no_device_needs_is_told_never_to_hunt_for_one_once_the_pool_has_any() {
     let b = new_board();
     let t = b.task("Copy", "");
     let tb = board::tb_cmd(&b.app);
     let line = format!(
-        "If this task needs an emulator, simulator or phone, don't pick one yourself: run {tb} task set T{t} --device tag:<tag> \
-         ({tb} devices lists them) and the board lends you a free one that no other terminal is using."
+        "Never look for, start or boot an emulator, simulator or phone yourself (no adb devices, xcrun simctl or emulator \
+         commands): the board's devices stay shut down until it lends one. If this task needs one, run {tb} task set T{t} \
+         --device tag:<tag> ({tb} devices lists the tags) and the board lends you a free one and says how to start it. \
+         Otherwise don't use any."
     );
-    assert!(!handoff::build(&b.app, t).unwrap().contains("don't pick one yourself"), "an empty pool says nothing");
+    assert!(!handoff::build(&b.app, t).unwrap().contains("Never look for, start or boot"), "an empty pool says nothing");
     b.post("devices", json!({"name": "pixel-a", "tags": "android"}));
     let h = handoff::build(&b.app, t).unwrap();
     assert!(h.contains(&line), "{h}");
     let a = b.task("A", "android");
-    assert!(!handoff::build(&b.app, a).unwrap().contains("don't pick one yourself"), "a task that asks for devices hears about those");
+    assert!(!handoff::build(&b.app, a).unwrap().contains("Never look for, start or boot"), "a task that asks for devices hears about those");
 }
