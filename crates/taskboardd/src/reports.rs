@@ -1351,12 +1351,64 @@ fn on_session_end(r: &mut Report) -> Result<Value> {
 
 fn pr_visit_paused(r: &Report, message: &str) -> Result<Value> {
     let t = prflow::visited_by(r.app, r.sid().unwrap_or(""))?;
+    let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
+    let asked = ends_on_question(&reply_end).filter(|_| !r.spooled);
+    if let (Some(t), Some(asked), Some(sid)) = (&t, asked, r.sid.clone()) {
+        // The visit ended by asking the owner something in its reply: screen it like a task's turn.
+        let (tid, name, message) = (t.id(), r.name(), message.to_string());
+        r.app.queue_ai(Box::new(move |a: &App| {
+            if let Err(e) = screen_visit_reply(a, tid, &sid, &name, &asked, &message) {
+                a.info(format!("visit reply question: {e}"));
+            }
+        }));
+        return Ok(ok(Some(t), None));
+    }
     if let Some(t) = &t {
         if prflow::stopped(r.app, t, &r.name(), message, false, None)? {
             r.set_session_status("needs")?;
         }
     }
     Ok(ok(t.as_ref(), None))
+}
+
+/// Screens the question a PR visit's reply ended on, off the hook's clock: when the owner's rules answer
+/// it, the answer goes to the visiting agent; otherwise it's put to the owner on the PR, as a `tb question`
+/// from the visit is. A reply that asks nothing after all is a plain stop. It does nothing when the
+/// terminal moved on meanwhile.
+fn screen_visit_reply(app: &App, tid: i64, sid: &str, name: &str, asked: &str, message: &str) -> Result<()> {
+    let t = board::get_task(app, tid)?;
+    let screened = screen::reply_question(app, Some(&t), asked).unwrap_or(json!({}));
+    app.db.tx(|| {
+        let idle = board::get_session(app, Some(sid))?.map(|s| s.s("status") == Some("idle")).unwrap_or(false);
+        let Some(t) = prflow::visited_by(app, sid)?.filter(|v| v.id() == tid && idle) else { return Ok(()) };
+        match screened["verdict"].as_str() {
+            Some("none") => {
+                if prflow::stopped(app, &t, name, message, false, None)? {
+                    app.db.x("UPDATE sessions SET status = 'needs' WHERE id = ? AND status != 'gone'", p![sid])?;
+                }
+            }
+            Some("answered") => {
+                let src = screened["source"].as_str().unwrap_or("the rules");
+                let ans = screened["answer"].as_str().unwrap_or("");
+                board::log_event(app, tid, name, "question", &format!("Asked in its reply on PR #{}: {asked}", t.i0("pr_num")))?;
+                board::log_event(app, tid, board::BOARD, "answer", &format!("Answered from {src} without asking you: {ans}"))?;
+                let text = format!(
+                    "{} Answered from {src} without asking {}:\n{ans}\n\nCarry on with the PR. If this answer really doesn't fit, ask again with {} question and say why.",
+                    handoff::marker(tid),
+                    app.cfg.owner,
+                    board::tb_cmd(app)
+                );
+                deliver::add(app, "answer", &text, tid, Some(sid), None)?;
+            }
+            _ => {
+                let question = screened["question"].as_str().filter(|q| !q.trim().is_empty()).unwrap_or(asked);
+                let wrote = (question != asked).then_some(asked);
+                raise_question(app, &t, true, name, question, wrote, None, None)?;
+                app.db.x("UPDATE sessions SET status = 'needs' WHERE id = ? AND status != 'gone'", p![sid])?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Events that show the terminal's Claude is trying the API again, which ends "offline"; and the ones

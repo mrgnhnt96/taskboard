@@ -18,10 +18,25 @@ struct Board {
 }
 
 fn new_board() -> Board {
+    board_screening(None)
+}
+
+/// A board whose question screener, when `out` is given, is a script printing `out` (what claude would
+/// print); with none, screening is off.
+fn board_screening(out: Option<&str>) -> Board {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
-    let app = App::for_tests(Config::for_tests(dir.path()));
+    let mut cfg = Config::for_tests(dir.path());
+    if let Some(out) = out {
+        let script = dir.path().join("claude");
+        std::fs::write(&script, format!("#!/bin/sh\necho '{out}'\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        cfg.claude = script.to_string_lossy().to_string();
+        cfg.questions.screen = true;
+    }
+    let app = App::for_tests(cfg);
     app.db
         .set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string()))
         .unwrap();
@@ -319,4 +334,42 @@ fn a_pr_visit_waiting_on_its_background_command_keeps_going_in_its_slot() {
     b.report("hook.stop", json!({"last_message": "The tests fail and I can't see why.", "transcript_path": path}));
     assert_eq!(stopped(&b, a)["message"], "The tests fail and I can't see why.");
     assert!(logged(&b, a, "Stopped on PR #7 before it was finished"));
+}
+
+const ASKS: &str = "The merge is blocked by the rebase.\n\nShould I reset the branch to the pushed commit and merge?";
+
+#[test]
+fn a_pr_visit_ending_on_a_question_puts_it_to_the_owner_on_the_pr() {
+    let b = new_board();
+    b.midna_says("idle");
+    let (a, _, _) = visiting(&b);
+    b.report("hook.stop", json!({"last_message": ASKS}));
+    assert_eq!(stopped(&b, a)["asked"], true);
+    assert!(logged(&b, a, "Asked you on PR #7: Should I reset the branch"));
+    assert!(!logged(&b, a, "Stopped on PR"));
+    assert_eq!(b.session()["status"], "needs");
+}
+
+#[test]
+fn a_pr_visit_question_the_rules_answer_goes_back_to_the_agent() {
+    let out = json!({"structured_output": {"verdict": "answered", "answer": "Yes, reset it and merge.", "source": "MEMORY.md"}}).to_string();
+    let b = board_screening(Some(&out));
+    b.midna_says("idle");
+    let (a, _, _) = visiting(&b);
+    b.report("hook.stop", json!({"last_message": ASKS}));
+    assert_eq!(stopped(&b, a), Value::Null, "the owner isn't asked");
+    assert!(logged(&b, a, "Answered from MEMORY.md without asking you: Yes, reset it and merge."));
+    let sent = b.app.db.q("SELECT target FROM jobs WHERE kind = 'deliver' AND purpose = 'answer' AND task_id = ?", p![a]).unwrap();
+    assert_eq!(sent.len(), 1, "the answer is delivered to the visit");
+}
+
+#[test]
+fn a_pr_visit_reply_that_asks_nothing_after_all_is_a_plain_stop() {
+    let out = json!({"structured_output": {"verdict": "none"}}).to_string();
+    let b = board_screening(Some(&out));
+    b.midna_says("idle");
+    let (a, _, _) = visiting(&b);
+    b.report("hook.stop", json!({"last_message": ASKS}));
+    assert!(logged(&b, a, "Stopped on PR #7 before it was finished"));
+    assert_ne!(stopped(&b, a)["asked"], true);
 }
