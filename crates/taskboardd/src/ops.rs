@@ -429,6 +429,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
         .iter()
         .map(board::job_dict)
         .collect();
+    let atts = board::attachments(app, Some(id), None)?;
     Ok(merge(
         d,
         json!({
@@ -443,8 +444,8 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "blocked_by": waitsfor::blocked_by(app, &t)?, "attachable": attachable, "found": found,
             "from_issue": fi.map(|b| json!({"id": b.id(), "ref": rf("issue", b.id()), "title": b.v("title")})).unwrap_or(Value::Null),
             "jobs": jobs_now,
-            "attachments": board::attachments(app, Some(id), None)?,
-            "goal_attachments": match &g { Some(g) => Value::Array(board::attachments(app, None, Some(g.id()))?), None => json!([]) },
+            "goal_attachments": match &g { Some(g) => Value::Array(board::goal_attachments(app, &atts, g.id())?), None => json!([]) },
+            "attachments": atts,
         }),
     ))
     .and_then(|d| with_step_results(app, &t, d))

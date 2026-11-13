@@ -847,6 +847,21 @@ fn the_goal_lists_every_task_attachment_next_to_its_own() {
 }
 
 #[test]
+fn a_task_lists_an_attachment_it_shares_with_its_goal_once() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Recap", "project": "webapp"}))["id"].as_i64().unwrap();
+    let t = b.post("/tasks", json!({"title": "Fix it", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    let design = json!({"url": "https://claude.ai/artifact/abc", "title": "Recap page components", "kind": "design"});
+    b.post(&format!("/tasks/T{t}/attachments"), design.clone());
+    b.post(&format!("/goals/G{g}/attachments"), design);
+    b.post(&format!("/goals/G{g}/attachments"), json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc"}));
+    let td = b.get(&format!("/tasks/T{t}"));
+    let titles = |k: &str| td[k].as_array().unwrap().iter().map(|a| a["title"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(titles("attachments"), vec!["Recap page components"]);
+    assert_eq!(titles("goal_attachments"), vec!["Spec"], "the shared one shows once, as the task's");
+}
+
+#[test]
 fn a_queued_task_moved_into_a_goal_becomes_planned_and_the_run_picks_it_up() {
     let b = new_board();
     let gid = b.post("/goals", json!({"name": "Checkout", "project": "webapp", "outcome": "people can pay"}))["id"].as_i64().unwrap();
