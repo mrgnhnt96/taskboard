@@ -281,7 +281,8 @@ fn capitalize_first(s: &str) -> String {
 fn attachments_block(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> {
     let mut atts = board::attachments(app, Some(t.id()), None)?;
     if let Some(g) = g {
-        atts.extend(board::attachments(app, None, Some(g.id()))?);
+        let goal_atts = board::goal_attachments(app, &atts, g.id())?;
+        atts.extend(goal_atts);
     }
     if atts.is_empty() {
         return Ok(vec![]);

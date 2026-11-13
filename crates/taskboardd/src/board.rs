@@ -1105,6 +1105,13 @@ pub fn attachments(app: &App, task_id: Option<i64>, goal_id: Option<i64>) -> Res
         .collect())
 }
 
+/// The goal's attachments the task doesn't already carry: one attached to both (same URL)
+/// shows once, as the task's.
+pub fn goal_attachments(app: &App, task_atts: &[Value], goal_id: i64) -> Result<Vec<Value>> {
+    let own: std::collections::HashSet<&str> = task_atts.iter().filter_map(|a| a["url"].as_str()).collect();
+    Ok(attachments(app, None, Some(goal_id))?.into_iter().filter(|a| !a["url"].as_str().is_some_and(|u| own.contains(u))).collect())
+}
+
 static ATT_TAG_RE: Lazy<Regex> = Lazy::new(|| {
     let tag = r"(?:\d{4}-\d{2}-\d{2}|[TG]\d+)";
     Regex::new(&format!(r"\s*[\(\[]\s*{tag}(?:\s*[,;·]\s*{tag})*\s*[\)\]]\s*$")).unwrap()
