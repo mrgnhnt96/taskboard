@@ -75,6 +75,10 @@ impl Board {
     fn card(&self, id: i64) -> Value {
         self.get(&format!("tasks/T{id}"))
     }
+    /// The handoff the task's terminal gets in its context.
+    fn handoff(&self, id: i64) -> String {
+        taskboardd::handoff::build_starting(&self.app, id).unwrap()
+    }
     fn start_job(&self, id: i64) -> taskboardd::util::Row {
         let j = self.app.db.q1("SELECT * FROM jobs WHERE kind = 'agent' AND purpose = 'start' AND task_id = ? ORDER BY id DESC", p![id]).unwrap();
         board::job_args(&j.unwrap_or_else(|| panic!("T{id} has no start job")))
@@ -126,7 +130,7 @@ fn tasks_sharing_a_lock_take_turns() {
     b.run_to_done(a, "s1");
     runner::start_queued(&b.app).unwrap();
     assert!(b.started().contains(&t2));
-    assert!(b.start_job(t2).st("prompt").contains("This task holds local-core, emulator-5554"));
+    assert!(b.handoff(t2).contains("This task holds local-core, emulator-5554"));
 }
 
 #[test]
@@ -165,7 +169,7 @@ fn alone_waits_for_the_goal_to_be_quiet_and_then_holds_it() {
     assert!(b.started().contains(&d));
     assert!(!b.started().contains(&e));
     assert_eq!(b.card(e)["waiting"], format!("Waits while T{d} runs alone"));
-    assert!(b.start_job(d).st("prompt").contains("runs alone in its goal"));
+    assert!(b.handoff(d).contains("runs alone in its goal"));
 }
 
 #[test]
@@ -262,8 +266,9 @@ fn each_task_starts_in_a_worktree_slot_off_the_base() {
         let job = b.start_job(t);
         assert_eq!(job.st("cwd"), folder);
         assert_eq!(git(Path::new(&folder), &["rev-parse", "HEAD"]), head);
-        assert!(job.st("prompt").contains(&format!("The board gave the task the worktree slot-{n} from its pool: {folder}, detached at origin/main")), "{}", job.st("prompt"));
-        assert!(job.st("prompt").contains(&format!("Its builds go in {folder}/target")), "{}", job.st("prompt"));
+        let h = b.handoff(t);
+        assert!(h.contains(&format!("The board gave the task the worktree slot-{n} from its pool: {folder}, detached at origin/main")), "{h}");
+        assert!(h.contains(&format!("Its builds go in {folder}/target")), "{h}");
         let log = b.get(&format!("tasks/T{t}"))["log"].to_string();
         assert!(log.contains(&format!("Made worktree slot-{n} from origin/main at {folder}")), "{log}");
     }
@@ -332,7 +337,8 @@ fn a_backport_task_starts_from_its_pr_base_and_its_pr_goes_into_it() {
     let job = b.start_job(t);
     assert_eq!(job.st("cwd"), slot(&b, 1));
     assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]), first, "it starts at the release branch, not main");
-    assert!(job.st("prompt").contains("Its PR goes into release/1.x, not the default branch"), "{}", job.st("prompt"));
+    let h = b.handoff(t);
+    assert!(h.contains("Its PR goes into release/1.x, not the default branch"), "{h}");
 
     // A goal's base is what its tasks take unless they name their own; default clears a task's.
     b.post(&format!("goals/G{g}"), json!({"pr_base": "release/2.x"}));
@@ -1256,7 +1262,7 @@ fn a_lane_on_the_task_or_its_goal_says_where_it_starts() {
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.start_job(in_slot).st("cwd"), slot(&b, 1), "a slot without a goal base starts at the default branch");
     assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]), head);
-    assert!(b.start_job(in_slot).st("prompt").contains("Lane: slot (it's set on the task)"), "{}", b.start_job(in_slot).st("prompt"));
+    assert!(b.handoff(in_slot).contains("Lane: slot (it's set on the task)"), "{}", b.handoff(in_slot));
 
     b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
     assert_eq!(b.get(&format!("goals/G{g}"))["lane"], "slot", "--worktrees puts the goal on the slot lane");
@@ -1343,7 +1349,7 @@ fn alone_is_the_alone_lane() {
     let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.started(), [t], "on the goal's alone lane, one runs at a time");
-    assert!(b.start_job(t).st("prompt").contains("runs alone in its goal"), "{}", b.start_job(t).st("prompt"));
+    assert!(b.handoff(t).contains("runs alone in its goal"), "{}", b.handoff(t));
     assert!(![one, two].iter().any(|x| b.started().contains(x)));
 }
 

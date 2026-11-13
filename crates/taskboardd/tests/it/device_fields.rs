@@ -146,7 +146,7 @@ fn a_long_handoff_keeps_the_device_lines_whole() {
     let a = b.post("/tasks", json!({"title": "Long one", "detail": long, "project": "webapp", "devices": "ios"}))["id"].as_i64().unwrap();
     runner::start_queued(&b.app).unwrap();
     let h = handoff::build(&b.app, a).unwrap();
-    assert!(h.chars().count() <= 6000, "the handoff still fits: {}", h.chars().count());
+    assert!(h.chars().count() <= handoff::CONTEXT_LIMIT, "the handoff still fits: {}", h.chars().count());
     assert!(h.contains("The board lent this task the device dev-c (iOS simulator, ABCD-UDID): use only that one"), "{h}");
     assert!(h.contains("Start it: xcrun simctl boot ABCD-UDID && open -a Simulator"), "{h}");
     assert!(h.contains("Stop it when you're done: xcrun simctl shutdown ABCD-UDID"), "{h}");
@@ -167,7 +167,7 @@ fn a_long_handoff_points_to_its_reference_and_keeps_the_work_whole() {
         b.post(
             &format!("/goals/G{g}/attachments"),
             json!({"url": format!("https://example.com/design/{n}"), "title": format!("Screen {n}"), "kind": "design",
-                   "summary": "Every state of the screen, light and dark, with the spacing called out. ".repeat(3)}),
+                   "summary": "Every state of the screen, light and dark, with the spacing called out. ".repeat(6)}),
         );
     }
     let detail = format!("Fix the track list. {}", "The tester saw the rows jump when the list scrolls. ".repeat(20));
@@ -176,7 +176,7 @@ fn a_long_handoff_points_to_its_reference_and_keeps_the_work_whole() {
         .unwrap();
     runner::start_queued(&b.app).unwrap();
     let h = handoff::build(&b.app, a).unwrap();
-    assert!(h.chars().count() <= 6000, "it fits: {}", h.chars().count());
+    assert!(h.chars().count() <= handoff::CONTEXT_LIMIT, "it fits: {}", h.chars().count());
     assert!(h.contains(&format!("What to do:\n{}", detail.trim())), "the work is whole: {h}");
     assert!(h.contains(setup.replace("{device}", "dev-c").trim()), "the goal's setup is whole: {h}");
     assert!(h.contains("Attached (read these before you start): [Shortened to fit. tb handoff prints it in full.]"), "{h}");

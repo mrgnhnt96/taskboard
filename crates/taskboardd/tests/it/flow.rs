@@ -93,7 +93,7 @@ fn a_task_starts_is_claimed_reports_and_finishes() {
     let job = &b.jobs("agent")[0];
     let args = board::job_args(job);
     assert!(args.st("prompt").starts_with("[task-board:T1] You are picking up “Add login” in webapp"));
-    assert!(args.st("prompt").contains("What to do:\nDo the thing."));
+    assert!(!args.st("prompt").contains("What to do:"), "a short prompt: the hook carries the handoff");
     assert_eq!(b.task(id).i("start_job"), Some(job.id()));
     assert!(runner::start_queued(&b.app).unwrap().is_empty(), "a task with a live start job isn't started twice");
 
@@ -101,7 +101,10 @@ fn a_task_starts_is_claimed_reports_and_finishes() {
     let prompt = args.st("prompt");
     let out = b.report("hook.prompt", "s1", json!({"prompt": prompt}));
     assert_eq!(out["task"], "T1");
-    assert!(out.get("context").is_none(), "the full handoff was already in the prompt");
+    let ctx = out["context"].as_str().unwrap_or("");
+    assert!(ctx.contains("What to do:\nDo the thing.") && ctx.contains(taskboardd::handoff::CLOSING), "the hook carries the whole handoff: {ctx}");
+    let again = b.report("hook.prompt", "s1", json!({"prompt": "carry on"}));
+    assert!(!again["context"].as_str().unwrap_or("").contains(taskboardd::handoff::CLOSING), "and sends it once: {again}");
     let t = b.task(id);
     assert_eq!(t.s("status"), Some("working"));
     assert_eq!(t.s("session_id"), Some("s1"));
@@ -365,7 +368,7 @@ fn a_task_waits_for_another_and_a_goal_runs_in_order() {
 
     b.post(&format!("/tasks/T{other}/done"), json!({"summary": "Table in"}));
     assert_eq!(runner::start_queued(&b.app).unwrap(), vec![t1]);
-    let prompt = board::job_args(&b.jobs("agent")[0]).st("prompt");
+    let prompt = taskboardd::handoff::build_starting(&b.app, t1).unwrap();
     assert!(prompt.contains("This task needs work from another task, and it's ready"));
     assert!(prompt.contains("It is part of the goal “Checkout”, done when people can pay."));
 }

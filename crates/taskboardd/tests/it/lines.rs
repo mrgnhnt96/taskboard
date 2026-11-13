@@ -534,7 +534,8 @@ fn the_owners_word_moves_this_terminals_task_to_a_terminal_of_its_own() {
     let job = b.app.db.q1("SELECT * FROM jobs WHERE task_id = ? AND purpose = 'start'", p![id(&t1)]).unwrap().unwrap();
     let args = board::job_args(&job);
     assert_eq!(args.st("cwd"), slot, "in the slot it holds");
-    assert!(args.st("prompt").contains("Header styles"), "with its checkpoint: {}", args.st("prompt"));
+    let h = taskboardd::handoff::build_starting(&b.app, id(&t1)).unwrap();
+    assert!(h.contains("Header styles"), "with its checkpoint: {h}");
     let held = b.app.db.count("SELECT COUNT(*) FROM worktree_slots WHERE task_id = ?", p![id(&t1)]).unwrap();
     assert_eq!(held, 1, "the slot stays the task's");
 }

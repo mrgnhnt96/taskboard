@@ -2222,7 +2222,7 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
             board::log_event(app, id, OWNER, "handoff", "Reopening the old conversation in a new terminal")?;
         } else {
             let edited = body_str(body, "handoff");
-            let mut text = if edited.is_empty() { handoff::build(app, id)? } else { edited.clone() };
+            let mut text = if edited.is_empty() { handoff::start_prompt(app, id)? } else { edited.clone() };
             if let Some(f) = finish.as_ref().or(ask.as_ref()) {
                 text = format!("{marker} {f}\n\n{text}");
             }

@@ -214,7 +214,8 @@ fn a_task_waiting_on_one_an_agent_marked_done_carries_on() {
 
     human::done_on_word(&b.app, &json!({"tasks": [h], "via_session": "s3", "note": "Tenancy acme-dev"}), said(&[id_of(&h)])).unwrap();
     assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two]);
-    let prompt = board::job_args(&b.starts(two)[0]).st("prompt");
+    assert!(!b.starts(two).is_empty());
+    let prompt = taskboardd::handoff::build_starting(&b.app, two).unwrap();
     assert!(prompt.contains(&format!("{h} “Create an Oracle Cloud account” is done")) && prompt.contains("Tenancy acme-dev"), "{prompt}");
 }
 
@@ -268,7 +269,8 @@ fn in_a_goal_it_holds_later_tasks_but_takes_no_terminal_slot() {
 
     b.from_app(&format!("tasks/{h}/did"), json!({"note": "Tenancy acme-dev"})).unwrap();
     assert_eq!(runner::start_queued(&b.app).unwrap(), vec![id_of(&next)], "a done human task frees the goal");
-    let prompt = board::job_args(&b.starts(id_of(&next))[0]).st("prompt");
+    assert!(!b.starts(id_of(&next)).is_empty());
+    let prompt = taskboardd::handoff::build_starting(&b.app, id_of(&next)).unwrap();
     assert!(prompt.contains("Tenancy acme-dev"), "the handoff names what the owner did: {prompt}");
 }
 
