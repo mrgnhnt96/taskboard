@@ -6,7 +6,10 @@ use crate::app::App;
 use crate::util::*;
 use crate::{board, p, projects, shared, steps, waitsfor};
 
-const LIMIT: usize = 6000;
+/// The most of a handoff the board sends as hook context. Claude Code takes a hook's context whole up to
+/// 10,000 characters (past that the agent sees a 2,000-character preview and a file path) and the hook
+/// clips at 9,900; this leaves room for what goes with it, like the terminal's line and the split check.
+pub const CONTEXT_LIMIT: usize = 9000;
 const NOTES_LIMIT: usize = 1500;
 pub const CLOSING: &str = "Check the branch and uncommitted files before changing anything and report a checkpoint, \
 then carry on with the work in the same turn. Don't stop to wait for a go-ahead.";
@@ -587,7 +590,7 @@ fn footer(app: &App) -> Option<String> {
     }
 }
 
-/// How a handoff section may give way when the handoff runs past [`LIMIT`].
+/// How a handoff section may give way when the handoff runs past [`CONTEXT_LIMIT`].
 #[derive(Clone, Copy, PartialEq)]
 enum Fit {
     /// What the agent acts on before anything else: never shortened.
@@ -618,12 +621,12 @@ fn pointer(text: &str, tb: &str) -> String {
     shortened(&one_line(text.lines().next().unwrap_or(""), POINTER_HEAD), POINTER_HEAD, tb)
 }
 
-/// Joins the parts and the tail. Past [`LIMIT`], reference parts give way to a pointer to `tb handoff`
+/// Joins the parts and the tail. Past [`CONTEXT_LIMIT`], reference parts give way to a pointer to `tb handoff`
 /// from the last one back, then the work itself is shortened (with the same pointer) to the room left.
 /// Must-act parts and the tail are never cut, so a handoff that still runs long is sent long.
 fn fit_to_limit(mut parts: Vec<Part>, tail: Vec<String>, tb: &str) -> String {
     let all = |p: &[Part]| p.iter().map(|p| p.text.clone()).chain(tail.iter().cloned()).collect::<Vec<_>>().join("\n\n");
-    let over = |p: &[Part]| all(p).chars().count() as i64 - LIMIT as i64;
+    let over = |p: &[Part]| all(p).chars().count() as i64 - CONTEXT_LIMIT as i64;
     for i in (0..parts.len()).rev() {
         if over(&parts) <= 0 {
             break;
@@ -655,10 +658,21 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     build_with(app, task_id, false, true)
 }
 
-/// The handoff a task starts with: it has started, though `started_at` is set only once a
-/// terminal takes it, so the devices line says none were free rather than that they come later.
+/// The handoff a terminal on the task gets as hook context: it has started, though `started_at` is set
+/// only once a terminal takes it, so the devices line says none were free rather than that they come later.
 pub fn build_starting(app: &App, task_id: i64) -> Result<String> {
     build_with(app, task_id, true, true)
+}
+
+/// The prompt a task starts with: its first line and where the rest is. The prompt hook sees the marker
+/// and puts the whole handoff in the conversation's context, once.
+pub fn start_prompt(app: &App, task_id: i64) -> Result<String> {
+    let t = board::get_task(app, task_id)?;
+    Ok(format!(
+        "{}\nThe board's hook puts the full handoff in your context; {} handoff prints it again.",
+        first_line(&t),
+        board::tb_cmd(app)
+    ))
 }
 
 /// The handoff with nothing shortened, for `tb handoff`: where a shortened section points.

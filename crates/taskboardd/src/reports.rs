@@ -337,7 +337,7 @@ impl<'a> Report<'a> {
     fn handoff_for(&self, t: &Row) -> Result<String> {
         let t = board::get_task(self.app, t.id())?;
         self.sent(&t)?;
-        handoff::build(self.app, t.id())
+        handoff::build_starting(self.app, t.id())
     }
 }
 
@@ -549,8 +549,9 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
                         r.sent(&t)?;
                         return Ok(ok(Some(&t), None));
                     }
-                    let c = r.handoff_for(&t)?;
-                    return Ok(ok(Some(&t), Some(c)));
+                    // A new terminal's SessionStart may have sent it already: the handoff goes once.
+                    let c = if r.needs_context(&t)? { Some(r.handoff_for(&t)?) } else { None };
+                    return Ok(ok(Some(&t), c));
                 }
             }
         }

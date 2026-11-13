@@ -105,7 +105,8 @@ fn once_the_other_projects_pr_merges_it_resumes_without_rebase_steps() {
 
     board::update_task(&b.app, api_task, vec![("pr_state", json!("MERGED")), ("pr_phase", json!("merged"))]).unwrap();
     assert_eq!(runner::start_queued(&b.app).unwrap(), vec![web_task]);
-    let prompt = board::job_args(&b.starts(web_task)[0]).st("prompt");
+    assert!(!b.starts(web_task).is_empty());
+    let prompt = taskboardd::handoff::build_starting(&b.app, web_task).unwrap();
     assert!(prompt.contains("in api is merged (PR #9"), "{prompt}");
     assert!(prompt.contains("Added GET /things."), "{prompt}");
     assert!(prompt.contains("nothing to rebase"), "{prompt}");
