@@ -134,10 +134,20 @@ fn rules(app: &App) -> String {
 fn prompt(app: &App, t: Option<&Row>, question: &str, reply: bool) -> Result<String> {
     let owner = &app.cfg.owner;
     let mut parts = vec![format!(
-        "An agent working on {owner}'s task board wants to ask {owner} a question. Decide whether the rules and \
-         context below already settle it.\n- answered: they clearly do. Give the answer in plain words and name its \
-         source (a file name or 'the task').\n- ask: they don't, or you're unsure. Rewrite the question for {owner} in \
-         plain words: say what it's about, explain every reference and term, and keep it short.\nNever invent a rule."
+        "An agent working on {owner}'s task board wants to ask {owner} a question. {owner} usually just does what the \
+         agent suggests, so decide it yourself whenever you can: the rules may settle it, or the task, the question \
+         and its choices may make one answer plainly right for the work. Judge the choices on their merits, whether \
+         or not the agent marked one as recommended.\n\
+         - answered: the rules settle it, or one answer is plainly right and safe for the work (it loses nothing, \
+         or what it changes can be put back). Give the answer in plain words, with the reason in one short clause, \
+         and name its source (a file name, 'the task', or 'the context' when you decided it from the question \
+         itself).\n\
+         - ask: it's truly {owner}'s call. What the work should do (product, scope, design, naming that users see), \
+         money, accounts or sign-ins, legal or privacy, a fact only {owner} knows, a step that can't be undone and \
+         loses work or data, one that reaches other people (publishing, sending, merging or pushing to a branch \
+         others share when the task didn't ask for it), or the choices are close and you can't tell. Rewrite the \
+         question for {owner} in plain words: say what it's about, explain every reference and term, and keep it \
+         short.\nNever invent a rule."
     )];
     if reply {
         parts.push(format!(

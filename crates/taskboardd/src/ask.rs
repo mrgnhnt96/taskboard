@@ -29,6 +29,14 @@ fn options(v: &Value) -> Vec<Value> {
     v.as_array().map(|a| a.iter().filter_map(option).take(MAX_OPTIONS).collect()).unwrap_or_default()
 }
 
+/// `tb question`'s options as lines for a reader ("- Label: what it means"), none without any.
+pub fn option_lines(opts: Option<&Value>) -> Vec<String> {
+    opts.map(options).unwrap_or_default().iter().map(|o| {
+        let (l, d) = (o["label"].as_str().unwrap_or(""), o["description"].as_str().unwrap_or(""));
+        if d.is_empty() { format!("- {l}") } else { format!("- {l}: {d}") }
+    }).collect()
+}
+
 /// The ask for `tb question`'s options (strings "Label: what it means", or `{label, description}`),
 /// or `None` without any.
 pub fn from_options(question: &str, opts: Option<&Value>) -> Option<String> {

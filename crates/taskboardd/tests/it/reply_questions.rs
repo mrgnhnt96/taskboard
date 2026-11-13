@@ -17,14 +17,16 @@ struct Board {
     _dir: tempfile::TempDir,
 }
 
-/// A board whose question screener is a script printing `verdict` (the JSON claude would return).
+/// A board whose question screener is a script printing `verdict` (the JSON claude would return); it
+/// saves the prompt it's given to `prompt.txt`.
 fn board_screening(verdict: Value) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
     let script = dir.path().join("claude");
-    std::fs::write(&script, format!("#!/bin/sh\necho '{}'\n", json!({"structured_output": verdict}))).unwrap();
+    let saved = dir.path().join("prompt.txt");
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$2\" > '{}'\necho '{}'\n", saved.display(), json!({"structured_output": verdict}))).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     cfg.claude = script.to_string_lossy().to_string();
     cfg.questions.screen = true;
@@ -51,6 +53,9 @@ impl Board {
     }
     fn stop(&self, reply: &str) -> Value {
         self.report("hook.stop", json!({"last_message": reply, "last_message_end": reply}))
+    }
+    fn screened_prompt(&self) -> String {
+        std::fs::read_to_string(self._dir.path().join("prompt.txt")).unwrap_or_default()
     }
     fn task(&self) -> taskboardd::util::Row {
         board::get_task(&self.app, 1).unwrap()
@@ -122,4 +127,13 @@ fn a_follow_up_prompt_then_a_re_ask_in_prose_alerts_the_owner_again() {
     assert_eq!((t.s("status"), t.s("needs_reason")), (Some("needs"), Some("question")));
     assert_eq!(t.s("answered_at"), None);
     assert!(b.alerts().iter().any(|a| a.starts_with("T1: Tell me which cap you want")), "{:?}", b.alerts());
+}
+
+#[test]
+fn the_screener_judges_a_question_with_its_choices() {
+    let b = board_screening(ask());
+    b.report("tb.question", json!({"text": "How do I unblock the merge?", "options": ["Reset: move the branch back to the pushed commit", "Force-push: push the rebase"]}));
+    let p = b.screened_prompt();
+    assert!(p.contains("How do I unblock the merge?\n\nIts choices:\n- Reset: move the branch back to the pushed commit\n- Force-push: push the rebase"), "{p}");
+    assert!(p.contains("decide it yourself whenever you can"), "the screener may answer by judgment, not only from rules");
 }
