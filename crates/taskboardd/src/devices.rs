@@ -1205,15 +1205,18 @@ pub fn cmd_vars(app: &App, t: &Row, d: &Row) -> std::collections::BTreeMap<Strin
     v
 }
 
-/// "Start it: …" and "Stop it when you're done: …" for a lent device, filled for the task.
-fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<String> {
+/// "Start it: …" and "Stop it when you're done: …" for a lent device, filled for the task, each
+/// with the bare command it runs.
+fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<(String, String)> {
     let vars = cmd_vars(app, t, d);
     let mut out = vec![];
     if let Some(c) = d.s("start_cmd").filter(|c| !c.trim().is_empty()) {
-        out.push(format!("Start it: {}", crate::steps::fill(c.trim(), &vars)));
+        let c = crate::steps::fill(c.trim(), &vars);
+        out.push((format!("Start it: {c}"), c));
     }
     if let Some(c) = d.s("stop_cmd").filter(|c| !c.trim().is_empty()) {
-        out.push(format!("Stop it when you're done: {}", crate::steps::fill(c.trim(), &vars)));
+        let c = crate::steps::fill(c.trim(), &vars);
+        out.push((format!("Stop it when you're done: {c}"), c));
     }
     out
 }
@@ -1235,10 +1238,14 @@ fn pick_none_line(app: &App, t: &Row) -> Result<Vec<String>> {
 }
 
 /// The handoff's line about the devices lent to the task, how to start and stop each, and which
-/// devices other tasks have. Lent devices are described from their own rows (as the Python board
-/// did from the task's loans), so one reserved for another goal since it was lent keeps its details.
-/// A task that needs devices but has none still hears which ones to leave alone. `starting`: the
-/// handoff it starts with (it has started, though `started_at` isn't set yet).
+/// devices other tasks have. Each fact is said once: a lent device is named with its kind and target
+/// (its id), and its note, start and stop lines are left out when the goal's setup already says them
+/// (the setup is in the same handoff, filled for this task). The devices it must leave alone are
+/// named only, a few at most, with the tb command that lists them all. Lent devices are described
+/// from their own rows (as the Python board did from the task's loans), so one reserved for another
+/// goal since it was lent keeps its details. A task that needs devices but has none still hears
+/// which ones to leave alone. `starting`: the handoff it starts with (it has started, though
+/// `started_at` isn't set yet).
 pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> {
     let names = lent(app, t.id())?;
     if names.is_empty() {
@@ -1258,14 +1265,12 @@ pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> 
                 needs_text(&needs)
             )
         };
-        let others = others_text(app, t, &[])?;
-        if !others.is_empty() {
-            text += &format!("\nOther devices in use, don't touch them: {others}.");
-        }
+        text += &others_line(app, t, &[])?;
         return Ok(vec![text]);
     }
     let (seen, _) = view(app, t.i("goal_id"))?;
     let all = pool(app)?;
+    let setup = goal_setup(app, t)?;
     // The task's view first (its goal's purposes added to the tags), else the device's own row.
     let rows: Vec<Option<&Row>> =
         names.iter().map(|n| seen.iter().chain(&all).find(|d| d.s("name") == Some(n.as_str()))).collect();
@@ -1275,12 +1280,15 @@ pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> 
         .map(|(n, d)| match d {
             Some(d) => {
                 // What it is (kind, target), else its tags; then its note, clipped to 300 as the
-                // Python board did (imported notes can run past the 200 a new one may have).
+                // Python board did (imported notes can run past the 200 a new one may have), unless
+                // the goal's setup already covers this device.
                 let mut parts: Vec<String> = match what(d) {
                     w if w.is_empty() => tags_of(d),
                     w => vec![w],
                 };
-                parts.extend(d.s("note").filter(|x| !x.is_empty()).map(|x| clip(x, 300)));
+                if !covers(&setup, d) {
+                    parts.extend(d.s("note").filter(|x| !x.is_empty()).map(|x| clip(x, 300)));
+                }
                 if parts.is_empty() { n.clone() } else { format!("{n} ({})", parts.join(", ")) }
             }
             None => n.clone(),
@@ -1288,7 +1296,7 @@ pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> 
         .collect();
     let one = names.len() == 1;
     let mut text = format!(
-        "The board lent this task {} {}: use only {}, since other tasks have the rest of the pool. {} when the task is done.",
+        "The board lent this task {} {}: use only {}. {} when the task is done.",
         if one { "the device" } else { "the devices" },
         described.join(", "),
         if one { "that one" } else { "these" },
@@ -1296,7 +1304,7 @@ pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> 
     );
     for (n, d) in names.iter().zip(&rows) {
         let Some(d) = d else { continue };
-        let cmds = cmd_lines(app, t, d);
+        let cmds: Vec<String> = cmd_lines(app, t, d).into_iter().filter(|(_, c)| setup.is_empty() || !setup.contains(c.as_str())).map(|(l, _)| l).collect();
         if cmds.is_empty() {
             continue;
         }
@@ -1306,16 +1314,47 @@ pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> 
             text += &format!("\n{n}:\n{}", cmds.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"));
         }
     }
-    let others = others_text(app, t, &names)?;
-    if !others.is_empty() {
-        text += &format!("\nOther devices in use, don't touch them: {others}.");
-    }
+    text += &others_line(app, t, &names)?;
     Ok(vec![text])
 }
 
-/// Every device this task must leave alone, as the Python board listed them: each with its target
-/// and why (`with T5`, `reserved for G3`, `kept for …`), joined with "; " and clipped to 500.
-fn others_text(app: &App, t: &Row, mine: &[String]) -> Result<String> {
+/// The goal's setup text, filled for this task as the handoff shows it ("" when it has none).
+fn goal_setup(app: &App, t: &Row) -> Result<String> {
+    let Some(g) = t.i("goal_id") else { return Ok(String::new()) };
+    let Some(g) = app.db.q1("SELECT setup FROM goals WHERE id = ?", p![g])? else { return Ok(String::new()) };
+    match g.s("setup").filter(|s| !s.trim().is_empty()) {
+        // Clipped as the handoff's setup block clips it, so only what the agent reads counts.
+        Some(text) => Ok(clip(crate::handoff::fill_setup(app, text, t)?.trim(), 1500)),
+        None => Ok(String::new()),
+    }
+}
+
+/// Whether the goal's setup already speaks of this device, by its name or its target.
+fn covers(setup: &str, d: &Row) -> bool {
+    !setup.is_empty()
+        && [d.s("name"), d.s("target")].into_iter().flatten().map(str::trim).any(|x| !x.is_empty() && setup.contains(x))
+}
+
+/// How many devices to leave alone the handoff names before it points to `tb devices`.
+const OTHERS_NAMED: usize = 5;
+
+/// "\nLeave these devices alone, other tasks or goals have them: a, b and 2 more (tb devices lists
+/// them)." — the devices in use or kept back, by name only; "" when there are none.
+fn others_line(app: &App, t: &Row, mine: &[String]) -> Result<String> {
+    let names = others(app, t, mine)?;
+    if names.is_empty() {
+        return Ok(String::new());
+    }
+    let tb = board::tb_cmd(app);
+    let shown = names.iter().take(OTHERS_NAMED).cloned().collect::<Vec<_>>().join(", ");
+    let rest = names.len().saturating_sub(OTHERS_NAMED);
+    let tail = if rest > 0 { format!(" and {rest} more ({tb} devices lists them)") } else { String::new() };
+    Ok(format!("\nLeave these devices alone, other tasks or goals have them: {shown}{tail}."))
+}
+
+/// Every device this task must leave alone, by name: held by another task, reserved for another
+/// goal, or kept back.
+fn others(app: &App, t: &Row, mine: &[String]) -> Result<Vec<String>> {
     let holders = held(app)?;
     let res = reserved(&goal_pools(app)?);
     let mut list = vec![];
@@ -1324,32 +1363,14 @@ fn others_text(app: &App, t: &Row, mine: &[String]) -> Result<String> {
         if mine.contains(&name) {
             continue;
         }
-        let mut why = vec![];
-        if let Some(tid) = holders.get(&name).filter(|tid| **tid != t.id()) {
-            why.push(format!("with {}", rf("task", *tid)));
+        let theirs = holders.get(&name).is_some_and(|tid| *tid != t.id())
+            || res.get(&name).is_some_and(|gs| !gs.iter().any(|g| Some(*g) == t.i("goal_id")))
+            || d.b("off");
+        if theirs {
+            list.push(name);
         }
-        if let Some(gs) = res.get(&name).filter(|gs| !gs.iter().any(|g| Some(*g) == t.i("goal_id"))) {
-            why.push(format!("reserved for {}", goals_text(gs)));
-        }
-        if d.b("off") {
-            why.push(kept_for(&d));
-        }
-        if why.is_empty() {
-            continue;
-        }
-        let target = d.s("target").map(str::trim).filter(|x| !x.is_empty()).map(|x| format!(" {x}")).unwrap_or_default();
-        list.push(format!("{name}{target} ({})", why.join(", ")));
     }
-    Ok(clip(&list.join("; "), 500))
-}
-
-/// Why a device is kept back: its note's "Kept for …" (as imported from the Python board), else just that.
-fn kept_for(d: &Row) -> String {
-    static KEPT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bkept for ([^;]+)").unwrap());
-    match d.s("note").and_then(|n| KEPT.captures(n)) {
-        Some(c) => format!("kept for {}", short(c[1].trim(), 80)),
-        None => "kept back".into(),
-    }
+    Ok(list)
 }
 
 #[cfg(test)]
