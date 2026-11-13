@@ -3553,7 +3553,12 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     if r.event == "tb.question" && !spooled {
         r.asking = app.db.tx(|| hold_question(&r))?;
         let t = r.task().ok().flatten();
-        r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
+        let mut asked = one_line(&r.b("text"), 2000);
+        let options = crate::ask::option_lines(r.body.get("options"));
+        if !options.is_empty() {
+            asked = format!("{asked}\n\nIts choices:\n{}", options.join("\n"));
+        }
+        r.screened = screen::question(app, t.as_ref(), &asked);
     }
     if r.event == "tb.new_task" && !spooled && crate::design::clean_kind(r.body.get("kind")).ok().flatten() == Some(crate::human::KIND) {
         // Most human tasks an agent files are work an agent can do: screen it before it reaches the owner.
