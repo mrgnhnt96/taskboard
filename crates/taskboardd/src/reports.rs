@@ -557,6 +557,10 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
         }
     }
     let Some(t) = r.task()? else {
+        // Its stop marked it idle: working again shows a reply answer held for that stop it moved on.
+        if !r.spooled {
+            r.set_session_status("working")?;
+        }
         if let Some(v) = prflow::visited_by(app, r.sid().unwrap_or(""))? {
             prflow::resumed(app, &v)?;
         }
@@ -639,6 +643,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         if r.background.total() > 0 {
             return Ok(ok(prflow::visited_by(app, r.sid().unwrap_or(""))?.as_ref(), None));
         }
+        screen_no_task_reply(r)?;
         return pr_visit_paused(r, &one_line(&r.b("last_message"), 500));
     };
     let msg = clip(&r.b("last_message"), 2000);
@@ -697,6 +702,26 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         Some(q) => Ok(with(ok(Some(&t), None), json!({"block": crate::buried::reason(app, &q, &board::tb_cmd(app))}))),
         None => Ok(ok(Some(&t), None)),
     }
+}
+
+/// The end of a turn on a terminal with no task (and not visiting a PR) that the board opened for
+/// the owner's work or its own (`reply_screen::asks`): when its reply ends on a question, it's
+/// screened like a task's turn.
+fn screen_no_task_reply(r: &Report) -> Result<()> {
+    let Some(sid) = r.sid.clone().filter(|_| !r.spooled) else { return Ok(()) };
+    if prflow::visited_by(r.app, &sid)?.is_some() {
+        return Ok(());
+    }
+    let Some(asks) = crate::reply_screen::asks(r.app, &sid)? else { return Ok(()) };
+    let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
+    let Some(asked) = ends_on_question(&reply_end) else { return Ok(()) };
+    let stopped_at = board::get_session(r.app, Some(&sid))?.and_then(|s| s.s("status_at").map(str::to_string)).unwrap_or_default();
+    r.app.queue_ai(Box::new(move |a: &App| {
+        if let Err(e) = crate::reply_screen::screen(a, &sid, asks, &asked, &stopped_at) {
+            a.info(format!("reply question: {e}"));
+        }
+    }));
+    Ok(())
 }
 
 static ASKS_OWNER: Lazy<Regex> = Lazy::new(|| {

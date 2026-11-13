@@ -731,6 +731,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;
+        crate::reply_screen::tick(app)?;
         dispatch::tick(app)
     })?;
     Ok(made)
