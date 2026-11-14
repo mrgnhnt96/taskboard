@@ -12,11 +12,24 @@ struct Composer {
     kind: Note,
     /// Waiting on someone's date.
     until: Option<String>,
+    /// Done's note, kept aside while another form has the box, so each sends only its own text.
+    done_text: String,
 }
 
 impl Composer {
     fn new(cx: &mut App) -> Composer {
-        Composer { input: kit::Input::new(cx, "", true), kind: Note::Done, until: None }
+        Composer { input: kit::Input::new(cx, "", true), kind: Note::Done, until: None, done_text: String::new() }
+    }
+
+    /// Back to Done's note, with its own text in the box.
+    fn to_done(&mut self, cx: &mut App) {
+        if self.kind == Note::Done {
+            return;
+        }
+        self.kind = Note::Done;
+        self.until = None;
+        let done = std::mem::take(&mut self.done_text);
+        self.input.set_text(&done, cx);
     }
 }
 
@@ -78,9 +91,10 @@ fn goal_open(g: &GoalRow) -> bool {
     g.kids.iter().any(starts_open) != flipped(&g.key)
 }
 
-fn lines_of(v: &View, later_open: bool) -> Vec<Line> {
+/// The page's lines; with the board down, no counts from before it went.
+fn lines_of(v: &View, later_open: bool, down: bool) -> Vec<Line> {
     let mut out = vec![Line::Head];
-    if !v.stats.is_empty() {
+    if !v.stats.is_empty() && !down {
         out.push(Line::Stats);
     }
     if v.groups.is_empty() {
@@ -116,12 +130,13 @@ fn prepare(m: &mut MainWindow) {
     let built = Built::of(m);
     let project = m.filters.project.clone();
     let home = m.data.home.clone().unwrap_or_default();
+    let down = m.down.is_some();
     let st = &mut m.home;
     let held = st.view.as_ref().filter(|v| Rc::ptr_eq(&v.asks, &built.asks) && v.project == project).cloned();
     let same_project = st.view.as_ref().is_some_and(|v| v.project == project);
     let fresh = held.is_none();
     let v = held.unwrap_or_else(|| Rc::new(View::of(&built, &project, &home)));
-    let lines = lines_of(&v, st.later_open);
+    let lines = lines_of(&v, st.later_open, down);
     let count = lines.len();
     match &st.list {
         None => st.list = Some(ListState::new(count, ListAlignment::Top, px(600.))),
@@ -153,9 +168,10 @@ fn line_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Contex
     let t = cx.global::<Theme>().clone();
     let (Some(v), Some(line)) = (m.home.view.clone(), m.home.lines.get(ix).copied()) else { return div().into_any_element() };
     let inner = match line {
-        Line::Head => head_line(&t, &v, cx),
+        Line::Head => head_line(&t, &v, m.data.home.is_some() && !paused(m), cx),
         Line::Stats => stats_line(&t, &v),
-        Line::Empty if m.data.home.is_none() => kit::empty(&t, if m.down.is_some() { "Can’t load the board." } else { "Loading…" }),
+        Line::Empty if paused(m) => kit::empty(&t, "Can’t load the board."),
+        Line::Empty if m.data.home.is_none() => kit::empty(&t, "Loading…"),
         Line::Empty => kit::empty(&t, "Nothing needs you.").pt(px(32.)),
         Line::Group(gi) => group_label(&t, &v.groups[gi]),
         Line::Row(gi, ri, open) => row_line(m, &t, &v.groups[gi], ri, open, window, cx),
@@ -169,7 +185,8 @@ fn line_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Contex
 
 // ------------------------------------------------------------------ the page's top
 
-fn head_line(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Div {
+/// The title, and how many agents wait only while that's known: no all-clear without the board.
+fn head_line(t: &Theme, v: &View, known: bool, cx: &mut Context<MainWindow>) -> Div {
     let tabs = ip::project_filter(t, PROJECT_FILTER, &v.project, &v.counts, cx, |m, p, cx| {
         let mut f = m.filters.clone();
         f.project = p;
@@ -181,7 +198,7 @@ fn head_line(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Div {
         .gap(px(12.))
         .pt(px(22.))
         .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child("Needs you"))
-        .child(div().text_size(px(13.)).text_color(t.muted).child(v.sub.clone()))
+        .when(known, |d| d.child(div().text_size(px(13.)).text_color(t.muted).child(v.sub.clone())))
         .child(div().flex_1())
         .when(v.names.len() > 1, |d| d.child(tabs))
 }
@@ -237,9 +254,15 @@ struct Head {
     finish: Vec<(String, Do)>,
     later: bool,
     time: String,
-    /// Open or shut, on a goal's row.
+    /// Open or shut, on a row that opens.
     chevron: Option<bool>,
     opens: bool,
+    /// A to-do: opening it puts the cursor in its note box.
+    note: bool,
+    /// The board is down: what would change it waits.
+    paused: bool,
+    /// Another form than Done's note is open on the row, so Done waits.
+    form_open: bool,
 }
 
 /// The tag's color: what's gone wrong in the failed color, an agent's in the Needs you color.
@@ -283,8 +306,11 @@ fn ask_head(t: &Theme, a: &Ask, kind: Kind, nested: bool) -> Head {
         finish: groups::finish_vm(a),
         later: a.snooze,
         time: if quiet { String::new() } else { a.time.clone() },
-        chevron: None,
+        chevron: has_body(a).then(|| is_open(a)),
         opens: has_body(a),
+        note: a.human,
+        paused: false,
+        form_open: false,
     }
 }
 
@@ -304,15 +330,37 @@ fn goal_head(t: &Theme, g: &GoalRow, kind: Kind, open: bool) -> Head {
         time: if g.quiet { String::new() } else { g.time.clone() },
         chevron: Some(open),
         opens: true,
+        note: false,
+        paused: false,
+        form_open: false,
     }
 }
 
-fn do_btn(t: &Theme, key: &str, n: usize, label: String, act: Do, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+/// A head with what the page knows now: whether the board answers and which form is open.
+fn live_head(m: &MainWindow, mut h: Head, a: Option<&Ask>) -> Head {
+    h.paused = paused(m);
+    h.form_open = a.is_some_and(|a| is_open(a) && m.home.notes.get(&a.key()).is_some_and(|c| c.kind != Note::Done));
+    h
+}
+
+/// Whether a row's button changes something on the board, rather than opening a page or a form.
+fn posts(act: &Do) -> bool {
+    match act {
+        Do::Act(a) => a.posts(),
+        Do::Ask(_) => false,
+        _ => true,
+    }
+}
+
+fn do_btn(t: &Theme, key: &str, n: usize, label: String, act: Do, off: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let id = SharedString::from(format!("home-do-{n}-{key}"));
     let b = match act {
         Do::Done(_) => kit::btn_primary(t, id, label).h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.)),
         _ => kit::btn_small(t, id, label),
     };
+    if off {
+        return kit::disabled(b);
+    }
     let key = key.to_string();
     b.on_click(cx.listener(move |m, _, window, cx| {
         cx.stop_propagation();
@@ -360,25 +408,36 @@ fn head_el(t: &Theme, h: Head, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .when(!h.above.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.goal).truncate().child(h.above.clone())))
         .child(div().flex().min_w_0().child(title));
     let soft = |b: Stateful<Div>| if h.quiet { b.bg(gpui_kit::transparent_black()).text_color(t.text_2) } else { b };
-    let buttons: Vec<_> = h.finish.iter().enumerate().map(|(n, (label, act))| soft(do_btn(t, &key, n, label.clone(), act.clone(), cx))).collect();
-    let later = h.later.then(|| soft(menu_btn(t, &key, LATER_MENU, "Later ▾", cx)));
+    let off = |act: &Do| (h.paused && posts(act)) || (h.form_open && matches!(act, Do::Done(_)));
+    let buttons: Vec<_> = h.finish.iter().enumerate().map(|(n, (label, act))| soft(do_btn(t, &key, n, label.clone(), act.clone(), off(act), cx))).collect();
+    let later = h.later.then(|| soft(if h.paused { kit::disabled(kit::btn_small(t, SharedString::from(format!("{LATER_MENU}{key}")), "Later ▾")) } else { menu_btn(t, &key, LATER_MENU, "Later ▾", cx) }));
     let more = soft(menu_btn(t, &key, MORE_MENU, "More ▾", cx));
-    let flip_key = key.clone();
-    div()
-        .id(SharedString::from(format!("home-head-{key}")))
-        .flex()
+    let (flip_key, note) = (key.clone(), h.note);
+    // A row that opens shows which way it is; the rest keep the chevron's space, so titles line up.
+    let mark = match h.chevron {
+        Some(open) => chevron(open, t.muted).into_any_element(),
+        None => div().flex_none().w(px(16.)).into_any_element(),
+    };
+    let head = div().id(SharedString::from(format!("home-head-{key}")));
+    let head = if h.opens { crate::ui::focus::stop(t, head) } else { head };
+    head.flex()
         .items_center()
         .gap(px(10.))
         .px(px(14.))
         .py(px(9.))
         .when(h.opens, |d| {
-            d.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
+            d.cursor_pointer().on_click(cx.listener(move |m, _, window, cx| {
                 flip(flip_key.clone());
+                if note && flipped(&flip_key) {
+                    let c = m.home.notes.entry(flip_key.clone()).or_insert_with(|| Composer::new(cx));
+                    let focus = c.input.focus.clone();
+                    window.focus(&focus, cx);
+                }
                 m.home.remeasure = true;
                 cx.notify();
             }))
         })
-        .when_some(h.chevron, |d, open| d.child(chevron(open, t.muted)))
+        .child(mark)
         .child(words)
         .when(!h.tag.is_empty(), |d| {
             let weight = if h.tag_color == t.muted { FontWeight::NORMAL } else { FontWeight::SEMIBOLD };
@@ -389,21 +448,23 @@ fn head_el(t: &Theme, h: Head, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .when(!h.time.is_empty(), |d| d.child(div().flex_none().w(px(36.)).flex().justify_end().text_size(px(12.)).text_color(t.muted).child(h.time.clone())))
 }
 
+/// A row's card; an agent waiting's is tinted, the loudest on the page.
 fn frame(t: &Theme, warn: bool, quiet: bool) -> Div {
-    div().flex().flex_col().border_color(if warn { t.warn_line } else { t.border }).when(!quiet, |d| d.bg(t.card)).overflow_hidden()
+    let fill = if warn { Some(t.warn_soft) } else { (!quiet).then_some(t.card) };
+    div().flex().flex_col().border_color(if warn { t.warn_line } else { t.border }).when_some(fill, |d, c| d.bg(c)).overflow_hidden()
 }
 
 fn row_line(m: &mut MainWindow, t: &Theme, g: &Group, ri: usize, open: bool, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
     let warn = g.kind == Kind::Waiting;
     match &g.rows[ri] {
         Row::One(a) => {
-            let head = head_el(t, ask_head(t, a, g.kind, false), cx);
+            let head = head_el(t, live_head(m, ask_head(t, a, g.kind, false), Some(a)), cx);
             let card = frame(t, warn, a.sev == Sev::Quiet).rounded(px(10.)).border_1().child(head);
             let card = if open { card.child(body(m, t, a, 14., window, cx)) } else { card };
             div().pb(px(6.)).child(card)
         }
         Row::Goal(x) => {
-            let head = head_el(t, goal_head(t, x, g.kind, open), cx);
+            let head = head_el(t, live_head(m, goal_head(t, x, g.kind, open), None), cx);
             let card = frame(t, warn, x.quiet).child(head);
             if open {
                 card.rounded_t(px(10.)).border_t_1().border_l_1().border_r_1()
@@ -419,7 +480,7 @@ fn kid_line(m: &mut MainWindow, t: &Theme, g: &Group, ri: usize, ki: usize, open
     let Row::Goal(x) = &g.rows[ri] else { return div() };
     let a = &x.kids[ki];
     let last = ki + 1 == x.kids.len();
-    let head = head_el(t, ask_head(t, a, g.kind, true), cx).pl(px(30.));
+    let head = head_el(t, live_head(m, ask_head(t, a, g.kind, true), Some(a)), cx).pl(px(30.));
     let card = frame(t, g.kind == Kind::Waiting, x.quiet).border_l_1().border_r_1().child(head);
     let card = if open { card.child(body(m, t, a, 30., window, cx)) } else { card };
     if last { div().pb(px(6.)).child(card.border_b_1().rounded_b(px(10.))) } else { card }
@@ -432,23 +493,27 @@ fn body(m: &mut MainWindow, t: &Theme, a: &Ask, left: f32, window: &mut Window, 
         return todo_body(m, t, a, frame, window, cx);
     }
     if a.answer {
-        return question_body(t, a, frame, cx);
+        return question_body(t, a, frame, paused(m), cx);
     }
-    alert_body(t, a, frame, cx)
+    alert_body(t, a, frame, paused(m), cx)
 }
 
 fn ask_id(a: &Ask, part: &str) -> SharedString {
     SharedString::from(format!("home-{part}-{}", a.key()))
 }
 
-fn alert_body(t: &Theme, a: &Ask, body: Div, cx: &mut Context<MainWindow>) -> Div {
+fn alert_body(t: &Theme, a: &Ask, body: Div, paused: bool, cx: &mut Context<MainWindow>) -> Div {
     let fixes: Vec<_> = a
         .actions
         .iter()
         .enumerate()
         .map(|(n, (label, command))| {
             let (aid, label, command) = (a.id.clone(), label.clone(), command.clone());
-            kit::btn(t, ask_id(a, &format!("fix-{n}")), label.clone()).on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
+            let b = kit::btn(t, ask_id(a, &format!("fix-{n}")), label.clone());
+            if paused {
+                return kit::disabled(b);
+            }
+            b.on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
         })
         .collect();
     let mut body = body;
@@ -464,30 +529,52 @@ fn alert_body(t: &Theme, a: &Ask, body: Div, cx: &mut Context<MainWindow>) -> Di
     body.when(!fixes.is_empty(), |d| d.child(div().flex().flex_wrap().items_center().gap(px(8.)).children(fixes)))
 }
 
-fn question_body(t: &Theme, a: &Ask, body: Div, cx: &mut Context<MainWindow>) -> Div {
+fn question_body(t: &Theme, a: &Ask, body: Div, paused: bool, cx: &mut Context<MainWindow>) -> Div {
     let id = |part: &str| ask_id(a, part);
     let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-    let focus = body_focus(a).map(|act| kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx))));
+    let focus = body_focus(a).map(|act| {
+        let b = kit::btn(t, id("focus"), act.label());
+        if paused { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx))) }
+    });
     // An option answers in one click, and so does a picker's when it asks one single-select
     // question; otherwise its options toggle and Send presses them. The alert's suggested
-    // answers answer like options.
+    // answers answer like options. While an answer is on its way the pressed choice reads
+    // Sending… and every choice waits, so a second press sends nothing.
     let chosen = picked(&r);
     let one = one_click(&a.asks);
+    let busy = sending(&r);
+    let wait = paused || busy.is_some();
+    let choice = |part: String, label: String| {
+        let label = if busy.as_deref() == Some(part.as_str()) { "Sending…".to_string() } else { label };
+        let b = kit::btn(t, id(&part), label);
+        (b, part)
+    };
     let option = |label: &str, desc: &str, qo: Option<(usize, usize)>| {
         let n = qo.map_or_else(|| label.to_string(), |(q, o)| format!("{q}-{o}"));
-        let (r, text) = (r.clone(), label.to_string());
+        let (r, aid, text) = (r.clone(), a.id.clone(), label.to_string());
         let head = match qo {
-            Some((_, o)) if a.picker && one => kit::btn(t, id(&format!("pick-{n}")), text).on_click(cx.listener(move |m, _, _, cx| pick(m, &r, vec![vec![o]], cx))),
+            Some((_, o)) if a.picker && one => {
+                let (b, part) = choice(format!("pick-{n}"), text);
+                if wait { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| pick(m, &aid, &r, &part, vec![vec![o]], cx))) }
+            }
             Some((q, o)) if a.picker => {
                 let asks = a.asks.clone();
-                let b = kit::btn(t, id(&format!("pick-{n}")), text).on_click(cx.listener(move |_, _, _, cx| {
-                    let next = toggle_pick(&asks, &picked(&r), q, o);
-                    PICKED.with(|p| p.borrow_mut().insert(r.clone(), next));
-                    cx.notify();
-                }));
-                if chosen.contains(&(q, o)) { b.border_color(t.warn).bg(t.warn_soft).font_weight(FontWeight::SEMIBOLD) } else { b }
+                let (b, _) = choice(format!("pick-{n}"), text);
+                let b = if chosen.contains(&(q, o)) { b.border_color(t.warn).bg(t.warn_soft).font_weight(FontWeight::SEMIBOLD) } else { b };
+                if wait {
+                    kit::disabled(b)
+                } else {
+                    b.on_click(cx.listener(move |_, _, _, cx| {
+                        let next = toggle_pick(&asks, &picked(&r), q, o);
+                        PICKED.with(|p| p.borrow_mut().insert(r.clone(), next));
+                        cx.notify();
+                    }))
+                }
             }
-            _ => kit::btn(t, id(&format!("opt-{n}")), text.clone()).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &text, cx))),
+            _ => {
+                let (b, part) = choice(format!("opt-{n}"), text.clone());
+                if wait { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| answer(m, &aid, &r, &part, &text, cx))) }
+            }
         };
         div()
             .flex()
@@ -508,13 +595,14 @@ fn question_body(t: &Theme, a: &Ask, body: Div, cx: &mut Context<MainWindow>) ->
     }
     let send = (a.picker && !one).then(|| {
         let answers = pick_answers(&a.asks, &chosen);
-        let b = kit::btn_primary(t, id("pick-send"), "Send");
+        let label = if busy.as_deref() == Some("pick-send") { "Sending…" } else { "Send" };
+        let b = kit::btn_primary(t, id("pick-send"), label);
         match answers {
-            Some(answers) => {
-                let r = r.clone();
-                b.on_click(cx.listener(move |m, _, _, cx| pick(m, &r, answers.clone(), cx)))
+            Some(answers) if !wait => {
+                let (r, aid) = (r.clone(), a.id.clone());
+                b.on_click(cx.listener(move |m, _, _, cx| pick(m, &aid, &r, "pick-send", answers.clone(), cx)))
             }
-            None => b.opacity(0.5).cursor_default(),
+            _ => kit::disabled(b),
         }
     });
     body.child(div().text_size(px(14.)).text_color(t.warn_text).child(a.text.clone()))
@@ -540,9 +628,7 @@ fn todo_body(m: &mut MainWindow, t: &Theme, a: &Ask, body: Div, window: &mut Win
     if !a.text.is_empty() && a.text != a.title {
         out = out.child(div().text_size(px(13.)).text_color(t.text_2).child(ref_text(t, ask_id(a, "text"), &a.text, cx)));
     }
-    if kind != Note::Done {
-        out = out.child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(kind.label()));
-    }
+    out = out.child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(kind.name()));
     out = out.child(field);
     if kind == Note::WaitingOn {
         let chips: Vec<_> = groups::wait_dates(chrono::Local::now().date_naive())
@@ -564,7 +650,7 @@ fn todo_body(m: &mut MainWindow, t: &Theme, a: &Ask, body: Div, window: &mut Win
     if kind != Note::Done {
         let (k, k2) = (key.clone(), key.clone());
         let send = kit::btn_primary(t, ask_id(a, "note-send"), "Send").h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.));
-        let send = if kind == Note::WaitingOn && until.is_none() { kit::disabled(send) } else { send.on_click(cx.listener(move |m, _, _, cx| send_note(m, &k, &r, cx))) };
+        let send = if paused(m) || (kind == Note::WaitingOn && until.is_none()) { kit::disabled(send) } else { send.on_click(cx.listener(move |m, _, _, cx| send_note(m, &k, &r, cx))) };
         let cancel = kit::btn_small(t, ask_id(a, "note-cancel"), "Cancel").on_click(cx.listener(move |m, _, _, cx| close_note(m, &k2, cx)));
         out = out.child(div().flex().items_center().gap(px(6.)).child(send).child(cancel));
     }
@@ -716,11 +802,12 @@ fn after_menu(t: &Theme, x: Target, goals: Vec<(String, String)>, cx: &mut Conte
     menu
 }
 
-fn more_menu(t: &Theme, key: &str, x: Target, cx: &mut Context<MainWindow>) -> Div {
+fn more_menu(t: &Theme, key: &str, x: Target, paused: bool, cx: &mut Context<MainWindow>) -> Div {
     let mut menu = kit::menu_box(t, 210.);
     for (n, entry) in x.more.into_iter().enumerate() {
         menu = match entry {
             Entry::Line => menu.child(menu_line(t)),
+            Entry::Item(label, act) if paused && posts(&act) => menu.child(kit::disabled(kit::menu_item(t, ("home-more-choice", n), label, false))),
             Entry::Item(label, act) => {
                 let key = key.to_string();
                 menu.child(kit::menu_item(t, ("home-more-choice", n), label, false).on_click(cx.listener(move |m, _, window, cx| run_do(m, &key, &act, window, cx))))
@@ -741,7 +828,7 @@ fn row_menu(m: &MainWindow, t: &Theme, v: &View, cx: &mut Context<MainWindow>) -
     let menu = match prefix {
         LATER_MENU => later_menu(t, key, x, !goals.is_empty(), at, cx),
         AFTER_MENU => after_menu(t, x, goals, cx),
-        _ => more_menu(t, key, x, cx),
+        _ => more_menu(t, key, x, paused(m), cx),
     };
     // After a goal replaces the Later menu, so both open under the Later button.
     let button = format!("{}{key}", if prefix == AFTER_MENU { LATER_MENU } else { prefix });
@@ -750,16 +837,12 @@ fn row_menu(m: &MainWindow, t: &Theme, v: &View, cx: &mut Context<MainWindow>) -
 
 // ------------------------------------------------------------------ signals
 
-/// Off the list at once, ahead of the board's next answer.
-fn take_off(m: &mut MainWindow, ids: &[String]) {
-    if let Some(needs) = m.data.home.as_mut().and_then(|h| Rc::make_mut(h).get_mut("needs")).and_then(Value::as_array_mut) {
-        needs.retain(|a| !ids.iter().any(|id| id == s(a, "id")));
-    }
-}
-
 /// Later on a row: `POST /alerts/:id/snooze` for each thing in it, one toast for the lot.
 fn later(m: &mut MainWindow, ids: Vec<String>, body: Value, cx: &mut Context<MainWindow>) {
     m.menu = None;
+    if paused(m) {
+        return cx.notify();
+    }
     take_off(m, &ids);
     for (n, id) in ids.into_iter().enumerate() {
         m.post(format!("alerts/{id}/snooze"), body.clone(), cx, move |m, v, cx| {
@@ -774,6 +857,13 @@ fn later(m: &mut MainWindow, ids: Vec<String>, body: Value, cx: &mut Context<Mai
 fn open_note(m: &mut MainWindow, key: &str, kind: Note, window: &mut Window, cx: &mut Context<MainWindow>) {
     FLIPPED.with(|f| f.borrow_mut().insert(key.to_string()));
     let c = m.home.notes.entry(key.to_string()).or_insert_with(|| Composer::new(cx));
+    if c.kind != kind {
+        // Each form has its own text: Done's note waits aside, another form starts empty.
+        if c.kind == Note::Done {
+            c.done_text = c.input.text(cx);
+        }
+        c.input.clear(cx);
+    }
     c.kind = kind;
     c.until = None;
     let focus = c.input.focus.clone();
@@ -785,10 +875,7 @@ fn open_note(m: &mut MainWindow, key: &str, kind: Note, window: &mut Window, cx:
 /// Back from an answer to Done's plain note; a row with only that shuts.
 fn close_note(m: &mut MainWindow, key: &str, cx: &mut Context<MainWindow>) {
     match m.home.notes.get_mut(key) {
-        Some(c) if c.kind != Note::Done => {
-            c.kind = Note::Done;
-            c.until = None;
-        }
+        Some(c) if c.kind != Note::Done => c.to_done(cx),
         _ => {
             FLIPPED.with(|f| f.borrow_mut().remove(key));
         }
@@ -800,6 +887,9 @@ fn close_note(m: &mut MainWindow, key: &str, cx: &mut Context<MainWindow>) {
 /// Sends the note on `key`'s row; it stays until the board has it, so a refusal loses nothing.
 fn send_note(m: &mut MainWindow, key: &str, r: &str, cx: &mut Context<MainWindow>) {
     let Some(c) = m.home.notes.get(key) else { return };
+    if paused(m) {
+        return;
+    }
     let kind = c.kind;
     let Some((path, body)) = groups::note_post(r, kind, &c.input.text(cx), c.until.as_deref()) else { return };
     let key = key.to_string();
@@ -830,10 +920,18 @@ fn talk(m: &mut MainWindow, path: String, cx: &mut Context<MainWindow>) {
 fn run_do(m: &mut MainWindow, key: &str, act: &Do, window: &mut Window, cx: &mut Context<MainWindow>) {
     use crate::ui::modals::{Ask as Confirm, Modal};
     m.menu = None;
+    if paused(m) && posts(act) {
+        return cx.notify();
+    }
     match act.clone() {
         Do::Act(a) => run_act(m, &a, cx),
+        // Done sends Done's own note, and waits while another form is open in the box.
         Do::Done(r) => {
-            m.home.notes.entry(key.to_string()).or_insert_with(|| Composer::new(cx)).kind = Note::Done;
+            let c = m.home.notes.entry(key.to_string()).or_insert_with(|| Composer::new(cx));
+            if c.kind != Note::Done && flipped(key) {
+                return cx.notify();
+            }
+            c.to_done(cx);
             send_note(m, key, &r, cx);
         }
         Do::Ask(kind) => open_note(m, key, kind, window, cx),
@@ -851,4 +949,84 @@ fn run_do(m: &mut MainWindow, key: &str, act: &Do, window: &mut Window, cx: &mut
         Do::ConfirmCancel(r) => m.modal = Some(Modal::finish(r.to_uppercase(), Confirm::Cancel)),
     }
     cx.notify();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parity::{settle, window};
+    // Beats the glob's `gpui_kit::test`.
+    use ::core::prelude::v1::test;
+
+    #[gpui_kit::test]
+    fn done_waits_while_another_form_is_open_and_sends_only_its_own_note(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        let key = "task:T41".to_string();
+        w.update(cx, |m, window, cx| {
+            let c = m.home.notes.entry(key.clone()).or_insert_with(|| Composer::new(cx));
+            c.input.set_text("Booked the room", cx);
+            open_note(m, &key, Note::CantDo, window, cx);
+            let c = &m.home.notes[&key];
+            assert_eq!(c.input.text(cx), "", "another form starts empty");
+            c.input.set_text("No access", cx);
+            run_do(m, &key, &Do::Done("T41".into()), window, cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.last("tasks/T41/did"), None, "Done waits while Can't do this is open");
+
+        w.update(cx, |m, window, cx| {
+            close_note(m, &key, cx);
+            assert_eq!(m.home.notes[&key].input.text(cx), "Booked the room", "Done's note comes back");
+            run_do(m, &key, &Do::Done("T41".into()), window, cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.last("tasks/T41/did"), Some(json!({"note": "Booked the room"})));
+    }
+
+    #[gpui_kit::test]
+    fn a_shut_row_with_a_form_left_open_sends_dones_note(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        let key = "task:T42".to_string();
+        w.update(cx, |m, window, cx| {
+            let c = m.home.notes.entry(key.clone()).or_insert_with(|| Composer::new(cx));
+            c.input.set_text("Sent the invoice", cx);
+            open_note(m, &key, Note::NotNeeded, window, cx);
+            m.home.notes[&key].input.set_text("Dropped", cx);
+            flip(key.clone());
+            run_do(m, &key, &Do::Done("T42".into()), window, cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.last("tasks/T42/did"), Some(json!({"note": "Sent the invoice"})));
+    }
+
+    #[gpui_kit::test]
+    fn with_the_board_down_row_buttons_wait(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        rec.clear();
+        w.update(cx, |m, window, cx| {
+            m.down = Some("The board isn't answering.".into());
+            run_do(m, "task:T43", &Do::DontWait("T43".into()), window, cx);
+            run_do(m, "task:T43", &Do::Act(Act::Restart("T43".into())), window, cx);
+            later(m, vec!["a1".into()], json!({"until": "next_week"}), cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.posts(), vec![], "nothing is sent while the board is down");
+    }
+
+    #[test]
+    fn only_what_changes_the_board_waits_for_it() {
+        assert!(posts(&Do::Done("T1".into())) && posts(&Do::Act(Act::Restart("T1".into()))) && posts(&Do::Dismiss("a1".into())));
+        assert!(!posts(&Do::Act(Act::OpenGoal("G1".into()))) && !posts(&Do::Ask(Note::CantDo)));
+    }
+
+    #[test]
+    fn with_the_board_down_the_page_drops_its_counts() {
+        let v = View { asks: Rc::new(vec![]), project: "all".into(), stats: Rc::new(stats_vm(&json!({}))), names: Rc::new(vec![]), counts: vec![], groups: vec![], later: None, sub: String::new() };
+        assert!(lines_of(&v, false, false).contains(&Line::Stats));
+        assert!(!lines_of(&v, false, true).contains(&Line::Stats));
+    }
 }
