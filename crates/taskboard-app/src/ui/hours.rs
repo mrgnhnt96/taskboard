@@ -31,6 +31,8 @@ pub struct State {
     pub err: Option<String>,
     /// The half each time field's chip shows (true = pm): From, to, Today until.
     pub pm: [bool; 3],
+    /// Whether that half was picked (typed or flipped) rather than worked out.
+    pub picked: [bool; 3],
     /// The time fields, made when the menu first draws.
     pub fields: Option<Fields>,
     /// The day the week starts on (`work_hours.week_days[0]`, config.toml's `first_weekday`).
@@ -208,6 +210,38 @@ pub fn ghost(text: &str, pm: bool) -> Option<String> {
     full.strip_prefix(typed).filter(|rest| !rest.is_empty()).map(str::to_string)
 }
 
+/// Minutes into the day of "HH:MM".
+fn minutes(hhmm: &str) -> Option<u32> {
+    let (h, m) = hhmm.split_once(':')?;
+    Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?)
+}
+
+/// For "Today until": the half (true = pm) of a typed time that names none whose time comes next
+/// after `now` (minutes into the day), so at 10 PM a bare "1" is 1 AM tonight, not 1 PM tomorrow.
+/// None when the typing settles it ("1p", "13:00") or isn't a time yet.
+pub fn next_half(text: &str, now: u32) -> Option<bool> {
+    let (am, pm) = (minutes(&parse_time(text, false)?)?, minutes(&parse_time(text, true)?)?);
+    if am == pm {
+        return None;
+    }
+    // how far ahead each comes; a time that is now is tomorrow's, as the board reads it
+    let ahead = |t: u32| (t + 1439 - now) % 1440;
+    Some(ahead(pm) < ahead(am))
+}
+
+/// When "Today until" ends: "Ends today at 11:30 PM", "Ends tomorrow at 1:00 AM" (a time that has
+/// passed today is tomorrow's).
+pub fn end_line(hhmm: &str, now: u32) -> Option<String> {
+    let at = minutes(hhmm)?;
+    Some(format!("Ends {} at {}", if at > now { "today" } else { "tomorrow" }, fmt::clock12(hhmm)))
+}
+
+/// Now, in minutes into the reader's day.
+fn now_minutes() -> u32 {
+    let l = fmt::local(fmt::now());
+    chrono::Timelike::hour(&l) * 60 + chrono::Timelike::minute(&l)
+}
+
 pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
     let Some(h) = m.state().get("work_hours").filter(|v| v.is_object()).cloned() else {
         return div().into_any_element();
@@ -279,6 +313,11 @@ fn make_fields(st: &State, window: &mut Window, cx: &mut Context<MainWindow>) ->
             let text = field.read(cx).text().to_string();
             if let Some(pm) = typed_half(&text) {
                 m.hours.pm[i] = pm;
+                m.hours.picked[i] = true;
+            } else if i == TODAY && !m.hours.picked[i]
+                && let Some(pm) = next_half(&text, now_minutes())
+            {
+                m.hours.pm[i] = pm;
             }
             let shown = digits_shown(&text);
             if shown != text {
@@ -303,6 +342,7 @@ fn close_fields(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWi
 
 /// Show field `i`'s value again (its chip too), dropping what was typed.
 fn show_value(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
+    m.hours.picked[i] = false;
     let (text, pm) = shown(m.hours.value(i));
     if let Some(pm) = pm {
         m.hours.pm[i] = pm;
@@ -317,6 +357,11 @@ fn show_value(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
 fn commit(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
     let Some(f) = m.hours.fields.as_ref() else { return };
     let text = f.inputs[i].text(cx);
+    if i == TODAY && !m.hours.picked[i]
+        && let Some(pm) = next_half(&text, now_minutes())
+    {
+        m.hours.pm[i] = pm;
+    }
     let next = if i == TODAY && text.trim().is_empty() { Some(String::new()) } else { parse_time(&text, m.hours.pm[i]) };
     let changed = next.filter(|v| v != m.hours.value(i)).map(|v| *m.hours.value_mut(i) = v).is_some();
     show_value(m, i, cx);
@@ -329,6 +374,7 @@ fn commit(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
 /// The chip: flip field `i` between am and pm, keeping the time typed.
 fn flip(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
     m.hours.pm[i] = !m.hours.pm[i];
+    m.hours.picked[i] = true;
     let Some(f) = m.hours.fields.as_ref() else { return };
     let digits = split_half(&f.inputs[i].text(cx)).0;
     f.inputs[i].set_text(&digits, cx);
@@ -515,6 +561,9 @@ pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
         days = days.child(item);
     }
     let err = st.err.clone();
+    // the end of the time being typed, else the one kept
+    let typing = m.hours.fields.as_ref().map(|f| f.inputs[TODAY].text(cx)).and_then(|text| parse_time(&text, m.hours.pm[TODAY]));
+    let today_end = typing.or_else(|| Some(m.hours.today.clone()).filter(|v| !v.is_empty())).and_then(|v| end_line(&v, now_minutes()));
     if m.hours.fields.is_none() {
         m.hours.fields = Some(make_fields(&m.hours, window, cx));
     }
@@ -534,6 +583,7 @@ pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
         )
         .child(days)
         .child(row().child(div().whitespace_nowrap().child("Today until")).child(time_field(m, &t, TODAY, window, cx)))
+        .children(today_end.map(|e| div().px(px(4.)).mt(px(-4.)).text_size(px(12.)).text_color(t.muted).child(e)))
         .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)))
         .children(m.state().get("keep_awake").and_then(keep_awake_view).map(|k| keep_awake(&t, k)));
     // Beside the pill: above it when it sits low in the window.
@@ -542,7 +592,7 @@ pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
 
 #[cfg(test)]
 mod tests {
-    use super::{DAYS, State, ghost, parse_time, pill_view, save, shown, typed_half, week_order};
+    use super::{DAYS, State, end_line, ghost, next_half, parse_time, pill_view, save, shown, typed_half, week_order};
     use crate::fmt::{self, arr, b, s};
     use crate::parity::golden;
     use serde_json::json;
@@ -588,6 +638,21 @@ mod tests {
                 "labels": ["From", "to", "Today until"],
             })
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn today_until_takes_the_time_that_comes_next() {
+        let at = |h: u32, m: u32| h * 60 + m;
+        assert_eq!(next_half("1", at(22, 0)), Some(false), "at 10 PM a bare 1 is 1 AM tonight, not 1 PM tomorrow");
+        assert_eq!(next_half("1", at(9, 0)), Some(true), "at 9 AM it is 1 PM today");
+        assert_eq!(next_half("11:30", at(22, 0)), Some(true), "11:30 PM still comes today");
+        assert_eq!(next_half("11:30", at(23, 45)), Some(false), "past it: 11:30 AM tomorrow comes first");
+        assert_eq!(next_half("9", at(9, 0)), Some(true), "9 AM is now, so 9 PM");
+        assert_eq!(next_half("1p", at(22, 0)), None, "a typed half settles it");
+        assert_eq!(next_half("13", at(22, 0)), None, "so does a 24-hour time");
+        assert_eq!(next_half("", at(22, 0)), None);
+        assert_eq!(end_line("23:30", at(22, 0)).as_deref(), Some("Ends today at 11:30 PM"));
+        assert_eq!(end_line("01:00", at(22, 0)).as_deref(), Some("Ends tomorrow at 1:00 AM"));
     }
 
     #[::core::prelude::v1::test]

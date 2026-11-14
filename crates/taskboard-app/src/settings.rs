@@ -84,7 +84,7 @@ impl Sec {
             Sec::Questions => "Questions agents ask you in their replies, and whether the board sends back one asked above the reply's last paragraph to ask it properly.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
             Sec::Worktrees => "Each project's reusable worktree slots, kept warm between tasks. tb project set sizes a project's pool.",
-            Sec::System => "Updates, and the versions of the app and the daemon.",
+            Sec::System => "Updates, and the versions of the app and the board.",
         }
     }
 
@@ -102,13 +102,51 @@ impl Sec {
     }
 }
 
-/// Each account's card: id, a short mark and its color, and what it's used for.
-const CARDS: [(&str, &str, u32, &str); 4] = [
-    ("github", "GH", 0x24292f, "PR checks and reviews, comments, reviewers and git push"),
-    ("bitbucket", "BB", 0x2684ff, "Pull requests, comments, reviewers and git push over HTTPS"),
-    ("azure", "AZ", 0x0078d4, "Failed Azure Pipelines steps and tests on PR checks"),
-    ("slack", "S", 0x4a154b, "Posting and reading messages for the board and its agents"),
-];
+/// Each account's row: id and a short mark.
+const CARDS: [(&str, &str); 4] = [("github", "GH"), ("bitbucket", "BB"), ("azure", "AZ"), ("slack", "SL")];
+
+/// What stops while an account's sign-in is refused.
+fn refused_means(id: &str) -> &'static str {
+    match id {
+        "github" | "bitbucket" => "agents can't push",
+        "azure" => "no failed pipeline steps on PR checks",
+        _ => "no Slack messages",
+    }
+}
+
+/// What forgetting an account's sign-in stops, asked before Disconnect does it.
+fn forget_means(id: &str) -> &'static str {
+    match id {
+        "github" => "Agents can't push to github.com or read PR checks until you sign in again.",
+        "bitbucket" => "Agents can't push to bitbucket.org or read pull requests until you connect it again.",
+        "azure" => "PR checks stop showing failed pipeline steps until you connect it again.",
+        _ => "The board and its agents can't post to Slack until you connect it again.",
+    }
+}
+
+/// An account's status line, and whether the service refused its sign-in: "Signed in as sam ·
+/// checked 3:05 PM, works", "GitHub refused the sign-in at 2:51 PM · agents can't push",
+/// "Not connected".
+fn account_line(id: &str, a: &Value) -> (String, bool) {
+    if a["connected"] != true {
+        return ("Not connected".into(), false);
+    }
+    let at = a["checked_at"].as_str().map(crate::fmt::day_time).filter(|s| !s.is_empty());
+    if a["error"].is_string() {
+        let label = a["label"].as_str().unwrap_or(id);
+        let when = at.map(|at| format!(" at {at}")).unwrap_or_default();
+        return (format!("{label} refused the sign-in{when} · {}", refused_means(id)), true);
+    }
+    let org = a["detail"].as_str().and_then(|d| d.split("dev.azure.com/").nth(1)).map(|o| o.trim_end_matches('/').to_string());
+    let who = match (id, org) {
+        ("azure", Some(org)) => format!("Signed in to {org}"),
+        _ => match a["user"].as_str().filter(|u| !u.is_empty()) {
+            Some(u) => format!("Signed in as {u}"),
+            None => "Signed in".into(),
+        },
+    };
+    (match at { Some(at) => format!("{who} · checked {at}, works"), None => who }, false)
+}
 
 /// What a row's agent line shows, per account.
 fn agent_cli(id: &str) -> &'static str {
@@ -146,6 +184,10 @@ pub struct SettingsWindow {
     bb_form: bool,
     /// Azure DevOps's token form is open while connected (to replace a token missing scopes).
     az_form: bool,
+    /// Slack's token form is open.
+    slack_form: bool,
+    /// The account whose Disconnect is asking first.
+    confirm: Option<&'static str>,
     gh_token: Input,
     bb_email: Input,
     bb_token: Input,
@@ -160,6 +202,8 @@ pub struct SettingsWindow {
     history: Option<Value>,
     history_busy: bool,
     history_note: Option<(String, bool)>,
+    /// A retention change that removes history, waiting for the owner's yes: the change and what it removes.
+    history_confirm: Option<(Value, String)>,
     /// `GET /usage`'s `daily` block, a call in flight, and the line under its card.
     daily: Option<Value>,
     daily_busy: bool,
@@ -202,6 +246,8 @@ impl SettingsWindow {
             gh_form: false,
             bb_form: false,
             az_form: false,
+            slack_form: false,
+            confirm: None,
             gh_token: Input::secret(cx, "ghp_… or github_pat_…"),
             bb_email: Input::new(cx, "you@company.com", false),
             bb_token: Input::secret(cx, "ATATT…"),
@@ -213,6 +259,7 @@ impl SettingsWindow {
             history: None,
             history_busy: false,
             history_note: None,
+            history_confirm: None,
             daily: None,
             daily_busy: false,
             daily_note: None,
@@ -228,6 +275,16 @@ impl SettingsWindow {
             sys_busy: false,
             sys_note: None,
         };
+        // coming back to the window shows what changed while it was behind others
+        cx.observe_window_activation(window, |s, window, cx| {
+            if window.is_window_active() {
+                s.load(false, cx);
+                if s.view != Sec::Accounts {
+                    s.reload_page(cx);
+                }
+            }
+        })
+        .detach();
         s.load(false, cx);
         s.load_history(cx);
         s.load_daily(cx);
@@ -246,15 +303,13 @@ impl SettingsWindow {
                         break;
                     }
                 }
-                // the updater runs on its own thread: redraw System as its state moves
                 let _ = this.update(cx, |s, cx| {
-                    if s.view == Sec::Worktrees && tick % IDLE_TICKS == 0 {
-                        s.load_slots(cx);
+                    // a window left open keeps its page current
+                    if tick % IDLE_TICKS == 0 && s.view != Sec::Accounts {
+                        s.reload_page(cx);
                     }
+                    // the updater runs on its own thread: redraw System as its state moves
                     if s.view == Sec::System {
-                        if tick % IDLE_TICKS == 0 {
-                            s.load_info(cx);
-                        }
                         cx.notify();
                     }
                 });
@@ -262,6 +317,20 @@ impl SettingsWindow {
         })
         .detach();
         s
+    }
+
+    /// Asks the board again for what the shown page reads.
+    fn reload_page(&self, cx: &mut Context<Self>) {
+        match self.view {
+            Sec::Accounts => self.load(false, cx),
+            Sec::History => self.load_history(cx),
+            Sec::Usage => self.load_daily(cx),
+            Sec::Qa => self.load_qa(cx),
+            Sec::Questions => self.load_questions(cx),
+            Sec::Reviewers => self.load_reviewers(cx),
+            Sec::Worktrees => self.load_slots(cx),
+            Sec::System => self.load_info(cx),
+        }
     }
 
     fn load_history(&self, cx: &mut Context<Self>) {
@@ -430,6 +499,34 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// A retention choice: the board says first what the next cleanup would remove under it. Nothing
+    /// to remove saves it; otherwise the page asks.
+    fn preview_history(&mut self, key: &'static str, n: i64, cx: &mut Context<Self>) {
+        if self.history_busy {
+            return;
+        }
+        self.history_busy = true;
+        self.history_note = None;
+        self.history_confirm = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.post("history", json!({key: n, "preview": true})) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.history_busy = false;
+                match r {
+                    Ok(v) => match removal_line(&v["removes"]) {
+                        None => s.post_history("history", json!({key: n}), cx),
+                        Some(line) => s.history_confirm = Some((json!({key: n}), line)),
+                    },
+                    Err(e) => s.history_note = Some((e.message, true)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// `POST history` (a setting) or `history/cleanup`; both answer with the History state.
     fn post_history(&mut self, path: &'static str, body: Value, cx: &mut Context<Self>) {
         if self.history_busy {
@@ -437,6 +534,7 @@ impl SettingsWindow {
         }
         self.history_busy = true;
         self.history_note = None;
+        self.history_confirm = None;
         cx.notify();
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
@@ -498,6 +596,9 @@ impl SettingsWindow {
         self.loaded = true;
         self.error = None;
         let gh = self.account("github");
+        if !before && gh["connected"] == true {
+            self.gh_form = false;
+        }
         if !before && gh["connected"] == true && self.opened_code.take().is_some() {
             self.notes.insert("github", (format!("Signed in as @{}.", gh["user"].as_str().unwrap_or("")), false));
         }
@@ -547,6 +648,7 @@ impl SettingsWindow {
     /// Copies the token `gh` already uses; gh's own sign-in isn't changed.
     fn import_gh(&mut self, cx: &mut Context<Self>) {
         self.post("github", "accounts/github/import".into(), json!({}), cx, |s, _| {
+            s.gh_form = false;
             let a = s.account("github");
             s.notes.insert("github", (format!("Using gh's sign-in: {}.", a["detail"].as_str().unwrap_or("connected")), false));
         });
@@ -570,6 +672,7 @@ impl SettingsWindow {
             s.gh_form = false;
             s.bb_form = false;
             s.az_form = false;
+            s.slack_form = false;
             let a = s.account(id);
             s.notes.insert(id, (format!("Connected as {}.", a["detail"].as_str().or(a["user"].as_str()).unwrap_or("you")), false));
         });
@@ -660,7 +763,7 @@ impl Render for SettingsWindow {
                     .flex_col()
                     .child(self.page_header(&t, cx))
                     .when_some(self.error.clone(), |d, e| {
-                        d.child(div().mx(px(28.)).mb(px(10.)).px(px(12.)).py(px(8.)).rounded(px(8.)).bg(t.warn_soft).text_color(t.warn_fg).text_size(px(12.)).child(format!("taskboardd: {e}")))
+                        d.child(div().mx(px(28.)).mb(px(10.)).px(px(12.)).py(px(8.)).rounded(px(8.)).bg(t.warn_soft).text_color(t.warn_fg).text_size(px(12.)).child(format!("The board didn't answer: {e}")))
                     })
                     .child(body),
             )
@@ -702,15 +805,8 @@ impl SettingsWindow {
                     })
                     .on_click(cx.listener(move |s, _, _, cx| {
                         s.view = sec;
-                        if sec == Sec::System {
-                            s.load_info(cx);
-                        }
-                        if sec == Sec::Worktrees {
-                            s.load_slots(cx);
-                        }
-                        if sec == Sec::Usage {
-                            s.load_daily(cx);
-                        }
+                        s.confirm = None;
+                        s.reload_page(cx);
                         cx.notify();
                     })),
             );
@@ -739,7 +835,7 @@ impl SettingsWindow {
                     .text_size(px(12.))
                     .text_color(t.muted)
                     .child(kit::dot(if live { t.up } else { t.warn }, 7.))
-                    .child(div().flex_1().child(if live { "Live" } else if self.loaded { "Not connected" } else { "Connecting…" }))
+                    .child(div().flex_1().child(if live { "The board · Running" } else if self.loaded || self.error.is_some() { "The board · Not answering" } else { "The board · Connecting…" }))
                     .when(self.backend.label() == "fake", |d| d.child(kit::tone_pill(t, "goal", "Sample"))),
             )
     }
@@ -793,19 +889,20 @@ impl SettingsWindow {
     }
 
     fn accounts_page(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(10.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         if !self.loaded && self.error.is_none() {
             return list.child(kit::empty(t, "Asking the board…"));
         }
-        for (id, mark, color, about) in CARDS {
+        let mut card = kit::card(t).overflow_hidden();
+        for (i, (id, mark)) in CARDS.into_iter().enumerate() {
             let a = self.account(id);
+            card = card.child(self.status_row(t, id, mark, &a, i == 0, cx));
             let rows: Vec<AnyElement> = match id {
                 "github" => self.github_rows(t, &a, window, cx),
                 "bitbucket" => self.bitbucket_rows(t, &a, window, cx),
                 "azure" => self.azure_rows(t, &a, window, cx),
                 _ => self.slack_rows(t, &a, window, cx),
             };
-            let mut card = kit::card(t).overflow_hidden();
             for r in rows {
                 card = card.child(r);
             }
@@ -815,129 +912,212 @@ impl SettingsWindow {
             if self.cli {
                 card = card.child(self.cli_line(t, id, "tb accounts", cx)).child(self.cli_line(t, &format!("{id}-use"), agent_cli(id), cx));
             }
-            let label = a["label"].as_str().unwrap_or(id).to_string();
-            let heading = div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .px(px(4.))
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t.muted)
-                .child(
-                    div()
-                        .size(px(18.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.))
-                        .bg(rgb(color))
-                        .text_color(t.on_accent)
-                        .text_size(px(9.))
-                        .font_weight(FontWeight::BOLD)
-                        .child(mark),
-                )
-                .child(div().text_color(t.text).child(label))
-                .child(div().font_weight(FontWeight::NORMAL).text_size(px(11.5)).truncate().child(format!("· {about}")));
-            list = list.child(div().flex().flex_col().gap(px(8.)).child(heading).child(card));
         }
-        list.child(
-            div()
-                .px(px(4.))
-                .text_size(px(11.5))
-                .line_height(px(16.))
-                .text_color(t.muted)
-                .child("Tokens are checked with the service, then kept in your login Keychain as Taskboard's own. Your gh and git sign-ins aren't changed. The board never shows tokens again; agents get them with tb token, and push with them while on a task."),
-        )
+        list.child(card).child(div().px(px(4.)).text_size(px(11.5)).line_height(px(16.)).text_color(t.muted).child("Tokens stay in your login Keychain."))
     }
 
     // -------------------------------------------------------------- accounts
 
+    /// An account's one row: its mark, name and status, and what can be done with it. Disconnect asks
+    /// first, in the row; a refused sign-in turns the row amber with "Sign in again".
+    fn status_row(&self, t: &Theme, id: &'static str, mark: &str, a: &Value, first: bool, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.busy == Some(id);
+        let label = a["label"].as_str().unwrap_or(id).to_string();
+        let connected = a["connected"] == true;
+        let (status, refused) = account_line(id, a);
+        let asking = self.confirm == Some(id) && connected;
+        let tile = div()
+            .size(px(30.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(7.))
+            .bg(t.panel_2)
+            .text_color(t.muted)
+            .text_size(px(11.))
+            .font_weight(FontWeight::BOLD)
+            .child(mark.to_string());
+        let (name, note) = if asking { (format!("Forget the {label} sign-in?"), forget_means(id).to_string()) } else { (label, status) };
+        let warn = refused && !asking;
+        let words = div()
+            .id(SharedString::from(format!("{id}-status")))
+            .flex_1()
+            .min_w(px(150.))
+            .flex()
+            .flex_col()
+            .child(div().font_weight(FontWeight::SEMIBOLD).when(warn, |d| d.text_color(t.warn_fg)).child(name))
+            .child(div().text_size(px(12.)).line_height(px(16.)).text_color(if warn { t.warn_fg } else { t.muted }).child(note))
+            .when_some(a["error"].as_str().filter(|_| warn).map(str::to_string), |d, e| d.tooltip(kit::tip(e)));
+        let small = |b: Stateful<Div>| b.h(px(26.)).text_size(px(12.));
+        let mut ctl = controls().flex_wrap();
+        if asking {
+            ctl = ctl
+                .child(kit::btn_small(t, SharedString::from(format!("{id}-keep")), "Cancel").on_click(cx.listener(|s, _, _, cx| {
+                    s.confirm = None;
+                    cx.notify();
+                })))
+                .child(small(kit::btn_danger(t, SharedString::from(format!("{id}-forget")), "Disconnect")).on_click(cx.listener(move |s, _, _, cx| s.disconnect(id, cx))));
+        } else if connected {
+            let first = if refused {
+                let b = small(kit::btn_primary(t, SharedString::from(format!("{id}-again")), if busy { "Starting…" } else { "Sign in again" }));
+                if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |s, _, window, cx| s.sign_in_again(id, window, cx))) }
+            } else {
+                let b = kit::btn_small(t, SharedString::from(format!("{id}-check")), if busy { "Checking…" } else { "Check" });
+                if busy { kit::disabled(b) } else { b.tooltip(kit::tip("Ask the service whether the token still works")).on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/check"), json!({}), cx, |_, _| {}))) }
+            };
+            let out = small(kit::btn_danger(t, SharedString::from(format!("{id}-out")), "Disconnect"));
+            let out = if busy { kit::disabled(out) } else { out.tooltip(kit::tip("Forgets the board's token. gh and git on this Mac aren't touched.")).on_click(cx.listener(move |s, _, _, cx| s.ask_disconnect(id, cx))) };
+            ctl = ctl.child(first).child(div().w(px(1.)).h(px(18.)).mx(px(2.)).bg(t.border)).child(out);
+        } else if self.login().is_none() || id != "github" {
+            let open = self.form_open(id);
+            ctl = ctl.child(kit::btn_small(t, SharedString::from(format!("{id}-connect-open")), if open { "Cancel" } else { "Connect…" }).on_click(cx.listener(move |s, _, window, cx| {
+                if s.form_open(id) { s.close_form(id, cx) } else { s.open_form(id, window, cx) }
+            })));
+        }
+        row(t, &format!("{id}-row"), first)
+            .min_h(px(56.))
+            .when(warn, |d| d.bg(t.warn_soft))
+            .when(asking, |d| d.bg(t.down_soft))
+            .child(tile)
+            .child(words)
+            .child(ctl)
+            .into_any_element()
+    }
+
+    fn form_open(&self, id: &str) -> bool {
+        match id {
+            "github" => self.gh_form,
+            "bitbucket" => self.bb_form,
+            "azure" => self.az_form,
+            _ => self.slack_form,
+        }
+    }
+
+    /// Connect… opens an account's form, its first field ready to type in.
+    fn open_form(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = match id {
+            "github" => {
+                self.gh_form = true;
+                &self.gh_token.focus
+            }
+            "bitbucket" => {
+                self.bb_form = true;
+                &self.bb_email.focus
+            }
+            "azure" => {
+                self.az_form = true;
+                &self.az_org.focus
+            }
+            _ => {
+                self.slack_form = true;
+                &self.slack_token.focus
+            }
+        };
+        window.focus(focus, cx);
+        cx.notify();
+    }
+
+    fn close_form(&mut self, id: &str, cx: &mut Context<Self>) {
+        match id {
+            "github" => self.gh_form = false,
+            "bitbucket" => self.bb_form = false,
+            "azure" => self.az_form = false,
+            _ => self.slack_form = false,
+        }
+        cx.notify();
+    }
+
+    /// A refused sign-in: GitHub signs in with the browser again when gh is here; the rest (and
+    /// GitHub without gh) open their form for a new token.
+    fn sign_in_again(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == "github" && self.account("github")["gh"] != false {
+            self.sign_in(cx);
+        } else {
+            self.open_form(id, window, cx);
+        }
+    }
+
+    /// Disconnect only asks; the row says what forgetting the sign-in stops.
+    fn ask_disconnect(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.confirm = Some(id);
+        cx.notify();
+    }
+
+    fn disconnect(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.confirm = None;
+        self.post(id, format!("accounts/{id}/disconnect"), json!({}), cx, |_, _| {});
+    }
+
+    /// GitHub's rows under its status: the sign-in code while the browser sign-in waits, a sign-in
+    /// missing scopes, and the form Connect… opens.
     fn github_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let busy = self.busy == Some("github");
         let has_gh = a["gh"] != false;
+        let connected = a["connected"] == true;
         let mut rows = vec![];
         if let Some((code, url)) = self.login() {
             rows.push(self.github_code(t, code, url, cx));
             return rows;
         }
-        if a["connected"] == true {
-            rows.push(self.signed_in_row(t, "github", a, "Taskboard's own token", "Disconnect", cx));
-            if a["reauth"] == true {
-                let btn = if !has_gh {
-                    kit::btn_primary(t, "gh-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
-                        s.gh_form = true;
-                        window.focus(&s.gh_token.focus, cx);
-                        cx.notify();
-                    }))
-                } else if busy {
-                    kit::disabled(kit::btn_primary(t, "gh-reauth", "Starting…").h(px(26.)).text_size(px(12.)))
-                } else {
-                    kit::btn_primary(t, "gh-reauth", "Sign in again").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
-                };
-                rows.push(reauth_row(t, "github", a, "Sign in again (or use a token that has them).", btn.into_any_element()));
-            }
-            rows.push(push_row(t, "github", "github.com"));
-        } else {
+        if connected && a["reauth"] == true {
+            let btn = if !has_gh {
+                kit::btn_primary(t, "gh-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| s.open_form("github", window, cx)))
+            } else if busy {
+                kit::disabled(kit::btn_primary(t, "gh-reauth", "Starting…").h(px(26.)).text_size(px(12.)))
+            } else {
+                kit::btn_primary(t, "gh-reauth", "Sign in again").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
+            };
+            rows.push(reauth_row(t, "github", a, "Sign in again (or use a token that has them).", btn.into_any_element()));
+        }
+        if !self.gh_form {
+            rows.extend(error_row(t, "github", a));
+            return rows;
+        }
+        if !connected {
             let sign_in = if busy { kit::disabled(kit::btn_primary(t, "gh-sign-in", "Starting…").h(px(26.)).text_size(px(12.))) } else {
                 kit::btn_primary(t, "gh-sign-in", "Sign in with GitHub").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
             };
             let note = if has_gh {
-                "Opens GitHub in your browser with a one-time code. Taskboard keeps its own token; gh's sign-in isn't changed."
+                "Opens GitHub in your browser with a one-time code. The board keeps its own token; gh's sign-in isn't changed."
             } else {
-                "Paste a token, or install the GitHub CLI (brew install gh) to sign in with the browser."
+                "Paste a token below, or install the GitHub CLI (brew install gh) to sign in with the browser."
             };
             rows.push(
-                line(t, "gh-out", true, false, "Not signed in", note, None)
-                    .child(
-                        controls()
-                            .when(has_gh, |d| {
-                                d.child(
+                line(t, "gh-out", false, false, "Sign in with the browser", note, None)
+                    .when(has_gh, |d| {
+                        d.child(
+                            controls()
+                                .flex_wrap()
+                                .child(
                                     kit::btn_small(t, "gh-import", "Use my gh sign-in")
-                                        .tooltip(kit::tip("Copies the token gh already uses into Taskboard. gh isn't changed."))
+                                        .tooltip(kit::tip("Copies the token gh already uses to the board. gh isn't changed."))
                                         .on_click(cx.listener(|s, _, _, cx| s.import_gh(cx))),
                                 )
-                            })
-                            .when(!self.gh_form, |d| {
-                                d.child(kit::btn_small(t, "gh-use-token", "Use a token").on_click(cx.listener(|s, _, window, cx| {
-                                    s.gh_form = true;
-                                    window.focus(&s.gh_token.focus, cx);
-                                    cx.notify();
-                                })))
-                            })
-                            .when(has_gh, |d| d.child(sign_in)),
-                    )
+                                .child(sign_in),
+                        )
+                    })
                     .into_any_element(),
             );
         }
-        if self.gh_form {
-            rows.push(self.token_row(t, "github", "Token", "A classic token with repo, read:org and workflow, or a fine-grained one with Contents, Pull requests and Workflows (read and write).", &self.gh_token, window, cx, a["connected"] != true));
-        }
+        rows.push(self.token_row(t, "github", "Token", "A classic token with repo, read:org and workflow, or a fine-grained one with Contents, Pull requests and Workflows (read and write).", &self.gh_token, window, cx, false));
         rows.extend(error_row(t, "github", a));
         rows
     }
 
     fn bitbucket_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![];
-        let connected = a["connected"] == true;
-        if connected {
-            rows.push(self.signed_in_row(t, "bitbucket", a, "API token in the Keychain (taskboard-bitbucket)", "Disconnect", cx));
+        if a["connected"] == true {
             if a["reauth"] == true && !self.bb_form {
-                let btn = kit::btn_primary(t, "bb-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
-                    s.bb_form = true;
-                    window.focus(&s.bb_email.focus, cx);
-                    cx.notify();
-                }));
+                let btn = kit::btn_primary(t, "bb-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| s.open_form("bitbucket", window, cx)));
                 rows.push(reauth_row(t, "bitbucket", a, "Make a new API token with them and connect it.", btn.into_any_element()));
             } else if let Some(note) = a["note"].as_str() {
                 rows.push(off_row(t, "bitbucket", a, note));
             }
-            rows.push(push_row(t, "bitbucket", "bitbucket.org"));
         }
-        if !connected || self.bb_form {
-            let email = self.bb_email.render(t, "bb-email", window).w(px(260.)).on_key_down(self.field_keys("bitbucket", &self.bb_email, cx));
-            rows.push(line(t, "bb-email-row", !connected, false, "Atlassian email", "The email you sign in to Bitbucket with.", None).child(email).into_any_element());
+        if self.bb_form {
+            let email = self.bb_email.render(t, "bb-email", window).flex_1().min_w(px(140.)).max_w(px(260.)).on_key_down(self.field_keys("bitbucket", &self.bb_email, cx));
+            rows.push(line(t, "bb-email-row", false, false, "Atlassian email", "The email you sign in to Bitbucket with.", None).child(field_box().child(email)).into_any_element());
             rows.push(self.token_row(
                 t,
                 "bitbucket",
@@ -956,23 +1136,17 @@ impl SettingsWindow {
 
     fn azure_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![];
-        let connected = a["connected"] == true;
-        if connected {
-            rows.push(self.signed_in_row(t, "azure", a, "Personal access token in the Keychain (taskboard-azure-devops)", "Disconnect", cx));
+        if a["connected"] == true {
             if a["reauth"] == true && !self.az_form {
-                let btn = kit::btn_primary(t, "az-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
-                    s.az_form = true;
-                    window.focus(&s.az_token.focus, cx);
-                    cx.notify();
-                }));
+                let btn = kit::btn_primary(t, "az-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| s.open_form("azure", window, cx)));
                 rows.push(reauth_row(t, "azure", a, "Edit the token in Azure DevOps (or make a new one) to add them, and connect it.", btn.into_any_element()));
             } else if let Some(note) = a["note"].as_str() {
                 rows.push(off_row(t, "azure", a, note));
             }
         }
-        if !connected || self.az_form {
-            let org = self.az_org.render(t, "az-org", window).w(px(260.)).on_key_down(self.field_keys("azure", &self.az_org, cx));
-            rows.push(line(t, "az-org-row", !connected, false, "Organization", "The organization your pipelines run in.", None).child(org).into_any_element());
+        if self.az_form {
+            let org = self.az_org.render(t, "az-org", window).flex_1().min_w(px(140.)).max_w(px(260.)).on_key_down(self.field_keys("azure", &self.az_org, cx));
+            rows.push(line(t, "az-org-row", false, false, "Organization", "The organization your pipelines run in.", None).child(field_box().child(org)).into_any_element());
             rows.push(self.token_row(t, "azure", "Personal access token", "A token with Build (Read) and Test Management (Read).", &self.az_token, window, cx, false));
             rows.push(link_row(t, "az-create", "How to make a personal access token", taskboardd::accounts::AZURE_TOKEN_URL, cx));
         }
@@ -982,19 +1156,8 @@ impl SettingsWindow {
 
     fn slack_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![];
-        if a["connected"] == true {
-            rows.push(self.signed_in_row(t, "slack", a, "Token in the Keychain (taskboard-slack)", "Disconnect", cx));
-        } else {
-            rows.push(self.token_row(
-                t,
-                "slack",
-                "Token",
-                "A user (xoxp-) or bot (xoxb-) token from your Slack app's OAuth & Permissions page.",
-                &self.slack_token,
-                window,
-                cx,
-                true,
-            ));
+        if self.slack_form {
+            rows.push(self.token_row(t, "slack", "Token", "A user (xoxp-) or bot (xoxb-) token from your Slack app's OAuth & Permissions page.", &self.slack_token, window, cx, false));
             rows.push(link_row(t, "slack-apps", "Open your Slack apps", taskboardd::accounts::SLACK_APPS_URL, cx));
         }
         rows.extend(error_row(t, "slack", a));
@@ -1077,32 +1240,14 @@ impl SettingsWindow {
         panel.child(line1).child(line2).child(div().text_size(px(11.5)).line_height(px(15.)).text_color(t.muted).child(after)).into_any_element()
     }
 
-    /// "Name · detail · scopes" with Check and Sign out / Disconnect.
-    fn signed_in_row(&self, t: &Theme, id: &'static str, a: &Value, how: &str, out: &str, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.busy == Some(id);
-        let name = a["name"].as_str().or(a["user"].as_str()).unwrap_or("Connected").to_string();
-        let scopes: Vec<&str> = a["scopes"].as_array().map(|s| s.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-        let detail = a["detail"].as_str().unwrap_or("");
-        let note = [detail, how].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
-        let check = kit::btn_small(t, SharedString::from(format!("{id}-check")), if busy { "Checking…" } else { "Check" });
-        let check = if busy { kit::disabled(check) } else { check.tooltip(kit::tip("Ask the service whether the token still works")).on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/check"), json!({}), cx, |_, _| {}))) };
-        let out_btn = kit::btn_small(t, SharedString::from(format!("{id}-out")), out.to_string()).text_color(t.down);
-        let out_btn = if busy { kit::disabled(out_btn) } else { out_btn.on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/disconnect"), json!({}), cx, |_, _| {}))) };
-        let tip = "Forgets Taskboard's token. gh and git on this Mac aren't touched.";
-        line(t, &format!("{id}-in"), true, false, "", &note, Some((&name, true)))
-            .when(!scopes.is_empty(), |d| d.child(div().flex().flex_wrap().gap(px(4.)).max_w(px(260.)).justify_end().children(scopes.into_iter().take(6).map(|s| kit::chip(t, s.to_string())))))
-            .child(controls().child(check).child(out_btn.tooltip(kit::tip(tip))))
-            .into_any_element()
-    }
-
     /// A secret field with Connect (↩).
     #[allow(clippy::too_many_arguments)]
     fn token_row(&self, t: &Theme, id: &'static str, label: &str, note: &str, field: &Input, window: &Window, cx: &mut Context<Self>, first: bool) -> AnyElement {
         let busy = self.busy == Some(id);
-        let input = field.render(t, SharedString::from(format!("{id}-token")), window).w(px(260.)).on_key_down(self.field_keys(id, field, cx));
+        let input = field.render(t, SharedString::from(format!("{id}-token")), window).flex_1().min_w(px(140.)).max_w(px(260.)).on_key_down(self.field_keys(id, field, cx));
         let btn = kit::btn_primary(t, SharedString::from(format!("{id}-connect")), if busy { "Checking…" } else { "Connect" }).h(px(32.)).text_size(px(12.5));
         let btn = if busy { kit::disabled(btn) } else { btn.on_click(cx.listener(move |s, _, _, cx| s.connect(id, cx))) };
-        line(t, &format!("{id}-token-row"), first, false, label, note, None).child(controls().child(input).child(btn)).into_any_element()
+        line(t, &format!("{id}-token-row"), first, false, label, note, None).child(field_box().child(input).child(btn)).into_any_element()
     }
 
     fn cli_line(&self, t: &Theme, id: &str, cli: &str, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1157,6 +1302,33 @@ fn days_label(n: i64) -> String {
     }
 }
 
+/// A retention control from `GET /history`: its choices, and which one the board keeps now. The
+/// board names them `detail_choices` and `summary_choices` beside `detail_days` and `summary_days`.
+fn retention(h: &Value, key: &str) -> (Vec<i64>, Option<usize>) {
+    let choices: Vec<i64> = h[format!("{}_choices", key.trim_end_matches("_days"))].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
+    let on = h[key].as_i64().and_then(|cur| choices.iter().position(|n| *n == cur));
+    (choices, on)
+}
+
+/// What a retention change would remove (the board's preview), or None when it removes nothing.
+fn removal_line(removes: &Value) -> Option<String> {
+    let n = |k: &str| removes[k].as_i64().unwrap_or(0);
+    let (events, days) = (n("events_total"), n("days"));
+    let mut parts = vec![];
+    if events > 0 {
+        parts.push(crate::fmt::plural(events, "event", "events"));
+    }
+    if days > 0 {
+        parts.push(format!("the summaries of {}", crate::fmt::plural(days, "day", "days")));
+    } else if n("day_rows") > 0 {
+        parts.push(crate::fmt::plural(n("day_rows"), "day summary", "day summaries"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("The next cleanup, after 3 AM, removes {}. They can't be brought back.", parts.join(" and ")))
+}
+
 /// "4.2 MB", "820 KB".
 fn bytes_label(b: i64) -> String {
     if b >= 1_000_000 { format!("{:.1} MB", b as f64 / 1_000_000.0) } else { format!("{} KB", (b as f64 / 1000.0).ceil() as i64) }
@@ -1168,15 +1340,15 @@ impl SettingsWindow {
         let Some(h) = self.history.clone() else {
             return list.child(kit::empty(t, "Asking the board…"));
         };
+        let busy = self.history_busy;
         let pick = |key: &'static str, label: &str, note: &str, first: bool, cx: &mut Context<Self>| {
-            let choices: Vec<i64> = h[format!("{key}_choices")].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
-            let cur = h[key].as_i64().unwrap_or(0);
+            let (choices, on) = retention(&h, key);
             let labels: Vec<String> = choices.iter().map(|n| days_label(*n)).collect();
             let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
-            let on = choices.iter().position(|n| *n == cur).unwrap_or(usize::MAX);
+            let on = on.unwrap_or(usize::MAX);
             let control = kit::seg(t, &format!("hist-{key}"), &refs, on, |i, item| {
                 let n = choices[i];
-                item.on_click(cx.listener(move |s, _, _, cx| s.post_history("history", json!({key: n}), cx)))
+                if busy || i == on { item } else { item.on_click(cx.listener(move |s, _, _, cx| s.preview_history(key, n, cx))) }
             });
             line(t, &format!("hist-{key}-row"), first, false, label, note, None).child(controls().child(control))
         };
@@ -1199,7 +1371,19 @@ impl SettingsWindow {
             kit::btn_small(t, "hist-clean", "Clean up now").on_click(cx.listener(|s, _, _, cx| s.post_history("history/cleanup", json!({}), cx)))
         };
         let clean = line(t, "hist-clean-row", false, false, "Cleanup", &format!("Runs every night after 3 AM. Last run: {last}."), None).child(controls().child(button));
-        let mut card = kit::card(t).overflow_hidden().child(detail).child(summary).child(used).child(clean);
+        let mut card = kit::card(t).overflow_hidden().child(detail).child(summary);
+        if let Some((body, text)) = self.history_confirm.clone() {
+            let ask = line(t, "hist-confirm", false, true, "Remove this history?", &text, None).child(
+                controls()
+                    .child(kit::btn_small(t, "hist-keep", "Cancel").on_click(cx.listener(|s, _, _, cx| {
+                        s.history_confirm = None;
+                        cx.notify();
+                    })))
+                    .child(kit::btn_danger(t, "hist-apply", "Change and remove").h(px(26.)).text_size(px(12.)).on_click(cx.listener(move |s, _, _, cx| s.post_history("history", body.clone(), cx)))),
+            );
+            card = card.child(ask);
+        }
+        card = card.child(used).child(clean);
         if let Some((text, bad)) = &self.history_note {
             card = card.child(row(t, "hist-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
         }
@@ -1255,7 +1439,7 @@ impl SettingsWindow {
                 item.on_click(cx.listener(move |s, _, _, cx| s.post_daily("usage/daily", json!({"base": b}), cx)))
             }
         });
-        let note = "Even splits what's left of the week over the days to its reset; a percent gives each day that share of the week.";
+        let note = "Even splits what's left of the week over the days to its reset; a percent gives each day that share of the week. A change keeps what today already used.";
         let mut card = kit::card(t).overflow_hidden().child(line(t, "daily-base-row", true, false, "Daily limit", note, None).child(controls().child(base)));
         if d["on"] == true {
             let spread = d["carry"] == "spread";
@@ -1383,7 +1567,7 @@ impl SettingsWindow {
                 "Downloaded and checked. The board and its agents keep running through the restart.".into(),
                 Some(small(kit::btn_primary(t, "sys-apply", "Restart to update")).on_click(cx.listener(|s, _, _, cx| s.apply_update(cx)))),
             ),
-            State::Applying { version } => (t.accent, format!("Installing {version}…"), "Taskboard reopens in a moment.".into(), None),
+            State::Applying { version } => (t.accent, format!("Installing {version}…"), "The app reopens in a moment.".into(), None),
             State::Failed { error, at } => (t.down, format!("Check failed at {at}"), error, Some(check("Retry", cx))),
         };
         let update = line(t, "sys-update", true, false, "Update", &note, None).child(
@@ -1416,11 +1600,11 @@ impl SettingsWindow {
                 kit::disabled(small(kit::btn_small(t, "sys-restart", "Restarting…")))
             } else {
                 // the call to action when it's behind; otherwise there for a daemon that's stuck
-                let b = if behind { kit::btn_primary(t, "sys-restart", "Restart daemon") } else { kit::btn_small(t, "sys-restart", "Restart daemon") };
+                let b = if behind { kit::btn_primary(t, "sys-restart", "Restart the board") } else { kit::btn_small(t, "sys-restart", "Restart the board") };
                 small(b).on_click(cx.listener(|s, _, _, cx| s.restart_daemon(cx)))
             }
         });
-        let daemon = line(t, "sys-daemon", false, behind, "Daemon version", &daemon_note, None).child(
+        let daemon = line(t, "sys-daemon", false, behind, "Board version", &daemon_note, None).child(
             controls()
                 .child(kit::dot(if self.info.is_none() { t.faint } else if behind { t.warn } else { t.up }, 7.))
                 .child(div().text_size(px(12.)).text_color(if daemon_v.is_some() { t.text } else { t.muted }).child(daemon_v.unwrap_or_else(|| "not running".into())))
@@ -1469,7 +1653,7 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 s.sys_busy = false;
                 if let Err(e) = r {
-                    s.sys_note = Some((format!("Couldn't restart the daemon: {e}"), true));
+                    s.sys_note = Some((format!("Couldn't restart the board: {e}"), true));
                 }
                 s.load_info(cx);
                 cx.notify();
@@ -1663,7 +1847,7 @@ fn used_at(iso: &str) -> String {
 
 /// A row's shell: padding and the line above every row but the first.
 fn row(t: &Theme, id: &str, first: bool) -> Stateful<Div> {
-    div().id(SharedString::from(id.to_string())).flex().items_center().gap(px(16.)).px(px(16.)).py(px(9.)).min_h(px(46.)).when(!first, |d| d.border_t_1().border_color(t.border))
+    div().id(SharedString::from(id.to_string())).flex().flex_wrap().items_center().gap_x(px(16.)).gap_y(px(8.)).px(px(16.)).py(px(9.)).min_h(px(46.)).when(!first, |d| d.border_t_1().border_color(t.border))
 }
 
 /// A row with a name (or `title`, bold) and what it means; the caller adds its controls.
@@ -1684,6 +1868,11 @@ fn controls() -> Div {
     div().flex().flex_none().items_center().gap(px(8.))
 }
 
+/// Controls holding a text field: they shrink with the window, down to a usable field.
+fn field_box() -> Div {
+    div().flex().flex_1().min_w(px(220.)).justify_end().items_center().gap(px(8.))
+}
+
 /// Whether an account needs the owner: its sign-in stopped working or lacks scopes Taskboard needs.
 fn needs_owner(a: &Value) -> bool {
     a["connected"] == true && (a["error"].is_string() || a["reauth"] == true)
@@ -1692,7 +1881,7 @@ fn needs_owner(a: &Value) -> bool {
 /// Amber: the scopes Taskboard now needs that this sign-in lacks, and how to give them.
 fn reauth_row(t: &Theme, id: &str, a: &Value, how: &str, button: AnyElement) -> AnyElement {
     let missing: Vec<&str> = a["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-    line(t, &format!("{id}-reauth"), false, true, "Needs a new sign-in", &format!("Taskboard now needs {}. {how}", missing.join(", ")), None)
+    line(t, &format!("{id}-reauth"), false, true, "Needs a new sign-in", &format!("The board now needs {}. {how}", missing.join(", ")), None)
         .child(div().flex().flex_wrap().gap(px(4.)).max_w(px(200.)).justify_end().children(missing.iter().map(|s| kit::chip(t, s.to_string()))))
         .child(controls().child(button))
         .into_any_element()
@@ -1707,16 +1896,9 @@ fn off_row(t: &Theme, id: &str, a: &Value, note: &str) -> AnyElement {
         .into_any_element()
 }
 
-/// How agents push: only in the board's sessions, only while on a task.
-fn push_row(t: &Theme, id: &str, host: &str) -> AnyElement {
-    row(t, &format!("{id}-git"), false)
-        .child(kit::dot(t.up, 7.))
-        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.muted).child(format!("Agents on a task git push to {host} with this account. Other terminals keep their own git sign-in.")))
-        .into_any_element()
-}
-
+/// Why a sign-in that isn't connected failed (a connected one's refusal is its status row).
 fn error_row(t: &Theme, id: &str, a: &Value) -> Option<AnyElement> {
-    let e = a["error"].as_str()?;
+    let e = a["error"].as_str().filter(|_| a["connected"] != true)?;
     Some(row(t, &format!("{id}-error"), false).bg(t.warn_soft).child(kit::dot(t.warn, 7.)).child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.warn_fg).child(e.to_string())).into_any_element())
 }
 
@@ -1931,13 +2113,98 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn disconnect_asks_in_the_row_before_forgetting_the_sign_in(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, window, cx| {
+            assert!(!s.slack_form, "no form until Connect…");
+            s.open_form("slack", window, cx);
+            assert!(s.slack_form);
+            s.slack_token.set_text("xoxb-1", cx);
+            s.connect("slack", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, window, cx| {
+            assert_eq!(s.account("slack")["connected"], true);
+            assert!(!s.slack_form, "the form closes once connected");
+            s.ask_disconnect("slack", cx);
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
+        assert!(!rec.posts().iter().any(|(p, _)| p == "accounts/slack/disconnect"), "Disconnect only asks");
+        w.update(cx, |s, _, cx| {
+            assert_eq!(s.confirm, Some("slack"));
+            assert_eq!(s.account("slack")["connected"], true);
+            s.disconnect("slack", cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert!(rec.posts().iter().any(|(p, _)| p == "accounts/slack/disconnect"));
+        w.update(cx, |s, _, _| {
+            assert_eq!(s.confirm, None);
+            assert_eq!(s.account("slack")["connected"], false);
+        })
+        .unwrap();
+    }
+
+    #[::core::prelude::v1::test]
+    fn each_account_says_its_status_in_one_line() {
+        let line = |id, a| super::account_line(id, &a);
+        assert_eq!(line("github", json!({"connected": false})), ("Not connected".into(), false));
+        assert_eq!(line("github", json!({"connected": true, "user": "sam", "checked_at": crate::fmt::now().format("%Y-%m-%dT15:05:00Z").to_string()})), ("Signed in as sam · checked 3:05 PM, works".into(), false));
+        assert_eq!(line("azure", json!({"connected": true, "user": "s@acme.com", "detail": "s@acme.com · dev.azure.com/acme"})), ("Signed in to acme".into(), false));
+        let refused = json!({"connected": true, "label": "GitHub", "user": "sam", "error": "Bad credentials", "checked_at": crate::fmt::now().format("%Y-%m-%dT14:51:00Z").to_string()});
+        assert_eq!(line("github", refused.clone()), ("GitHub refused the sign-in at 2:51 PM · agents can't push".into(), true));
+        assert!(super::needs_owner(&refused), "the sidebar counts it");
+        assert_eq!(line("slack", json!({"connected": true, "label": "Slack", "error": "token_expired"})).0, "Slack refused the sign-in · no Slack messages");
+    }
+
+    #[gpui_kit::test]
+    fn history_retention_shows_the_values_the_board_keeps(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |s, _, _| {
+            let h = s.history.clone().expect("GET /history read on open");
+            for key in ["detail_days", "summary_days"] {
+                let (choices, on) = super::retention(&h, key);
+                assert_eq!(choices.len(), 4, "{key}: {h}");
+                assert!(on.is_some(), "{key} shows the board's value as chosen: {h}");
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_retention_change_asks_the_board_what_it_removes_first(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, _, cx| s.preview_history("summary_days", 0, cx)).unwrap();
+        settle(cx);
+        let posts: Vec<_> = rec.posts().into_iter().filter(|(p, _)| p == "history").collect();
+        assert_eq!(posts[0].1, json!({"summary_days": 0, "preview": true}), "previewed first");
+        assert_eq!(posts.get(1).map(|p| p.1.clone()), Some(json!({"summary_days": 0})), "keeping more removes nothing, so it saves");
+        w.update(cx, |s, _, _| assert_eq!(s.history.as_ref().unwrap()["summary_days"], 0)).unwrap();
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_removal_warning_counts_events_and_days() {
+        assert_eq!(super::removal_line(&json!({"events_total": 0, "days": 0, "day_rows": 0})), None);
+        assert_eq!(
+            super::removal_line(&json!({"events_total": 9, "days": 2, "day_rows": 3})).as_deref(),
+            Some("The next cleanup, after 3 AM, removes 9 events and the summaries of 2 days. They can't be brought back.")
+        );
+        assert_eq!(super::removal_line(&json!({"events_total": 1, "days": 0, "day_rows": 0})).as_deref(), Some("The next cleanup, after 3 AM, removes 1 event. They can't be brought back."));
+    }
+
+    #[gpui_kit::test]
     fn uses_gh_sign_in_without_changing_it(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = window(cx);
+        w.update(cx, |s, _, _| s.gh_form = true).unwrap();
         w.update(cx, |s, _, cx| s.import_gh(cx)).unwrap();
         settle(cx);
         assert!(rec.posts().iter().any(|(p, _)| p == "accounts/github/import"));
         w.update(cx, |s, _, _| {
             assert_eq!(s.account("github")["connected"], true);
+            assert!(!s.gh_form, "the form closes once signed in");
             assert!(s.notes.get("github").is_some_and(|(n, bad)| !bad && n.starts_with("Using gh's sign-in")));
         })
         .unwrap();
