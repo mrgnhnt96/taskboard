@@ -96,6 +96,12 @@ impl Print for i64 {
     }
 }
 
+impl Print for usize {
+    fn print(&self, f: &mut Fingerprint) {
+        self.hash(&mut f.h);
+    }
+}
+
 impl Print for crate::backend::CallError {
     fn print(&self, f: &mut Fingerprint) {
         (self.status, &self.message).hash(&mut f.h);
@@ -137,6 +143,14 @@ impl<A: Print, B: Print> Print for (A, B) {
     fn print(&self, f: &mut Fingerprint) {
         self.0.print(f);
         self.1.print(f);
+    }
+}
+
+impl<A: Print, B: Print, C: Print> Print for (A, B, C) {
+    fn print(&self, f: &mut Fingerprint) {
+        self.0.print(f);
+        self.1.print(f);
+        self.2.print(f);
     }
 }
 

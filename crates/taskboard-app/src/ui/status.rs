@@ -281,6 +281,18 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                             m.open_task(task.clone(), cx);
                         }))
                 }))
+                .children((m.idea_toast == Some(at)).then(|| {
+                    div()
+                        .id("toast-reopen")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.accent_soft)
+                        .cursor_pointer()
+                        .child("Reopen ⌘N")
+                        .on_click(cx.listener(move |m, _, window, cx| {
+                            m.dismiss_toast(at, cx);
+                            m.new_idea(window, cx);
+                        }))
+                }))
                 .children(x.err.then(|| {
                     div()
                         .id(("toast-dismiss", i))
