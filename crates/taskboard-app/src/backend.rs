@@ -221,6 +221,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_RECAPS").is_ok() {
             seed_recaps(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_PANEL").is_ok() {
+            seed_panel(&board);
+        }
         if std::env::var("TASKBOARD_FAKE_QUIET").is_ok() {
             let _ = taskboardd::dispatch::add_alert_keyed(&board, "T5: no update for 40 minutes", Some(5), None, "quiet:T5");
         }
@@ -334,6 +337,43 @@ fn seed_stopped(board: &Board) {
     }
 }
 
+/// Dev (`TASKBOARD_FAKE_PANEL=1`): the task panel's need boxes: a lost task that looks finished,
+/// PRs waiting on your review, rebasing and stopped, and a human task waiting on a task with a PR.
+fn seed_panel(board: &Board) {
+    use taskboardd::{board as b, fields, human, util};
+    let post = |body: Value| api::dispatch(board, "POST", "/tasks", &Query::new(), &body).ok().and_then(|v| v["id"].as_i64());
+    let mk = |title: &str| post(json!({"title": title, "detail": "Sample work.", "project": "webapp", "pickup": "new"}));
+    let now = util::now_iso();
+    let ago = |mins: i64| (chrono::Utc::now() - chrono::Duration::minutes(mins)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    if let Some(t) = mk("Release v0.2.0") {
+        let found = json!({"lost_at": ago(20), "found": [{"what": "Tag v0.2.0", "at": ago(30)},
+                                                       {"what": "Release v0.2.0 published", "at": ago(25), "url": "https://github.com/acme/webapp/releases/tag/v0.2.0"}]});
+        let _ = b::update_task(board, t, fields!["status" => "needs", "needs_reason" => "lost", "lost" => 1, "started_at" => ago(90),
+                                                 "latest" => "Published the release notes.", "looks_finished" => found.to_string()]);
+    }
+    let checks = json!({"checks": [{"name": "ci", "state": "SUCCESS"}], "running": 0});
+    let pr = |title: &str, num: i64, phase: &str, flow: Value| {
+        let t = mk(title)?;
+        let _ = b::update_task(board, t, fields!["status" => "done", "started_at" => ago(180), "finished_at" => ago(40), "summary" => "Ready for review.",
+                                                 "pr_repo" => "acme/webapp", "pr_num" => num, "pr_url" => format!("https://github.com/acme/webapp/pull/{num}"),
+                                                 "pr_state" => "OPEN", "pr_title" => title, "pr_phase" => phase, "pr_flow" => flow.to_string()]);
+        Some(t)
+    };
+    pr("Passkey sign-in button", 44, "review", json!({"rec": checks}));
+    pr("Rename the auth helpers", 45, "rebase", json!({"rec": checks}));
+    pr("Fix the flaky login test", 46, "fix", json!({"rec": {"checks": [{"name": "e2e", "state": "FAILURE"}], "failed": ["e2e"], "running": 0},
+                                                       "stopped": {"at": ago(8), "message": "Tests still fail on CI only. Should I skip the e2e suite for this PR?", "asked": true}}));
+    let signing = mk("Set up signing");
+    if let Some(s) = signing {
+        let _ = b::update_task(board, s, fields!["status" => "working", "started_at" => ago(50), "pr_repo" => "acme/webapp", "pr_num" => 47,
+                                                 "pr_url" => "https://github.com/acme/webapp/pull/47", "pr_state" => "OPEN", "pr_title" => "Set up signing"]);
+    }
+    if let (Some(h), Some(s)) = (mk("Upload the signing certificate"), signing) {
+        let _ = b::update_task(board, h, fields!["kind" => human::KIND, "status" => "queued",
+                                                 "detail" => "1. Open the developer account.\n2. Upload the certificate.", "waits_for" => json!([s]).to_string(), "updated_at" => now]);
+    }
+}
+
 /// Dev (`TASKBOARD_FAKE_NEEDS=1`): Needs you's Decide and Your to-dos filled, and two items on Later.
 fn seed_needs(board: &Board) {
     use taskboardd::{board as b, dispatch, fields, human, util};
@@ -347,7 +387,7 @@ fn seed_needs(board: &Board) {
     };
     let todo = |title: &str, goal: Option<i64>| {
         let t = post("/tasks".into(), json!({"title": title, "detail": "1. Open the account page.\n2. Copy the key.", "project": "webapp", "pickup": "new"}))["id"].as_i64()?;
-        let _ = b::update_task(board, t, taskboardd::fields!["kind" => human::KIND, "status" => "needs", "needs_reason" => human::NEEDS, "goal_id" => goal]);
+        let _ = b::update_task(board, t, taskboardd::fields!["kind" => human::KIND, "status" => "queued", "goal_id" => goal]);
         Some(t)
     };
     let replay = "Picto: every error replay shows the 30 s before it";

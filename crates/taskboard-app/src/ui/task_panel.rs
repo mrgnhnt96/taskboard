@@ -41,7 +41,7 @@ thread_local! {
     static HANDOFF_AT: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static NOTE_GEN: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
     /// When a click outside last closed the terminal menu, so the same click on ⋯ doesn't reopen it.
-    static MENU_CLOSED: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    static MENU_CLOSED: std::cell::Cell<Option<(std::time::Instant, &'static str)>> = const { std::cell::Cell::new(None) };
     /// The same for a reviewer's popover: when, and whose, so a click on their name doesn't reopen it.
     static REV_CLOSED: RefCell<Option<(std::time::Instant, String)>> = const { RefCell::new(None) };
 }
@@ -434,6 +434,7 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         "open-task" => open_from_panel(m, &id, cx),
         "tab" => {
+            ui(close_menus);
             if let Some(Panel::Task { tab, .. }) = m.panel.as_mut() {
                 *tab = match a.arg.as_str() {
                     "what" => TaskTab::What,
@@ -535,14 +536,20 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
         // Only asks: the confirm merges it.
         "pr-merge-now" => {
+            ui(|u| u.pr_menu = false);
             m.modal = Some(crate::ui::modals::Modal::finish(a.id.clone(), crate::ui::modals::Ask::Merge));
             cx.notify();
         }
         // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
         "bit-made" => run(m, a, format!("bits/{}/made", a.arg), json!({}), |_, _| String::new(), cx),
-        "term-menu" => {
-            let just_closed = MENU_CLOSED.with(|c| c.take()).is_some_and(|at| at.elapsed() < Duration::from_millis(300));
-            ui(|u| u.term_menu = !u.term_menu && !just_closed);
+        // The ⋯ menus: the terminal's, the need box's and the PR's. One open at a time.
+        "term-menu" | "box-menu" | "pr-menu" => {
+            let which = a.act;
+            let just_closed = MENU_CLOSED.with(|c| c.take()).is_some_and(|(at, w)| w == which && at.elapsed() < Duration::from_millis(300));
+            ui(|u| {
+                let open = close_menus(u) != Some(which) && !just_closed;
+                *menu_flag(u, which) = open;
+            });
             cx.notify();
         }
         // A reviewer's name: open (and fetch) their popover, or close it.
@@ -588,8 +595,12 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         "talk" => run(m, a, tp("/talk"), json!({}), |m, _| sent(m), cx),
         "open-url" => open_target(&a.arg, cx),
+        // Another of the task's terminals (the PR's, or one still open from before): bring it up in Midna.
         "term-focus" => run(m, a, format!("sessions/{id}/focus"), json!({}), |m, _| sent(m), cx),
-        "resume" => run(m, a, tp("/resume"), json!({"mode": a.arg}), |m, _| sent(m), cx),
+        "resume" => {
+            ui(|u| u.box_menu = false);
+            run(m, a, tp("/resume"), json!({"mode": a.arg}), |m, _| sent(m), cx)
+        }
         "meta-del" => {
             let Some(task) = m.data.task.clone() else { return };
             let i: usize = a.arg.parse().unwrap_or(usize::MAX);
@@ -921,7 +932,7 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     if m.task_panel.r != r {
         m.task_panel = State { r: r.clone(), ..Default::default() };
         ui(|u| {
-            u.term_menu = false;
+            close_menus(u);
             u.tl_open.clear();
             u.rev_pop = None;
         });
@@ -1002,20 +1013,20 @@ impl Draw<'_> {
         self.within.last().copied()
     }
 
-    /// The sheet scrolls (`.panel { overflow-y: auto; gap: 18px; padding: 16px 24px 32px }`) between
-    /// the header (breadcrumb, title, chips), pinned above it, and the footer tabs, pinned under it.
+    /// The sheet scrolls (`.panel { overflow-y: auto; gap: 18px; padding: 16px 24px 32px }`) under
+    /// the header (breadcrumb, title, chips) and the tabs, both pinned above it.
     fn panel(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
         let r = m.task_panel.r.clone();
         let panel = div().size_full().flex().flex_col().text_size(px(14.));
         let (head, col, foot) = self.sheet(m, tree, true, cx);
-        let head = head.map(|h| h.flex_none().px(px(24.)).pt(px(16.)).pb(px(16.)).line_height(relative(1.5)).border_b_1().border_color(self.t.border));
+        let head = head.map(|h| h.flex_none().px(px(24.)).pt(px(16.)).pb(px(if foot.is_some() { 12. } else { 16. })).line_height(relative(1.5)).when(foot.is_none(), |d| d.border_b_1().border_color(self.t.border)));
         // The Full log: a list that draws only what's in view, the sheet above as its first item.
         if let (Some(l), Some(_)) = (&m.task_panel.log_list, find_log(tree)) {
             let items = list(l.state.clone(), cx.processor(log_list_item)).flex_1().min_h_0();
-            return panel.children(head).child(items).children(foot).into_any_element();
+            return panel.children(head).children(foot).child(items).into_any_element();
         }
         let body = div().id(SharedString::from(format!("task-body-{r}"))).flex_1().min_h_0().overflow_y_scroll().child(col.pb(px(32.)));
-        panel.children(head).child(body).children(foot).into_any_element()
+        panel.children(head).children(foot).child(body).into_any_element()
     }
 
     /// The header (breadcrumb, title, chips), the sheet under it and (when `with_foot`) the footer.
@@ -1027,12 +1038,12 @@ impl Draw<'_> {
         let mut foot = None;
         self.within.push(K::Col);
         for (i, k) in kids.iter().enumerate() {
-            if !with_foot && matches!(k, Node::El { k: K::Foot, .. }) {
+            if !with_foot && matches!(k, Node::El { k: K::PanelTabs, .. }) {
                 continue;
             }
             self.path.push(i);
             let e = self.node(m, k, None, cx);
-            if let Node::El { k: K::Foot, .. } = k {
+            if let Node::El { k: K::PanelTabs, .. } = k {
                 self.path.pop();
                 foot = Some(e);
                 continue;
@@ -1302,7 +1313,7 @@ impl Draw<'_> {
             K::TlActs => self.c_tl_acts(m, n, boxed, cx),
             K::TermMenu => self.c_term_menu(m, n, boxed, cx),
             K::MenuItem { danger } => self.c_menu_item(n, danger, cx),
-            K::Foot => self.c_foot(m, n, cx),
+            K::PanelTabs => self.c_foot(m, n, cx),
             K::Step(st) => self.c_step(m, n, st, boxed, cx),
             K::Kv => self.c_kv(m, n, boxed, cx),
             K::Files => self.c_files(m, n, boxed, cx),
@@ -1440,27 +1451,30 @@ impl Draw<'_> {
             .into_any_element()
     }
 
-    /// `.needs-banner`: full width under the chips (bleeding past the sheet's 24px sides), 14px 24px,
-    /// a line above and below.
+    /// The need box on top of the Timeline: the one thing the owner can do, in its tone (orange when
+    /// it waits on them, red when something broke, green when it looks finished, grey when nothing's
+    /// needed), rounded with a line round it.
     #[inline(never)]
     fn c_banner(&mut self, m: &MainWindow, n: &Node, tone: BoxTone, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let (bg, line) = match tone {
             BoxTone::Lost => (t.down_soft, t.down_line),
             BoxTone::Quiet => (t.seg, t.border),
-            _ => (t.warn_soft, t.warn_line),
+            BoxTone::Done => (t.up_soft, t.border),
+            BoxTone::Info => (accent_tint(t), t.accent_line),
+            BoxTone::Ask => (t.warn_soft, t.warn_line),
         };
         let kids = self.kids(m, n, Some(tone), cx);
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .mx(px(-24.))
-            .px(px(24.))
+            .gap(px(10.))
+            .mb(px(16.))
+            .px(px(16.))
             .py(px(14.))
+            .rounded(px(12.))
             .bg(bg)
-            .border_t_1()
-            .border_b_1()
+            .border_1()
             .border_color(line)
             .text_size(px(14.))
             .children(kids)
@@ -1593,14 +1607,11 @@ impl Draw<'_> {
     fn c_steps(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let kids = self.kids(m, n, boxed, cx);
-        let mut row = div().flex().items_start().pt(px(4.)).pb(px(2.));
+        let mut col = div().flex().flex_col().min_w_0().rounded(px(10.)).border_1().border_color(t.border);
         for (i, e) in kids.into_iter().enumerate() {
-            if i > 0 {
-                row = row.child(div().flex_1().min_w(px(14.)).h(px(2.)).mt(px(10.)).rounded(px(1.)).bg(t.border_2));
-            }
-            row = row.child(e);
+            col = col.child(div().when(i > 0, |d| d.border_t_1().border_color(t.divider)).child(e));
         }
-        row.into_any_element()
+        col.into_any_element()
     }
 
     /// `.tline`: the stops top to bottom, a rail joining each to the next.
@@ -1760,7 +1771,7 @@ impl Draw<'_> {
         let mut at = div().relative().ml_auto();
         for (kid, e) in nodes.iter().zip(kids) {
             match kid {
-                Node::Btn { act: a, .. } if a.act == "term-menu" => at = at.child(e),
+                Node::Btn { act: a, .. } if a.act.ends_with("-menu") => at = at.child(e),
                 Node::El { k: K::TermMenu, .. } => at = at.child(div().absolute().right_0().top(px(34.)).child(deferred(e).with_priority(2))),
                 _ => row = row.child(e),
             }
@@ -1787,8 +1798,8 @@ impl Draw<'_> {
             .occlude()
             .on_mouse_down_out(cx.listener(|_, _, _, cx| {
                 // The ⋯ button toggles it itself: closing here first would reopen it.
-                if ui(|u| std::mem::replace(&mut u.term_menu, false)) {
-                    MENU_CLOSED.with(|c| c.set(Some(std::time::Instant::now())));
+                if let Some(which) = ui(close_menus) {
+                    MENU_CLOSED.with(|c| c.set(Some((std::time::Instant::now(), which))));
                     cx.notify();
                 }
             }))
@@ -1969,13 +1980,13 @@ impl Draw<'_> {
             .into_any_element()
     }
 
-    /// `.panel-foot`: What to do, Context and Full log (with its count), pinned under the sheet.
+    /// The tabs (Full log with its count), pinned under the header on one line.
     #[inline(never)]
     fn c_foot(&mut self, m: &MainWindow, n: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
         let kids = self.kids(m, n, None, cx);
-        let mut row = div().flex().flex_none().items_center().gap(px(22.)).px(px(24.)).pt(px(14.)).pb(px(16.)).border_t_1().border_color(t.border).bg(t.card);
+        let mut row = div().flex().flex_none().items_end().gap(px(22.)).px(px(24.)).border_b_1().border_color(t.border);
         let mut prev: Option<AnyElement> = None;
         for (kid, e) in nodes.iter().zip(kids) {
             match kid {
@@ -1996,11 +2007,12 @@ impl Draw<'_> {
     #[inline(never)]
     fn c_step(&mut self, m: &MainWindow, n: &Node, st: StepSt, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
+        // Orange is only for what waits on the owner; red for a failure.
         let (name_c, sub_c) = match st {
-            StepSt::Done => (t.text_2, t.up),
-            StepSt::Fail => (t.down, t.down),
-            StepSt::Ask => (t.warn, t.warn),
-            StepSt::Wait | StepSt::Now => (t.text_2, t.accent_fg),
+            StepSt::Done => (t.text, t.up_fg),
+            StepSt::Fail => (t.text, t.down),
+            StepSt::Ask => (t.text, t.warn_fg),
+            StepSt::Wait | StepSt::Now => (t.text, t.accent_fg),
             StepSt::Todo => (t.muted, t.faint),
         };
         let bold = matches!(st, StepSt::Fail | StepSt::Ask);
@@ -2009,13 +2021,14 @@ impl Draw<'_> {
         let (name, sub) = (kids.next(), kids.next());
         div()
             .flex()
-            .flex_col()
-            .flex_none()
             .items_center()
-            .gap(px(4.))
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(8.))
+            .text_size(px(13.))
             .child(dot)
-            .child(div().text_color(name_c).when(bold, |d| d.font_weight(FontWeight::BOLD)).children(name))
-            .children(sub.map(|s| div().text_color(sub_c).child(s)))
+            .child(div().flex_1().min_w_0().text_color(name_c).children(name))
+            .children(sub.map(|s| div().flex_none().max_w(px(240.)).text_color(sub_c).when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(s)))
             .into_any_element()
     }
 
@@ -2378,7 +2391,23 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
     match look {
         Look::Plain => base(t, id, label),
         Look::Chip { on } => chip(t, div().id(id), on).child(label),
-        Look::Foot { on } => div().id(id).flex().items_center().gap(px(6.)).text_size(px(13.)).text_color(if on { t.text } else { t.text_2 }).cursor_pointer().hover(|d| d.text_color(t.text)).child(label),
+        // The open tab: bold, on a 2px accent line.
+        Look::PanelTab { on } => div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .pt(px(4.))
+            .pb(px(8.))
+            .mb(px(-1.))
+            .border_b_2()
+            .border_color(if on { t.accent } else { gpui::transparent_black() })
+            .text_size(px(13.))
+            .text_color(if on { t.text } else { t.text_2 })
+            .when(on, |d| d.font_weight(FontWeight::SEMIBOLD))
+            .cursor_pointer()
+            .hover(|d| d.text_color(t.text))
+            .child(label),
         Look::Primary | Look::PrimaryWide => {
             let b = raw(t, id, label).bg(t.accent_btn).border_color(transparent_black()).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).hover(|d| d.opacity(0.94));
             // `.lg.wide`: 42px, 14px, sharing the row.
@@ -2778,16 +2807,37 @@ pub(crate) fn chevron(open: bool, color: Hsla) -> impl IntoElement {
 }
 
 /// `.pr-step-dot` in each state.
+/// Closes whichever ⋯ menu is open, saying which.
+fn close_menus(u: &mut view::Ui) -> Option<&'static str> {
+    let open = if u.term_menu {
+        Some("term-menu")
+    } else if u.box_menu {
+        Some("box-menu")
+    } else if u.pr_menu {
+        Some("pr-menu")
+    } else {
+        None
+    };
+    (u.term_menu, u.box_menu, u.pr_menu) = (false, false, false);
+    open
+}
+
+fn menu_flag<'a>(u: &'a mut view::Ui, which: &str) -> &'a mut bool {
+    match which {
+        "box-menu" => &mut u.box_menu,
+        "pr-menu" => &mut u.pr_menu,
+        _ => &mut u.term_menu,
+    }
+}
+
 fn step_dot(t: &Theme, st: StepSt) -> AnyElement {
-    let d = div().flex_none().size(px(22.)).rounded_full().flex().items_center().justify_center();
-    // `box-shadow: 0 0 0 2px`: a 2px ring outside the dot.
-    let ring = |c: Hsla, inner: Div| div().flex_none().size(px(26.)).m(px(-2.)).p(px(2.)).rounded_full().bg(c).child(inner).into_any_element();
+    let d = div().flex_none().size(px(16.)).rounded_full().flex().items_center().justify_center();
     match st {
-        StepSt::Done => d.bg(t.up_soft).child(paint(Ic::Check, 12., 3., t.up)).into_any_element(),
-        StepSt::Fail => ring(t.down, d.bg(t.down_soft).child(paint(Ic::X, 11., 3., t.down))),
-        StepSt::Ask => ring(t.warn, d.bg(t.warn_soft).child(paint(Ic::Comment, 11., 2.6, t.warn))),
-        StepSt::Wait => d.border_1().border_color(t.accent).child(paint(Ic::Clock, 12., 2.6, t.accent_fg)).into_any_element(),
-        StepSt::Now => d.child(spinner(22., 2., t.accent)).into_any_element(),
+        StepSt::Done => d.bg(t.up_soft).child(paint(Ic::Check, 9., 3., t.up)).into_any_element(),
+        StepSt::Fail => d.bg(t.down_soft).border_1().border_color(t.down).child(paint(Ic::X, 8., 3., t.down)).into_any_element(),
+        StepSt::Ask => d.bg(t.warn_soft).border_1().border_color(t.warn).child(paint(Ic::Comment, 8., 2.6, t.warn)).into_any_element(),
+        StepSt::Wait => d.border_1().border_color(t.accent).child(paint(Ic::Clock, 9., 2.6, t.accent_fg)).into_any_element(),
+        StepSt::Now => d.child(spinner(16., 2., t.accent)).into_any_element(),
         StepSt::Todo => d.border_1().border_color(t.border_2).into_any_element(),
     }
 }
