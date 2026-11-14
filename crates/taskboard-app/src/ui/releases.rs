@@ -1,14 +1,15 @@
 //! The Releases pages. The overview (`Page::Releases`) is a card per project with releases on (the
-//! state's `releases`): its newest release, what waits in Unreleased (and its pending cut), and the
-//! few releases before. A project's page (`Page::ReleasesOf`) shows its counts, then Unreleased (the
-//! pending cut's checklist on top, then the work by goal), its newest release always open, and every
-//! older release by month, each a row that opens in place to its tasks by goal (`GET /releases/:id`).
+//! state's `releases`): its newest release, what waits in Unreleased (and its next cut), and the
+//! few releases before. A project's page (`Page::ReleasesOf`) shows its counts, then the next
+//! release (what it cuts after, then the work already finished), and every release by month, each
+//! a row that opens in place to its tasks by goal (`GET /releases/:id`); the newest starts open.
 //! That page is a virtual list, paged from the board (`GET /releases?limit=`) as it nears its end.
-//! With no project on, the pages are hidden. Read-only: cutting and editing releases stay in `tb`.
+//! A failed answer says so with Try again and keeps what loaded before. With no project on, the
+//! pages are hidden. Read-only: cutting and editing releases stay in `tb`.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
-use crate::ui::{goal, kit, sidebar};
+use crate::ui::{focus, goal, kit, sidebar};
 use chrono::{DateTime, Datelike, Utc};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -27,15 +28,23 @@ pub const CARD_RELEASES: usize = 4;
 pub const PAGE: usize = 50;
 /// Ask for more once the list is scrolled within this many items of its end.
 const AHEAD: usize = 20;
+/// How far a goal's tasks sit in from its heading.
+const INDENT: f32 = 34.;
 
 #[derive(Default)]
 pub struct State {
     /// The older releases open in place on a project's page, by ref.
     pub open: HashSet<String>,
+    /// The newest releases closed by hand (the newest starts open), by ref.
+    pub shut: HashSet<String>,
     /// `GET /releases?project=` by project: an overview card's few, or the project page's pages.
     pub lists: HashMap<String, Value>,
     /// `GET /releases/:id` (or `/releases/unreleased`) by [`unreleased_key`] or ref.
     pub details: HashMap<String, Value>,
+    /// Why the last ask for a project's list failed, by project, until one comes back.
+    pub list_errs: HashMap<String, String>,
+    /// Why the last ask for a release (or Unreleased) failed, by key, until one comes back.
+    pub row_errs: HashMap<String, String>,
     /// How many releases the project page asks for (at least [`PAGE`]).
     pub limit: usize,
     /// A release a link opened: its project's page scrolls to it once it's listed.
@@ -47,6 +56,33 @@ pub struct State {
 impl State {
     pub fn limit(&self) -> usize {
         self.limit.max(PAGE)
+    }
+}
+
+/// The board's answers: each one that came back replaces what was there; a failed one is kept as an
+/// error beside the older data, so the page says it can't load rather than Loading for ever.
+pub fn land(st: &mut State, lists: Vec<(String, Result<Value, String>)>, rows: Vec<(String, Result<Value, String>)>) {
+    for (p, v) in lists {
+        match v {
+            Ok(v) => {
+                st.list_errs.remove(&p);
+                st.lists.insert(p, v);
+            }
+            Err(e) => {
+                st.list_errs.insert(p, e);
+            }
+        }
+    }
+    for (k, v) in rows {
+        match v {
+            Ok(v) => {
+                st.row_errs.remove(&k);
+                st.details.insert(k, v);
+            }
+            Err(e) => {
+                st.row_errs.insert(k, e);
+            }
+        }
     }
 }
 
@@ -95,12 +131,25 @@ fn lists_release(l: &Value, r: &str) -> bool {
     arr(l, "releases").iter().any(|x| s(x, "ref") == r)
 }
 
+/// Whether a release is open in place: the newest unless closed by hand, any other once opened.
+pub fn is_open(st: &State, r: &str, newest: bool) -> bool {
+    if newest { !st.shut.contains(r) } else { st.open.contains(r) }
+}
+
+fn toggle(st: &mut State, r: &str, newest: bool) {
+    let set = if newest { &mut st.shut } else { &mut st.open };
+    if !set.remove(r) {
+        set.insert(r.to_string());
+    }
+}
+
 /// A `taskboard://release/R3` link (Midna links R refs): its project's page with that release open.
 /// Before its project is known the overview shows, and [`focus_moves`] goes on once it is.
 pub fn open(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     let project = m.releases.lists.iter().find(|(_, l)| lists_release(l, r)).map(|(p, _)| p.clone());
     m.releases.focus = Some(r.to_string());
     m.releases.open.insert(r.to_string());
+    m.releases.shut.remove(r);
     m.go(project.map_or(Page::Releases, Page::ReleasesOf), cx);
     m.refresh(cx);
 }
@@ -109,6 +158,7 @@ pub fn open(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
 pub fn open_in(m: &mut MainWindow, project: String, r: &str, cx: &mut Context<MainWindow>) {
     m.releases.focus = Some(r.to_string());
     m.releases.open.insert(r.to_string());
+    m.releases.shut.remove(r);
     m.go(Page::ReleasesOf(project), cx);
     m.refresh(cx);
 }
@@ -128,16 +178,19 @@ pub fn detail_call(key: &str) -> (String, Vec<(&'static str, String)>) {
     }
 }
 
-/// What the page fetches in full: on a project's page its Unreleased, its newest release and the
-/// open older ones; and a linked release, to learn its project.
+/// What the page fetches in full: on a project's page its Unreleased and the open releases (the
+/// newest among them unless closed); and a linked release, to learn its project.
 pub fn open_rows(st: &State, page: &Page) -> Vec<String> {
     let mut v: Vec<String> = st.focus.iter().cloned().collect();
     if let Some(p) = page_project(page) {
         v.push(unreleased_key(p));
         if let Some(l) = st.lists.get(p) {
-            let rels = arr(l, "releases");
-            v.extend(rels.first().map(|r| s(r, "ref").to_string()));
-            v.extend(rels.iter().skip(1).map(|r| s(r, "ref").to_string()).filter(|r| st.open.contains(r)));
+            for (ix, r) in arr(l, "releases").iter().enumerate() {
+                let r = s(r, "ref");
+                if is_open(st, r, ix == 0) {
+                    v.push(r.to_string());
+                }
+            }
         }
     }
     v.sort();
@@ -157,18 +210,19 @@ pub struct Row {
     /// When it was cut.
     pub when: String,
     pub count: String,
-    /// Marked failed (`tb release fail`): its work went back to Unreleased.
-    pub failed: bool,
+    /// When it was marked failed (`tb release fail`): its work went back to Unreleased.
+    pub failed: Option<String>,
 }
 
 fn row(r: &Value, now: DateTime<Utc>) -> Row {
+    let at = |k: &str| fmt::parse(s(r, k)).map(|t| cut_at(t, now)).unwrap_or_default();
     Row {
         key: s(r, "ref").to_string(),
         name: s(r, "name").to_string(),
         headline: headline(r),
-        when: fmt::parse(s(r, "cut_at")).map(|t| cut_at(t, now)).unwrap_or_default(),
+        when: at("cut_at"),
         count: fmt::plural(i(r, "tasks"), "task", "tasks"),
-        failed: opt_s(r, "failed_at").is_some(),
+        failed: opt_s(r, "failed_at").map(|_| at("failed_at")),
     }
 }
 
@@ -181,27 +235,41 @@ fn headline(r: &Value) -> String {
     opt_s(r, "notes").and_then(|n| n.lines().map(str::trim).find(|l| !l.is_empty())).unwrap_or("").to_string()
 }
 
-/// An overview card: the project's newest release, the ones before it, Unreleased and its pending cut.
+/// The notes after their first line (the headline, already on the row).
+fn more_notes(notes: &str) -> String {
+    let mut lines = notes.lines().skip_while(|l| l.trim().is_empty());
+    lines.next();
+    lines.collect::<Vec<_>>().join("\n").trim().to_string()
+}
+
+/// "Failed Oct 21, 9:12 PM · its work went back to Unreleased".
+fn failed_line(when: &str) -> String {
+    let when = if when.is_empty() { String::new() } else { format!(" {when}") };
+    format!("Failed{when} · its work went back to Unreleased")
+}
+
+/// An overview card: the project's newest release, the ones before it, Unreleased and its next cut.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card {
     pub total: i64,
     pub latest: Option<Row>,
     pub previous: Vec<Row>,
-    pub unreleased: String,
-    /// "v1.5 pending", or "v1.5 cutting" while the board cuts it.
-    pub pending: Option<String>,
+    /// Finished tasks not in a release yet.
+    pub unreleased: i64,
+    /// The next cut's pill, its tone and words: "v1.5 · 2 still to finish", "v1.5 · Cutting", or
+    /// "v1.5 dropped" once the board gave up on it.
+    pub cut: Option<(&'static str, String)>,
 }
 
 pub fn card(list: &Value, now: DateTime<Utc>) -> Card {
     let mut rows = rows(list, now).into_iter();
     let total = list["counts"]["total"].as_i64().unwrap_or(arr(list, "releases").len() as i64);
-    Card {
-        total,
-        latest: rows.next(),
-        previous: rows.take(CARD_RELEASES - 1).collect(),
-        unreleased: fmt::plural(i(list, "unreleased"), "task", "tasks"),
-        pending: pending(list).map(|p| format!("{} {}", p.name, if p.running { "cutting" } else { "pending" })),
-    }
+    let cut = match (pending(list), dropped(list)) {
+        (Some(p), _) => Some((if p.running { "working" } else { "neutral" }, format!("{} · {}", p.name, p.progress()))),
+        (None, Some(d)) => Some(("failed", format!("{} dropped", d.name))),
+        (None, None) => None,
+    };
+    Card { total, latest: rows.next(), previous: rows.take(CARD_RELEASES - 1).collect(), unreleased: i(list, "unreleased"), cut }
 }
 
 /// Where a task or goal a pending cut waits for stands.
@@ -219,7 +287,7 @@ pub struct Wait {
     pub r: String,
     pub title: String,
     pub standing: Standing,
-    /// "Done", "Running", "In review", "2 of 3", "Can't finish".
+    /// "Done", "Running", "In review", "2 of 3 done", "Can't finish".
     pub label: String,
     /// Why it can't be met.
     pub why: Option<String>,
@@ -234,13 +302,15 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// "1 of 3 ready", or "Cutting".
+    /// "2 still to finish", "Ready to cut", or "Cutting".
     pub fn progress(&self) -> String {
         if self.running {
             return "Cutting".into();
         }
-        let met = self.after.iter().filter(|w| w.standing == Standing::Met).count();
-        format!("{met} of {} ready", self.after.len())
+        match self.after.iter().filter(|w| w.standing != Standing::Met).count() {
+            0 => "Ready to cut".into(),
+            n => format!("{n} still to finish"),
+        }
     }
 }
 
@@ -250,7 +320,7 @@ fn wait(a: &Value) -> Wait {
     let (standing, label) = match s(a, "state") {
         "met" => (Standing::Met, "Done".to_string()),
         "dead" => (Standing::Dead, "Can't finish".to_string()),
-        _ if goal => (Standing::Waiting, format!("{} of {}", i(a, "done"), i(a, "total"))),
+        _ if goal => (Standing::Waiting, format!("{} of {} done", i(a, "done"), i(a, "total"))),
         _ => (Standing::Waiting, task_label(s(a, "status"), s(a, "pr_phase")).to_string()),
     };
     Wait { title: s(a, "title").to_string(), standing, label, why: opt_s(a, "why").map(str::to_string), r }
@@ -278,6 +348,22 @@ pub fn pending(list: &Value) -> Option<Pending> {
     Some(Pending { name: s(p, "name").to_string(), after: arr(p, "after").iter().map(wait).collect(), running: p["running"] == true })
 }
 
+/// The last pending cut the board dropped, until it's cut by hand or a new one is set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dropped {
+    pub name: String,
+    pub why: String,
+    /// The command that cuts it by hand.
+    pub next: String,
+}
+
+pub fn dropped(list: &Value) -> Option<Dropped> {
+    let d = list.get("dropped").filter(|d| d.is_object())?;
+    let name = s(d, "name").to_string();
+    let next = opt_s(d, "next").map_or_else(|| format!("tb release cut {name}"), str::to_string);
+    Some(Dropped { why: s(d, "why").to_string(), next, name })
+}
+
 /// "Today, 3:05 PM", "Oct 7, 3:05 PM", or "Oct 7, 2025, 3:05 PM" in another year.
 pub(crate) fn cut_at(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let (l, today) = (fmt::local(t), fmt::local(now).date_naive());
@@ -292,11 +378,6 @@ pub(crate) fn cut_at(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// "October 2026": the month heading a release sits under.
 fn month(r: &Value) -> String {
     fmt::parse(s(r, "cut_at")).map(|t| fmt::local(t).format("%B %Y").to_string()).unwrap_or_default()
-}
-
-/// "Oct 7" for a task's finish.
-fn finished(c: &Value) -> String {
-    fmt::parse(s(c, "finished_at")).map(|t| fmt::local(t).format("%b %-d").to_string()).unwrap_or_default()
 }
 
 /// A goal group's heading: its name, or "No goal" for tasks without one.
@@ -320,28 +401,27 @@ fn tally(d: &Value) -> String {
     out
 }
 
-/// One item of the project page's list: everything above the older releases, a month's heading, an
-/// older release (`first`/`last` in its month, for the box around them), or the end.
+/// One item of the project page's list: everything above the releases, a month's heading, a
+/// release, or the end.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
     Top,
     Month(String),
-    Release { r: String, first: bool, last: bool },
+    Release(String),
     End,
 }
 
-/// The project page's items: the older releases (all but the newest) under their months.
+/// The project page's items: its releases, newest first, under their months.
 pub fn items(list: &Value) -> Vec<Item> {
     let mut v = vec![Item::Top];
-    let rels: Vec<&Value> = arr(list, "releases").iter().skip(1).collect();
-    for (ix, r) in rels.iter().enumerate() {
+    let mut last: Option<String> = None;
+    for r in arr(list, "releases") {
         let m = month(r);
-        let first = ix == 0 || month(rels[ix - 1]) != m;
-        let last = rels.get(ix + 1).is_none_or(|n| month(n) != m);
-        if first {
-            v.push(Item::Month(m));
+        if last.as_ref() != Some(&m) {
+            v.push(Item::Month(m.clone()));
+            last = Some(m);
         }
-        v.push(Item::Release { r: s(r, "ref").to_string(), first, last });
+        v.push(Item::Release(s(r, "ref").to_string()));
     }
     v.push(Item::End);
     v
@@ -349,280 +429,260 @@ pub fn items(list: &Value) -> Vec<Item> {
 
 // ================================================================== render
 
-fn goal_link(t: &Theme, id: String, r: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let r2 = r.clone();
-    div()
-        .id(SharedString::from(id))
-        .flex_none()
-        .font_family(t.mono_font.clone())
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(t.goal)
-        .cursor_pointer()
-        .hover(|s| s.underline())
-        .child(r)
-        .on_click(cx.listener(move |m, _, _, cx| goal::open(m, &r2, false, cx)))
+/// The open task's (or goal's) row: a soft accent fill and an accent edge on its left.
+fn marked(t: &Theme, el: Stateful<Div>, on: bool) -> Stateful<Div> {
+    let fill = t.accent_soft;
+    el.border_l_2().border_color(if on { t.accent } else { transparent_black() }).when(on, move |d| d.bg(fill))
 }
 
-fn task_row(t: &Theme, at: &str, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+/// A row that opens something as a whole: a Tab stop, the hand and a hover fill.
+fn target(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
+    let hover = t.panel_2;
+    focus::stop(t, div().id(id)).cursor_pointer().hover(move |s| s.bg(hover))
+}
+
+/// "Can't load …" with a way to ask again; whatever loaded before stays.
+fn cant_load(t: &Theme, id: &str, text: String, cx: &mut Context<MainWindow>) -> Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(10.))
+        .py(px(4.))
+        .text_size(px(13.))
+        .child(div().text_color(t.down).child(text))
+        .child(kit::link(t, SharedString::from(format!("releases-retry-{id}")), "Try again").on_click(cx.listener(|m, _, _, cx| m.refresh(cx))))
+}
+
+/// A task's PR, its own target inside the row that opens the task.
+fn pr_link(t: &Theme, id: String, c: &Value) -> Option<Stateful<Div>> {
+    let (label, url) = match (c["pr_num"].as_i64(), opt_s(c, "pr_url").filter(|u| !u.is_empty())) {
+        (Some(n), Some(u)) => (format!("#{n}"), u.to_string()),
+        (None, Some(u)) => ("PR".to_string(), u.to_string()),
+        _ => return None,
+    };
+    Some(kit::link(t, SharedString::from(id), label).text_size(px(12.)).font_family(t.mono_font.clone()).on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        cx.open_url(&url)
+    }))
+}
+
+/// A finished task: the whole row opens it.
+fn task_row(t: &Theme, at: &str, c: &Value, indent: bool, open: Option<&str>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let r = s(c, "ref").to_string();
     let o = r.clone();
-    let hover = t.panel_2;
-    let link = t.accent;
-    let pr = match (c["pr_num"].as_i64(), opt_s(c, "pr_url").filter(|u| !u.is_empty())) {
-        (Some(n), Some(u)) => Some((format!("#{n}"), u.to_string())),
-        (None, Some(u)) => Some(("PR".to_string(), u.to_string())),
-        _ => None,
-    };
-    div()
-        .id(SharedString::from(format!("releases-task-{at}-{r}")))
+    let row = target(t, SharedString::from(format!("releases-task-{at}-{r}")))
         .flex()
         .items_center()
         .gap(px(12.))
-        .h(px(34.))
-        .px(px(16.))
-        .border_t_1()
-        .border_color(t.divider)
+        .h(px(36.))
+        .pl(px(if indent { INDENT } else { 10. }))
+        .pr(px(10.))
         .text_size(px(13.))
-        .hover(move |s| s.bg(hover))
-        .child(div().flex_none().w(px(46.)).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(r.clone()))
-        .child(
-            div().min_w_0().flex_1().flex().child(
-                div()
-                    .id(SharedString::from(format!("releases-task-title-{at}-{r}")))
-                    .min_w_0()
-                    .truncate()
-                    .cursor_pointer()
-                    .hover(move |s| s.text_color(link).underline())
-                    .child(s(c, "title").to_string())
-                    .on_click(cx.listener(move |m, _, _, cx| m.open_task(o.clone(), cx))),
-            ),
-        )
-        .child(div().flex_none().w(px(56.)).flex().justify_end().children(pr.map(|(label, url)| {
-            kit::link(t, SharedString::from(format!("releases-pr-{at}-{r}")), label).text_size(px(12.)).font_family(t.mono_font.clone()).on_click(move |_, _, cx| cx.open_url(&url))
-        })))
-        .child(div().flex_none().w(px(52.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(finished(c)))
+        .child(div().flex_none().w(px(16.)).font_weight(FontWeight::BOLD).text_color(t.up_fg).child("✓"))
+        .child(div().flex_none().w(px(46.)).text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(t.muted).child(r.clone()))
+        .child(div().flex_1().min_w_0().truncate().child(s(c, "title").to_string()))
+        .children(pr_link(t, format!("releases-pr-{at}-{r}"), c))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(o.clone(), cx)));
+    marked(t, row, open == Some(r.as_str()))
 }
 
-/// A goal's tasks in their own box: the goal's ref and name over its task rows.
-fn goal_card(t: &Theme, at: &str, g: &Value, cx: &mut Context<MainWindow>) -> Div {
-    let tasks = arr(g, "tasks");
-    let head = div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .px(px(16.))
-        .py(px(10.))
-        .text_size(px(13.))
-        .children(opt_s(g, "goal").map(|r| goal_link(t, format!("releases-goal-{at}-{r}"), r.to_string(), cx)))
-        .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::BOLD).child(group_title(g)))
-        .child(div().flex_none().text_color(t.muted).child(fmt::plural(tasks.len() as i64, "task", "tasks")));
-    let mut card = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden().child(head);
-    for c in tasks {
-        card = card.child(task_row(t, at, c, cx));
+/// A goal's tasks under its ref and name (the heading opens the goal); tasks without a goal stand alone.
+fn group(t: &Theme, at: &str, g: &Value, open: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
+    let mut col = div().flex().flex_col();
+    let goal = opt_s(g, "goal").map(str::to_string);
+    if let Some(r) = goal.clone() {
+        let o = r.clone();
+        let head = target(t, SharedString::from(format!("releases-goal-{at}-{r}")))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .h(px(30.))
+            .px(px(10.))
+            .text_size(px(12.))
+            .font_weight(FontWeight::BOLD)
+            .child(div().flex_none().font_family(t.mono_font.clone()).text_color(t.goal).child(r.clone()))
+            .child(div().flex_1().min_w_0().truncate().text_color(t.text_2).child(group_title(g)))
+            .on_click(cx.listener(move |m, _, _, cx| goal::open(m, &o, false, cx)));
+        col = col.child(marked(t, head, open == Some(r.as_str())));
     }
-    card
+    for c in arr(g, "tasks") {
+        col = col.child(task_row(t, at, c, goal.is_some(), open, cx));
+    }
+    col
 }
 
-/// A release's (or Unreleased's) notes and its goals, each in its box.
-fn work(t: &Theme, at: &str, d: Option<&Value>, notes: bool, cx: &mut Context<MainWindow>) -> Div {
-    let col = div().flex().flex_col().gap(px(10.));
+/// A release's (or Unreleased's) work by goal, or why it isn't here.
+fn work(t: &Theme, at: &str, d: Option<&Value>, err: bool, what: &str, open: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
+    let mut col = div().flex().flex_col();
+    if err {
+        col = col.child(div().px(px(10.)).child(cant_load(t, at, format!("Can't load {what}."), cx)));
+    }
     let Some(d) = d.filter(|d| d["groups"].is_array()) else {
-        return col.child(kit::help(t, "Loading…"));
+        return if err { col } else { col.child(div().px(px(10.)).py(px(4.)).child(kit::help(t, "Loading…"))) };
     };
-    let col = col.when_some(notes.then(|| opt_s(d, "notes").map(str::trim).filter(|n| !n.is_empty())).flatten(), |c, n| {
-        c.child(div().text_size(px(14.)).text_color(t.text_2).child(n.to_string()))
-    });
     let groups = arr(d, "groups");
     if groups.is_empty() {
-        return col.child(kit::help(t, "No tasks"));
+        return col.child(div().px(px(10.)).py(px(4.)).child(kit::help(t, "No tasks")));
     }
-    groups.iter().fold(col, |c, g| c.child(goal_card(t, at, g, cx)))
+    for g in groups {
+        col = col.child(group(t, at, g, open, cx));
+    }
+    col
 }
 
-/// The ring, tick or cross in front of a task or goal a pending cut waits for.
-fn mark(t: &Theme, w: Standing) -> Div {
-    let ring = div().flex_none().size(px(16.)).rounded_full().flex().items_center().justify_center().text_size(px(10.)).font_weight(FontWeight::BOLD);
+/// The tick, ring, chevron or cross in front of what a pending cut waits for.
+fn mark(t: &Theme, w: Standing, goal: bool) -> Div {
+    let slot = div().flex_none().w(px(16.)).flex().items_center().justify_center().text_size(px(13.)).font_weight(FontWeight::BOLD);
     match w {
-        Standing::Met => ring.bg(t.up).text_color(t.on_status).child("✓"),
-        Standing::Waiting => ring.border_2().border_color(t.warn),
-        Standing::Dead => ring.bg(t.down).text_color(t.on_status).child("✕"),
+        Standing::Met => slot.text_color(t.up_fg).child("✓"),
+        Standing::Dead => slot.text_color(t.down).child("✕"),
+        Standing::Waiting if goal => slot.text_color(t.muted).child("›"),
+        Standing::Waiting => slot.child(div().size(px(11.)).rounded_full().border_2().border_color(t.accent)),
     }
 }
 
-/// The pending cut as a checklist: what it waits for, each with where it stands.
-fn next_cut(t: &Theme, project: &str, p: &Pending, cx: &mut Context<MainWindow>) -> Div {
-    let tone = if p.running { "working" } else { "warn" };
-    let head = div()
+/// One task or goal the next cut waits for: the whole row opens it.
+fn wait_row(t: &Theme, project: &str, w: &Wait, open: Option<&str>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let (r, goal) = (w.r.clone(), w.r.starts_with('G'));
+    let label = div()
+        .id(SharedString::from(format!("releases-why-{project}-{r}")))
+        .flex_none()
+        .text_size(px(12.))
+        .text_color(if w.standing == Standing::Dead { t.down } else { t.muted })
+        .child(w.label.clone())
+        .when_some(w.why.clone(), |d, why| d.tooltip(kit::tip(why)));
+    let o = r.clone();
+    let row = target(t, SharedString::from(format!("releases-wait-{project}-{r}")))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .px(px(16.))
-        .py(px(11.))
-        .bg(t.warn_soft)
-        .child(div().flex_1().min_w_0().flex().items_baseline().gap(px(6.)).text_size(px(14.)).font_weight(FontWeight::BOLD).child("Next cut").child(div().min_w_0().truncate().font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(p.name.clone())))
-        .child(kit::tone_pill(t, tone, p.progress()));
-    let mut card = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.warn_line).bg(t.card).overflow_hidden().child(head);
-    for w in &p.after {
-        let (r, goal) = (w.r.clone(), w.r.starts_with('G'));
-        let ref_color = match w.standing {
-            Standing::Met => t.up_fg,
-            Standing::Dead => t.down,
-            Standing::Waiting if goal => t.goal,
-            Standing::Waiting => t.accent,
-        };
-        let state_color = match w.standing {
-            Standing::Met => t.up_fg,
-            Standing::Dead => t.down,
-            Standing::Waiting => t.warn_text,
-        };
-        let label = div().flex_none().text_size(px(12.)).text_color(state_color).child(w.label.clone());
-        let label = match &w.why {
-            Some(why) => label.id(SharedString::from(format!("releases-why-{project}-{r}"))).tooltip(kit::tip(why.clone())).into_any_element(),
-            None => label.into_any_element(),
-        };
-        let link = div()
-            .id(SharedString::from(format!("releases-wait-{project}-{r}")))
-            .flex_none()
-            .w(px(46.))
-            .text_size(px(12.))
-            .font_family(t.mono_font.clone())
-            .text_color(ref_color)
-            .cursor_pointer()
-            .hover(|s| s.underline())
-            .child(r.clone())
-            .on_click(cx.listener(move |m, _, _, cx| if goal { goal::open(m, &r, false, cx) } else { m.open_task(r.clone(), cx) }));
-        card = card.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .min_h(px(40.))
-                .px(px(16.))
-                .py(px(6.))
-                .border_t_1()
-                .border_color(t.warn_line)
-                .text_size(px(13.))
-                .child(mark(t, w.standing))
-                .child(link)
-                .child(div().flex_1().min_w_0().truncate().child(w.title.clone()))
-                .child(label),
-        );
-    }
-    card
+        .gap(px(12.))
+        .h(px(40.))
+        .px(px(10.))
+        .text_size(px(13.))
+        .child(mark(t, w.standing, goal))
+        .child(div().flex_none().w(px(46.)).text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(if goal { t.goal } else { t.muted }).child(r.clone()))
+        .child(div().flex_1().min_w_0().truncate().child(w.title.clone()))
+        .child(label)
+        .on_click(cx.listener(move |m, _, _, cx| if goal { goal::open(m, &o, false, cx) } else { m.open_task(o.clone(), cx) }));
+    marked(t, row, open == Some(w.r.as_str()))
 }
 
-/// A section of the project page: Unreleased, or the newest release.
-fn section(t: &Theme, line: Hsla) -> Div {
-    div().flex().flex_col().gap(px(10.)).p(px(18.)).rounded(px(14.)).border_1().border_color(line).bg(t.card)
+/// A small bold label over a group of rows.
+fn label(t: &Theme, text: &'static str) -> Div {
+    div().pt(px(8.)).pb(px(2.)).px(px(12.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.muted).child(text)
 }
 
-fn stat(t: &Theme, label: &'static str, n: i64) -> Div {
-    div().flex().flex_col().gap(px(2.)).child(div().text_size(px(13.)).text_color(t.muted).child(label)).child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(n.to_string()))
-}
-
-/// Everything above the older releases: the way back, the counts, Unreleased and the newest release.
+/// Everything above the releases: the way back, the counts, a dropped cut, the next release (what
+/// it cuts after and what's already finished) and the Past releases heading.
 fn top(m: &MainWindow, t: &Theme, p: &str, l: &Value, cx: &mut Context<MainWindow>) -> Div {
-    let now = fmt::now();
+    let open = crate::app::open_ref(m).map(str::to_string);
+    let open = open.as_deref();
     let counts = &l["counts"];
-    let back = kit::link(t, "releases-back", "Releases").on_click(cx.listener(|m, _, _, cx| m.go(Page::Releases, cx)));
+    let back = div().flex().items_center().gap(px(6.)).text_size(px(13.)).child(div().text_color(t.accent).child("‹")).child(kit::link(t, "releases-back", "Releases").underline().on_click(cx.listener(|m, _, _, cx| m.go(Page::Releases, cx))));
+    let mut sub = vec![fmt::plural(i(counts, "total"), "release", "releases"), format!("{} in the last 30 days", i(counts, "recent"))];
+    if i(counts, "failed") > 0 {
+        sub.push(format!("{} failed", i(counts, "failed")));
+    }
     let mut col = div()
         .flex()
         .flex_col()
-        .gap(px(16.))
         .pt(px(22.))
-        .pb(px(8.))
-        .child(div().flex().gap(px(6.)).text_size(px(13.)).text_color(t.muted).child(back).child("/").child(p.to_string()))
-        .child(
+        .pb(px(4.))
+        .child(back)
+        .child(div().pt(px(14.)).text_size(px(22.)).font_weight(FontWeight::BOLD).child(p.to_string()))
+        .child(div().text_size(px(13.)).text_color(t.muted).child(sub.join(" · ")));
+    if m.releases.list_errs.contains_key(p) {
+        col = col.child(div().pt(px(10.)).child(cant_load(t, p, format!("Can't load {p}'s releases."), cx)));
+    }
+    if let Some(d) = dropped(l) {
+        let why = if d.why.is_empty() { String::new() } else { format!(": {}", d.why) };
+        col = col.child(
             div()
+                .pt(px(16.))
                 .flex()
-                .flex_wrap()
-                .items_end()
-                .gap(px(24.))
-                .child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::BOLD).child(p.to_string()))
-                .child(div().flex().gap(px(28.)).child(stat(t, "Releases", i(counts, "total"))).child(stat(t, "Last 30 days", i(counts, "recent"))).child(stat(t, "Failed", i(counts, "failed")))),
+                .flex_col()
+                .gap(px(2.))
+                .text_size(px(13.))
+                .child(div().font_weight(FontWeight::BOLD).text_color(t.down).child(format!("{} was dropped{why}", d.name)))
+                .child(div().flex().flex_wrap().gap(px(6.)).text_color(t.muted).child("Cut it by hand once it's ready:").child(div().font_family(t.mono_font.clone()).text_color(t.text_2).child(d.next))),
         );
+    }
 
     let key = unreleased_key(p);
     let pc = pending(l);
-    let unreleased = m.releases.details.get(&key);
-    if i(l, "unreleased") > 0 || pc.is_some() {
-        let mut sec = section(t, t.border).child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_baseline()
-                .gap(px(12.))
-                .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Unreleased"))
-                .child(div().text_size(px(13.)).text_color(t.muted).child(unreleased.map(tally).unwrap_or_else(|| fmt::plural(i(l, "unreleased"), "task", "tasks")))),
-        );
-        if let Some(pc) = &pc {
-            sec = sec.child(next_cut(t, p, pc, cx));
+    let un = m.releases.details.get(&key);
+    let un_err = m.releases.row_errs.contains_key(&key);
+    let waiting = i(l, "unreleased");
+    let heading = |title: &'static str| div().pt(px(24.)).pb(px(4.)).flex().flex_wrap().items_center().gap(px(8.)).child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title));
+    if let Some(pc) = &pc {
+        col = col.child(heading("Next release").child(div().text_size(px(14.)).font_family(t.mono_font.clone()).font_weight(FontWeight::BOLD).child(pc.name.clone())).child(kit::tone_pill(t, if pc.running { "working" } else { "neutral" }, pc.progress())));
+        if !pc.after.is_empty() {
+            col = col.child(label(t, "Cuts when these finish"));
+            for w in &pc.after {
+                col = col.child(wait_row(t, p, w, open, cx));
+            }
         }
-        if i(l, "unreleased") > 0 {
-            sec = sec.child(work(t, &key, unreleased, false, cx));
+        if waiting > 0 {
+            col = col.child(label(t, "Already finished")).child(work(t, &key, un, un_err, "Unreleased", open, cx));
         }
-        col = col.child(sec);
+    } else if waiting > 0 {
+        let n = un.filter(|d| d["groups"].is_array()).map(tally).unwrap_or_else(|| fmt::plural(waiting, "task", "tasks"));
+        col = col.child(heading("Unreleased").child(div().text_size(px(13.)).text_color(t.muted).child(n))).child(work(t, &key, un, un_err, "Unreleased", open, cx));
     }
 
-    let Some(newest) = arr(l, "releases").first() else {
-        return col.when(i(l, "unreleased") == 0 && pc.is_none(), |c| c.child(kit::empty(t, "No releases yet")));
-    };
-    let r = row(newest, now);
-    let d = m.releases.details.get(&r.key);
-    let meta = [Some(r.when.clone()).filter(|w| !w.is_empty()), Some(d.map(tally).unwrap_or(r.count.clone()))].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-    let pill = if r.failed { kit::tone_pill(t, "failed", "Failed") } else { kit::tone_pill(t, "up", "Latest") };
-    col.child(
-        section(t, if r.failed { t.down_line } else { t.accent_line })
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(div().text_size(px(22.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(r.name.clone()))
-                    .child(pill)
-                    .child(div().flex_1())
-                    .child(div().text_size(px(13.)).text_color(t.muted).child(meta)),
-            )
-            .child(work(t, &r.key, d, true, cx)),
-    )
+    if !arr(l, "releases").is_empty() {
+        col = col.child(div().pt(px(28.)).text_size(px(16.)).font_weight(FontWeight::BOLD).child("Past releases"));
+    } else if waiting == 0 && pc.is_none() {
+        col = col.child(div().pt(px(20.)).child(kit::empty(t, "No releases yet")));
+    }
+    col
 }
 
-fn release_row(m: &MainWindow, t: &Theme, r: &Value, first: bool, last: bool, cx: &mut Context<MainWindow>) -> Div {
+/// A release: the whole row opens it in place, to its notes and its work by goal.
+fn release_row(m: &MainWindow, t: &Theme, r: &Value, newest: bool, cx: &mut Context<MainWindow>) -> Div {
+    let open_ref = crate::app::open_ref(m).map(str::to_string);
     let row = row(r, fmt::now());
-    let open = m.releases.open.contains(&row.key);
+    let open = is_open(&m.releases, &row.key, newest);
     let key = row.key.clone();
-    let head = div()
-        .id(SharedString::from(format!("releases-row-{}", row.key)))
+    let end = match row.failed {
+        Some(_) => kit::tone_pill(t, "failed", "Failed").into_any_element(),
+        None => div().flex_none().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(row.count.clone()).into_any_element(),
+    };
+    let head = target(t, SharedString::from(format!("releases-row-{}", row.key)))
         .flex()
         .items_center()
-        .gap(px(14.))
-        .h(px(44.))
-        .px(px(16.))
+        .gap(px(12.))
+        .h(px(40.))
+        .px(px(10.))
         .text_size(px(13.))
-        .cursor_pointer()
-        .hover({
-            let bg = t.panel_2;
-            move |s| s.bg(bg)
-        })
-        .child(div().flex_none().w(px(10.)).text_size(px(12.)).text_color(t.muted).child(if open { "▾" } else { "▸" }))
-        .child(div().flex_none().w(px(96.)).truncate().text_size(px(14.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(row.name.clone()))
-        .child(div().flex_1().min_w_0().truncate().text_color(t.text_2).child(row.headline.clone()))
-        .when(row.failed, |d| d.child(kit::tone_pill(t, "failed", "Failed")))
-        .child(div().flex_none().w(px(124.)).text_right().whitespace_nowrap().text_color(t.muted).child(row.when.clone()))
-        .child(div().flex_none().w(px(60.)).text_right().whitespace_nowrap().text_color(t.muted).child(row.count.clone()))
+        .child(div().flex_none().w(px(14.)).text_color(t.muted).child(if open { "⌄" } else { "›" }))
+        .child(div().flex_none().w(px(84.)).truncate().font_family(t.mono_font.clone()).font_weight(FontWeight::BOLD).child(row.name.clone()))
+        .child(div().flex_1().min_w_0().truncate().child(row.headline.clone()))
+        .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(row.when.clone()))
+        .child(end)
         .on_click(cx.listener(move |m, _, _, cx| {
-            if !m.releases.open.remove(&key) {
-                m.releases.open.insert(key.clone());
-            }
+            toggle(&mut m.releases, &key, newest);
             m.refresh(cx);
         }));
-    let mut b = div().flex().flex_col().bg(t.card).border_l_1().border_r_1().border_color(t.border).overflow_hidden();
-    b = if first { b.border_t_1().rounded_t(px(12.)) } else { b.border_t_1().border_color(t.border) };
-    if last {
-        b = b.border_b_1().rounded_b(px(12.));
+    let mut out = div().flex().flex_col().child(head);
+    if open {
+        let d = m.releases.details.get(&row.key);
+        let notes = d.and_then(|d| opt_s(d, "notes")).or(opt_s(r, "notes")).map(more_notes).unwrap_or_default();
+        let mut body = div().flex().flex_col().gap(px(2.)).pl(px(26.)).pb(px(10.));
+        if let Some(f) = &row.failed {
+            body = body.child(div().px(px(10.)).text_size(px(13.)).text_color(t.down).child(failed_line(f)));
+        }
+        if !notes.is_empty() {
+            body = body.child(div().px(px(10.)).pb(px(4.)).text_size(px(13.)).text_color(t.muted).child(notes));
+        }
+        let has_work = d.is_some_and(|d| !arr(d, "groups").is_empty());
+        if row.failed.is_none() || has_work {
+            body = body.child(work(t, &row.key, d, m.releases.row_errs.contains_key(&row.key), &row.name, open_ref.as_deref(), cx));
+        }
+        out = out.child(body);
     }
-    b.child(head).when(open, |b| b.child(div().px(px(16.)).pt(px(4.)).pb(px(16.)).pl(px(40.)).child(work(t, &row.key, m.releases.details.get(&row.key), true, cx))))
+    out
 }
 
 /// One item of the project page's list.
@@ -633,24 +693,28 @@ fn item(m: &mut MainWindow, ix: usize, _window: &mut Window, cx: &mut Context<Ma
     let Some(l) = m.releases.lists.get(&p).cloned() else { return div().into_any_element() };
     let wrap = |c: AnyElement| div().px(px(PAGE_X)).child(div().max_w(px(MAX_W)).child(c)).into_any_element();
     match it {
-        Some(Item::Top) => wrap(top(m, &t, &p, &l, cx).pb(px(12.)).into_any_element()),
-        Some(Item::Month(name)) => wrap(div().pt(px(14.)).pb(px(8.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.muted).child(name.to_uppercase()).into_any_element()),
-        Some(Item::Release { r, first, last }) => match arr(&l, "releases").iter().find(|x| s(x, "ref") == r) {
-            Some(rel) => wrap(release_row(m, &t, rel, first, last, cx).into_any_element()),
-            None => div().into_any_element(),
-        },
+        Some(Item::Top) => wrap(top(m, &t, &p, &l, cx).into_any_element()),
+        Some(Item::Month(name)) => wrap(div().pt(px(14.)).pb(px(4.)).px(px(12.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.muted).child(name.to_uppercase()).into_any_element()),
+        Some(Item::Release(r)) => {
+            let rels = arr(&l, "releases");
+            match rels.iter().position(|x| s(x, "ref") == r) {
+                Some(ix) => wrap(release_row(m, &t, &rels[ix], ix == 0, cx).into_any_element()),
+                None => div().into_any_element(),
+            }
+        }
         Some(Item::End) => wrap(div().pt(px(12.)).pb(px(32.)).when(l["more"] == true, |d| d.child(kit::help(&t, "Loading…"))).into_any_element()),
         None => div().into_any_element(),
     }
 }
 
 /// How an item looks, so only the ones that changed are measured again.
-fn sig(st: &State, it: &Item) -> String {
+fn sig(st: &State, l: &Value, it: &Item) -> String {
     match it {
-        Item::Release { r, .. } => {
-            let open = st.open.contains(r);
-            let n = if open { st.details.get(r).map_or(-1, |d| arr(d, "groups").len() as i64) } else { 0 };
-            format!("{open}:{n}")
+        Item::Release(r) => {
+            let newest = arr(l, "releases").first().is_some_and(|x| s(x, "ref") == r);
+            let open = is_open(st, r, newest);
+            let n = if open { st.details.get(r).map_or(-1, |d| arr(d, "groups").iter().map(|g| arr(g, "tasks").len() as i64 + 1).sum()) } else { 0 };
+            format!("{open}:{n}:{}", st.row_errs.contains_key(r))
         }
         _ => String::new(),
     }
@@ -658,8 +722,8 @@ fn sig(st: &State, it: &Item) -> String {
 
 /// Keep the list's items in step with the project's releases: an older page comes in at the end, so
 /// the place scrolled to stays put. The top always measures again (it changes with the data).
-fn sync(st: &mut State, project: &str, items: Vec<Item>) {
-    let sigs: Vec<String> = items.iter().map(|it| sig(st, it)).collect();
+fn sync(st: &mut State, project: &str, l: &Value, items: Vec<Item>) {
+    let sigs: Vec<String> = items.iter().map(|it| sig(st, l, it)).collect();
     let h = match &mut st.list {
         Some(h) if h.project == project => h,
         slot => slot.insert(History { project: project.to_string(), state: ListState::new(items.len(), ListAlignment::Top, px(800.)), items: items.clone(), sigs: sigs.clone() }),
@@ -683,24 +747,30 @@ fn sync(st: &mut State, project: &str, items: Vec<Item>) {
     h.state.remeasure_items(0..1);
 }
 
+/// What a page shows before a project's list has come: Loading, or why it can't.
+fn not_loaded(m: &MainWindow, t: &Theme, p: &str, cx: &mut Context<MainWindow>) -> Div {
+    if m.down.is_some() {
+        cant_load(t, p, "Can't load the board.".into(), cx)
+    } else if m.releases.list_errs.contains_key(p) {
+        cant_load(t, p, format!("Can't load {p}'s releases."), cx)
+    } else {
+        kit::help(t, "Loading…")
+    }
+}
+
 fn project_page(m: &mut MainWindow, p: &str, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let Some(l) = m.releases.lists.get(p).cloned() else {
-        return div().px(px(PAGE_X)).pt(px(22.)).child(kit::empty(&t, if m.down.is_some() { "Can’t load the board." } else { "Loading…" })).into_any_element();
+        return div().px(px(PAGE_X)).pt(px(22.)).child(not_loaded(m, &t, p, cx)).into_any_element();
     };
     let items = items(&l);
-    sync(&mut m.releases, p, items);
+    sync(&mut m.releases, p, &l, items);
     let Some(h) = &m.releases.list else { return div().into_any_element() };
     let len = arr(&l, "releases").len();
 
     // A linked release: scroll to it once listed, or ask for more until it is.
     if let Some(f) = m.releases.focus.clone() {
-        let at = if arr(&l, "releases").first().is_some_and(|r| s(r, "ref") == f) {
-            Some(0)
-        } else {
-            h.items.iter().position(|it| matches!(it, Item::Release { r, .. } if *r == f))
-        };
-        match at {
+        match h.items.iter().position(|it| matches!(it, Item::Release(r) if *r == f)) {
             Some(ix) => {
                 h.state.scroll_to_reveal_item(ix);
                 m.releases.focus = None;
@@ -724,78 +794,99 @@ fn project_page(m: &mut MainWindow, p: &str, cx: &mut Context<MainWindow>) -> An
     list(h.state.clone(), cx.processor(item)).size_full().line_height(relative(1.4)).into_any_element()
 }
 
-fn overview_card(t: &Theme, p: &str, l: Option<&Value>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let go = |id: String, p: String, r: Option<String>, cx: &mut Context<MainWindow>| {
-        div().id(SharedString::from(id)).cursor_pointer().on_click(cx.listener(move |m, _, _, cx| match &r {
+fn overview_card(m: &MainWindow, t: &Theme, p: &str, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let go = |id: String, r: Option<String>, cx: &mut Context<MainWindow>| {
+        let p = p.to_string();
+        target(t, SharedString::from(id)).on_click(cx.listener(move |m, _, _, cx| match &r {
             Some(r) => open_in(m, p.clone(), r, cx),
             None => m.go(Page::ReleasesOf(p.clone()), cx),
         }))
     };
-    let mut col = div().id(SharedString::from(format!("releases-card-{p}"))).flex_1().min_w_0().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
-    let head = div().flex().items_center().gap(px(10.)).px(px(18.)).pt(px(16.)).child(div().flex_1().min_w_0().truncate().text_size(px(15.)).font_weight(FontWeight::BOLD).child(p.to_string()));
-    let Some(l) = l else {
-        return col.child(head).child(div().px(px(18.)).py(px(16.)).child(kit::help(t, "Loading…")));
+    let col = div().id(SharedString::from(format!("releases-card-{p}"))).flex_1().min_w_0().flex().flex_col().gap(px(10.)).p(px(16.)).rounded(px(12.)).border_1().border_color(t.border).bg(t.card);
+    let head = div().flex().items_center().gap(px(10.)).child(div().flex_1().min_w_0().truncate().text_size(px(15.)).font_weight(FontWeight::BOLD).child(p.to_string()));
+    let Some(l) = m.releases.lists.get(p) else {
+        return col.child(head).child(not_loaded(m, t, p, cx));
     };
     let c = card(l, fmt::now());
-    let total = fmt::plural(c.total, "release", "releases");
-    col = col.child(head.child(kit::link(t, SharedString::from(format!("releases-all-{p}")), total).text_size(px(13.)).on_click({
-        let p = p.to_string();
-        cx.listener(move |m, _, _, cx| m.go(Page::ReleasesOf(p.clone()), cx))
-    })));
+    let all = go(format!("releases-all-{p}"), None, cx)
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(px(6.))
+        .text_size(px(13.))
+        .text_color(t.muted)
+        .child(fmt::plural(c.total, "release", "releases"))
+        .child("›");
+    let mut col = col.child(head.child(all));
+    if m.releases.list_errs.contains_key(p) {
+        col = col.child(cant_load(t, p, format!("Can't load {p}'s releases."), cx));
+    }
     if let Some(r) = &c.latest {
         let meta = [r.when.clone(), r.count.clone()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
         col = col.child(
-            go(format!("releases-latest-{p}"), p.to_string(), Some(r.key.clone()), cx)
+            go(format!("releases-latest-{p}"), Some(r.key.clone()), cx)
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .px(px(18.))
-                .pt(px(14.))
-                .pb(px(16.))
-                .child(div().flex().items_center().gap(px(10.)).child(div().min_w_0().truncate().text_size(px(26.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(r.name.clone())).when(r.failed, |d| d.child(kit::tone_pill(t, "failed", "Failed"))))
-                .child(div().text_size(px(13.)).text_color(t.muted).child(meta)),
+                .gap(px(2.))
+                .mx(px(-8.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().min_w_0().truncate().text_size(px(13.)).font_family(t.mono_font.clone()).font_weight(FontWeight::BOLD).child(r.name.clone()))
+                        .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(meta))
+                        .when(r.failed.is_some(), |d| d.child(kit::tone_pill(t, "failed", "Failed"))),
+                )
+                .when(!r.headline.is_empty(), |d| d.child(div().truncate().text_size(px(13.)).child(r.headline.clone()))),
         );
     }
-    let waiting = !c.unreleased.starts_with("0 ");
-    col = col.child(
-        go(format!("releases-unreleased-{p}"), p.to_string(), None, cx)
-            .mx(px(18.))
-            .mt(px(if c.latest.is_some() { 0. } else { 14. }))
-            .px(px(12.))
-            .py(px(10.))
-            .rounded(px(9.))
-            .bg(if waiting { t.accent_soft } else { t.seg })
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .text_size(px(13.))
-            .child(div().flex_none().font_weight(FontWeight::BOLD).child("Unreleased"))
-            .child(div().flex_1().min_w_0().truncate().text_color(t.text_2).child(c.unreleased.clone()))
-            .children(c.pending.clone().map(|x| kit::tone_pill(t, "warn", x))),
-    );
-    let mut prev = div().flex().flex_col().mt(px(10.)).pb(px(8.));
-    for r in &c.previous {
-        prev = prev.child(
-            go(format!("releases-prev-{}", r.key), p.to_string(), Some(r.key.clone()), cx)
+    if c.unreleased > 0 || c.cut.is_some() {
+        let n = fmt::plural(c.unreleased, "task", "tasks");
+        col = col.child(
+            go(format!("releases-unreleased-{p}"), None, cx)
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .h(px(34.))
-                .px(px(18.))
-                .border_t_1()
-                .border_color(t.divider)
+                .gap(px(10.))
+                .px(px(12.))
+                .py(px(9.))
+                .rounded(px(9.))
+                .bg(t.seg)
                 .text_size(px(13.))
-                .hover({
-                    let bg = t.panel_2;
-                    move |s| s.bg(bg)
-                })
-                .child(div().flex_none().w(px(90.)).truncate().font_family(t.mono_font.clone()).child(r.name.clone()))
-                .child(div().flex_1().min_w_0().truncate().text_color(t.muted).child(r.when.clone()))
-                .when(r.failed, |d| d.child(kit::tone_pill(t, "failed", "Failed")))
-                .child(div().flex_none().text_color(t.muted).child(r.count.clone())),
+                .child(div().flex_1().min_w_0().truncate().flex().gap(px(4.)).child(div().flex_none().font_weight(FontWeight::BOLD).child("Unreleased")).child(div().text_color(t.text_2).child(format!("· {n}"))))
+                .children(c.cut.clone().map(|(tone, x)| kit::tone_pill(t, tone, x)))
+                .child(div().flex_none().text_color(t.muted).child("›")),
         );
     }
-    col.child(prev)
+    if !c.previous.is_empty() {
+        let mut prev = div().flex().flex_col();
+        for r in &c.previous {
+            let end = match r.failed {
+                Some(_) => kit::tone_pill(t, "failed", "Failed").into_any_element(),
+                None => div().flex_none().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(r.when.clone()).into_any_element(),
+            };
+            prev = prev.child(
+                go(format!("releases-prev-{}", r.key), Some(r.key.clone()), cx)
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .h(px(30.))
+                    .border_t_1()
+                    .border_color(t.divider)
+                    .text_size(px(13.))
+                    .child(div().flex_none().w(px(72.)).truncate().font_family(t.mono_font.clone()).font_weight(FontWeight::BOLD).child(r.name.clone()))
+                    .child(div().flex_1().min_w_0().truncate().child(r.headline.clone()))
+                    .child(end),
+            );
+        }
+        col = col.child(prev);
+    }
+    col
 }
 
 /// The overview's columns at this window width.
@@ -823,13 +914,13 @@ fn overview(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
         .when(lists.iter().all(Option::is_some), |d| d.child(div().text_size(px(13.)).text_color(t.muted).child(sum.join(" · "))));
     let mut page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head);
     if projects.is_empty() {
-        page = page.child(kit::empty(&t, if m.down.is_some() { "Can’t load the board." } else { "Loading…" }));
+        page = page.child(if m.down.is_some() { cant_load(&t, "board", "Can't load the board.".into(), cx) } else { kit::help(&t, "Loading…") });
     }
     let cols = columns(window);
     for chunk in projects.chunks(cols) {
         let mut line = div().flex().items_start().gap(px(GAP));
         for p in chunk {
-            line = line.child(overview_card(&t, p, m.releases.lists.get(p), cx));
+            line = line.child(overview_card(m, &t, p, cx));
         }
         for _ in chunk.len()..cols {
             line = line.child(div().flex_1().min_w_0());
@@ -867,10 +958,12 @@ mod tests {
         let now = at(2026, 10, 15, 16);
         let mut newest = rel(5, "v1.4", at(2026, 10, 15, 15), 2);
         newest["notes"] = json!("\n  Faster log\nand more");
-        let list = json!({"unreleased": 3, "counts": {"total": 31}, "pending": {"name": "v1.5", "running": false, "after": []}, "releases": [
+        let mut failed = rel(3, "v1.2", at(2025, 12, 1, 9), 4);
+        failed["failed_at"] = json!(at(2025, 12, 2, 21).to_rfc3339());
+        let list = json!({"unreleased": 3, "counts": {"total": 31}, "pending": {"name": "v1.5", "running": false, "after": [{"ref": "T1", "state": "waiting"}, {"ref": "T2", "state": "met"}]}, "releases": [
             newest,
             rel(4, "v1.3", at(2026, 10, 7, 9), 1),
-            rel(3, "v1.2", at(2025, 12, 1, 9), 4),
+            failed,
             rel(2, "v1.1", at(2025, 11, 1, 9), 1),
         ]});
         let c = card(&list, now);
@@ -878,24 +971,32 @@ mod tests {
         let latest = c.latest.unwrap();
         assert_eq!((latest.name.as_str(), latest.headline.as_str(), latest.when.as_str(), latest.count.as_str()), ("v1.4", "Faster log", "Today, 3:05 PM", "2 tasks"));
         assert_eq!(c.previous.iter().map(|r| (r.name.as_str(), r.when.as_str())).collect::<Vec<_>>(), [("v1.3", "Oct 7, 9:05 AM"), ("v1.2", "Dec 1, 2025, 9:05 AM"), ("v1.1", "Nov 1, 2025, 9:05 AM")]);
-        assert_eq!((c.unreleased.as_str(), c.pending.as_deref()), ("3 tasks", Some("v1.5 pending")));
-        assert_eq!(card(&json!({"unreleased": 0, "releases": []}), now), Card { total: 0, latest: None, previous: vec![], unreleased: "0 tasks".into(), pending: None });
+        assert_eq!(c.previous[1].failed.as_deref(), Some("Dec 2, 2025, 9:05 PM"));
+        assert_eq!((c.unreleased, c.cut), (3, Some(("neutral", "v1.5 · 1 still to finish".to_string()))));
+        assert_eq!(card(&json!({"unreleased": 0, "releases": []}), now), Card { total: 0, latest: None, previous: vec![], unreleased: 0, cut: None });
     }
 
     #[test]
-    fn older_releases_sit_under_their_months() {
+    fn a_card_shows_a_cut_in_progress_or_dropped() {
+        let now = at(2026, 10, 15, 16);
+        let running = json!({"releases": [], "pending": {"name": "v2", "running": true, "after": []}});
+        assert_eq!(card(&running, now).cut, Some(("working", "v2 · Cutting".to_string())));
+        let gone = json!({"releases": [], "pending": null, "dropped": {"name": "v0.14.0", "why": "failed", "next": "tb release cut v0.14.0"}});
+        assert_eq!(card(&gone, now).cut, Some(("failed", "v0.14.0 dropped".to_string())));
+        assert_eq!(dropped(&gone), Some(Dropped { name: "v0.14.0".into(), why: "failed".into(), next: "tb release cut v0.14.0".into() }));
+        assert_eq!(dropped(&json!({"dropped": null})), None);
+    }
+
+    #[test]
+    fn releases_sit_under_their_months_newest_first() {
         let list = json!({"releases": [
             rel(5, "v1.4", at(2026, 10, 15, 15), 2),
             rel(4, "v1.3", at(2026, 10, 7, 9), 1),
-            rel(3, "v1.2", at(2026, 10, 2, 9), 1),
             rel(2, "v1.1", at(2026, 9, 20, 9), 1),
         ]});
-        let r = |r: &str, first, last| Item::Release { r: r.into(), first, last };
-        assert_eq!(
-            items(&list),
-            [Item::Top, Item::Month("October 2026".into()), r("R4", true, false), r("R3", false, true), Item::Month("September 2026".into()), r("R2", true, true), Item::End]
-        );
-        assert_eq!(items(&json!({"releases": []})), [Item::Top, Item::End], "the newest sits in the top");
+        let r = |r: &str| Item::Release(r.into());
+        assert_eq!(items(&list), [Item::Top, Item::Month("October 2026".into()), r("R5"), r("R4"), Item::Month("September 2026".into()), r("R2"), Item::End]);
+        assert_eq!(items(&json!({"releases": []})), [Item::Top, Item::End]);
     }
 
     #[test]
@@ -926,28 +1027,47 @@ mod tests {
                 ("T627", "Push on review", Standing::Met, "Done"),
                 ("T630", "Phone link", Standing::Waiting, "Running"),
                 ("T631", "Docs", Standing::Waiting, "In review"),
-                ("G12", "Releases page", Standing::Waiting, "2 of 3"),
+                ("G12", "Releases page", Standing::Waiting, "2 of 3 done"),
                 ("T9", "Old", Standing::Dead, "Can't finish"),
             ]
         );
         assert_eq!(p.after[4].why.as_deref(), Some("T9 failed"));
-        assert_eq!(p.progress(), "1 of 5 ready");
+        assert_eq!(p.progress(), "4 still to finish");
+        assert_eq!(Pending { after: vec![p.after[0].clone()], ..p.clone() }.progress(), "Ready to cut");
         assert_eq!(Pending { running: true, ..p }.progress(), "Cutting");
     }
 
     #[test]
-    fn a_project_page_fetches_unreleased_the_newest_and_the_open_rows() {
+    fn a_project_page_fetches_unreleased_and_the_open_rows() {
         let mut st = State::default();
         let page = Page::ReleasesOf("web".into());
         assert_eq!(open_rows(&st, &page), ["unreleased:web"]);
         st.lists.insert("web".into(), json!({"releases": [{"ref": "R3"}, {"ref": "R2"}, {"ref": "R1"}]}));
         st.open.extend(["R1".to_string(), "R9".to_string()]);
-        assert_eq!(open_rows(&st, &page), ["R1", "R3", "unreleased:web"]);
+        assert_eq!(open_rows(&st, &page), ["R1", "R3", "unreleased:web"], "the newest starts open");
+        toggle(&mut st, "R3", true);
+        assert_eq!(open_rows(&st, &page), ["R1", "unreleased:web"], "closed by hand");
+        toggle(&mut st, "R3", true);
+        toggle(&mut st, "R1", false);
+        assert_eq!(open_rows(&st, &page), ["R3", "unreleased:web"]);
         assert_eq!(open_rows(&st, &Page::Releases), Vec::<String>::new(), "the overview fetches no rows");
         st.focus = Some("R7".into());
         assert_eq!(open_rows(&st, &Page::Releases), ["R7"], "a linked release, to learn its project");
         assert_eq!(detail_call("R2"), ("releases/R2".to_string(), vec![]));
         assert_eq!(detail_call("unreleased:web"), ("releases/unreleased".to_string(), vec![("project", "web".to_string())]));
+    }
+
+    #[test]
+    fn a_failed_answer_is_kept_beside_the_older_data_until_one_comes_back() {
+        let mut st = State::default();
+        land(&mut st, vec![("web".into(), Ok(json!({"releases": []})))], vec![("R2".into(), Ok(json!({"groups": []})))]);
+        land(&mut st, vec![("web".into(), Err("busy".into())), ("api".into(), Err("busy".into()))], vec![("R2".into(), Err("busy".into()))]);
+        assert_eq!(st.lists.get("web"), Some(&json!({"releases": []})), "the older list stays");
+        assert!(st.list_errs.contains_key("web") && st.list_errs.contains_key("api") && st.row_errs.contains_key("R2"));
+        assert!(st.details.contains_key("R2"));
+        land(&mut st, vec![("api".into(), Ok(json!({"releases": []})))], vec![("R2".into(), Ok(json!({"groups": []})))]);
+        assert!(!st.list_errs.contains_key("api") && !st.row_errs.contains_key("R2"));
+        assert!(st.list_errs.contains_key("web"), "still failing");
     }
 
     #[test]
@@ -982,5 +1102,13 @@ mod tests {
         assert_eq!(group_title(&json!({"goal": "G2", "name": "Billing"})), "Billing");
         assert_eq!(group_title(&json!({"goal": null, "name": null})), "No goal");
         assert_eq!(group_title(&json!({"goal": "G4", "name": ""})), "Untitled goal");
+    }
+
+    #[test]
+    fn an_open_release_shows_its_notes_after_the_headline_and_why_it_failed() {
+        assert_eq!(more_notes("\n Passkeys\nAlso trims the bundle.\n"), "Also trims the bundle.");
+        assert_eq!(more_notes("Only a headline"), "");
+        assert_eq!(failed_line("Oct 21, 9:12 PM"), "Failed Oct 21, 9:12 PM · its work went back to Unreleased");
+        assert_eq!(failed_line(""), "Failed · its work went back to Unreleased");
     }
 }
