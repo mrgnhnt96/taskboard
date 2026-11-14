@@ -7,8 +7,9 @@
 //! wave. Planned tasks never show: nothing runs them until the owner starts the goal.
 //!
 //! Put off, an item leaves `needs` for `later` until its time comes. Each item says what it `holds`
-//! up, and `waiting` counts the agents waiting on the owner, put off or not. A goal stopped after a
-//! wave is a Needs you item too: its entry's `stage`, under a `stage:G12:1` id. Nothing from a paused
+//! up, and `waiting` counts the agents waiting on the owner, put off or not. A goal stopped at a
+//! wave (a review stop, a failed wave or a held one: the stage's `kind`) is a Needs you item too:
+//! its entry's `stage`, under a `stage:G12:1` id. Nothing from a paused
 //! or set-aside goal is listed, put off or not.
 
 use std::collections::{HashMap, HashSet};
@@ -109,19 +110,22 @@ fn rank(e: &Value) -> u8 {
     }
 }
 
-/// The stage the goal is stopped at for the owner's review, unless it's put off: then the goal reads
-/// as not stopped.
+/// The stage the goal is stopped at for the owner (a review stop, a failed wave or a held one: its
+/// `kind`), unless it's put off: then the goal reads as not stopped.
 fn stage_entry(app: &App, g: &Row, tasks: &[Row], goal: &mut Value) -> Result<Value> {
-    if goal["stopped"].is_null() || g.b("paused") || !waves::uses_waves(tasks) {
+    if goal["stop"].is_null() || g.b("paused") || !waves::uses_waves(tasks) {
         return Ok(Value::Null);
     }
-    let Some(wave) = waves::stopped_wave(&waves::waves(app, g, tasks)?) else { return Ok(Value::Null) };
+    let Some(stop) = waves::stop(&waves::waves(app, g, tasks)?) else { return Ok(Value::Null) };
+    let wave = stop["wave"].as_i64().unwrap_or(0);
     let id = stage_id(g.id(), wave);
     if put_away_list(app).get(&id).is_some_and(dispatch::snoozed) {
         goal["stopped"] = Value::Null;
+        goal["stop"] = Value::Null;
         return Ok(Value::Null);
     }
-    Ok(json!({"id": id, "wave": wave, "holds": stage_holds(g.id(), tasks)}))
+    Ok(json!({"id": id, "wave": wave, "kind": stop["kind"], "line": stop["line"], "failed": stop["tasks"], "at": stop["at"],
+              "holds": stage_holds(g.id(), tasks)}))
 }
 
 /// A stage holds up the rest of its goal.
@@ -264,11 +268,12 @@ fn later_stages(app: &App, goals: &mut Goals, away: &Row, resting: &HashSet<i64>
     for (id, entry) in away.iter().filter(|(_, p)| dispatch::snoozed(p)) {
         let Some((g, wave)) = stage_parts(id).filter(|(g, _)| !resting.contains(g)) else { continue };
         let Some(v) = goals.get(app, g)? else { continue };
-        if v.goal.b("archived") || waves::stopped_wave(&v.waves) != Some(wave) {
+        let Some(stop) = waves::stop(&v.waves).filter(|s| s["wave"].as_i64() == Some(wave)) else { continue };
+        if v.goal.b("archived") {
             continue;
         }
-        out.push(json!({"id": id, "text": waves::stopped_line(&v.waves), "goal": rf("goal", g), "goal_name": v.goal.v("name"), "stage": true,
-                        "wave": wave, "waiting": false, "holds": stage_holds(g, &v.tasks), "later": later_of(entry)}));
+        out.push(json!({"id": id, "text": stop["line"], "goal": rf("goal", g), "goal_name": v.goal.v("name"), "stage": true,
+                        "kind": stop["kind"], "wave": wave, "waiting": false, "holds": stage_holds(g, &v.tasks), "later": later_of(entry)}));
     }
     Ok(out)
 }
@@ -417,7 +422,8 @@ pub const TASK_ID: &str = "task:";
 /// The id prefix of a goal's line under Stopped: `stopped:G12`.
 const STOPPED_ID: &str = "stopped:";
 
-/// The id prefix of a goal's finished stage: `stage:G12:1`, stopped after wave 1.
+/// The id prefix of a goal's stage that stops it for the owner: `stage:G12:1`, stopped at wave 1
+/// (after it for review, or because it failed or is held).
 pub const STAGE_ID: &str = "stage:";
 
 fn stage_id(goal: i64, wave: i64) -> String {
@@ -470,7 +476,7 @@ fn stage_entry_for(app: &App, id: &str, later: Option<Later>) -> Result<Value> {
     let Some(later) = later else { return err(409, "A finished stage stays until it's continued or put off.") };
     let Some(goal) = board::find_goal(app, Some(g))? else { return err(404, "There's no such goal.") };
     let tasks = board::goal_tasks(app, g)?;
-    if waves::stopped_wave(&waves::waves(app, &goal, &tasks)?) != Some(wave) {
+    if waves::stop_wave(&waves::waves(app, &goal, &tasks)?) != Some(wave) {
         return err(404, "That goal isn't stopped at that stage now.");
     }
     Ok(later_entry(&later))

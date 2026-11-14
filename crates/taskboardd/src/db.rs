@@ -356,6 +356,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "closed_as", "TEXT"),
     ("issues", "fixed_by", "INT"),
     ("issues", "fixed_pr", "TEXT"),
+    // A failed wave the owner let the goal go on past: who, when and the tasks that had failed
+    // (JSON `{"by", "at", "tasks"}`, `waves::release`).
+    ("goal_waves", "passed_failed", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

@@ -99,6 +99,7 @@ pub fn waves(app: &App, g: &Row, tasks: &[Row]) -> Result<Vec<Value>> {
             "tasks": ts.iter().map(|t| rf("task", t.id())).collect::<Vec<_>>(), "total": ts.len(), "done": done.len(),
             "failed": failed, "active": active, "starting": starting, "to_start": to_start,
             "planned": ts.iter().filter(|t| t.s("status") == Some("planned")).count(),
+            "passed_failed": w.s("passed_failed").map(|x| Value::Object(jloads_obj(Some(x)))).unwrap_or(Value::Null),
         });
         if !passed && holding.is_none() {
             holding = Some(wv.clone());
@@ -160,9 +161,26 @@ pub fn stopped_line(wl: &[Value]) -> Option<String> {
     }
 }
 
-/// The wave the goal is stopped after for the owner's review, if it is.
-pub fn stopped_wave(wl: &[Value]) -> Option<i64> {
-    wl.iter().find(|w| w["passed"] != true).filter(|w| w["state"] == "stopped").and_then(|w| w["wave"].as_i64())
+/// The goal is stopped at a wave until the owner acts: `kind` is `review` (a review stop after a
+/// done wave), `failed` (a task in it failed) or `held` (held before it started). `line` says so,
+/// `tasks` are the failed ones, `at` when it was held. None when nothing holds the goal for the owner.
+pub fn stop(wl: &[Value]) -> Option<Value> {
+    let w = wl.iter().find(|w| w["passed"] != true)?;
+    let kind = match w["state"].as_str()? {
+        "stopped" => "review",
+        "failed" => "failed",
+        "held" => "held",
+        _ => return None,
+    };
+    let line = if kind == "held" { hold_reason(w) } else { stopped_line(wl)? };
+    Some(json!({"kind": kind, "wave": w["wave"], "name": w["name"], "line": line,
+                "tasks": if kind == "failed" { w["failed"].clone() } else { json!([]) },
+                "at": if kind == "held" { w["held_at"].clone() } else { Value::Null }}))
+}
+
+/// The wave the goal is stopped at for the owner, whatever stopped it (`stop`).
+pub fn stop_wave(wl: &[Value]) -> Option<i64> {
+    stop(wl).and_then(|s| s["wave"].as_i64())
 }
 
 /// A wave's name and stop point (`POST /goals/:id/waves/:n`, `tb goal wave`).
@@ -190,7 +208,13 @@ pub fn release(app: &App, goal_id: i64, n: i64, who: &str) -> Result<bool> {
         }
         return Ok(true);
     }
-    set_wave(app, goal_id, n, vec![("released_at", json!(now_iso()))])?;
+    let failed: Vec<String> = ts.iter().filter(|t| t.s("status") == Some("done") && t.b("failed")).map(|t| rf("task", t.id())).collect();
+    let at = now_iso();
+    let mut f = vec![("released_at", json!(at))];
+    if ts.iter().all(|t| t.s("status") == Some("done") || crate::human::released(t)) && !failed.is_empty() {
+        f.push(("passed_failed", json!(jdumps(&json!({"by": who, "at": at, "tasks": failed})))));
+    }
+    set_wave(app, goal_id, n, f)?;
     for t in &ts {
         board::log_event(app, t.id(), who, "status", &format!("{who} let the goal go on past wave {n}"))?;
     }
