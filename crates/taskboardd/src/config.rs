@@ -52,6 +52,7 @@ pub struct FileConfig {
     pub quiet: crate::quiet::QuietConfig,
     pub spans: crate::spans::SpansConfig,
     pub review: crate::review::ReviewConfig,
+    pub recap: crate::recap::RecapConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     /// `[hosts.<host>]`: each PR host's call budget (`prhost/limit.rs`).
@@ -779,6 +780,7 @@ pub struct Config {
     pub quiet: crate::quiet::QuietConfig,
     pub spans: crate::spans::SpansConfig,
     pub review: crate::review::ReviewConfig,
+    pub recap: crate::recap::RecapConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
@@ -961,6 +963,7 @@ impl Config {
             quiet: f.quiet,
             spans: f.spans,
             review: f.review,
+            recap: f.recap,
             reviewers: f.reviewers,
             feed: f.feed,
             hosts: f.hosts,

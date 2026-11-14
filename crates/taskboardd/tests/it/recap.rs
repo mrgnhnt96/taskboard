@@ -243,3 +243,32 @@ fn the_app_lists_reads_and_marks_recaps_seen() {
     assert_eq!(call(&app, "GET", "/recaps/999").unwrap_err().0, 404);
     assert_eq!(call(&app, "GET", "/recaps/nope").unwrap_err().0, 404);
 }
+
+#[test]
+fn the_schedule_makes_each_period_once_skips_one_with_nothing_finished_and_notifies_once_written() {
+    let (_dir, app) = new_board();
+    let t = task(&app, None, "webapp", "Login form");
+    finish(&app, t, &at(day(2026, 11, 4), 10, 0), vec![]);
+    let monday = |d: u32, h: u32| day(2026, 11, d).and_hms_opt(h, 0, 0).unwrap();
+
+    assert_eq!(recap::tick(&app, monday(9, 8)).unwrap().len(), 0, "before 9:00 AM only October is due, and nothing finished in it");
+    let made = recap::tick(&app, monday(9, 9)).unwrap();
+    assert_eq!(made.len(), 1);
+    let r = recap::get(&app, made[0]).unwrap();
+    assert_eq!((r["kind"].clone(), r["first_day"].clone(), r["last_day"].clone()), (json!("weekly"), json!("2026-11-02"), json!("2026-11-08")));
+    assert_eq!(r["writing_status"], "done", "Claude's off in tests, so the page is written at once");
+    assert_eq!(app.db.get_setting("recap_announce").unwrap(), None, "its notification went once the page was written");
+    assert!(recap::tick(&app, monday(12, 23)).unwrap().is_empty(), "a period is made once, however late the board wakes");
+    assert!(recap::tick(&app, monday(16, 10)).unwrap().is_empty(), "nothing finished the week of November 9");
+
+    let n = recap::notice(&app, made[0]).unwrap();
+    assert_eq!((n["title"].clone(), n["body"].clone()), (json!("Weekly recap: Nov 2 – 8"), json!("1 task finished")));
+    assert_eq!(n["open"], format!("taskboard://recap/{}", made[0]));
+    assert_eq!(n["id"], recap::notification_id(made[0]));
+    assert!(!taskboardd::dispatch::alerts(&app).iter().any(|a| a["key"] == recap::key(made[0])), "no Needs you item");
+
+    let mut cfg = Config::for_tests(_dir.path());
+    cfg.recap.on = false;
+    let off = App::for_tests(cfg);
+    assert!(recap::tick(&off, monday(9, 10)).unwrap().is_empty(), "off makes none");
+}

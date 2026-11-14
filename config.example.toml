@@ -105,6 +105,17 @@ day = "friday"
 at = "5:00 PM"
 suggest = true
 
+# Weekly and monthly recaps of what shipped, the highlights and where the time went, under Days in the
+# app. The week's is made on weekly_day at `at` for the Monday to Sunday before; the month's on
+# monthly_day (1 to 28) at `at` for the calendar month before. Each is made once, however late the
+# board wakes, and skipped when no task finished in it. Once its page is written (or its writing
+# failed), a notification opens it; there's no Needs you item.
+[recap]
+on = true
+weekly_day = "monday"
+monthly_day = 1
+at = "9:00 AM"
+
 # Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
 # impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
 # waves. Off, or without `claude`, issues are grouped by kind and waves follow priority.
