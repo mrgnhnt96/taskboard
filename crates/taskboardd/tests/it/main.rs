@@ -87,6 +87,7 @@ mod qa;
 mod quality;
 mod rebase_visit;
 mod recap;
+mod recap_page;
 mod release_tags;
 mod releases;
 mod reply_questions;

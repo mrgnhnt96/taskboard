@@ -527,6 +527,11 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["reviews", id, "fixes"]) => crate::review_fixes::start(app, review_id(id)?),
         ("POST", ["reviews", id, "seen"]) => app.db.tx(|| crate::review::seen(app, review_id(id)?)),
         ("GET", ["recaps"]) => crate::recap::list(app),
+        ("POST", ["recaps"]) => {
+            let day = crate::recap::parse_day(&body_str(body, "day"))?;
+            let again = body.get("again").and_then(Value::as_bool).unwrap_or(false);
+            crate::recap::get(app, crate::recap::make(app, &body_str(body, "kind"), day, again)?)
+        }
         ("GET", ["recaps", id]) => crate::recap::get(app, recap_id(id)?),
         ("POST", ["recaps", id, "seen"]) => app.db.tx(|| crate::recap::seen(app, recap_id(id)?)),
         ("GET", ["tasks", id, "spans"]) => crate::review::task_spans(app, tid(id)?),
