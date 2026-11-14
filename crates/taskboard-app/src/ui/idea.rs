@@ -554,7 +554,7 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
         let busy = m.idea.busy.contains(&format!("close::{r}"));
         let can = bt.enabled && !busy;
         let bt = Btn { label: format!("{} ▾", bt.label), ..bt };
-        button(t, "idea-close", bt, false, busy).when(can, |d| {
+        button(t, "idea-close", bt, false, busy).child(kit::anchor(CLOSE_MENU)).when(can, |d| {
             d.on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                 let p = e.position();
                 m.toggle_menu(CLOSE_MENU, point(p.x - px(160.), p.y + px(14.)), cx);
@@ -577,7 +577,7 @@ fn close_menu(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>
         let r = r.clone();
         menu = menu.child(kit::menu_item(t, SharedString::from(format!("idea-{act}")), label, false).on_click(cx.listener(move |m, _, _, cx| close(m, act, &r, cx))));
     }
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(CLOSE_MENU, kit::Align::Right, at, menu))
 }
 
 fn header(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Div {

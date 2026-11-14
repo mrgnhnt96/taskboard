@@ -1,7 +1,7 @@
 //! Small building blocks every page uses: buttons, chips, dots, section labels, the segmented
 //! control, text fields, tooltips, popover menus and the modal shell. Their sizes follow the
 //! web board's `app.css` so the native app reads the same.
-use crate::theme::Theme;
+use crate::theme::{Theme, height, opacity, radius, space, text as size};
 use crate::ui::text_input::TextField;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -10,38 +10,34 @@ use gpui_kit::*;
 
 /// `--shadow-modal`: 0 24px 64px.
 pub fn shadow_modal(t: &Theme) -> Vec<BoxShadow> {
-    let dark = t.mode == crate::theme::ThemeMode::Dark;
-    let color: Hsla = if dark { rgba(0x00000099).into() } else { rgba(0x10182840).into() };
-    vec![BoxShadow { color, offset: point(px(0.), px(24.)), blur_radius: px(64.), spread_radius: px(0.), inset: false }]
+    t.shadow_modal()
 }
 
-/// `--shadow-seg`: the selected segment's lift.
+/// The chosen segment's lift: 0 1px 2px.
 pub fn shadow_seg(t: &Theme) -> Vec<BoxShadow> {
-    let dark = t.mode == crate::theme::ThemeMode::Dark;
-    let color: Hsla = if dark { rgba(0x00000066).into() } else { rgba(0x1018281a).into() };
-    vec![BoxShadow { color, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]
+    t.shadow_raised()
 }
 
 // ------------------------------------------------------------------ text
 
-/// `.h3`: 12px semibold uppercase muted section label.
+/// A section label: 11px bold uppercase muted.
 pub fn h3(t: &Theme, text: impl Into<SharedString>) -> Div {
     let text: SharedString = text.into();
-    div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
+    div().text_size(px(size::CAPTION)).font_weight(FontWeight::BOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
 }
 
-/// `.help`: 12.5px muted.
+/// Help under a field or control: 12px muted.
 pub fn help(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().text_size(px(12.5)).text_color(t.muted).child(text.into())
+    div().text_size(px(size::META)).text_color(t.muted).child(text.into())
 }
 
 /// `.empty`: centered muted placeholder.
 pub fn empty(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().py(px(20.)).px(px(8.)).flex().justify_center().text_size(px(13.)).text_color(t.muted).child(text.into())
+    div().py(px(space::S6)).px(px(space::S2)).flex().justify_center().text_size(px(size::BODY)).text_color(t.muted).child(text.into())
 }
 
 pub fn mono(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().font_family(t.mono_font.clone()).text_size(px(12.)).child(text.into())
+    div().font_family(t.mono_font.clone()).text_size(px(size::META)).child(text.into())
 }
 
 // ------------------------------------------------------------------ marks
@@ -51,38 +47,42 @@ pub fn dot(color: Hsla, size: f32) -> Div {
     div().flex_none().size(px(size)).rounded_full().bg(color)
 }
 
-/// `.chip`: 20px outlined label.
+/// A chip: a 20px outlined label with square-ish corners (a fact, never a control).
 pub fn chip(t: &Theme, text: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .flex_none()
         .items_center()
-        .h(px(20.))
-        .px(px(7.))
-        .rounded(px(6.))
+        .h(px(height::TAG))
+        .px(px(space::S2))
+        .rounded(px(radius::INNER))
         .border_1()
-        .border_color(t.border)
-        .text_size(px(11.5))
+        .border_color(t.border_2)
+        .text_size(px(size::META))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(t.muted)
         .whitespace_nowrap()
         .child(text.into())
 }
 
-/// A filled pill in a tone (fg on its soft bg).
+/// A status pill: a 20px round tag, its tone's text on the tone's soft fill. Shorter than the
+/// smallest button, fully round and never hovered, so it never reads as something to press.
 pub fn pill(fg: Hsla, bg: Hsla, text: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(5.))
-        .h(px(20.))
-        .px(px(8.))
+        .gap(px(space::S1))
+        .h(px(height::TAG))
+        .px(px(space::S2))
         .rounded_full()
         .bg(bg)
         .text_color(fg)
-        .text_size(px(11.5))
-        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(size::META))
+        .font_weight(FontWeight::BOLD)
+        .line_height(px(height::TAG))
         .whitespace_nowrap()
+        .cursor_default()
         .child(text.into())
 }
 
@@ -126,48 +126,117 @@ pub fn tone_pill(t: &Theme, name: &str, text: impl Into<SharedString>) -> Div {
 
 // ------------------------------------------------------------------ buttons
 
-fn btn_base(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+/// What a button does, which sets its look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// The one main action: filled accent.
+    Primary,
+    /// Any other action: outlined.
+    Secondary,
+    /// Removes or stops something: red text and edge.
+    Danger,
+    /// A quiet action inside a row or bar: no edge until hovered.
+    Quiet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Size {
+    /// 24px, for row actions.
+    Small,
+    /// 32px.
+    Regular,
+}
+
+/// The one button: every button on every page is this in a kind and a size.
+pub fn button(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Kind, size: Size) -> Stateful<Div> {
+    let b = button_shape(id, label, size);
+    match kind {
+        Kind::Primary => {
+            let (hover, down) = (t.accent_hover, t.accent_down);
+            b.bg(t.accent_btn).border_color(t.accent_btn).text_color(t.on_accent).hover(move |s| s.bg(hover).border_color(hover)).active(move |s| s.bg(down).border_color(down))
+        }
+        Kind::Secondary => {
+            let (hover, down) = (t.panel_2, t.border);
+            b.bg(t.card).border_color(t.border_2).text_color(t.text).hover(move |s| s.bg(hover)).active(move |s| s.bg(down))
+        }
+        Kind::Danger => {
+            let (soft, line) = (t.down_soft, t.down);
+            b.bg(t.card).border_color(t.down_line).text_color(t.down).hover(move |s| s.bg(soft)).active(move |s| s.bg(soft).border_color(line))
+        }
+        Kind::Quiet => {
+            let (hover, text) = (t.hover_overlay, t.text);
+            b.border_color(transparent_black()).text_color(t.muted).hover(move |s| s.bg(hover).text_color(text))
+        }
+    }
+}
+
+/// A primary button filled in another colour (a status colour): it darkens on hover and press
+/// instead of turning accent blue.
+pub fn filled(id: impl Into<ElementId>, label: impl Into<SharedString>, fill: Hsla, text: Hsla) -> Stateful<Div> {
+    button_shape(id, label, Size::Regular).bg(fill).border_color(fill).text_color(text).hover(|s| s.opacity(0.9)).active(|s| s.opacity(0.8))
+}
+
+/// Every button's size, corners and label, before its kind's colours.
+fn button_shape(id: impl Into<ElementId>, label: impl Into<SharedString>, size: Size) -> Stateful<Div> {
+    let (h, pad, text, gap) = match size {
+        Size::Small => (height::SMALL, space::S2, size::META, space::S1),
+        Size::Regular => (height::CONTROL, space::S3, size::BODY, space::S2),
+    };
     div()
         .id(id)
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .gap(px(6.))
-        .h(px(30.))
-        .px(px(12.))
-        .rounded(px(8.))
+        .gap(px(gap))
+        .h(px(h))
+        .px(px(pad))
+        .rounded(px(radius::CONTROL))
         .border_1()
-        .border_color(t.border_2)
-        .bg(t.card)
-        .text_color(t.text)
-        .text_size(px(13.))
+        .text_size(px(text))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
         .child(label.into())
 }
 
-/// `.btn`: outlined button.
+/// An outlined button.
 pub fn btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    let h = t.panel_2;
-    btn_base(t, id, label).hover(move |s| s.bg(h))
+    button(t, id, label, Kind::Secondary, Size::Regular)
 }
 
-/// `.btn.primary`: accent filled.
+/// The filled accent button.
 pub fn btn_primary(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    btn_base(t, id, label).bg(t.accent_btn).border_color(t.accent_btn).text_color(t.on_accent).hover(|s| s.opacity(0.9))
+    button(t, id, label, Kind::Primary, Size::Regular)
 }
 
-/// `.btn.danger`: red outlined.
+/// A red outlined button.
 pub fn btn_danger(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    let soft = t.down_soft;
-    btn_base(t, id, label).text_color(t.down).border_color(t.down_line).hover(move |s| s.bg(soft))
+    button(t, id, label, Kind::Danger, Size::Regular)
 }
 
-/// A small 24px button (row actions).
+/// A small outlined button (row actions).
 pub fn btn_small(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    btn(t, id, label).h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.))
+    button(t, id, label, Kind::Secondary, Size::Small)
+}
+
+/// A square 24px button holding one icon; muted until hovered.
+#[allow(dead_code)]
+pub fn icon_btn(t: &Theme, id: impl Into<ElementId>, child: impl IntoElement) -> Stateful<Div> {
+    let (hover, down) = (t.panel_2, t.border);
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(height::SMALL))
+        .rounded(px(radius::CONTROL))
+        .text_color(t.muted)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(down))
+        .child(child)
 }
 
 /// A borderless text button (links inside rows).
@@ -178,43 +247,72 @@ pub fn link(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>)
 
 /// Disabled look for any button (the caller simply doesn't attach `on_click`).
 pub fn disabled(b: Stateful<Div>) -> Stateful<Div> {
-    b.opacity(0.45).cursor_default()
+    b.opacity(opacity::DISABLED).cursor_default()
 }
 
-/// `.seg`: a segmented control. `on` is the selected index.
+/// A label that takes the bold width even while regular, so choosing it never shifts its row.
+fn steady_label(label: &str, bold: bool) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(div().when(bold, |d| d.font_weight(FontWeight::BOLD)).child(label.to_string()))
+        .child(div().h(px(0.)).overflow_hidden().font_weight(FontWeight::BOLD).child(label.to_string()))
+}
+
+/// `.seg`: a segmented control. `on` is the selected index. The chosen one is raised on the
+/// card colour with a firm edge and a bold label.
 pub fn seg<F>(t: &Theme, id: &str, labels: &[&str], on: usize, mut f: F) -> Div
 where
     F: FnMut(usize, Stateful<Div>) -> Stateful<Div>,
 {
-    let mut row = div().flex().flex_none().items_center().gap(px(2.)).p(px(2.)).rounded(px(8.)).bg(t.seg);
+    let mut row = div().flex().flex_none().items_center().gap(px(space::S1)).p(px(space::S1)).rounded(px(radius::CONTROL)).bg(t.seg);
     for (i, l) in labels.iter().enumerate() {
         let sel = i == on;
-        let hover = t.text;
+        let (text, hover) = (t.text, t.border);
         let item = div()
             .id(SharedString::from(format!("{id}-{i}")))
             .flex()
             .items_center()
-            .h(px(24.))
-            .px(px(10.))
-            .rounded(px(6.))
-            .text_size(px(12.5))
+            .h(px(height::SMALL))
+            .px(px(space::S3))
+            .rounded(px(radius::INNER))
+            .border_1()
+            .text_size(px(size::BODY))
             .font_weight(FontWeight::MEDIUM)
             .cursor_pointer()
             .whitespace_nowrap()
-            .text_color(if sel { t.text } else { t.muted })
-            .when(sel, |d| d.bg(t.card).shadow_sm())
-            .hover(move |s| s.text_color(hover))
-            .child(l.to_string());
+            .map(|d| if sel { d.bg(t.card).border_color(t.control_line).text_color(t.text).shadow(t.shadow_raised()) } else { d.border_color(transparent_black()).text_color(t.muted).hover(move |s| s.bg(hover).text_color(text)) })
+            .child(steady_label(l, sel));
         row = row.child(f(i, item));
     }
     row
 }
 
+/// One underlined tab: the chosen one has a bold label over a 2px bar in the text colour.
+pub fn tab(t: &Theme, id: impl Into<ElementId>, label: &str, on: bool) -> Stateful<Div> {
+    let (text, line) = (t.text, t.border_2);
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .h(px(height::CONTROL))
+        .px(px(space::S2))
+        .mb(px(-1.))
+        .border_b_2()
+        .text_size(px(size::BODY))
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .whitespace_nowrap()
+        .map(|d| if on { d.border_color(t.text).text_color(t.text) } else { d.border_color(transparent_black()).text_color(t.muted).hover(move |s| s.text_color(text).border_color(line)) })
+        .child(steady_label(label, on))
+}
+
 // ------------------------------------------------------------------ cards and shells
 
-/// `.card`: white rounded box with a border.
+/// A card: the card colour, a hairline edge and 12px corners. The caller sets its padding.
 pub fn card(t: &Theme) -> Div {
-    div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.border).bg(t.card)
+    div().flex().flex_col().rounded(px(radius::CONTAINER)).border_1().border_color(t.border).bg(t.card)
 }
 
 /// The dimmed full-window backdrop behind a modal or panel; clicks on it call `on_close`. It occludes
@@ -231,17 +329,26 @@ pub fn modal_box(t: &Theme, width: f32) -> Div {
         .w(px(width))
         .max_w(relative(0.94))
         .max_h(relative(0.9))
-        .rounded(px(14.))
+        .rounded(px(radius::DIALOG))
         .border_1()
         .border_color(t.border)
         .bg(t.card)
-        .shadow_lg()
+        .shadow(t.shadow_modal())
         .overflow_hidden()
 }
 
 /// A popover menu box (anchored by the caller).
 pub fn menu_box(t: &Theme, width: f32) -> Div {
-    div().flex().flex_col().w(px(width)).p(px(4.)).rounded(px(10.)).border_1().border_color(t.border).bg(t.card).shadow_lg()
+    div()
+        .flex()
+        .flex_col()
+        .w(px(width))
+        .p(px(space::S1))
+        .rounded(px(radius::CONTAINER))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .shadow(t.shadow_overlay())
 }
 
 /// One row in a popover menu.
@@ -251,21 +358,60 @@ pub fn menu_item(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStr
         .id(id)
         .flex()
         .items_center()
-        .gap(px(8.))
-        .h(px(30.))
-        .px(px(10.))
-        .rounded(px(6.))
-        .text_size(px(13.))
+        .gap(px(space::S2))
+        .min_h(px(height::CONTROL))
+        .pl(px(space::S2))
+        .pr(px(space::S3))
+        .rounded(px(radius::CONTROL))
+        .text_size(px(size::BODY))
         .cursor_pointer()
         .text_color(if selected { t.accent_fg } else { t.text })
-        .when(selected, |d| d.bg(t.accent_soft))
+        .when(selected, |d| d.bg(t.accent_soft).font_weight(FontWeight::MEDIUM))
         .hover(move |s| s.bg(h))
         .child(label.into())
 }
 
-/// A popover anchored under the element that opened it, drawn above everything.
+/// A popover at a point (a right-click menu at the pointer), drawn above everything.
 pub fn popover(at: Point<Pixels>, child: impl IntoElement) -> AnyElement {
-    deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(child)).with_priority(3).into_any_element()
+    deferred(anchored().position(at).snap_to_window_with_margin(px(space::S2)).child(child)).with_priority(3).into_any_element()
+}
+
+thread_local! {
+    static ANCHORS: std::cell::RefCell<std::collections::HashMap<SharedString, Bounds<Pixels>>> = Default::default();
+}
+
+/// Put inside the button that opens a menu: it notes where the button was drawn, under `key`,
+/// so [`menu_under`] can open the menu beside it.
+pub fn anchor(key: impl Into<SharedString>) -> impl IntoElement {
+    let key = key.into();
+    canvas(move |bounds, _, _| ANCHORS.with(|a| a.borrow_mut().insert(key.clone(), bounds)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+}
+
+/// Which edge of its button a menu lines up with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+}
+
+/// Where a menu opens for a button drawn at `button`: 4px under it, lined up with its `align`
+/// edge. The second point is where it goes instead, 4px above, when there's no room below.
+pub fn menu_spot(button: Bounds<Pixels>, align: Align) -> (Point<Pixels>, Point<Pixels>, Anchor) {
+    let gap = px(space::ANCHOR_GAP);
+    let x = if align == Align::Right { button.right() } else { button.left() };
+    let corner = if align == Align::Right { Anchor::TopRight } else { Anchor::TopLeft };
+    (point(x, button.bottom() + gap), point(x, button.top() - gap), corner)
+}
+
+/// A menu beside the button that put [`anchor`]`(key)` inside it: under it, or above it when the
+/// window is too short below, never over it. Before the button has been drawn, at `at`.
+pub fn menu_under(key: &str, align: Align, at: Point<Pixels>, child: impl IntoElement) -> AnyElement {
+    let Some(button) = ANCHORS.with(|a| a.borrow().get(key).copied()) else { return popover(at, child) };
+    let (below, above, corner) = menu_spot(button, align);
+    // Placed at the spot above and pushed down past the button: when it doesn't fit below,
+    // `anchored` flips it to end at the spot above instead.
+    let a = anchored().anchor(corner).position(above).offset(point(px(0.), below.y - above.y)).child(child);
+    deferred(a).with_priority(3).into_any_element()
 }
 
 // ------------------------------------------------------------------ text fields
@@ -338,14 +484,14 @@ impl Input {
             .id(id)
             .flex()
             .items_center()
-            .min_h(px(32.))
-            .px(px(10.))
-            .py(px(6.))
-            .rounded(px(8.))
+            .min_h(px(height::CONTROL))
+            .px(px(space::S3))
+            .py(px(space::S1))
+            .rounded(px(radius::CONTROL))
             .border_1()
-            .border_color(if focused { t.accent } else { t.border_2 })
+            .border_color(if focused { t.focus_ring } else { t.control_line })
             .bg(t.card)
-            .text_size(px(13.5))
+            .text_size(px(size::BODY))
             .text_color(t.text)
             .overflow_hidden()
             .cursor_text()
@@ -363,16 +509,22 @@ struct Tip {
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>();
-        div()
-            .max_w(px(360.))
-            .px(px(8.))
-            .py(px(5.))
-            .rounded(px(6.))
-            .bg(t.text)
-            .text_color(t.bg)
-            .text_size(px(12.))
-            .font_family(t.ui_font.clone())
-            .child(self.text.clone())
+        // The tip is placed at the pointer and flips up near the window's bottom edge: an equal
+        // clear band above and below keeps the visible box off the pointer and its button either way.
+        div().py(px(space::S6)).child(
+            div()
+                .max_w(px(360.))
+                .px(px(space::S2))
+                .py(px(space::S1))
+                .rounded(px(radius::CONTROL))
+                .bg(t.text)
+                .text_color(t.bg)
+                .text_size(px(size::META))
+                .line_height(px(16.))
+                .font_family(t.ui_font.clone())
+                .shadow(t.shadow_overlay())
+                .child(self.text.clone()),
+        )
     }
 }
 
@@ -412,23 +564,26 @@ impl Render for CardTip {
                 .child(div().flex_none().w(px(52.)).text_color(t.muted).child(k.clone()))
                 .child(div().flex_1().min_w_0().text_color(t.text).child(v.clone()))
         });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .w(px(340.))
-            .px(px(12.))
-            .py(px(10.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(t.border_2)
-            .bg(t.card)
-            .shadow_lg()
-            .text_size(px(12.))
-            .font_family(t.ui_font.clone())
-            .child(div().pb(px(4.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone()))
-            .children(self.summary.clone().map(|s| div().mt(px(-4.)).pb(px(4.)).text_color(t.text_2).child(s)))
-            .children(rows)
+        // Clear of the pointer and its row, as [`Tip`].
+        div().py(px(space::S6)).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(space::S1))
+                .w(px(340.))
+                .px(px(space::S3))
+                .py(px(10.))
+                .rounded(px(radius::CONTROL))
+                .border_1()
+                .border_color(t.border)
+                .bg(t.card)
+                .shadow(t.shadow_overlay())
+                .text_size(px(size::META))
+                .font_family(t.ui_font.clone())
+                .child(div().pb(px(space::S1)).text_size(px(size::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone()))
+                .children(self.summary.clone().map(|s| div().mt(px(-4.)).pb(px(space::S1)).text_color(t.text_2).child(s)))
+                .children(rows),
+        )
     }
 }
 
@@ -617,6 +772,23 @@ mod tests {
         let (narrow, wide) = view.read_with(cx, |b, _| (b.0.clone(), b.1.clone()));
         assert!(super::was_cut(&narrow, WORDS), "{}", narrow.text());
         assert!(!super::was_cut(&wide, WORDS), "{}", wide.text());
+    }
+
+    #[::core::prelude::v1::test]
+    fn menus_open_under_their_button_and_flip_above_it() {
+        use super::{Align, menu_spot};
+        use gpui_kit::{Anchor, Bounds, point, size};
+        let button = Bounds::new(point(px(100.), px(50.)), size(px(80.), px(32.)));
+        let (below, above, corner) = menu_spot(button, Align::Right);
+        assert_eq!((below, above, corner), (point(px(180.), px(86.)), point(px(180.), px(46.)), Anchor::TopRight));
+        let (below, above, corner) = menu_spot(button, Align::Left);
+        assert_eq!((below, above, corner), (point(px(100.), px(86.)), point(px(100.), px(46.)), Anchor::TopLeft));
+    }
+
+    #[::core::prelude::v1::test]
+    fn status_pills_stay_shorter_than_the_smallest_button() {
+        use crate::theme::height;
+        assert!(height::TAG < height::SMALL && height::SMALL < height::CONTROL);
     }
 
     #[::core::prelude::v1::test]

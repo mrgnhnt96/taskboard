@@ -241,7 +241,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 pick(m, id, cx)
             }
         })))
-        .child(kit::btn(&t, "recap-list-btn", "All recaps  ▾").on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+        .child(kit::btn(&t, "recap-list-btn", "All recaps  ▾").child(kit::anchor(MENU)).on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
             let p = e.position();
             m.toggle_menu(MENU, point(p.x - px(160.), p.y + px(14.)), cx);
         })))
@@ -277,9 +277,9 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                     .collect::<Vec<_>>()
             }),
         )
-        .h(px(n.min(SHOWN) as f32 * 30.));
+        .h(px(n.min(SHOWN) as f32 * crate::theme::height::CONTROL));
         let menu = kit::menu_box(&t, 240.).id("recap-menu").child(el);
-        menus.push(kit::popover(at, menu.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
+        menus.push(kit::menu_under(MENU, kit::Align::Right, at, menu.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
     }
 
     let title = period(&r);

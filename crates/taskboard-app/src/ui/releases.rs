@@ -443,9 +443,9 @@ fn work(t: &Theme, at: &str, d: Option<&Value>, notes: bool, cx: &mut Context<Ma
 fn mark(t: &Theme, w: Standing) -> Div {
     let ring = div().flex_none().size(px(16.)).rounded_full().flex().items_center().justify_center().text_size(px(10.)).font_weight(FontWeight::BOLD);
     match w {
-        Standing::Met => ring.bg(t.up).text_color(t.on_accent).child("✓"),
+        Standing::Met => ring.bg(t.up).text_color(t.on_status).child("✓"),
         Standing::Waiting => ring.border_2().border_color(t.warn),
-        Standing::Dead => ring.bg(t.down).text_color(t.on_accent).child("✕"),
+        Standing::Dead => ring.bg(t.down).text_color(t.on_status).child("✕"),
     }
 }
 

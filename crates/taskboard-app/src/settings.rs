@@ -697,7 +697,7 @@ impl SettingsWindow {
                     .child(div().flex_1().min_w_0().truncate().child(sec.label()))
                     .when(n > 0, |d| {
                         d.child(
-                            div().min_w(px(18.)).h(px(18.)).px(px(5.)).rounded(px(9.)).flex().items_center().justify_center().text_size(px(11.)).font_weight(FontWeight::BOLD).bg(t.warn).text_color(t.on_accent).child(n.to_string()),
+                            div().min_w(px(18.)).h(px(18.)).px(px(5.)).rounded(px(9.)).flex().items_center().justify_center().text_size(px(11.)).font_weight(FontWeight::BOLD).bg(t.warn).text_color(t.on_status).child(n.to_string()),
                         )
                     })
                     .on_click(cx.listener(move |s, _, _, cx| {

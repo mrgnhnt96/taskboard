@@ -323,7 +323,7 @@ fn do_btn(t: &Theme, key: &str, n: usize, label: String, act: Do, cx: &mut Conte
 fn menu_btn(t: &Theme, key: &str, menu: &'static str, label: &'static str, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let id = SharedString::from(format!("{menu}{key}"));
     let open = format!("{menu}{key}");
-    kit::btn_small(t, id, label).on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+    kit::btn_small(t, id, label).child(kit::anchor(open.clone())).on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
         cx.stop_propagation();
         let p = e.position();
         m.toggle_menu(&open, point(p.x - px(150.), p.y + px(14.)), cx);
@@ -743,7 +743,9 @@ fn row_menu(m: &MainWindow, t: &Theme, v: &View, cx: &mut Context<MainWindow>) -
         AFTER_MENU => after_menu(t, x, goals, cx),
         _ => more_menu(t, key, x, cx),
     };
-    Some(kit::popover(at, menu.id("home-row-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())))
+    // After a goal replaces the Later menu, so both open under the Later button.
+    let button = format!("{}{key}", if prefix == AFTER_MENU { LATER_MENU } else { prefix });
+    Some(kit::menu_under(&button, kit::Align::Right, at, menu.id("home-row-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())))
 }
 
 // ------------------------------------------------------------------ signals

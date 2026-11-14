@@ -265,7 +265,7 @@ pub fn rollup(g: &Value, filter: Filter, wave: Option<&str>) -> Rollup {
 
 // ------------------------------------------------------------------ view
 
-/// A text button that opens one of the card's menus where it was clicked.
+/// A text button that opens one of the card's menus under it.
 fn menu_btn(t: &Theme, id: &'static str, menu: &'static str, label: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let tint = t.tint;
     div()
@@ -283,6 +283,7 @@ fn menu_btn(t: &Theme, id: &'static str, menu: &'static str, label: String, cx: 
         .hover(move |s| s.bg(tint))
         .child(label)
         .child(chevron(true, t.muted))
+        .child(kit::anchor(menu))
         .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
             let p = e.position();
             m.toggle_menu(menu, point(p.x - px(150.), p.y + px(14.)), cx);
@@ -308,6 +309,7 @@ fn wave_btn(t: &Theme, label: String, cx: &mut Context<MainWindow>) -> Stateful<
         .hover(move |s| s.bg(tint))
         .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(label.clone()))
         .child(chevron(true, t.muted))
+        .child(kit::anchor(WAVE_MENU))
         .tooltip(kit::tip(label))
         .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
             let p = e.position();
@@ -465,7 +467,7 @@ pub(super) fn menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWi
         }
         let list = div().id("goal-att-wave-list").flex().flex_col().max_h(px(360.)).overflow_y_scroll().children(rows);
         let menu = kit::menu_box(t, 300.).id("goal-att-wave-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(list);
-        return Some(kit::popover(at, menu));
+        return Some(kit::menu_under(WAVE_MENU, kit::Align::Left, at, menu));
     }
     let at = m.menu_open(KIND_MENU)?;
     let r = r();
@@ -483,7 +485,7 @@ pub(super) fn menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWi
             row
         });
     }
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(KIND_MENU, kit::Align::Right, at, menu))
 }
 
 // ------------------------------------------------------------------ hover card
