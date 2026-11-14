@@ -981,6 +981,7 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
                                 .border_color(t.accent_fg)
                                 .px(px(8.))
                                 .text_color(on)
+                                .child(kit::anchor(START_MENU))
                                 .tooltip(kit::tip(if split { "Start now or at a set time instead" } else { "Start at a set time instead" }))
                                 .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                                     let p = e.position();
@@ -998,7 +999,7 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
             }
             "sched-menu" => {
                 let is_busy = busy(m, &format!("goal-run-now::{gr}")) || busy(m, &format!("goal-run::{gr}")) || busy(m, &format!("goal-at::{gr}"));
-                let b = kit::btn(t, "goal-sched", if is_busy { bt.busy_label.to_string() } else { format!("{label} ▾") }).tooltip(kit::tip(bt.title.clone()));
+                let b = kit::btn(t, "goal-sched", if is_busy { bt.busy_label.to_string() } else { format!("{label} ▾") }).child(kit::anchor(SCHED_MENU)).tooltip(kit::tip(bt.title.clone()));
                 if is_busy {
                     kit::disabled(b)
                 } else {
@@ -1012,7 +1013,7 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
             "wait-menu" => {
                 // Busy while its Start now or Pause runs.
                 let is_busy = busy(m, &format!("goal-run-now::{gr}")) || busy(m, &format!("goal-pause:on:{gr}"));
-                let b = kit::btn(t, "goal-wait", if is_busy { bt.busy_label.to_string() } else { format!("{label} ▾") }).tooltip(kit::tip(bt.title.clone()));
+                let b = kit::btn(t, "goal-wait", if is_busy { bt.busy_label.to_string() } else { format!("{label} ▾") }).child(kit::anchor(WAIT_MENU)).tooltip(kit::tip(bt.title.clone()));
                 if is_busy {
                     kit::disabled(b)
                 } else {
@@ -1065,7 +1066,7 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
                 })),
         );
     }
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(START_MENU, kit::Align::Right, at, menu))
 }
 
 fn wait_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
@@ -1094,7 +1095,7 @@ fn wait_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                 })),
         );
     }
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(WAIT_MENU, kit::Align::Right, at, menu))
 }
 
 /// Start at…: the time field opens focused under where it was picked.
@@ -1204,7 +1205,7 @@ fn at_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(div().flex().items_center().gap(px(8.)).child(field).child(go))
         .children(m.goal_page.at_err.clone().map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)));
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(START_MENU, kit::Align::Right, at, menu))
 }
 
 fn sched_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
@@ -1237,7 +1238,7 @@ fn sched_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
                 })),
         );
     }
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(SCHED_MENU, kit::Align::Right, at, menu))
 }
 
 /// The misses behind "Outcome not met": each opens its issue.
@@ -1267,7 +1268,7 @@ fn misses_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 })),
         );
     }
-    Some(kit::popover(at, menu))
+    Some(kit::menu_under(MISSES_MENU, kit::Align::Left, at, menu))
 }
 
 /// The run buttons wait for the goal's tasks (`loaded`); a `/goals` row alone can't tell which apply.
@@ -1357,6 +1358,7 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, loaded: bool, cx: &mut Context<M
                                     .cursor_pointer()
                                     .hover(|s| s.underline())
                                     .child(why)
+                                    .child(kit::anchor(MISSES_MENU))
                                     .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                                         let p = e.position();
                                         m.toggle_menu(MISSES_MENU, point(p.x - px(300.), p.y + px(14.)), cx);

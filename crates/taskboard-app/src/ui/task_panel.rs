@@ -2284,25 +2284,9 @@ fn danger(t: &Theme, id: SharedString, label: String) -> Stateful<Div> {
     raw(t, id, label).text_color(t.down).border_color(t.down_line)
 }
 
-/// `.tab`: 14px semibold, 42px, an accent underline when selected.
+/// A panel tab: the shared underlined tab.
 fn tab_btn(t: &Theme, id: SharedString, label: &str, on: bool) -> Stateful<Div> {
-    let hover = t.text;
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .min_h(px(42.))
-        .px(px(10.))
-        .mb(px(-1.))
-        .border_b_2()
-        .border_color(if on { t.accent } else { transparent_black() })
-        .text_size(px(14.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .cursor_pointer()
-        .whitespace_nowrap()
-        .text_color(if on { t.text } else { t.muted })
-        .hover(move |s| s.text_color(hover))
-        .child(label.to_string())
+    kit::tab(t, id, label, on)
 }
 
 /// `.fchip`: a round 32px filter chip; the pressed one inverted.

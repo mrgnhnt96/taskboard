@@ -339,7 +339,7 @@ pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context
         .on_key_down(cx.listener(|m, ev: &KeyDownEvent, window, cx| on_key(m, ev, true, window, cx)));
     let cur = f.project.clone();
     let label = if cur.is_empty() { "Choose a project".to_string() } else { cur.clone() };
-    let project = ip::picker_button(t, "new-idea-project-btn", label, cur.is_empty()).on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
+    let project = ip::picker_button(t, "new-idea-project-btn", label, cur.is_empty()).child(kit::anchor(FORM_PROJECT)).on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
         let p = e.position();
         ip::open_project_choice(m, FORM_PROJECT, &cur, &projects, point(p.x - px(10.), p.y + px(14.)), window, cx, |m, p, cx| {
             if let Some(f) = m.ideas.form.as_mut() {

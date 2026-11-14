@@ -560,11 +560,6 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
 
 // ------------------------------------------------------------------ render
 
-/// Text on the goal color: light purple in the dark theme takes dark text.
-fn on_goal(t: &Theme) -> Hsla {
-    if t.mode == crate::theme::ThemeMode::Dark { t.bg } else { t.on_accent }
-}
-
 fn check_box(t: &Theme, id: SharedString, c: Check) -> Stateful<Div> {
     let on = c != Check::None;
     div()
@@ -576,9 +571,9 @@ fn check_box(t: &Theme, id: SharedString, c: Check) -> Stateful<Div> {
         .size(px(18.))
         .rounded(px(5.))
         .border_1()
-        .border_color(if on { t.goal } else { t.border_2 })
+        .border_color(if on { t.goal } else { t.control_line })
         .when(on, |d| d.bg(t.goal))
-        .text_color(on_goal(t))
+        .text_color(t.on_status)
         .text_size(px(12.))
         .font_weight(FontWeight::BOLD)
         .cursor_pointer()
@@ -725,13 +720,13 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         let move_open = m.menu_open(MENU_MOVE).is_some();
         let prio_open = m.menu_open(MENU_PRIO).is_some();
         let sep = || div().w(px(1.)).h(px(18.)).bg(t.goal_line);
-        let mut move_wrap = div().relative().child(bar_btn(&t, "plan-move-btn", "Move to goal", "M").on_click(cx.listener(|m, _, _, cx| m.toggle_menu(MENU_MOVE, point(px(0.), px(0.)), cx))));
+        let mut move_wrap = div().relative().child(bar_btn(&t, "plan-move-btn", "Move to goal", "M").child(kit::anchor(MENU_MOVE)).on_click(cx.listener(|m, _, _, cx| m.toggle_menu(MENU_MOVE, point(px(0.), px(0.)), cx))));
         if move_open {
-            move_wrap = move_wrap.child(deferred(div().absolute().top(px(32.)).left_0().child(move_menu(m, &t, &sel, cx))).with_priority(3));
+            move_wrap = move_wrap.child(kit::menu_under(MENU_MOVE, kit::Align::Left, point(px(0.), px(0.)), move_menu(m, &t, &sel, cx)));
         }
-        let mut prio_wrap = div().relative().child(bar_btn(&t, "plan-prio-btn", "Set priority", "P").on_click(cx.listener(|m, _, _, cx| m.toggle_menu(MENU_PRIO, point(px(0.), px(0.)), cx))));
+        let mut prio_wrap = div().relative().child(bar_btn(&t, "plan-prio-btn", "Set priority", "P").child(kit::anchor(MENU_PRIO)).on_click(cx.listener(|m, _, _, cx| m.toggle_menu(MENU_PRIO, point(px(0.), px(0.)), cx))));
         if prio_open {
-            prio_wrap = prio_wrap.child(deferred(div().absolute().top(px(32.)).left_0().child(prio_menu(m, &t, &list, &sel, cx))).with_priority(3));
+            prio_wrap = prio_wrap.child(kit::menu_under(MENU_PRIO, kit::Align::Left, point(px(0.), px(0.)), prio_menu(m, &t, &list, &sel, cx)));
         }
         div()
             .flex()
@@ -1050,7 +1045,7 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
             box_ = box_.child(item_el(t, it, "u", cx));
         }
         let label = if d.never_planned { "Plan waves with Claude" } else { "Re-plan with Claude" };
-        let b = if d.never_planned { kit::btn_primary(t, "plan-plan", label).bg(t.goal).border_color(t.goal).text_color(on_goal(t)) } else { kit::btn(t, "plan-plan", label).text_color(t.goal).border_color(t.goal_line) };
+        let b = if d.never_planned { kit::filled("plan-plan", label, t.goal, t.on_status) } else { kit::btn(t, "plan-plan", label).text_color(t.goal).border_color(t.goal_line) };
         box_ = box_.child(b.mt(px(4.)).h(px(34.)).on_click(cx.listener(|m, _, _, cx| plan_waves(m, cx))));
         col = col.child(box_);
     }
@@ -1063,7 +1058,7 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
     } else {
         "Create goal".into()
     };
-    let mut btn = kit::btn_primary(t, "plan-create", label).h(px(38.)).bg(t.goal).border_color(t.goal).text_color(on_goal(t));
+    let mut btn = kit::filled("plan-create", label, t.goal, t.on_status).h(px(38.));
     if d.can_create() && !m.backlog.busy {
         let dd = d.clone();
         btn = btn.on_click(cx.listener(move |m, _, _, cx| create(m, &dd, cx)));

@@ -131,10 +131,7 @@ fn date_of(v: &Value, k: &str) -> Option<NaiveDate> {
 /// leaves out the greens, oranges and reds the page uses for done, waiting and lost. A project
 /// keeps its slot (its place among all the board's projects) whatever is hidden; past four, grey.
 pub fn project_color(mode: ThemeMode, index: usize) -> Hsla {
-    const LIGHT: [u32; 4] = [0x2a78d6, 0xeda100, 0x4a3aa7, 0xe87ba4];
-    const DARK: [u32; 4] = [0x3987e5, 0xc98500, 0x9085e9, 0xd55181];
-    let pal = if mode == ThemeMode::Dark { DARK } else { LIGHT };
-    rgb(pal.get(index).copied().unwrap_or(0x8a95a3)).into()
+    if index < 4 { crate::theme::chart(mode, index) } else { crate::theme::chart_other(mode) }
 }
 
 // ------------------------------------------------------------------ view model

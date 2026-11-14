@@ -832,7 +832,7 @@ pub fn project_filter(
     let label = if value == "all" { "All projects".to_string() } else { value.to_string() };
     let projects = projects.to_vec();
     let value = value.to_string();
-    kit::btn_small(t, SharedString::from(format!("{key}-btn")), format!("{label}  ▾")).max_w(px(260.)).overflow_hidden().on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
+    kit::btn_small(t, SharedString::from(format!("{key}-btn")), format!("{label}  ▾")).max_w(px(260.)).overflow_hidden().child(kit::anchor(key)).on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
         let p = e.position();
         open_project_filter(m, key, &value, &projects, point(p.x - px(10.), p.y + px(14.)), window, cx, on_pick.clone());
     }))
@@ -939,6 +939,7 @@ fn pick(m: &mut MainWindow, v: String, window: &mut Window, cx: &mut Context<Mai
 pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let p = m.issue_panel.picker.as_ref()?;
     let at = m.menu_open(&p.key)?;
+    let key = p.key.clone();
     let q = p.q.text(cx);
     let items = p.items(&q, m.state(), &m.data.goals);
     let active = p.active.min(items.len().saturating_sub(1));
@@ -1019,7 +1020,7 @@ pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mu
         .child(div().p(px(8.)).child(field))
         .child(list)
         .child(foot);
-    Some(kit::popover(at, card))
+    Some(kit::menu_under(&key, kit::Align::Left, at, card))
 }
 
 /// The button that opens a picker: a search glyph and the label (`pickerButton`).
@@ -1036,41 +1037,14 @@ pub fn note_el(t: &Theme, n: &Option<(String, bool)>) -> Option<Div> {
 
 /// A button for an [`Act`]: `primary` / plain / `ghost` styles as the web board's classes.
 pub fn act_button(t: &Theme, id: impl Into<ElementId>, a: &Act, style: &str, small: bool) -> Stateful<Div> {
-    let b = match style {
-        "primary" => kit::btn_primary(t, id, a.label.clone()),
-        "soft" => kit::btn(t, id, a.label.clone()).bg(t.accent_soft).border_color(t.accent_line).text_color(t.accent_fg),
-        "ghost" => {
-            let h = t.panel_2;
-            div()
-                .id(id)
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .h(px(30.))
-                .px(px(12.))
-                .rounded(px(8.))
-                .text_color(t.muted)
-                .text_size(px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .whitespace_nowrap()
-                .cursor_pointer()
-                .hover(move |s| s.bg(h))
-                .child(a.label.clone())
-        }
-        _ => kit::btn(t, id, a.label.clone()),
+    let size = if small { kit::Size::Small } else { kit::Size::Regular };
+    let kind = match style {
+        "primary" => kit::Kind::Primary,
+        "ghost" => kit::Kind::Quiet,
+        _ => kit::Kind::Secondary,
     };
-    // `.btn` is 36px tall, padding 0 14px (`.ghost` 0 10px), radius 8px, 13px; primary is bold.
-    let b = if small {
-        b.h(px(26.)).px(px(10.)).rounded(px(7.)).text_size(px(12.5))
-    } else {
-        let b = b.h(px(36.)).px(px(if style == "ghost" { 10. } else { 14. })).rounded(px(8.)).text_size(px(13.));
-        match style {
-            "primary" => b.font_weight(FontWeight::SEMIBOLD),
-            "ghost" => b,
-            _ => b.font_weight(FontWeight::NORMAL).border_color(t.border),
-        }
-    };
+    let b = kit::button(t, id, a.label.clone(), kind, size);
+    let b = if style == "soft" { b.bg(t.accent_soft).border_color(t.accent_line).text_color(t.accent_fg) } else { b };
     if a.busy { kit::disabled(b) } else { b }
 }
 

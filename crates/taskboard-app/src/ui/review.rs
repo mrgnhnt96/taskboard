@@ -251,10 +251,7 @@ pub fn first_review(next: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(S
 
 /// The category palette, in order of time spent: the Days page's project colours, then teal, then grey.
 fn category_color(mode: ThemeMode, index: usize) -> Hsla {
-    const LIGHT: [u32; 5] = [0x2a78d6, 0xeda100, 0x4a3aa7, 0xe87ba4, 0x1f9e89];
-    const DARK: [u32; 5] = [0x3987e5, 0xc98500, 0x9085e9, 0xd55181, 0x2bb39c];
-    let pal = if mode == ThemeMode::Dark { DARK } else { LIGHT };
-    rgb(pal.get(index).copied().unwrap_or(0x8a95a3)).into()
+    crate::theme::chart(mode, index)
 }
 
 // ------------------------------------------------------------------ actions
@@ -635,7 +632,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
                 pick(m, id, cx)
             }
         })))
-        .child(kit::btn(&t, "review-week-btn", "All weeks  ▾").on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+        .child(kit::btn(&t, "review-week-btn", "All weeks  ▾").child(kit::anchor(MENU_WEEK)).on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
             let p = e.position();
             m.toggle_menu(MENU_WEEK, point(p.x - px(160.), p.y + px(14.)), cx);
         })))
@@ -664,9 +661,9 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
                     .collect::<Vec<_>>()
             }),
         )
-        .h(px(n.min(WEEKS_SHOWN) as f32 * 30.));
+        .h(px(n.min(WEEKS_SHOWN) as f32 * crate::theme::height::CONTROL));
         let menu = kit::menu_box(&t, 220.).id("review-week-menu").child(items);
-        menus.push(kit::popover(at, menu.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
+        menus.push(kit::menu_under(MENU_WEEK, kit::Align::Right, at, menu.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
     }
 
     shell.child(page(header(&t, v.period.clone(), v.against.clone(), nav)).child(body(m, &t, &v, cx))).children(menus).into_any_element()

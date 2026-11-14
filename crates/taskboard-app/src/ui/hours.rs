@@ -236,6 +236,7 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
         .child(kit::dot(dot, 8.))
         .child(p.label)
         .child(div().ml(px(-1.)).opacity(0.65).child(kit::icon(kit::Icon::Chev, 14., fg)))
+        .child(kit::anchor(MENU))
         .tooltip(kit::tip(p.title))
         .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
             if m.menu_open(MENU).is_none() {
@@ -470,7 +471,7 @@ pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
                 .size(px(16.))
                 .rounded(px(4.))
                 .border_1()
-                .border_color(if on { t.accent_btn } else { t.border_2 })
+                .border_color(if on { t.accent_btn } else { t.control_line })
                 .bg(if on { t.accent_btn } else { t.card })
                 .flex()
                 .items_center()
@@ -535,8 +536,8 @@ pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
         .child(row().child(div().whitespace_nowrap().child("Today until")).child(time_field(m, &t, TODAY, window, cx)))
         .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)))
         .children(m.state().get("keep_awake").and_then(keep_awake_view).map(|k| keep_awake(&t, k)));
-    // Opens upward from the pill.
-    Some(deferred(anchored().anchor(Anchor::BottomLeft).position(at).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
+    // Beside the pill: above it when it sits low in the window.
+    Some(kit::menu_under(MENU, kit::Align::Left, at, menu))
 }
 
 #[cfg(test)]
