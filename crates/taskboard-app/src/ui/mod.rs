@@ -5,6 +5,7 @@ pub mod days;
 pub mod goal;
 pub mod goals;
 pub mod goals_page;
+pub mod health;
 pub mod home;
 pub mod hours;
 pub mod idea;

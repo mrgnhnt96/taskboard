@@ -41,7 +41,21 @@ pub enum State {
     /// Downloaded, checked and staged; applied on restart.
     Ready { version: String, page: String },
     Applying { version: String },
-    Failed { error: String, at: String },
+    /// Stays until dismissed or the next check. `stage` names the step that failed:
+    /// "Checking for updates", "Downloading 1.2.0", "Checking 1.2.0", "Installing 1.2.0".
+    Failed { stage: String, error: String, at: String },
+}
+
+impl State {
+    /// "Couldn’t install 1.2.0", the failure's title in the footer and Settings.
+    pub fn failure_title(stage: &str) -> String {
+        match stage.split_once(' ') {
+            Some(("Downloading", v)) => format!("Couldn’t download {v}"),
+            Some(("Checking", v)) if v != "for updates" => format!("Couldn’t check {v}"),
+            Some(("Installing", v)) => format!("Couldn’t install {v}"),
+            _ => "Couldn’t check for updates".into(),
+        }
+    }
 }
 
 static STATE: Mutex<State> = Mutex::new(State::Idle);
@@ -53,14 +67,18 @@ pub fn state() -> State {
     STATE.lock().map(|s| s.clone()).unwrap_or(State::Idle)
 }
 
-#[cfg(test)]
-pub fn set_for_test(s: State) {
-    set(s)
-}
-
 fn set(s: State) {
     if let Ok(mut g) = STATE.lock() {
         *g = s;
+    }
+}
+
+/// Put a failure away (its ✕ in the footer or Settings); the next check runs as usual.
+pub fn dismiss() {
+    if let Ok(mut g) = STATE.lock()
+        && matches!(*g, State::Failed { .. })
+    {
+        *g = State::Idle;
     }
 }
 
@@ -241,42 +259,60 @@ fn cache_dir() -> PathBuf {
     taskboardd::util::expand_home("~/Library/Caches/com.mrgnhnt.taskboard/updates")
 }
 
-/// One check: find a newer release, then download, check and stage it.
+/// One check: find a newer release, then download, check and stage it. A ready update stays
+/// ready until a newer one is downloaded and checked; a failed check for a newer one only logs.
 fn check(bundle: &Path) {
-    let ready = match state() {
-        State::Ready { version, .. } => Some(version),
+    let before = state();
+    let ready = match &before {
+        State::Ready { version, .. } => Some(version.clone()),
         _ => None,
     };
     if ready.is_none() {
         set(State::Checking);
     }
-    let fail = |error: String| set(State::Failed { error, at: now() });
+    let fail = |stage: String, error: String| {
+        if ready.is_some() {
+            crate::log::info(format!("{stage}: {error}"));
+            set(before.clone());
+        } else {
+            set(State::Failed { stage, error, at: now() });
+        }
+    };
     let releases = match fetch_releases() {
         Ok(r) => r,
-        Err(e) if ready.is_none() => return fail(e),
-        Err(_) => return,
+        Err(e) => return fail("Checking for updates".into(), e),
     };
     let Some(r) = pick(&releases, VERSION) else {
-        return set(State::UpToDate { at: now() });
+        if ready.is_none() {
+            set(State::UpToDate { at: now() });
+        }
+        return;
     };
     if ready.as_deref().is_some_and(|v| !is_newer(&r.version, v)) {
         return;
     }
-    set(State::Downloading { version: r.version.clone() });
+    if ready.is_none() {
+        set(State::Downloading { version: r.version.clone() });
+    }
     let dir = cache_dir();
-    let staged = download(&r, &dir).and_then(|archive| {
-        let app = stage(&archive, &dir.join("staged"), &r.version, bundle);
-        let _ = std::fs::remove_file(&archive);
-        app
-    });
-    match staged {
+    let archive = match download(&r, &dir) {
+        Ok(a) => a,
+        Err(e) => return fail(format!("Downloading {}", r.version), e),
+    };
+    let to = dir.join(format!("staged-{}", r.version));
+    let app = stage(&archive, &to, &r.version, bundle);
+    let _ = std::fs::remove_file(&archive);
+    match app {
         Ok(app) => {
             if let Ok(mut g) = STAGED.lock() {
+                if let Some(old) = g.as_ref().and_then(|(a, _)| a.parent()).filter(|o| *o != to) {
+                    let _ = std::fs::remove_dir_all(old);
+                }
                 *g = Some((app, bundle.to_path_buf()));
             }
             set(State::Ready { version: r.version, page: r.page });
         }
-        Err(e) => fail(e),
+        Err(e) => fail(format!("Checking {}", r.version), e),
     }
 }
 
@@ -306,10 +342,65 @@ pub fn start(backend: &str) {
 /// Check now (Settings › System › Check now).
 pub fn check_now() {
     if let Some(tx) = WAKE.get().and_then(|m| m.lock().ok()) {
-        if !matches!(state(), State::Checking | State::Downloading { .. } | State::Applying { .. }) {
+        if !matches!(state(), State::Checking | State::Downloading { .. } | State::Applying { .. } | State::Ready { .. }) {
             set(State::Checking);
         }
         let _ = tx.send(());
+    }
+}
+
+/// The note by Restart to update: what keeps running and what doesn't, from the board's
+/// `GET /restart` (`code_reviews`: the reviews a restart cuts short and starts again).
+pub fn restart_note(code_reviews: Option<usize>) -> String {
+    let reviews = match code_reviews {
+        Some(0) => String::new(),
+        Some(1) => ", and 1 code review starts again".into(),
+        Some(n) => format!(", and {n} code reviews start again"),
+        None => ", and code reviews running now start again".into(),
+    };
+    format!("Agents keep running in Midna. The board is offline for about 10 seconds{reviews}.")
+}
+
+/// How many code reviews a restart of the board would start again, from its `GET /restart`
+/// (None until it's been asked).
+static RESTART_REVIEWS: Mutex<Option<usize>> = Mutex::new(None);
+
+/// Keep what `GET /restart` said (`{"count": 2, "code_reviews": [...]}`), for [`restart_note`].
+pub fn learn_restart(v: Option<&Value>) {
+    let n = v.and_then(|v| v["count"].as_u64().or_else(|| v["code_reviews"].as_array().map(|a| a.len() as u64)));
+    if let Ok(mut g) = RESTART_REVIEWS.lock() {
+        *g = n.map(|n| n as usize);
+    }
+}
+
+pub fn restart_reviews() -> Option<usize> {
+    RESTART_REVIEWS.lock().ok().and_then(|g| *g)
+}
+
+/// Where the version being installed is written, so the relaunched app can say "Updated to X".
+fn updated_marker() -> PathBuf {
+    cache_dir().join("updated-to")
+}
+
+/// The update this launch finished, said once: "1.2.0" and when, if the app relaunched into it.
+pub fn take_updated() -> Option<(String, String)> {
+    let p = updated_marker();
+    let text = std::fs::read_to_string(&p).ok()?;
+    let _ = std::fs::remove_file(&p);
+    let (v, at) = text.trim().split_once('\n').unwrap_or((text.trim(), ""));
+    (v == VERSION).then(|| (v.to_string(), at.to_string()))
+}
+
+/// The update this launch finished and when ("1.2.0", "3:02 PM"), for Settings › System.
+static UPDATED: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+pub fn updated() -> Option<(String, String)> {
+    UPDATED.lock().ok().and_then(|g| g.clone())
+}
+
+pub fn set_updated(v: Option<(String, String)>) {
+    if let Ok(mut g) = UPDATED.lock() {
+        *g = v;
     }
 }
 
@@ -322,6 +413,7 @@ pub fn apply() -> Result<(), String> {
         _ => return Err("No update is ready.".into()),
     };
     set(State::Applying { version: version.clone() });
+    let _ = std::fs::write(updated_marker(), format!("{version}\n{}", now()));
     let done = swap_in(&staged, &installed).and_then(|_| {
         if let Err(e) = crate::install::restart_daemon(&installed) {
             crate::log::info(format!("restarting the daemon after the update: {e}"));
@@ -335,7 +427,8 @@ pub fn apply() -> Result<(), String> {
             .map_err(|e| format!("Couldn't relaunch: {e}"))
     });
     if let Err(e) = &done {
-        set(State::Failed { error: e.clone(), at: now() });
+        let _ = std::fs::remove_file(updated_marker());
+        set(State::Failed { stage: format!("Installing {version}"), error: e.clone(), at: now() });
     }
     done
 }
@@ -349,7 +442,7 @@ fn swap_in(staged: &Path, installed: &Path) -> Result<(), String> {
         // another volume: copy, keeping signatures and extended attributes
         if !Command::new("/usr/bin/ditto").arg(staged).arg(&side).status().is_ok_and(|s| s.success()) {
             let _ = std::fs::remove_dir_all(&side);
-            return Err(format!("Can't write next to {} (is the folder writable?)", installed.display()));
+            return Err(format!("Replacing the app: {} can’t be written to.", parent.display()));
         }
     }
     swap(&side, installed).inspect_err(|_| {
@@ -413,6 +506,21 @@ mod tests {
         assert_eq!(pick(&list, "0.1.1"), None);
         let draft = json!([{"tag_name": "v9.0.0", "draft": true, "prerelease": false, "assets": [{"name": "a.app.tar.gz", "browser_download_url": "u"}]}]);
         assert_eq!(pick(&draft, "0.1.0"), None);
+    }
+
+    #[test]
+    fn failures_name_their_stage() {
+        assert_eq!(State::failure_title("Checking for updates"), "Couldn’t check for updates");
+        assert_eq!(State::failure_title("Downloading 1.2.0"), "Couldn’t download 1.2.0");
+        assert_eq!(State::failure_title("Checking 1.2.0"), "Couldn’t check 1.2.0");
+        assert_eq!(State::failure_title("Installing 1.2.0"), "Couldn’t install 1.2.0");
+    }
+
+    #[test]
+    fn the_restart_note_promises_only_what_keeps_running() {
+        assert_eq!(restart_note(Some(0)), "Agents keep running in Midna. The board is offline for about 10 seconds.");
+        assert_eq!(restart_note(Some(2)), "Agents keep running in Midna. The board is offline for about 10 seconds, and 2 code reviews start again.");
+        assert!(restart_note(None).contains("code reviews running now start again"));
     }
 
     #[test]

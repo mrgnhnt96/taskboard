@@ -248,12 +248,12 @@ mod tests {
         w.update(cx, |m, _, _| assert_eq!(m.data.errs.goal.as_deref(), Some("Boom."))).unwrap();
         // While the board is down, only the banner speaks.
         rec.heal();
-        rec.fail("state", 0, "Can’t reach the task board server.");
+        rec.fail("state", 0, "Can’t reach the board.");
         rec.fail("goals/G1", 500, "should not be asked");
         w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
-            assert_eq!(m.down.as_deref(), Some("Can’t reach the task board server."));
+            assert_eq!(m.down.as_deref(), Some("Can’t reach the board."));
             assert_eq!(m.data.errs.goal.as_deref(), Some("Boom."), "unchanged: nothing else was fetched");
         })
         .unwrap();

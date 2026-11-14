@@ -274,6 +274,33 @@ fn tab_counts(split: &[(String, usize, usize)], picked: &str) -> (usize, usize) 
 /// Open the New idea dialog: the draft left earlier when there is one, else empty on the project
 /// the page shows (none when it shows them all).
 pub fn open_form(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    new_form(m, cx);
+    m.set_modal(Some(Modal::NewIdea), window, cx);
+    if let Some(f) = &m.ideas.form {
+        let to = f.title.focus.clone();
+        window.focus(&to, cx);
+    }
+}
+
+/// The draft typed before an update restart, put back unopened: ⌘N shows it.
+pub fn restore_draft(m: &mut MainWindow, title: &str, detail: &str, project: &str, cx: &mut Context<MainWindow>) {
+    new_form(m, cx);
+    if let Some(f) = &mut m.ideas.form {
+        f.title.set_text(title, cx);
+        f.detail.set_text(detail, cx);
+        if !project.is_empty() {
+            f.project = project.to_string();
+        }
+    }
+}
+
+/// The idea draft's words and project, while it holds anything typed.
+pub fn draft(m: &MainWindow, cx: &App) -> Option<(String, String, String)> {
+    let f = m.ideas.form.as_ref().filter(|f| has_text(f, cx))?;
+    Some((f.title.text(cx), f.detail.text(cx), f.project.clone()))
+}
+
+fn new_form(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     if m.ideas.form.is_none() {
         let project = match m.ideas.project() {
             "all" => String::new(),
@@ -296,11 +323,6 @@ pub fn open_form(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainW
         })
         .detach();
         m.ideas.form = Some(Form { title, detail, project, title_err: None, project_err: None, error: None, busy: false, refocus: false, shown: false });
-    }
-    m.set_modal(Some(Modal::NewIdea), window, cx);
-    if let Some(f) = &m.ideas.form {
-        let to = f.title.focus.clone();
-        window.focus(&to, cx);
     }
 }
 
