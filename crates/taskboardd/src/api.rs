@@ -1005,11 +1005,17 @@ fn close_sessions(app: &App, body: &Value) -> Result<Value> {
     })
 }
 
+/// Refused while Midna is down: a focus job would wait for it and the app would read it as done.
+const FOCUS_DOWN: &str = "Midna isn't running, so the board can't show that terminal.";
+
 fn focus_session(app: &App, id: &str) -> Result<Value> {
     app.db.tx(|| {
         let s = board::get_session(app, Some(id))?.filter(|s| s.s("status") != Some("gone"));
         if s.is_none() {
             return err(404, "That terminal isn't open any more.");
+        }
+        if !midna::up(app) {
+            return err(409, FOCUS_DOWN);
         }
         board::create_job(app, "focus", json!({"session": id}), None, "focus", None)?;
         Ok(json!({"ok": true}))
@@ -2161,12 +2167,18 @@ fn close_terminal(app: &App, id: i64, body: &Value) -> Result<Value> {
 fn focus_task(app: &App, id: i64) -> Result<Value> {
     let t = board::get_task(app, id)?;
     if board::live_session(app, &t)?.is_none() && t.s("status") == Some("needs") && has(t.s("question")) {
+        if !midna::up(app) {
+            return err(409, "Midna isn't running, so the board can't open a terminal.");
+        }
         resume(app, id, &json!({"mode": "ask"}))?;
         return Ok(json!({"ok": true, "opened": true}));
     }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let s = need_live(app, &t)?;
+        if !midna::up(app) {
+            return err(409, FOCUS_DOWN);
+        }
         board::create_job(app, "focus", json!({"session": s.v("id")}), Some(id), "focus", None)?;
         Ok(json!({"ok": true}))
     })

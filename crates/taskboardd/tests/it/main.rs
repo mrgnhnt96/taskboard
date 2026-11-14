@@ -16,6 +16,7 @@ mod backlog_match;
 mod backlog_models;
 mod backlog_tidy;
 mod beta5_prflow;
+mod board_signals;
 mod breaks;
 mod buried_questions;
 mod chain;

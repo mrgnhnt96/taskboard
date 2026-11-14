@@ -22,6 +22,7 @@ fn board() -> Board {
     std::fs::create_dir_all(&repo).unwrap();
     let app = App::for_tests(cfg);
     app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
     Board { app, _dir: dir }
 }
 
@@ -96,4 +97,26 @@ fn focus_with_no_terminal_and_no_question_still_refuses() {
     let t = b.task(fields!["status" => "working"]);
     let e = b.post(&format!("/tasks/T{t}/focus")).unwrap_err();
     assert_eq!((e.status, e.message.as_str()), (409, "This task has no open Midna terminal."));
+}
+
+#[test]
+fn focus_while_midna_is_down_is_refused_with_why() {
+    let b = board();
+    b.app.shared.lock().midna_seen_at = None;
+    let t = b.task(fields!["status" => "needs", "needs_reason" => "question", "question" => "Which option do you want?"]);
+    let e = b.post(&format!("/tasks/T{t}/focus")).unwrap_err();
+    assert_eq!((e.status, e.message.as_str()), (409, "Midna isn't running, so the board can't open a terminal."));
+    assert!(b.app.db.q1("SELECT * FROM jobs WHERE task_id = ?", p![t]).unwrap().is_none(), "nothing waits to open");
+
+    b.app.db.x("INSERT INTO sessions(id, name, status) VALUES('s1', 'One', 'working')", p![]).unwrap();
+    board::update_task(&b.app, t, fields!["status" => "working", "session_id" => "s1"]).unwrap();
+    let e = b.post(&format!("/tasks/T{t}/focus")).unwrap_err();
+    assert_eq!((e.status, e.message.as_str()), (409, "Midna isn't running, so the board can't show that terminal."));
+    let e = b.post("/sessions/s1/focus").unwrap_err();
+    assert_eq!((e.status, e.message.as_str()), (409, "Midna isn't running, so the board can't show that terminal."));
+    assert!(b.app.db.q1("SELECT * FROM jobs WHERE kind = 'focus'", p![]).unwrap().is_none(), "no focus job waits for Midna");
+
+    b.app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
+    assert_eq!(b.post("/sessions/s1/focus").unwrap()["ok"], true);
+    assert_eq!(b.post(&format!("/tasks/T{t}/focus")).unwrap()["ok"], true);
 }

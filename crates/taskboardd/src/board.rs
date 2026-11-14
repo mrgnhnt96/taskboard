@@ -389,6 +389,10 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
             if crate::stack::parent_id(t) == Some(n) {
                 w["stack"] = json!(true);
             }
+            // The other task's PR, so a wait on its merge can link to it.
+            if let Some(o) = other.as_ref().filter(|o| has(o.s("pr_url"))) {
+                w["pr"] = json!({"num": o.v("pr_num"), "url": o.v("pr_url"), "state": o.s("pr_state").unwrap_or("OPEN").to_uppercase()});
+            }
             Ok(w)
         }).collect::<Result<Vec<_>>>()?,
         "locks": crate::locks::names(t),
@@ -421,7 +425,13 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         // When this run began, which the Working time counts from; the first pickup on an older task.
         o.insert("picked_up_at".into(), opt_str(t.s("picked_up_at").or(t.s("started_at"))));
         // Whether Focus shows a terminal or opens a new one.
-        o.insert("terminal_open".into(), json!(live_session(app, t)?.is_some()));
+        let live = live_session(app, t)?;
+        o.insert("terminal_open".into(), json!(live.is_some()));
+        // When its terminal closed, while none is open.
+        o.insert("terminal_closed_at".into(), match live {
+            Some(_) => Value::Null,
+            None => get_session(app, t.s("session_id"))?.filter(|s| s.s("status") == Some("gone")).map_or(Value::Null, |s| s.v("gone_at")),
+        });
         o.insert("no_evidence".into(), t.v("no_evidence"));
         // The task's model and effort and what its terminal runs with [models].
         o.insert("model".into(), t.v("model"));
@@ -1014,6 +1024,14 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
     let c = counts_in(app, g.id(), &rows, Some(&order))?;
     // A goal stopped at a wave for the owner (a review stop, or a failed task): one line.
     let stopped = crate::waves::stopped_line(order.waves()?);
+    // The same stop with its kind (review, failed or held), so every page shows one stop state.
+    let stop = crate::waves::stop(order.waves()?);
+    // The tasks other goals share into this one, each with the goal it came from.
+    let mut shared = vec![];
+    for t in rows.iter().filter(|t| t.i("goal_id") != Some(g.id())) {
+        shared.push(json!({"id": t.id(), "ref": crate::human::task_ref(t), "title": t.v("title"), "status": t.v("status"),
+                           "failed": t.b("failed"), "from": goal_ref(find_goal(app, t.i("goal_id"))?.as_ref())}));
+    }
     let mut d = json!({
         "id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "outcome": g.v("outcome"),
         "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"), "start_at": crate::scheduled::goal_card(g),
@@ -1030,6 +1048,8 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
         "state": goal_state_line(&c),
         "peek": goal_peek(app, &rows)?,
         "stopped": stopped,
+        "stop": stop,
+        "shared_tasks": shared,
     });
     if let (Some(o), Some(c)) = (d.as_object_mut(), c.as_object()) {
         for (k, v) in c {
