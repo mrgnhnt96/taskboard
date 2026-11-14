@@ -6,7 +6,7 @@
 //! `render(m, window, cx)` function. They read `m.data` and act through [`MainWindow::post`].
 use crate::backend::{Backend, CallError};
 use crate::fingerprint::{self, Fingerprint, Stamped};
-use crate::fmt::{self, arr, b, s};
+use crate::fmt::{self, arr, b, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::{self, kit};
 use gpui_kit::prelude::*;
@@ -223,6 +223,8 @@ pub struct MainWindow {
     /// A popover menu, by key, and where it opens.
     pub menu: Option<(String, Point<Pixels>)>,
     pub toasts: Vec<Toast>,
+    /// The toast that offers back a New idea draft a link closed ("Reopen ⌘N").
+    pub idea_toast: Option<Instant>,
     /// Why the last `GET /state` failed (the "isn't answering" banner).
     pub down: Option<String>,
     pub focus: FocusHandle,
@@ -278,6 +280,10 @@ pub struct MainWindow {
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
+    /// A Restart Daemon from the menu is running.
+    pub daemon_busy: bool,
+    /// The page and name the menu bar was last built for.
+    menus_for: Option<(Page, String)>,
     /// How often the poll asks now ([`pace`]), and its loop.
     every: Duration,
     poller: Option<Task<()>>,
@@ -312,6 +318,7 @@ impl MainWindow {
             modal: None,
             menu: None,
             toasts: Vec::new(),
+            idea_toast: None,
             down: None,
             focus,
             modal_focus: cx.focus_handle(),
@@ -346,6 +353,8 @@ impl MainWindow {
             recent_goals: Vec::new(),
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
+            daemon_busy: false,
+            menus_for: None,
             every: pace(window),
             poller: None,
         };
@@ -460,8 +469,10 @@ impl MainWindow {
     pub fn go_back(&mut self, cx: &mut Context<Self>) {
         let here = self.here();
         while let Some(nav) = self.back.pop() {
-            if nav != here {
-                self.forward.push(here);
+            if nav != here && self.keeps(&nav) {
+                if self.keeps(&here) {
+                    self.forward.push(here);
+                }
                 return self.show(nav, cx);
             }
         }
@@ -471,11 +482,34 @@ impl MainWindow {
     pub fn go_forward(&mut self, cx: &mut Context<Self>) {
         let here = self.here();
         while let Some(nav) = self.forward.pop() {
-            if nav != here {
-                self.back.push(here);
+            if nav != here && self.keeps(&nav) {
+                if self.keeps(&here) {
+                    self.back.push(here);
+                }
                 return self.show(nav, cx);
             }
         }
+    }
+
+    /// Whether ⌘← or ⌘→ has somewhere to go.
+    pub fn can_go_back(&self) -> bool {
+        let here = self.here();
+        self.back.iter().any(|n| *n != here && self.keeps(n))
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        let here = self.here();
+        self.forward.iter().any(|n| *n != here && self.keeps(n))
+    }
+
+    /// Releases with no project's releases on only says so: it's no place to come back to.
+    fn keeps(&self, nav: &Nav) -> bool {
+        !(matches!(nav.page, Page::Releases | Page::ReleasesOf(_)) && self.releases_off())
+    }
+
+    /// No project has releases on (once the board has answered).
+    pub fn releases_off(&self) -> bool {
+        self.data.state.is_some() && ui::releases::projects_on(self.state()).is_empty()
     }
 
     /// A task's own "Back to T1": ⌘← when that's the place before this one. False when it isn't.
@@ -500,7 +534,7 @@ impl MainWindow {
     /// A fresh visit: keep this place for ⌘← and drop the forward ones.
     fn remember(&mut self) {
         let here = self.here();
-        if self.back.last() != Some(&here) {
+        if self.back.last() != Some(&here) && self.keeps(&here) {
             self.back.push(here);
         }
         self.forward.clear();
@@ -653,6 +687,24 @@ impl MainWindow {
         self.refresh(cx);
     }
 
+    /// A link from outside (a notification, `tb`): a dialog closes first, keeping a New idea
+    /// draft for ⌘N, then the window comes up showing what the link names.
+    pub fn arrive(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() {
+            let draft = matches!(self.modal, Some(ui::modals::Modal::NewIdea))
+                && self.ideas.form.as_ref().is_some_and(|f| !f.title.text(cx).trim().is_empty() || !f.detail.text(cx).trim().is_empty());
+            self.menu = None;
+            self.set_modal(None, window, cx);
+            if draft {
+                let at = Instant::now();
+                self.idea_toast = Some(at);
+                self.show_toast(Toast { text: "Idea draft kept".into(), err: false, at, undo: None }, cx);
+            }
+        }
+        window.activate_window();
+        self.open_link(url, cx);
+    }
+
     /// A `taskboard://task/T12` / `goal/G3` / `release/R2` / `session/<id>` link (a clicked notification), or
     /// a web-board route after a `#` (`tasks#/goals/G3`, `#/?task=T6`), as `tb` prints them.
     /// `task/T12?do=done|cancel` (a terminal link menu) opens the task with its confirm over it.
@@ -699,8 +751,10 @@ impl MainWindow {
                 }
                 self.go(Page::Projects, cx);
             }
-            ("release" | "releases", r) if !r.is_empty() && !ui::releases::projects_on(self.state()).is_empty() => ui::releases::open(self, &r.to_uppercase(), cx),
-            ("releases", _) if !ui::releases::projects_on(self.state()).is_empty() => self.go(Page::Releases, cx),
+            // Before the board's first answer too, as when a link launches the app: Releases says
+            // why it's empty when releases are off.
+            ("release" | "releases", r) if !r.is_empty() && !self.releases_off() => ui::releases::open(self, &r.to_uppercase(), cx),
+            ("release" | "releases", _) => self.go(Page::Releases, cx),
             _ => self.go(Page::Board, cx),
         }
     }
@@ -723,6 +777,18 @@ impl MainWindow {
         self.modal = modal;
         self.sync_modal_focus(window, cx);
         cx.notify();
+    }
+
+    /// Rebuilds the menu bar when the page or its name changes: View checks the page and Window
+    /// names it. Greyed items need no rebuild; macOS asks the window each time a menu opens.
+    fn sync_menus(&mut self, cx: &mut Context<Self>) {
+        let now = (self.page.clone(), self.page_name());
+        if self.menus_for.as_ref() == Some(&now) {
+            return;
+        }
+        let fake = self.backend.label() == "fake";
+        self.menus_for = Some(now.clone());
+        cx.defer(move |cx| cx.set_menus(crate::menu_bar::menus(fake, &now.0, &now.1)));
     }
 
     /// Moves focus into a dialog that just opened, or back out of one that just closed.
@@ -807,9 +873,31 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// The window title (`renderAll`): the page's name, with the needs-you count in front.
+    /// The window title: the page's name, with the needs-you count in front.
     pub fn title(&self) -> String {
-        page_title(&self.page, self.needs_count())
+        page_title(&self.page_name(), self.needs_count())
+    }
+
+    /// The page's name: a goal's or an idea's own title once the board has sent it.
+    pub fn page_name(&self) -> String {
+        match &self.page {
+            Page::Board => "Needs you".into(),
+            Page::Projects => "Projects".into(),
+            Page::Goals => "Goals".into(),
+            Page::Goal(r) => {
+                let own = self.data.goal.as_ref().filter(|g| fmt::ref_of(g, "G") == *r).map(|g| s(g, "title").to_string());
+                let row = || self.data.goals.iter().find(|g| fmt::ref_of(g, "G") == *r).map(|g| s(g, "title").to_string());
+                own.or_else(row).filter(|t| !t.is_empty()).unwrap_or_else(|| "Goals".into())
+            }
+            Page::Backlog => "Backlog".into(),
+            Page::Ideas => "Ideas".into(),
+            Page::Idea(r) => {
+                self.data.idea.as_ref().filter(|i| fmt::ref_of(i, "I") == *r).map(|i| s(i, "title").to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| "Ideas".into())
+            }
+            Page::Days | Page::Recap => "Days".into(),
+            Page::Review => "Review".into(),
+            Page::Releases | Page::ReleasesOf(_) => "Releases".into(),
+        }
     }
 
     /// Esc closes only the top layer: an open menu, then a dialog, then a popover in the panel,
@@ -862,7 +950,42 @@ impl MainWindow {
 
     /// A terminal link (a task's, ⌘K's, a notification's): bring that terminal up in Midna.
     pub fn show_in_midna(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.post(format!("sessions/{id}/focus"), json!({}), cx, |m, _, cx| m.toast("Showing it in Midna", false, cx));
+        let r = self.data.sessions.as_ref().and_then(|v| arr(v, "sessions").iter().find(|x| s(x, "id") == id).and_then(|x| opt_s(x, "task_ref")).map(str::to_string));
+        self.focus_in_midna(format!("sessions/{id}/focus"), r, cx);
+    }
+
+    /// Bring a terminal up in Midna. With Midna down the board refuses; the toast names the task.
+    pub fn focus_in_midna(&mut self, path: String, r: Option<String>, cx: &mut Context<Self>) {
+        self.post_or(path, json!({}), cx, |m, _, cx| m.toast("Showing it in Midna", false, cx), move |m, e, cx| {
+            let text = match (e.status == 409 && e.message.starts_with("Midna isn"), r) {
+                (true, Some(r)) => format!("Midna isn’t running, so it can’t show {r}’s terminal."),
+                (true, None) => "Midna isn’t running, so it can’t show that terminal.".to_string(),
+                (false, _) => e.message,
+            };
+            m.toast(text, true, cx)
+        });
+    }
+
+    /// The menu's Restart Daemon: restart the installed app's daemon off the UI thread.
+    pub fn restart_daemon(&mut self, cx: &mut Context<Self>) {
+        let Some(bundle) = crate::install::installed_bundle() else { return };
+        if self.daemon_busy {
+            return;
+        }
+        self.daemon_busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { crate::install::restart_daemon(&bundle) }).await;
+            let _ = this.update(cx, |m, cx| {
+                m.daemon_busy = false;
+                match r {
+                    Ok(()) => m.toast("Daemon restarted", false, cx),
+                    Err(e) => m.toast(e, true, cx),
+                }
+                m.refresh(cx);
+            });
+        })
+        .detach();
     }
 
     /// Like [`post`](Self::post) with the caller handling the error (inline notes in forms).
@@ -1534,9 +1657,8 @@ impl Got {
             m.goals_loaded = true;
         }
         if is_releases(&m.page) {
-            if m.data.state.is_some() && ui::releases::projects_on(m.state()).is_empty() {
-                m.page = Page::Board;
-            } else if m.data.state.is_some() && ui::releases::shown(m.state(), &m.page).is_empty() {
+            // With every project's releases off the page stays and says so.
+            if m.data.state.is_some() && !m.releases_off() && ui::releases::shown(m.state(), &m.page).is_empty() {
                 // That project's releases were turned off.
                 m.page = Page::Releases;
             }
@@ -1661,7 +1783,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward, FocusNext, FocusPrev]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, GoIdeas, GoReleases, NewIdea, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward, FocusNext, FocusPrev]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -1672,12 +1794,18 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-1", GoBoard, Some("MainWindow")),
         KeyBinding::new("cmd-2", GoProjects, Some("MainWindow")),
         KeyBinding::new("cmd-3", GoGoals, Some("MainWindow")),
-        KeyBinding::new("cmd-5", GoBacklog, Some("MainWindow")),
+        KeyBinding::new("cmd-4", GoBacklog, Some("MainWindow")),
+        KeyBinding::new("cmd-5", GoIdeas, Some("MainWindow")),
         KeyBinding::new("cmd-6", GoDays, Some("MainWindow")),
+        KeyBinding::new("cmd-7", GoReleases, Some("MainWindow")),
         KeyBinding::new("cmd-k", Search, Some("MainWindow")),
+        KeyBinding::new("cmd-n", NewIdea, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
         KeyBinding::new("cmd-shift-c", CopyRef, Some("MainWindow")),
         KeyBinding::new("cmd-c", CopySelection, Some("MainWindow")),
+        // ⌘[ first: the menu shows the first key.
+        KeyBinding::new("cmd-[", NavBack, Some("MainWindow")),
+        KeyBinding::new("cmd-]", NavForward, Some("MainWindow")),
         KeyBinding::new("cmd-left", NavBack, Some("MainWindow")),
         KeyBinding::new("cmd-right", NavForward, Some("MainWindow")),
         // In a text field ⌘← and ⌘→ move the cursor to the line's ends instead.
@@ -1709,6 +1837,12 @@ impl MainWindow {
             self.go(Page::Days, cx)
         } else if a.is::<GoGoals>() {
             self.go(Page::Goals, cx)
+        } else if a.is::<GoIdeas>() {
+            self.go(Page::Ideas, cx)
+        } else if a.is::<GoReleases>() {
+            self.go(Page::Releases, cx)
+        } else if a.is::<NewIdea>() {
+            self.new_idea(window, cx)
         } else if a.is::<CopyRef>() {
             copy_ref(self, cx)
         } else if a.is::<Search>() {
@@ -1717,6 +1851,18 @@ impl MainWindow {
             self.go_back(cx)
         } else if a.is::<NavForward>() {
             self.go_forward(cx)
+        }
+    }
+
+    /// New idea: a draft left typed in comes back as it was; otherwise a fresh form.
+    pub fn new_idea(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = self.ideas.form.as_ref().filter(|f| !f.busy && (!f.title.text(cx).trim().is_empty() || !f.detail.text(cx).trim().is_empty()));
+        match draft.map(|f| f.title.focus.clone()) {
+            Some(focus) => {
+                self.set_modal(Some(ui::modals::Modal::NewIdea), window, cx);
+                window.focus(&focus, cx);
+            }
+            None => ui::ideas::open_form(self, window, cx),
         }
     }
 
@@ -1735,6 +1881,7 @@ impl Render for MainWindow {
         self.sync_modal_focus(window, cx);
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
+        self.sync_menus(cx);
 
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
@@ -1745,6 +1892,7 @@ impl Render for MainWindow {
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),
             Page::Recap => ui::recap::render(self, window, cx),
+            Page::Releases | Page::ReleasesOf(_) if self.releases_off() => releases_off_view(&t),
             Page::Releases | Page::ReleasesOf(_) => ui::releases::render(self, window, cx),
             Page::Ideas => ui::ideas::render(self, window, cx),
             Page::Idea(_) => ui::idea::render(self, cx),
@@ -1757,24 +1905,14 @@ impl Render for MainWindow {
         let modal = self.modal.is_some().then(|| ui::modals::render(self, window, cx));
         let hours_menu = ui::hours::render_menu(self, window, cx);
 
-        div()
+        let root = div()
             .id("main")
             .key_context("MainWindow")
             .track_focus(&self.focus)
             .on_action(cx.listener(|m, _: &CloseOverlay, window, cx| m.escape(window, cx)))
             .on_action(cx.listener(|m, a: &FocusNext, window, cx| m.on_focus_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &FocusPrev, window, cx| m.on_focus_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &GoBoard, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &GoBacklog, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &GoProjects, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &GoDays, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &GoGoals, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
-            .on_action(cx.listener(|m, a: &CopyRef, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(|_: &CopySelection, window, cx| ui::select::copy(window, cx))
-            .on_action(cx.listener(|m, a: &Search, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &NavBack, window, cx| m.on_page_key(a, window, cx)))
-            .on_action(cx.listener(|m, a: &NavForward, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &FocusPrev, window, cx| m.on_focus_key(a, window, cx)));
+        crate::menu_bar::on_actions(self, root, cx)
             .relative()
             .flex()
             .flex_col()
@@ -1825,19 +1963,37 @@ impl Render for MainWindow {
 
 // ------------------------------------------------------------------ chrome view models
 
-/// `renderAll`'s title: the page's name, with "(n) " in front while tasks need you.
-pub fn page_title(page: &Page, needs: i64) -> String {
-    let base = match page {
-        Page::Goal(_) | Page::Goals => "Goals",
-        Page::Projects => "Projects",
-        Page::Backlog => "Backlog",
-        Page::Days | Page::Recap => "Days",
-        Page::Review => "Review",
-        Page::Releases | Page::ReleasesOf(_) => "Releases",
-        Page::Ideas | Page::Idea(_) => "Ideas",
-        Page::Board => "Task board",
-    };
-    if needs > 0 { format!("({needs}) {base}") } else { base.to_string() }
+/// The window title: the page's name and the app's, with "(n) " in front while tasks need you.
+pub fn page_title(name: &str, needs: i64) -> String {
+    let base = format!("{name} — Task board");
+    if needs > 0 { format!("({needs}) {base}") } else { base }
+}
+
+/// Releases with no project's releases on: why the page is empty, and how to turn them on.
+fn releases_off_view(t: &Theme) -> AnyElement {
+    div()
+        .id("releases-page")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .gap(px(20.))
+        .px(px(28.))
+        .pt(px(22.))
+        .line_height(relative(1.4))
+        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Releases"))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.))
+                .py(px(48.))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Releases are off"))
+                .child(div().text_size(px(13.)).text_color(t.muted).child("No project has releases on. Turn them on with"))
+                .child(div().font_family(t.mono_font.clone()).text_size(px(13.)).child("tb project set <name> --releases on")),
+        )
+        .into_any_element()
 }
 
 /// One banner line (`renderBanner`) or alerts-dialog row: what it says and its buttons.
@@ -2414,16 +2570,12 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn title_matches_web() {
-        golden("chrome").only("title").check(|i| {
-            let page = match i["page"].as_str().unwrap() {
-                "goal" => Page::Goal("G1".into()),
-                "backlog" => Page::Backlog,
-                _ => Page::Board,
-            };
-            json!(page_title(&page, i["needs"].as_i64().unwrap()))
-        });
+    fn the_title_names_the_page_and_the_app() {
+        assert_eq!(page_title("Needs you", 0), "Needs you — Task board");
+        assert_eq!(page_title("Needs you", 3), "(3) Needs you — Task board");
+        assert_eq!(page_title("Sign-in with passkeys", 1), "(1) Sign-in with passkeys — Task board");
     }
+
 
     #[gpui_kit::test]
     fn dismissing_alerts_posts_like_the_web(cx: &mut gpui_kit::TestAppContext) {
@@ -3066,7 +3218,8 @@ mod tests {
         let (w, rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
             m.open_link("releases", cx);
-            assert_eq!(m.page, Page::Board);
+            assert_eq!(m.page, Page::Releases, "it stays and says releases are off");
+            assert!(m.releases_off());
         })
         .unwrap();
         rec.board().post("projects/webapp", json!({"releases": true})).unwrap();
@@ -3098,6 +3251,107 @@ mod tests {
         rec.board().post("projects/webapp", json!({"releases": false})).unwrap();
         w.update(cx, |m: &mut MainWindow, _, cx| m.refresh(cx)).unwrap();
         settle(cx);
-        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.page, Page::Board)).unwrap();
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert_eq!(m.page, Page::ReleasesOf("webapp".into()), "the page stays");
+            assert!(m.releases_off(), "and says releases are off");
+        })
+        .unwrap();
+    }
+
+    fn releases_off(m: &mut MainWindow) {
+        if let Some(st) = m.data.state.as_mut().map(std::rc::Rc::make_mut) {
+            st["releases"] = json!([]);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_number_keys_follow_the_sidebar(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| window.focus(&m.focus, cx)).unwrap();
+        for (key, page) in [("cmd-4", Page::Backlog), ("cmd-5", Page::Ideas), ("cmd-6", Page::Days), ("cmd-7", Page::Releases), ("cmd-2", Page::Projects)] {
+            cx.simulate_keystrokes(w.into(), key);
+            settle(cx);
+            w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.page, page, "{key}")).unwrap();
+        }
+        cx.simulate_keystrokes(w.into(), "cmd-[");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.page, Page::Days, "⌘[ goes back, past Releases while it's off")).unwrap();
+        cx.simulate_keystrokes(w.into(), "cmd-]");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.page, Page::Projects, "⌘] goes forward")).unwrap();
+        cx.simulate_keystrokes(w.into(), "cmd-n");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert!(matches!(m.modal, Some(ui::modals::Modal::NewIdea)), "⌘N opens New idea")).unwrap();
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            let f = m.ideas.form.as_ref().unwrap();
+            f.title.set_text("Dark mode", cx);
+            window.focus(&f.detail.focus, cx);
+        })
+        .unwrap();
+        {
+            use gpui_kit::AppContext as _;
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+        cx.simulate_keystrokes(w.into(), "cmd-n");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            let f = m.ideas.form.as_ref().unwrap();
+            assert_eq!(f.title.text(cx), "Dark mode", "⌘N again keeps the draft");
+            assert!(f.title.focus.is_focused(window), "and puts focus in Title");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn with_releases_off_back_and_forward_skip_releases(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            releases_off(m);
+            assert!(m.releases_off());
+            m.go(Page::Releases, cx);
+            assert_eq!(m.page, Page::Releases, "the page stays and says why");
+            m.go(Page::Projects, cx);
+            m.go_back(cx);
+            assert_eq!(m.page, Page::Board, "Back skips Releases");
+            assert!(!m.can_go_back());
+            m.go_forward(cx);
+            assert_eq!(m.page, Page::Projects, "so does Forward");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_release_link_before_the_board_answers_lands_on_releases(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.data.state = None;
+            m.open_link("taskboard://release/R1", cx);
+            assert!(matches!(m.page, Page::Releases | Page::ReleasesOf(_)), "not Needs you: {:?}", m.page);
+            releases_off(m);
+            m.go(Page::Board, cx);
+            m.open_link("taskboard://release/R1", cx);
+            assert_eq!(m.page, Page::Releases, "with releases off it lands where it says why");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_link_closes_a_dialog_and_keeps_the_idea_draft(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            ui::ideas::open_form(m, window, cx);
+            m.ideas.form.as_ref().unwrap().title.set_text("Dark mode", cx);
+            m.arrive("taskboard://goal/G1", window, cx);
+            assert!(m.modal.is_none(), "the dialog closes first");
+            assert!(m.idea_toast.is_some_and(|at| m.toasts.iter().any(|t| t.at == at)), "a toast offers the draft back");
+            m.new_idea(window, cx);
+            assert!(matches!(m.modal, Some(ui::modals::Modal::NewIdea)));
+            assert_eq!(m.ideas.form.as_ref().unwrap().title.text(cx), "Dark mode", "the draft is kept");
+        })
+        .unwrap();
     }
 }

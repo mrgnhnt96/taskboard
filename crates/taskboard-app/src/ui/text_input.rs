@@ -199,6 +199,32 @@ impl TextField {
         }
     }
 
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.selected = 0..self.content.len();
+        self.reversed = false;
+        cx.notify();
+    }
+
+    /// Copies (or cuts) the selection. False when there's nothing it may copy.
+    fn copy(&mut self, cut: bool, cx: &mut Context<Self>) -> bool {
+        if self.secret || self.selected.is_empty() {
+            return false;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(self.content[self.selected.clone()].to_string()));
+        if cut {
+            let r = self.selected.clone();
+            self.replace(r, "", cx);
+        }
+        true
+    }
+
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(t) = cx.read_from_clipboard().and_then(|i| i.text()) {
+            let r = self.selected.clone();
+            self.replace(r, t.trim_end_matches(['\r', '\n']), cx);
+        }
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
@@ -269,27 +295,13 @@ impl TextField {
                 let to = if m.alt { self.next_word(c) } else { self.next_char(c) };
                 self.delete_to(to, cx);
             }
-            "a" if m.platform => {
-                self.selected = 0..len;
-                self.reversed = false;
-                cx.notify();
-            }
+            "a" if m.platform => self.select_all(cx),
             "c" | "x" if m.platform => {
-                if self.secret || self.selected.is_empty() {
+                if !self.copy(ks.key == "x", cx) {
                     return; // let the parent's copy (if any) run
                 }
-                cx.write_to_clipboard(ClipboardItem::new_string(self.content[self.selected.clone()].to_string()));
-                if ks.key == "x" {
-                    let r = self.selected.clone();
-                    self.replace(r, "", cx);
-                }
             }
-            "v" if m.platform => {
-                if let Some(t) = cx.read_from_clipboard().and_then(|i| i.text()) {
-                    let r = self.selected.clone();
-                    self.replace(r, t.trim_end_matches(['\r', '\n']), cx);
-                }
-            }
+            "v" if m.platform => self.paste(cx),
             _ => return, // not ours: typing goes to the IME handler, the rest to the parent
         }
         let _ = window;
@@ -543,6 +555,17 @@ impl Render for TextField {
             .when(self.wrap, |d| d.on_action(cx.listener(Self::newline)))
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::on_key))
+            // The Edit menu's items, live while this field has focus (Cut and Copy with a selection).
+            .when(!self.secret && !self.selected.is_empty(), |d| {
+                d.on_action(cx.listener(|f, _: &crate::menu_bar::EditCut, _, cx| {
+                    f.copy(true, cx);
+                }))
+                .on_action(cx.listener(|f, _: &crate::app::CopySelection, _, cx| {
+                    f.copy(false, cx);
+                }))
+            })
+            .on_action(cx.listener(|f, _: &crate::menu_bar::EditPaste, _, cx| f.paste(cx)))
+            .on_action(cx.listener(|f, _: &crate::menu_bar::EditSelectAll, _, cx| f.select_all(cx)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|f, ev: &MouseDownEvent, window, cx| {

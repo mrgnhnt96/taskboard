@@ -29,6 +29,7 @@ mod fmt;
 mod hooks;
 mod install;
 mod log;
+mod menu_bar;
 mod prefs;
 mod settings;
 #[cfg(test)]
@@ -108,48 +109,9 @@ fn main() {
                 let _ = w.update(cx, |_, window, _| window.remove_window());
             }
         });
-        cx.set_menus(vec![
-            Menu {
-                name: "Task board".into(),
-                items: vec![
-                    MenuItem::action("Settings…", OpenSettings),
-                    MenuItem::separator(),
-                    MenuItem::action("Hide Task board", Hide),
-                    MenuItem::action("Hide Others", HideOthers),
-                    MenuItem::action("Show All", ShowAll),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit Task board", Quit),
-                ],
-                disabled: false,
-            },
-            Menu {
-                name: "File".into(),
-                items: if backend.label() == "fake" {
-                    vec![MenuItem::action("Close Window", CloseWindow)]
-                } else {
-                    vec![MenuItem::action("Close Window", CloseWindow), MenuItem::separator(), MenuItem::action("Export for Debugging…", ExportForDebugging)]
-                },
-                disabled: false,
-            },
-            Menu {
-                name: "View".into(),
-                items: vec![
-                    MenuItem::action("Needs you", app::GoBoard),
-                    MenuItem::action("Projects", app::GoProjects),
-                    MenuItem::action("Goals", app::GoGoals),
-                    MenuItem::action("Backlog", app::GoBacklog),
-                    MenuItem::action("Days", app::GoDays),
-                    MenuItem::separator(),
-                    MenuItem::action("Search…", app::Search),
-                    MenuItem::separator(),
-                    MenuItem::action("Back", app::NavBack),
-                    MenuItem::action("Forward", app::NavForward),
-                    MenuItem::separator(),
-                    MenuItem::action("Refresh", app::Refresh),
-                ],
-                disabled: false,
-            },
-        ]);
+        menu_bar::bind_keys(cx);
+        menu_bar::on_app_actions(backend.label() == "fake", cx);
+        cx.set_menus(menu_bar::menus(backend.label() == "fake", &app::Page::Board, "Needs you"));
         // Installed: register the daemon's LaunchAgent and link `tb` (off the UI thread).
         install::start(backend.label());
         // Installed release builds: check GitHub for a newer release now and then.
@@ -177,7 +139,7 @@ fn main() {
                 cx.update(|cx| {
                     cx.activate(true);
                     for u in &urls {
-                        let _ = handle.update(cx, |m, _, cx| m.open_link(u, cx));
+                        let _ = handle.update(cx, |m, window, cx| m.arrive(u, window, cx));
                     }
                 });
             }

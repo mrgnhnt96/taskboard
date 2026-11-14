@@ -227,7 +227,7 @@ fn tab_stays_inside_an_open_dialog(cx: &mut TestAppContext) {
 fn page_keys_pause_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
     open_alerts(w, cx);
-    cx.simulate_keystrokes(w.into(), "cmd-5");
+    cx.simulate_keystrokes(w.into(), "cmd-4");
     parity::settle(cx);
     cx.simulate_keystrokes(w.into(), "cmd-k");
     parity::settle(cx);
@@ -238,7 +238,7 @@ fn page_keys_pause_while_a_dialog_is_open(cx: &mut TestAppContext) {
     .unwrap();
     cx.simulate_keystrokes(w.into(), "escape");
     redraw(w, cx);
-    cx.simulate_keystrokes(w.into(), "cmd-5");
+    cx.simulate_keystrokes(w.into(), "cmd-4");
     parity::settle(cx);
     w.update(cx, |m, _, _| assert!(m.page == Page::Backlog, "once it closes, they work again")).unwrap();
 }
