@@ -215,6 +215,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_NEEDS").is_ok() {
             seed_needs(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_RECAPS").is_ok() {
+            seed_recaps(&board);
+        }
         if std::env::var("TASKBOARD_FAKE_QUIET").is_ok() {
             let _ = taskboardd::dispatch::add_alert_keyed(&board, "T5: no update for 40 minutes", Some(5), None, "quiet:T5");
         }
@@ -390,6 +393,30 @@ fn seed_plan_review(board: &Board) {
         taskboardd::fields!["goal_id" => 1, "reason" => "new", "source" => "Alex", "model" => "small", "started_at" => at.clone(),
                             "finished_at" => at, "findings" => findings.to_string()],
     );
+}
+
+/// Dev (`TASKBOARD_FAKE_RECAPS=1`): this week's and this month's recaps, unseen. The week's page
+/// holds every component its facts can fill; the month's is the default page.
+fn seed_recaps(board: &Board) {
+    use taskboardd::{recap, recap_page};
+    let today = chrono::Local::now().date_naive();
+    if let Ok(month) = recap::save(board, "monthly", today) {
+        let _ = recap_page::compose(board, month, None);
+    }
+    let Ok(week) = recap::save(board, "weekly", today) else { return };
+    let Ok(writing) = recap_page::compose(board, week, None) else { return };
+    let Ok(one) = api::dispatch(board, "GET", &format!("/recaps/{week}"), &Query::new(), &json!({})) else { return };
+    let facts = &one["facts"];
+    let mut components = Vec::new();
+    for c in recap_page::CATALOG {
+        let spec = json!({"summary": "-", "components": [{"component": c.id, "why": "Every component."}]});
+        if let Ok(p) = recap_page::check(&spec, facts) {
+            components.extend(p["components"].as_array().cloned().unwrap_or_default());
+        }
+    }
+    let mut writing = writing;
+    writing["page"]["components"] = json!(components);
+    let _ = board.db.x("UPDATE recaps SET writing = ? WHERE id = ?", taskboardd::p![writing.to_string(), week]);
 }
 
 /// Dev (`TASKBOARD_FAKE_RELEASES=1`): releases on for both projects, two months of webapp releases

@@ -857,6 +857,7 @@ fn build_state_board(app: &App, query: &Query) -> Result<Value> {
     counts.insert("open_issues".into(), json!(open_issues.len()));
     counts.insert("untriaged".into(), json!(app.db.count("SELECT COUNT(*) FROM issues WHERE state = 'open' AND goal_id IS NULL", p![])?));
     counts.insert("waiting".into(), json!(crate::home::waiting_count(app)?));
+    counts.insert("recaps_unseen".into(), json!(app.db.count("SELECT COUNT(*) FROM recaps WHERE seen_at IS NULL", p![])?));
     let mut planned = vec![];
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'planned' ORDER BY goal_id, position, id", p![])? {
         if project_match(t.s("project"), project) && task_goal_match(app, &t, goal)? {
