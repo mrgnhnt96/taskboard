@@ -8,6 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::{fields, p};
+use taskboardd::util::RowExt;
 
 struct Board {
     app: Arc<App>,
@@ -73,8 +74,12 @@ fn talking_an_idea_over_opens_claude_in_its_checkout_with_all_of_it() {
 
     let (_, a) = b.job(&b.post(&format!("/ideas/{i}/talk"), json!({"question": "Last write wins?"})));
     assert_eq!(a["draft"], "Help me decide this one: Last write wins? (Yes / Ask)", "the question is typed in, not sent");
+    let round = b.app.db.q1("SELECT MAX(id) AS r FROM idea_rounds", p![]).unwrap().unwrap().i("r").unwrap();
+    let c = a["context"].as_str().unwrap();
+    assert!(c.contains(&format!("tb idea note {i} --round {round} --question conflicts")), "its answer links back to the question: {c}");
     let (_, a) = b.job(&b.post(&format!("/ideas/{i}/talk"), json!({"question": "Which store?"})));
     assert_eq!(a["draft"], "Help me decide this one: Which store?");
+    assert!(!a["context"].as_str().unwrap().contains("--question"), "a report from before blocks has no question ids");
     let (code, _) = b.try_post(&format!("/ideas/{i}/talk"), json!({"question": "Who asked this?"})).unwrap_err();
     assert_eq!(code, 404, "only a question the reports ask");
 

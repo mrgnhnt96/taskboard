@@ -68,6 +68,8 @@ pub struct Shared {
     pub tidying: bool,
     /// The ideas Claude is digging into now (`dig.rs`).
     pub digging: HashSet<i64>,
+    /// The dig rounds stopped from the app while Claude was still reading (`dig::stop`).
+    pub dig_stop: HashSet<i64>,
     /// The ideas Claude is planning into goals now (`idea_plan.rs`).
     pub idea_planning: HashSet<i64>,
     /// The goals whose plans Claude is reviewing now, and those changed since (`plan_review.rs`).

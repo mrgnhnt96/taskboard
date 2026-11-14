@@ -164,7 +164,9 @@ fn answering_a_rounds_question_keeps_one_note_per_question() {
     assert_eq!(v["notes"][0]["text"], "Answered “Which relay?”: Push");
 
     assert_eq!(answer("relay", "Carrier pigeon").unwrap_err().0, 400, "only one of its choices");
-    assert_eq!(answer("open", "Yes").unwrap_err().0, 400, "a question without choices isn't tapped");
+    let v = answer("open", "  Only on wifi  ").unwrap();
+    assert_eq!(v["rounds"][0]["answers"]["open"], "Only on wifi", "a question without choices is answered in words");
+    assert_eq!(answer("open", " ").unwrap_err().0, 400);
     assert_eq!(answer("nope", "Host").unwrap_err().0, 404);
     assert_eq!(try_call(&app, "POST", &path, &[], json!({"round": round + 1, "question": "relay", "answer": "Host"})).unwrap_err().0, 404);
     assert_eq!(try_call(&app, "POST", &path, &[], json!({"question": "relay", "answer": "Host"})).unwrap_err().0, 400);
@@ -253,4 +255,72 @@ fn many_ideas_come_a_page_at_a_time_in_the_pages_order() {
     let two = try_call(&app, "GET", "/ideas", &[("project", "all"), ("state", "all"), ("ids", "I3,7"), ("limit", "200")], json!({})).unwrap();
     let refs: Vec<&str> = two["ideas"].as_array().unwrap().iter().map(|i| i["ref"].as_str().unwrap()).collect();
     assert_eq!(refs.len(), 2, "ids picks out those ideas: {refs:?}");
+}
+
+#[test]
+fn a_note_can_answer_a_reports_question() {
+    let (_d, app) = new_board();
+    let r = idea(&app, "webapp", "Offline mode", "");
+    let id: i64 = r[1..].parse().unwrap();
+    let report = json!({"verdict": "partly", "why": "Mostly", "blocks": [
+        {"type": "question", "id": "relay", "text": "Which relay?", "choices": ["Host", "Push"]},
+        {"type": "question", "id": "open", "text": "Anything else?", "choices": []}]});
+    let round = app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => report.to_string()]).unwrap();
+    let path = format!("/ideas/{r}/note");
+    let note = |b: Value| try_call(&app, "POST", &path, &[], b);
+
+    let v = note(json!({"text": "Host it ourselves, push only as a fallback", "round": round, "question": "relay"})).unwrap();
+    assert_eq!(v["rounds"][0]["answers"], json!({"relay": "Host it ourselves, push only as a fallback"}),
+               "a talk's answer needn't be one of the choices");
+    assert_eq!(v["notes"][0]["text"], "Answered “Which relay?”: Host it ourselves, push only as a fallback");
+    assert_eq!(v["questions"], 1);
+    let v = note(json!({"text": "Nothing else", "round": round.to_string(), "question": "open"})).unwrap();
+    assert_eq!(v["rounds"][0]["answers"]["open"], "Nothing else");
+    assert_eq!((v["questions"].clone(), v["notes"].as_array().unwrap().len()), (json!(0), 2));
+
+    assert_eq!(note(json!({"text": "x", "round": round, "question": "nope"})).unwrap_err().0, 404);
+    assert_eq!(note(json!({"text": "x", "question": "relay"})).unwrap_err().0, 400, "a question needs its round");
+    let v = note(json!({"text": "Plain note"})).unwrap();
+    assert_eq!(v["notes"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn open_questions_are_counted_and_can_come_first() {
+    let (_d, app) = new_board();
+    let asks = idea(&app, "webapp", "Offline mode", "");
+    let quiet = idea(&app, "webapp", "Dark mode", "");
+    let id: i64 = asks[1..].parse().unwrap();
+    let report = json!({"verdict": "partly", "why": "Mostly", "blocks": [
+        {"type": "question", "id": "relay", "text": "Which relay?", "choices": ["Host", "Push"]},
+        {"type": "question", "id": "open", "text": "Anything else?", "choices": []}]});
+    let round = app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => report.to_string()]).unwrap();
+    app.db.x("UPDATE ideas SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?", taskboardd::p![id]).unwrap();
+
+    let count = |r: &str| call(&app, "GET", &format!("/ideas/{r}"), json!({}))["questions"].clone();
+    assert_eq!((count(&asks), count(&quiet)), (json!(2), json!(0)));
+    assert_eq!(listed(&app, &[("project", "webapp")]), [quiet.clone(), asks.clone()], "newest change first by default");
+    assert_eq!(listed(&app, &[("project", "webapp"), ("first", "questions")]), [asks.clone(), quiet.clone()]);
+    let page = |before: Option<&str>| {
+        let mut q = vec![("project", "webapp"), ("first", "questions"), ("limit", "1")];
+        if let Some(b) = before {
+            q.push(("before", b));
+        }
+        try_call(&app, "GET", "/ideas", &q, json!({})).unwrap()
+    };
+    let one = page(None);
+    assert_eq!(one["ideas"][0]["ref"].as_str(), Some(asks.as_str()));
+    let two = page(one["next"].as_str());
+    assert_eq!(two["ideas"][0]["ref"].as_str(), Some(quiet.as_str()), "paging keeps that order");
+    assert_eq!(two["next"], Value::Null);
+    assert_eq!(try_call(&app, "GET", "/ideas", &[("first", "votes")], json!({})).unwrap_err().0, 400);
+
+    call(&app, "POST", &format!("/ideas/{asks}/answer"), json!({"round": round, "question": "relay", "answer": "Host"}));
+    assert_eq!(count(&asks), 1, "an answered question isn't open");
+    let newer = json!({"verdict": "fits", "why": "Yes", "blocks": [{"type": "gist", "text": "Yes"}]});
+    app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => newer.to_string()]).unwrap();
+    assert_eq!(count(&asks), 0, "only the newest report's questions are open");
+    app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => report.to_string()]).unwrap();
+    assert_eq!(count(&asks), 2);
+    call(&app, "POST", &format!("/ideas/{asks}/shelve"), json!({}));
+    assert_eq!(count(&asks), 0, "none once it's put aside");
 }

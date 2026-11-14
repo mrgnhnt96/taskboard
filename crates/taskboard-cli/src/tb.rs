@@ -1119,8 +1119,17 @@ enum IdeaCmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Add a note to an idea
-    Note { idea: String, text: String },
+    /// Add a note to an idea; with --round and --question, the answer to one of a report's questions
+    Note {
+        idea: String,
+        text: String,
+        /// The report round the question is in
+        #[arg(long, requires = "question")]
+        round: Option<i64>,
+        /// The question's id in that round's report
+        #[arg(long, requires = "round")]
+        question: Option<String>,
+    },
     /// Drop an idea: it won't be built
     Drop {
         idea: String,
@@ -1146,6 +1155,10 @@ enum IdeaCmd {
     },
     /// Have Claude plan an idea into a goal and its tasks, from its notes and reports; planned only, not started
     Plan { idea: String },
+    /// Stop the dig running on an idea
+    Stop { idea: String },
+    /// Undo an idea's plan before its work starts: its goal and tasks are deleted
+    Unplan { idea: String },
 }
 
 #[derive(Subcommand)]
@@ -4399,7 +4412,14 @@ fn idea_cmd(c: &Ctx, action: IdeaCmd) -> Result<i32, String> {
             }
             (post(idea_ref(&idea)?, b)?, "Changed")
         }
-        IdeaCmd::Note { idea, text } => (post(format!("{}/note", idea_ref(&idea)?), json!({"text": text}))?, "Noted on"),
+        IdeaCmd::Note { idea, text, round, question } => {
+            let mut b = json!({"text": text});
+            if let (Some(r), Some(q)) = (round, question) {
+                b["round"] = json!(r);
+                b["question"] = json!(q);
+            }
+            (post(format!("{}/note", idea_ref(&idea)?), b)?, "Noted on")
+        }
         IdeaCmd::Drop { idea, reason } => (post(format!("{}/drop", idea_ref(&idea)?), json!({"reason": reason}))?, "Dropped"),
         IdeaCmd::Shelve { idea, reason } => (post(format!("{}/shelve", idea_ref(&idea)?), json!({"reason": reason}))?, "Shelved"),
         IdeaCmd::Reopen { idea } => (post(format!("{}/reopen", idea_ref(&idea)?), json!({}))?, "Reopened"),
@@ -4407,6 +4427,8 @@ fn idea_cmd(c: &Ctx, action: IdeaCmd) -> Result<i32, String> {
             (post(format!("{}/dig", idea_ref(&idea)?), json!({"focus": focus, "web": web}))?, "Digging into")
         }
         IdeaCmd::Plan { idea } => (post(format!("{}/plan", idea_ref(&idea)?), json!({}))?, "Planning"),
+        IdeaCmd::Stop { idea } => (post(format!("{}/stop", idea_ref(&idea)?), json!({}))?, "Stopped the dig on"),
+        IdeaCmd::Unplan { idea } => (post(format!("{}/unplan", idea_ref(&idea)?), json!({}))?, "Un-planned"),
     };
     if !did.is_empty() {
         out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));
