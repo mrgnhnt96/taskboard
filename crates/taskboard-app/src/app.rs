@@ -2052,11 +2052,12 @@ pub fn run_alert_action(m: &mut MainWindow, id: &str, n: usize, label: &str, com
         cx,
         move |m, _, cx| m.toast(format!("{label}: opened Claude in Midna"), false, cx),
         move |m, e, cx| {
-            if command.is_empty() {
-                return m.toast(e.message, true, cx);
+            let midna_down = m.state()["midna"]["up"] == Value::Bool(false);
+            let (text, copy) = ui::home::fix_failed(midna_down, &e.message, &command);
+            if copy {
+                cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
             }
-            cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
-            m.toast(format!("Copied {command}"), false, cx);
+            m.toast(text, !copy, cx);
         },
     );
 }

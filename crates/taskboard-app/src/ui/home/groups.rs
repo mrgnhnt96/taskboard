@@ -265,12 +265,13 @@ pub enum Note {
 }
 
 impl Note {
-    pub fn label(self) -> &'static str {
+    /// The note box's name: what it holds.
+    pub fn name(self) -> &'static str {
         match self {
-            Note::Done => "Done",
-            Note::CantDo => "Can't do this",
-            Note::NotNeeded => "Not needed",
-            Note::WaitingOn => "Waiting on someone",
+            Note::Done => "Note for the agents",
+            Note::CantDo => "Why you can't do this",
+            Note::NotNeeded => "Why it isn't needed",
+            Note::WaitingOn => "Who you're waiting on",
         }
     }
 

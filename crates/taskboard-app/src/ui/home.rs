@@ -37,6 +37,8 @@ thread_local! {
     static FLIPPED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// A picker's choices so far by task ref, (question, option), until Send.
     static PICKED: RefCell<HashMap<String, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
+    /// An answer on its way by task ref, and which choice was pressed, until the board has it.
+    static SENDING: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     /// The page's items, built once per answer.
     static BUILT: RefCell<Option<Built>> = const { RefCell::new(None) };
 }
@@ -127,6 +129,11 @@ impl Act {
             Act::OpenIssue(_) => "Open issue",
             Act::OpenReview(_) => "Open review",
         }
+    }
+
+    /// Whether it changes something on the board, rather than opening a page.
+    pub fn posts(&self) -> bool {
+        !matches!(self, Act::OpenPr(_) | Act::OpenTask(_) | Act::OpenGoal(_) | Act::OpenIssue(_) | Act::OpenReview(_))
     }
 }
 
@@ -641,7 +648,15 @@ fn sent(m: &mut MainWindow, text: String, cx: &mut Context<MainWindow>) {
     m.toast(text, false, cx);
 }
 
+/// With the board down, what would change it waits until it answers.
+fn paused(m: &MainWindow) -> bool {
+    m.down.is_some()
+}
+
 pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
+    if act.posts() && paused(m) {
+        return;
+    }
     match act.clone() {
         Act::Restart(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "fresh"}), cx, move |m, _, cx| sent(m, format!("Restarting {r}"), cx)),
         Act::RestartGoal(g, n) => m.post(format!("goals/{g}/restart"), json!({}), cx, move |m, _, cx| {
@@ -677,12 +692,74 @@ fn sent_note(state: &Value) -> &'static str {
     if state["midna"]["up"] == Value::Bool(false) { "Saved. It runs once Midna is back." } else { "Sent to Midna" }
 }
 
+/// The choice pressed on `r`'s question while its answer is on its way.
+fn sending(r: &str) -> Option<String> {
+    SENDING.with(|x| x.borrow().get(r).cloned())
+}
+
+/// Marks `choice` as `r`'s answer on its way: false when one already is, so a second press sends nothing.
+fn start_sending(r: &str, choice: &str) -> bool {
+    SENDING.with(|x| {
+        let mut x = x.borrow_mut();
+        if x.contains_key(r) {
+            return false;
+        }
+        x.insert(r.to_string(), choice.to_string());
+        true
+    })
+}
+
+fn done_sending(r: &str) {
+    SENDING.with(|x| x.borrow_mut().remove(r));
+}
+
+/// Sends `r`'s answer once, with `choice` reading Sending… meanwhile; on the board's yes the
+/// question (`id`) leaves the list, and on its no the choices come back.
+fn send_answer(m: &mut MainWindow, id: &str, r: &str, choice: &str, path: String, body: Value, cx: &mut Context<MainWindow>) {
+    if paused(m) || !start_sending(r, choice) {
+        return;
+    }
+    let (id, r, r2) = (id.to_string(), r.to_string(), r.to_string());
+    m.post_or(
+        path,
+        body,
+        cx,
+        move |m, _, cx| {
+            done_sending(&r);
+            PICKED.with(|p| p.borrow_mut().remove(&r));
+            take_off(m, &[id]);
+            let note = sent_note(m.state()).to_string();
+            sent(m, note, cx);
+            cx.notify();
+        },
+        move |m, e, cx| {
+            done_sending(&r2);
+            m.toast(e.message, true, cx);
+            cx.notify();
+        },
+    );
+    cx.notify();
+}
+
 /// Answer a question with one of its options: `POST /tasks/:id/answer`.
-fn answer(m: &mut MainWindow, r: &str, text: &str, cx: &mut Context<MainWindow>) {
-    m.post(format!("tasks/{r}/answer"), json!({"text": text, "when": "now"}), cx, move |m, _, cx| {
-        let note = sent_note(m.state()).to_string();
-        sent(m, note, cx);
-    });
+fn answer(m: &mut MainWindow, id: &str, r: &str, choice: &str, text: &str, cx: &mut Context<MainWindow>) {
+    send_answer(m, id, r, choice, format!("tasks/{r}/answer"), json!({"text": text, "when": "now"}), cx);
+}
+
+/// Off the list at once, ahead of the board's next answer.
+fn take_off(m: &mut MainWindow, ids: &[String]) {
+    if let Some(needs) = m.data.home.as_mut().and_then(|h| Rc::make_mut(h).get_mut("needs")).and_then(Value::as_array_mut) {
+        needs.retain(|a| !ids.iter().any(|id| id == s(a, "id")));
+    }
+}
+
+/// What a failed fix button does: the board's reason, and only with Midna down (no terminal to
+/// open it in) the fix's command copied to run by hand. The toast and whether to copy.
+pub fn fix_failed(midna_down: bool, reason: &str, command: &str) -> (String, bool) {
+    if midna_down && !command.is_empty() {
+        return (format!("{} Copied “{command}” to run in a terminal.", reason.trim()), true);
+    }
+    (reason.to_string(), false)
 }
 
 /// A picker with one single-select question answers in a click; otherwise its options toggle
@@ -722,13 +799,8 @@ fn picked(r: &str) -> Vec<(usize, usize)> {
 }
 
 /// Answer Claude's picker through Midna: `POST /tasks/:id/pick`.
-fn pick(m: &mut MainWindow, r: &str, answers: Vec<Vec<usize>>, cx: &mut Context<MainWindow>) {
-    let r = r.to_string();
-    m.post(format!("tasks/{r}/pick"), json!({"answers": answers}), cx, move |m, _, cx| {
-        PICKED.with(|p| p.borrow_mut().remove(&r));
-        let note = sent_note(m.state()).to_string();
-        sent(m, note, cx);
-    });
+fn pick(m: &mut MainWindow, id: &str, r: &str, choice: &str, answers: Vec<Vec<usize>>, cx: &mut Context<MainWindow>) {
+    send_answer(m, id, r, choice, format!("tasks/{r}/pick"), json!({"answers": answers}), cx);
 }
 
 /// An agent's question starts open, so it's answered at once.
@@ -1198,6 +1270,54 @@ mod tests {
         crate::parity::settle(cx);
         draw(cx);
         assert!(!Rc::ptr_eq(&first.asks, &built().asks), "a new answer builds the asks again");
+    }
+
+    #[gpui_kit::test]
+    fn an_answer_sends_once_and_the_pressed_choice_reads_sending(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        w.update(cx, |m, _, cx| {
+            answer(m, "task:T51", "T51", "opt-Yes", "Yes", cx);
+            assert_eq!(sending("T51").as_deref(), Some("opt-Yes"), "the pressed choice reads Sending…");
+            answer(m, "task:T51", "T51", "opt-No", "No", cx);
+            pick(m, "task:T51", "T51", "pick-send", vec![vec![0]], cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        let posts = rec.posts();
+        assert_eq!(posts.iter().filter(|(p, _)| p.starts_with("tasks/T51/")).count(), 1, "a double press sends once: {posts:?}");
+        assert_eq!(rec.last("tasks/T51/answer"), Some(json!({"text": "Yes", "when": "now"})));
+        assert_eq!(sending("T51"), None, "the choices come back once the board answers");
+    }
+
+    #[gpui_kit::test]
+    fn with_the_board_down_answers_and_actions_wait(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        rec.clear();
+        w.update(cx, |m, _, cx| {
+            m.down = Some("The board isn't answering.".into());
+            answer(m, "task:T52", "T52", "opt-Yes", "Yes", cx);
+            run_act(m, &Act::Restart("T52".into()), cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(rec.posts(), vec![]);
+        assert_eq!(sending("T52"), None, "nothing waits on a send that never went");
+    }
+
+    #[test]
+    fn a_failed_fix_gives_the_boards_reason_and_copies_only_with_midna_down() {
+        let reason = "The board doesn't know the folder for the project “web”.";
+        assert_eq!(fix_failed(false, reason, "tb project set web --review off"), (reason.to_string(), false), "the clipboard is kept");
+        let (text, copy) = fix_failed(true, "Midna isn't running, so the board can't open a terminal.", "tb project set web --review off");
+        assert!(copy);
+        assert_eq!(text, "Midna isn't running, so the board can't open a terminal. Copied “tb project set web --review off” to run in a terminal.");
+        assert_eq!(fix_failed(true, reason, ""), (reason.to_string(), false), "nothing to copy");
+    }
+
+    #[test]
+    fn opening_a_page_never_waits_for_the_board() {
+        assert!(Act::Restart("T1".into()).posts() && Act::Continue("G1".into(), 2).posts());
+        assert!(!Act::OpenGoal("G1".into()).posts() && !Act::OpenPr("https://x".into()).posts() && !Act::OpenReview(3).posts());
     }
 
     fn closed(by_hand: bool) -> Value {
