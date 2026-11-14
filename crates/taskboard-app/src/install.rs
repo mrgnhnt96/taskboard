@@ -16,7 +16,8 @@
 //! `scripts/dev-app.sh --uninstall`).
 //!
 //! Everything here blocks; `start` runs it on its own thread and publishes the result in
-//! [`status`] for the banner.
+//! [`status`] for the banner. [`recheck`] looks again while a banner shows, so a fix made
+//! elsewhere (Login Items switched on, the other board stopped) clears it without a relaunch.
 use objc2_foundation::NSString;
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use std::path::{Path, PathBuf};
@@ -39,13 +40,50 @@ pub enum LoginItem {
 
 static STATUS: Mutex<LoginItem> = Mutex::new(LoginItem::Checking);
 static IN_THE_WAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Who holds the board's port, when another program does (see [`port_line`]).
+static PORT: Mutex<Option<String>> = Mutex::new(None);
+/// Linking `~/.local/bin/tb` failed, and why; kept until dismissed or a link works.
+static LINK_FAILED: Mutex<Option<String>> = Mutex::new(None);
+/// When [`recheck`] last looked, and whether a look is running now.
+static LOOKED: Mutex<Option<Instant>> = Mutex::new(None);
+static LOOKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// How often [`recheck`] looks while a setup banner shows.
+const RECHECK_EVERY: Duration = Duration::from_secs(15);
 /// When the app last looked at launchd because it couldn't reach the daemon (see [`daemon_unreachable`]).
 static RECHECKED: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// What this launch found in the way of the board (another board on its port, another `tb` first
-/// on the PATH, another task-board plugin), one sentence each, for the banner.
+/// What was last found in the way of the board besides its port (another `tb` first on the PATH,
+/// another task-board plugin), one sentence each, for the banner.
 pub fn in_the_way() -> Vec<String> {
     IN_THE_WAY.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// "Port 8792 is held by python3 (pid 812).", when another program holds the board's port.
+pub fn port_line() -> Option<String> {
+    PORT.lock().ok().and_then(|g| g.clone())
+}
+
+/// The port sentence: the holder lsof names, else what the board's own check said.
+fn port_sentence(port: u16, holder: Option<taskboardd::cutover::Holder>, fallback: String) -> String {
+    match holder {
+        Some(h) => format!("Port {port} is held by {} (pid {}).", h.command, h.pid),
+        None => fallback,
+    }
+}
+
+/// Linking `tb` failed: "Linking ~/.local/bin/tb: permission denied".
+pub fn link_failed() -> Option<String> {
+    LINK_FAILED.lock().ok().and_then(|g| g.clone())
+}
+
+pub fn dismiss_link_failure() {
+    set_link_failed(None);
+}
+
+fn set_link_failed(e: Option<String>) {
+    if let Ok(mut g) = LINK_FAILED.lock() {
+        *g = e;
+    }
 }
 
 /// The PATH agents' shells are likely to have: the app's own (bare when opened from the Finder)
@@ -62,11 +100,14 @@ fn agent_path() -> String {
 /// board's port.
 fn check_in_the_way() -> bool {
     let Ok(cfg) = taskboardd::config::Config::load() else { return false };
-    let port = taskboardd::cutover::port_taken(&cfg.host, cfg.port);
+    let port = taskboardd::cutover::port_taken(&cfg.host, cfg.port).map(|why| port_sentence(cfg.port, taskboardd::cutover::port_holder(cfg.port), why));
     let taken = port.is_some();
-    let found: Vec<String> = port.into_iter().chain(taskboardd::cutover::other_problems(&agent_path(), &crate::hooks::claude_dir())).collect();
-    for p in &found {
+    let found = taskboardd::cutover::other_problems(&agent_path(), &crate::hooks::claude_dir());
+    for p in port.iter().chain(&found) {
         crate::log::info(p);
+    }
+    if let Ok(mut g) = PORT.lock() {
+        *g = port;
     }
     if let Ok(mut g) = IN_THE_WAY.lock() {
         *g = found;
@@ -335,15 +376,76 @@ pub fn start(backend: &str) {
                 set_status(held);
                 return;
             }
-            set_status(register(&bundle));
-            // Taskboard Dev leaves the link to the real app (TASKBOARD_NO_TB_LINK in its LSEnvironment).
-            if std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {
-                return;
-            }
-            if let Err(e) = link_tb(&bundle) {
-                crate::log::info(format!("couldn't link tb: {e}"));
-            }
+            register_and_link(&bundle);
         })
+        .ok();
+}
+
+fn register_and_link(bundle: &Path) {
+    set_status(register(bundle));
+    // Taskboard Dev leaves the link to the real app (TASKBOARD_NO_TB_LINK in its LSEnvironment).
+    if std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {
+        return;
+    }
+    match link_tb(bundle) {
+        Ok(()) => set_link_failed(None),
+        Err(e) => {
+            crate::log::info(format!("couldn't link tb: {e}"));
+            set_link_failed(Some(format!("Linking ~/.local/bin/tb: {e}")));
+        }
+    }
+}
+
+/// Whether a setup banner shows, so [`recheck`] has something to look at again.
+fn something_shows(s: &LoginItem) -> bool {
+    matches!(s, LoginItem::RequiresApproval | LoginItem::Blocked | LoginItem::NotRegistered | LoginItem::Failed(_)) || port_line().is_some() || !in_the_way().is_empty()
+}
+
+/// What a look finds next for the login item: a board that was held back starts once the port is
+/// free; otherwise the status macOS reports now (Login Items switched on, say).
+fn next_status(now: &LoginItem, port_taken: bool, reported: impl FnOnce() -> LoginItem) -> Option<LoginItem> {
+    match (now, port_taken) {
+        (_, true) => Some(LoginItem::Blocked),
+        (LoginItem::Blocked, false) => None,
+        _ => Some(reported()),
+    }
+}
+
+/// Look at the setup again while a banner shows: every [`RECHECK_EVERY`] from the poll, and at
+/// once when the window comes back (`now`). Off the UI thread; a look already running is left be.
+pub fn recheck(now: bool) {
+    let Some(bundle) = installed_bundle() else { return };
+    let was = status();
+    if matches!(was, LoginItem::Dev | LoginItem::Checking) || !something_shows(&was) {
+        return;
+    }
+    {
+        let mut last = LOOKED.lock().unwrap_or_else(|e| e.into_inner());
+        let wait = if now { Duration::from_secs(2) } else { RECHECK_EVERY };
+        if last.is_some_and(|t| t.elapsed() < wait) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    if LOOKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("install-look".into())
+        .spawn(move || {
+            let taken = check_in_the_way();
+            let reported = || bundled_agent_plist(&bundle).map_or(LoginItem::Failed("The launch agent isn't in the app bundle.".into()), |p| from_status(unsafe { agent_service(&p).status() }));
+            match next_status(&was, taken, reported) {
+                Some(s) => {
+                    if s != status() {
+                        set_status(s);
+                    }
+                }
+                None => register_and_link(&bundle),
+            }
+            LOOKING.store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .inspect_err(|_| LOOKING.store(false, std::sync::atomic::Ordering::SeqCst))
         .ok();
 }
 
@@ -361,6 +463,22 @@ mod tests {
         assert!(stale_registration(retrying));
         assert!(!stale_registration(running));
         assert!(!stale_registration(exited), "an ordinary crash isn't a registration problem");
+    }
+
+    #[test]
+    fn a_look_again_starts_a_held_back_board_once_the_port_is_free() {
+        let enabled = || LoginItem::Enabled;
+        assert_eq!(next_status(&LoginItem::Blocked, true, enabled), Some(LoginItem::Blocked));
+        assert_eq!(next_status(&LoginItem::Blocked, false, enabled), None, "registers and links");
+        assert_eq!(next_status(&LoginItem::RequiresApproval, false, enabled), Some(LoginItem::Enabled));
+        assert_eq!(next_status(&LoginItem::Enabled, true, enabled), Some(LoginItem::Blocked));
+    }
+
+    #[test]
+    fn the_port_line_names_its_holder() {
+        let h = taskboardd::cutover::Holder { pid: 812, command: "python3".into() };
+        assert_eq!(port_sentence(8792, Some(h), "x".into()), "Port 8792 is held by python3 (pid 812).");
+        assert_eq!(port_sentence(8792, None, "Something else is listening.".into()), "Something else is listening.");
     }
 
     #[test]

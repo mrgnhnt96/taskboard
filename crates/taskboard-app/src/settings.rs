@@ -350,7 +350,10 @@ impl SettingsWindow {
     fn load_info(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
+            let b = backend.clone();
             let r = cx.background_executor().spawn(async move { backend.get("info", &[]) }).await;
+            let restart = cx.background_executor().spawn(async move { b.get("restart", &[]) }).await;
+            crate::updater::learn_restart(restart.ok().as_ref());
             let _ = this.update(cx, |s, cx| {
                 s.info = r.ok();
                 cx.notify();
@@ -1554,21 +1557,25 @@ impl SettingsWindow {
                 cx.notify();
             }))
         };
-        let channel = if updater::VERSION.contains("-beta.") { "Gets every release, betas included." } else { "Gets public releases." };
+        let channel = match updater::updated() {
+            Some((v, at)) => format!("Updated to {v} today at {at}."),
+            None if updater::VERSION.contains("-beta.") => "Gets every release, betas included.".into(),
+            None => "Gets public releases.".into(),
+        };
         let (dot, status, note, button): (Hsla, String, String, Option<Stateful<Div>>) = match updater::state() {
             State::Off(why) => (t.faint, "Off".into(), why, None),
-            State::Idle => (t.faint, "Not checked yet".into(), channel.into(), Some(check("Check now", cx))),
-            State::Checking => (t.faint, "Checking…".into(), channel.into(), Some(kit::disabled(small(kit::btn_small(t, "sys-check", "Checking…"))))),
-            State::UpToDate { at } => (t.up, format!("Up to date · checked at {at}"), channel.into(), Some(check("Check now", cx))),
+            State::Idle => (t.faint, "Not checked yet".into(), channel, Some(check("Check now", cx))),
+            State::Checking => (t.faint, "Checking…".into(), channel, Some(kit::disabled(small(kit::btn_small(t, "sys-check", "Checking…"))))),
+            State::UpToDate { at } => (t.up, format!("Up to date · checked at {at}"), channel, Some(check("Check now", cx))),
             State::Downloading { version } => (t.accent, format!("Downloading {version}…"), "Checked before it's offered.".into(), None),
             State::Ready { version, .. } => (
                 t.accent,
                 format!("{version} ready"),
-                "Downloaded and checked. The board and its agents keep running through the restart.".into(),
+                updater::restart_note(updater::restart_reviews()),
                 Some(small(kit::btn_primary(t, "sys-apply", "Restart to update")).on_click(cx.listener(|s, _, _, cx| s.apply_update(cx)))),
             ),
             State::Applying { version } => (t.accent, format!("Installing {version}…"), "The app reopens in a moment.".into(), None),
-            State::Failed { error, at } => (t.down, format!("Check failed at {at}"), error, Some(check("Retry", cx))),
+            State::Failed { stage, error, at } => (t.down, format!("{} at {at}", State::failure_title(&stage)), format!("{stage}: {error}"), Some(check("Try again", cx))),
         };
         let update = line(t, "sys-update", true, false, "Update", &note, None).child(
             controls()
@@ -1621,6 +1628,13 @@ impl SettingsWindow {
     pub fn show_system(&mut self, cx: &mut Context<Self>) {
         self.view = Sec::System;
         self.load_info(cx);
+        cx.notify();
+    }
+
+    /// Open on Usage (the sidebar's usage block).
+    pub fn show_usage(&mut self, cx: &mut Context<Self>) {
+        self.view = Sec::Usage;
+        self.load_daily(cx);
         cx.notify();
     }
 

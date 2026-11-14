@@ -1,6 +1,6 @@
 //! The sidebar on every page: search, the pages with their counts, the goals in flight with a
-//! status bar and last update each, and the board's health (Midna, work hours, usage, hooks,
-//! accounts, updates, settings) at the foot. Its top is the window's title bar, clear of the traffic lights.
+//! status bar and last update each, and the board's health at the foot: one line of what's
+//! wrong, the usage reading, work hours and Settings. Its top is the window's title bar, clear of the traffic lights.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, s};
 use crate::theme::{Theme, ThemeMode};
@@ -237,52 +237,9 @@ fn search_box(t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).child("⌘K"))
 }
 
-/// The board's health: Midna, work hours and usage, then whatever needs a look (hooks, accounts,
-/// an update, the PR feed), and Settings.
+/// The board's health (see [`crate::ui::health::footer`]).
 fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
-    let st = m.state_rc();
-    let mut wrap = div().flex().flex_wrap().gap(px(6.)).pt(px(10.)).border_t_1().border_color(t.border);
-    if let Some(mid) = st.get("midna").filter(|v| v.is_object()) {
-        let p = crate::app::conn_pill(mid);
-        let (fg, bg, dot) = if p.cls == "up" { (t.up_fg, t.up_soft, t.up) } else { (t.warn_fg, t.warn_soft, t.warn) };
-        let label = if p.cls == "up" { "Midna".to_string() } else { p.label };
-        wrap = wrap.child(crate::app::pill_shell(t, "conn-pill", fg, bg).child(kit::dot(dot, 8.)).child(label).tooltip(kit::tip(p.title)));
-    }
-    wrap = wrap.child(crate::ui::hours::pill(m, t, cx));
-    if let Some(u) = st.get("usage").and_then(crate::app::usage_view) {
-        wrap = wrap.child(
-            div().id("usage-pill-go").cursor_pointer().child(crate::app::usage_pill(t, &u)).on_click(cx.listener(|m, _, _, cx| m.go(crate::app::Page::Days, cx))),
-        );
-    }
-    wrap = wrap.children(crate::ui::prwatch::pills(&st, t));
-    if let Some(h) = crate::app::hooks_item(m, t, cx) {
-        wrap = wrap.child(h);
-    }
-    if m.backend.label() == "fake" {
-        wrap = wrap.child(kit::tone_pill(t, "goal", "Sample board"));
-    }
-    if let Some(p) = crate::app::accounts_pill(&st, t) {
-        wrap = wrap.child(p);
-    }
-    if let Some(p) = crate::app::update_pill(t) {
-        wrap = wrap.child(p);
-    }
-    let text = t.text;
-    wrap.child(
-        div()
-            .id("open-settings")
-            .flex()
-            .items_center()
-            .h(px(25.))
-            .px(px(4.))
-            .text_size(px(12.5))
-            .text_color(t.muted)
-            .cursor_pointer()
-            .hover(move |s| s.text_color(text))
-            .tooltip(kit::tip("Settings (⌘,)"))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
-            .child("Settings"),
-    )
+    crate::ui::health::footer(m, t, cx)
 }
 
 #[cfg(test)]

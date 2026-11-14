@@ -31,6 +31,7 @@ mod install;
 mod log;
 mod menu_bar;
 mod prefs;
+mod relaunch;
 mod settings;
 #[cfg(test)]
 mod parity;
@@ -41,7 +42,7 @@ mod updater;
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, OpenSystemSettings, ExportForDebugging]);
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, OpenSystemSettings, OpenUsageSettings, ExportForDebugging]);
 
 /// Writes the same redacted zip as `tb export` into Downloads and shows it in Finder, off the UI thread.
 fn export_for_debugging() {
@@ -99,6 +100,12 @@ fn main() {
                 let _ = h.update(cx, |s, _, cx| s.show_system(cx));
             }
         });
+        let b = backend.clone();
+        cx.on_action(move |_: &OpenUsageSettings, cx| {
+            if let Some(h) = settings::open(b.clone(), cx) {
+                let _ = h.update(cx, |s, _, cx| s.show_usage(cx));
+            }
+        });
         cx.on_action(|_: &ExportForDebugging, _| export_for_debugging());
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &Hide, cx| cx.hide());
@@ -145,6 +152,13 @@ fn main() {
             }
         })
         .detach();
+        // Restart to update keeps what's typed, and the new app says it's updated.
+        cx.on_app_quit(move |cx| {
+            let _ = handle.update(cx, |m, _, cx| relaunch::save(m, cx));
+            async {}
+        })
+        .detach();
+        let _ = handle.update(cx, |m, _, cx| relaunch::restore(m, cx));
         let settings_page = std::env::var("TASKBOARD_PAGE").as_deref() == Ok("settings");
         let settings = settings_page.then(|| settings::open(backend.clone(), cx)).flatten();
         #[cfg(feature = "snapshot")]

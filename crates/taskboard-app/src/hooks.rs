@@ -25,6 +25,7 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 pub const PLUGIN: &str = "task-board@taskboard";
 const MARKETPLACE: &str = "taskboard";
@@ -286,7 +287,10 @@ fn edit_settings(path: &Path, change: impl Fn(&Value) -> Value) -> Result<(), St
     if before.as_deref().is_none_or(|b| b.ends_with('\n')) {
         text.push('\n');
     }
-    write(path, before.as_deref(), &text).map_err(|e| format!("Writing {} failed: {e}", path.display()))
+    write(path, before.as_deref(), &text).map_err(|e| {
+        let e = e.to_string();
+        e.split(" (os error").next().unwrap_or(&e).to_lowercase()
+    })
 }
 
 /// Atomic write. The first time Taskboard changes the file, the original is kept next to it as
@@ -370,16 +374,59 @@ fn claude_bin() -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join("claude")).find(|p| p.is_file())
 }
 
+/// The last install that failed and when ("3:05 PM"). It stays, in the footer and on the hooks
+/// row, until it's dismissed or an install works.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Failed {
+    /// "Writing ~/.claude/settings.json: permission denied", the stage first.
+    pub text: String,
+    pub at: String,
+}
+
+static FAILED: Mutex<Option<Failed>> = Mutex::new(None);
+
+pub fn failed() -> Option<Failed> {
+    FAILED.lock().ok().and_then(|g| g.clone())
+}
+
+/// Put the failure away (its ✕).
+pub fn dismiss() {
+    set_failed(None);
+}
+
+fn set_failed(f: Option<Failed>) {
+    if let Ok(mut g) = FAILED.lock() {
+        *g = f;
+    }
+}
+
+/// `~/.claude/settings.json` rather than the whole path.
+fn short(p: &Path) -> String {
+    let home = dirs_home();
+    match p.strip_prefix(&home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 /// Point the `taskboard` marketplace at this app, install the plugin from it (its copy has no hooks,
 /// which replaces one that had), then write this app's hooks into `settings.json`. Blocking.
+/// A failure names the stage it stopped at and is kept (see [`failed`]).
 pub fn install(t: &Target) -> Result<(), String> {
+    let r = install_steps(t);
+    set_failed(r.as_ref().err().map(|e| Failed { text: e.clone(), at: chrono::Local::now().format("%-I:%M %p").to_string() }));
+    r
+}
+
+fn install_steps(t: &Target) -> Result<(), String> {
     if !t.plugin.join(".claude-plugin/marketplace.json").is_file() {
-        return Err(format!("This app has no plugin at {}.", t.plugin.display()));
+        return Err(format!("Finding the plugin: this app has none at {}.", t.plugin.display()));
     }
     let settings = claude_dir().join("settings.json");
+    let at = |stage: String| move |e: String| format!("{stage}: {}", e.trim_end_matches('.').to_string() + ".");
     // Refuse a settings file that can't be changed before the plugin is touched.
-    read_settings(&settings)?;
-    let claude = claude_bin().ok_or("Couldn't find the claude command.")?;
+    read_settings(&settings).map_err(at(format!("Reading {}", short(&settings))))?;
+    let claude = claude_bin().ok_or("Finding Claude Code: the claude command isn’t on this Mac.")?;
     let run = |args: &[&str]| -> Result<(), String> {
         let out = Command::new(&claude).args(args).output().map_err(|e| format!("Couldn't run claude: {e}"))?;
         if out.status.success() {
@@ -391,10 +438,10 @@ pub fn install(t: &Target) -> Result<(), String> {
     };
     // Removing the marketplace also uninstalls the plugin; it's fine for it to be missing.
     let _ = run(&["plugin", "marketplace", "remove", MARKETPLACE]);
-    run(&["plugin", "marketplace", "add", &t.plugin.to_string_lossy()])?;
-    run(&["plugin", "install", PLUGIN, "--scope", "user"])?;
+    run(&["plugin", "marketplace", "add", &t.plugin.to_string_lossy()]).map_err(at("Adding the plugin’s marketplace".into()))?;
+    run(&["plugin", "install", PLUGIN, "--scope", "user"]).map_err(at("Installing the plugin".into()))?;
     // Read again: the claude CLI just wrote the file too.
-    edit_settings(&settings, |v| with(v, t))
+    edit_settings(&settings, |v| with(v, t)).map_err(at(format!("Writing {}", short(&settings))))
 }
 
 /// Take out the hooks that run a `tb` inside `bundle` (`taskboard-app --uninstall`); hooks for
@@ -402,11 +449,13 @@ pub fn install(t: &Target) -> Result<(), String> {
 pub fn uninstall(claude: &Path, bundle: &Path) -> Result<(), String> {
     let inside = sh_quote(&bundle.to_string_lossy());
     let inside = inside.trim_end_matches('\'').to_string() + "/";
-    edit_settings(&claude.join("settings.json"), |v| {
+    let path = claude.join("settings.json");
+    edit_settings(&path, |v| {
         let mut v = v.clone();
         strip(&mut v, |h| h["command"].as_str().is_some_and(|c| c.contains(&inside)));
         v
     })
+    .map_err(|e| format!("Writing {}: {e}", path.display()))
 }
 
 #[cfg(test)]

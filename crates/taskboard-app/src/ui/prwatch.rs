@@ -228,26 +228,19 @@ pub fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<An
         .collect()
 }
 
-/// The status-bar pills for the PR watch.
-pub fn pills(st: &Value, t: &Theme) -> Vec<AnyElement> {
-    let mut out = vec![];
-    if let Some(p) = st.get("pr_builds").and_then(builds_pill) {
-        out.push(pill_shell(t, "builds-pill", t.warn_fg, t.warn_soft).child(kit::dot(t.warn, 7.)).child(p.label).tooltip(kit::tip(p.title)).into_any_element());
-    }
-    if let Some(p) = st.get("pr_feed").and_then(feed_pill) {
-        out.push(pill_shell(t, "feed-pill", t.warn_fg, t.warn_soft).child(kit::dot(t.warn, 7.)).child(p.label).tooltip(kit::tip(p.title)).into_any_element());
-    }
-    if let Some(v) = st.get("stream").and_then(streams_view) {
-        let rows = v.rows;
-        out.push(
-            pill_shell(t, "streams-pill", t.muted, t.seg)
-                .child(kit::dot(tone_color(t, v.tone), 7.))
-                .child("Streams")
-                .tooltip(move |_, cx| cx.new(|_| StreamsCard { rows: rows.clone() }).into())
-                .into_any_element(),
-        );
-    }
-    out
+/// The Streams pill, while a source's stream is watched; hovering lists every source. (A stuck
+/// feed or stopped builds are in the footer's summary.)
+pub fn streams_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
+    let v = st.get("stream").and_then(streams_view)?;
+    let rows = v.rows;
+    Some(
+        pill_shell(t, "streams-pill", t.muted, t.seg)
+            .flex_none()
+            .child(kit::dot(tone_color(t, v.tone), 7.))
+            .child("Streams")
+            .tooltip(move |_, cx| cx.new(|_| StreamsCard { rows: rows.clone() }).into())
+            .into_any_element(),
+    )
 }
 
 #[cfg(test)]

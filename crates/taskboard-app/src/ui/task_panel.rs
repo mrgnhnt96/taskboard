@@ -50,6 +50,20 @@ fn ui<R>(f: impl FnOnce(&mut view::Ui) -> R) -> R {
     UI.with(|u| f(&mut u.borrow_mut()))
 }
 
+/// The panel's typed drafts (answers, notes, picks), to keep across an update restart.
+pub fn drafts() -> std::collections::HashMap<String, String> {
+    ui(|u| u.drafts.iter().filter(|(_, v)| !v.trim().is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// Put drafts kept across an update restart back; a draft typed since wins.
+pub fn restore_drafts(kept: std::collections::HashMap<String, String>) {
+    ui(|u| {
+        for (k, v) in kept {
+            u.drafts.entry(k).or_insert(v);
+        }
+    });
+}
+
 /// Per-task GPUI state: the text fields drawn in the panel, by their web key (`data-k`).
 #[derive(Default)]
 pub struct State {

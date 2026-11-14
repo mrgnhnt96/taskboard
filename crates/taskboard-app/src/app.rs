@@ -227,6 +227,8 @@ pub struct MainWindow {
     pub idea_toast: Option<Instant>,
     /// Why the last `GET /state` failed (the "isn't answering" banner).
     pub down: Option<String>,
+    /// When the board stopped answering ("3:05 PM"), while it hasn't since.
+    pub down_at: Option<String>,
     pub focus: FocusHandle,
     /// The open dialog's own focus: keys go to the dialog, and Tab stays inside it.
     pub modal_focus: FocusHandle,
@@ -355,6 +357,7 @@ impl MainWindow {
             hooks_busy: false,
             daemon_busy: false,
             menus_for: None,
+            down_at: None,
             every: pace(window),
             poller: None,
         };
@@ -1053,6 +1056,7 @@ impl MainWindow {
         self.every = every;
         if back {
             self.poll(cx);
+            crate::install::recheck(true);
         }
         self.schedule(cx);
     }
@@ -1064,6 +1068,7 @@ impl MainWindow {
             self.ask(true, cx);
         }
         self.check_hooks(cx);
+        crate::install::recheck(false);
     }
 
     /// Re-read Claude Code's config for the hooks' state (it can change outside the app).
@@ -1101,7 +1106,8 @@ impl MainWindow {
                 m.hooks = h;
                 match r {
                     Ok(()) => m.toast("Hooks installed. New Claude sessions report to the board.", false, cx),
-                    Err(e) => m.toast(e, true, cx),
+                    // It stays in the footer's summary, with Copy details, until dismissed.
+                    Err(e) => ui::status::announce(&format!("Couldn’t install hooks. {e}")),
                 }
                 cx.notify();
             });
@@ -1652,8 +1658,14 @@ impl Got {
                     m.data.state = Some(Rc::new(v));
                 }
                 m.down = None;
+                m.down_at = None;
             }
-            Some(Err(e)) => m.down = Some(e.message),
+            Some(Err(e)) => {
+                if m.down.is_none() {
+                    m.down_at = Some(chrono::Local::now().format("%-I:%M %p").to_string());
+                }
+                m.down = Some(e.message);
+            }
             None => {}
         }
         if let Some(g) = self.goals.filter(|g| Stamps::took(&mut m.stamps.goals, g)) {
@@ -1945,6 +1957,7 @@ impl Render for MainWindow {
             .children(panel)
             .children(modal)
             .children(hours_menu)
+            .children(ui::health::render_menu(self, cx))
             .children(ui::status::toasts(self, &t, cx))
             .when(self.menu.is_some(), |d| {
                 // A click anywhere outside an open menu closes it.
@@ -2208,13 +2221,13 @@ fn usage_today(d: &Value) -> Option<UsageWin> {
 // ------------------------------------------------------------------ chrome drawing
 
 /// `.banner`: 7px 40px, 6/10 gaps, 13px, a bottom line.
-fn bar(bg: Hsla, fg: Hsla, line: Hsla) -> Div {
+pub(crate) fn bar(bg: Hsla, fg: Hsla, line: Hsla) -> Div {
     div().flex().flex_none().items_center().flex_wrap().gap_x(px(10.)).gap_y(px(6.)).px(px(40.)).py(px(7.)).text_size(px(13.)).bg(bg).text_color(fg).border_b_1().border_color(line)
 }
 
 /// `.btn.sm` in the banner: 32px tall, 12.5px, 0 10px, radius 7. `soft` is accent on accent-soft
 /// (semibold); otherwise `.ghost` (muted, no fill).
-fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, soft: bool) -> Stateful<Div> {
+pub(crate) fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, soft: bool) -> Stateful<Div> {
     let text = t.text;
     div()
         .id(id)
@@ -2233,46 +2246,10 @@ fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString
         .child(label.into())
 }
 
-/// The banner lines: the board down, the login item (native), master and PR-build problems. The
-/// alerts are the home page's Needs you list.
+/// The banner lines: the board down and setup that needs a hand (see [`ui::health::banners`]),
+/// then master and PR-build problems. The alerts are the home page's Needs you list.
 fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
-    let mut out = Vec::new();
-    let rows = banner_view(m.down.as_deref(), &[]);
-    for r in rows.iter().filter(|r| r.kind == "down") {
-        let text = r.text.clone();
-        out.push(
-            bar(t.down_soft, t.down, t.down_line)
-                .child(kit::dot(t.down, 8.))
-                .child(div().flex_1().min_w_0().child(r.text.clone()))
-                .child(banner_btn(t, "down-copy", "Copy", false).on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx))))
-                .into_any_element(),
-        );
-    }
-    match crate::install::status() {
-        crate::install::LoginItem::RequiresApproval => out.push(
-            bar(t.warn_soft, t.warn_text, t.warn_line)
-                .child(kit::dot(t.warn, 8.))
-                .child(div().flex_1().min_w_0().child("The board runs in the background as a login item. Switch on Taskboard in System Settings ▸ Login Items."))
-                .child(kit::btn_small(t, "open-login-items", "Open Login Items").on_click(|_, _, _| crate::install::open_login_items()))
-                .into_any_element(),
-        ),
-        crate::install::LoginItem::Blocked => out.push(
-            bar(t.warn_soft, t.warn_text, t.warn_line)
-                .child(kit::dot(t.warn, 8.))
-                .child(div().flex_1().min_w_0().child("Another board holds the port, so this one didn't start its background service or link tb. Stop the other board, then open Taskboard again."))
-                .into_any_element(),
-        ),
-        crate::install::LoginItem::Failed(e) => out.push(
-            bar(t.warn_soft, t.warn_text, t.warn_line)
-                .child(kit::dot(t.warn, 8.))
-                .child(div().flex_1().min_w_0().child(format!("The board's background service couldn't be registered: {e}")))
-                .into_any_element(),
-        ),
-        _ => {}
-    }
-    for p in crate::install::in_the_way() {
-        out.push(bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)).child(div().flex_1().min_w_0().child(p)).into_any_element());
-    }
+    let mut out = ui::health::banners(m, t, cx);
     out.extend(ui::prwatch::banner(m, t, cx));
     out
 }
@@ -2378,105 +2355,6 @@ pub fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<D
     div().id(id).flex().flex_none().items_center().gap(px(6.)).py(px(3.)).px(px(10.)).rounded_full().text_size(px(12.5)).line_height(px(18.75)).whitespace_nowrap().text_color(fg).bg(bg)
 }
 
-/// Amber "GitHub: sign in again" when an account lacks scopes Taskboard needs (or stopped working);
-/// opens Settings. `state.accounts` is the daemon's `accounts::attention`.
-pub(crate) fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
-    let list = st.get("accounts")?.as_array().filter(|l| !l.is_empty())?;
-    let label = match list.as_slice() {
-        [one] => format!("{}: {}", one["label"].as_str().unwrap_or("Account"), if one["reauth"] == true { "sign in again" } else { "check sign-in" }),
-        many => format!("{} accounts need you", many.len()),
-    };
-    let tip = list.iter().map(|a| format!("{}: {}", a["label"].as_str().unwrap_or(""), a["reason"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
-    Some(
-        pill_shell(t, "accounts-pill", t.warn_fg, t.warn_soft)
-            .cursor_pointer()
-            .child(kit::dot(t.warn, 7.))
-            .child(label)
-            .tooltip(kit::tip(tip))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
-            .into_any_element(),
-    )
-}
-
-/// "Taskboard 1.2.0 is ready" once a newer release is downloaded and checked; opens Settings › System,
-/// where Restart to update installs it.
-pub(crate) fn update_pill(t: &Theme) -> Option<AnyElement> {
-    let crate::updater::State::Ready { version, .. } = crate::updater::state() else { return None };
-    Some(
-        pill_shell(t, "update-pill", t.accent, t.accent_soft)
-            .cursor_pointer()
-            .child(kit::dot(t.accent, 7.))
-            .child(format!("Taskboard {version} is ready"))
-            .tooltip(kit::tip(format!("A new release, downloaded and checked. Restart to update from {} to {version}.", crate::updater::VERSION)))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSystemSettings), cx))
-            .into_any_element(),
-    )
-}
-
-/// "Install hooks", "● Hooks" or an amber "Reinstall hooks", as in Midna's status bar.
-pub(crate) fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    use crate::hooks::Hooks;
-    let can_install = crate::hooks::target().is_some_and(|t| t.can_install);
-    let text = t.text;
-    let base = div().id("hooks").flex().items_center().gap(px(5.)).text_size(px(12.5)).whitespace_nowrap().text_color(t.muted);
-    let clickable = |d: Stateful<Div>| -> Stateful<Div> {
-        if can_install {
-            d.cursor_pointer().hover(move |s| s.text_color(text)).on_click(cx.listener(|m, _, _, cx| m.install_hooks(cx)))
-        } else {
-            d
-        }
-    };
-    let by_app = if can_install { "" } else { "\nInstall them from Taskboard.app." };
-    let el = if m.hooks_busy {
-        base.child("Installing hooks…")
-    } else {
-        match &m.hooks {
-            Hooks::Hidden | Hooks::Checking => return None,
-            Hooks::Current => base
-                .child(kit::dot(t.up, 7.))
-                .child("Hooks")
-                .tooltip(kit::tip("The board's hooks are in Claude Code's settings, so sessions in Midna terminals report to the board.")),
-            Hooks::NotInstalled => clickable(base.text_color(t.accent).child("Install hooks")).tooltip(kit::tip(format!(
-                "Install the board's hooks and plugin in Claude Code so sessions in Midna terminals report to the board.{by_app}"
-            ))),
-            Hooks::NeedsReinstall(why) => clickable(base.text_color(t.warn_fg).child(kit::dot(t.warn, 7.)).child("Reinstall hooks"))
-                .tooltip(kit::tip(format!("The hooks are out of date, so sessions may not report to the board.\n{why}{by_app}"))),
-        }
-    };
-    Some(el.into_any_element())
-}
-
-/// `.conn.usage`: per window `.u-k` label, a 34×5 bar and the value; warm/hot recolour both.
-pub(crate) fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
-    let mut row = pill_shell(t, "usage-pill", t.muted, t.seg)
-        .gap(px(0.))
-        .px(px(4.))
-        .border_1()
-        .border_color(gpui_kit::transparent_black())
-        .when(u.stale, |d| d.opacity(0.6))
-        .tooltip(kit::tip(u.title.clone()));
-    for (n, w) in u.windows.iter().enumerate() {
-        let (bar_c, val_c) = match w.level {
-            "lifted" => (t.accent, t.accent),
-            "hot" => (t.down, t.down),
-            "warm" => (t.warn, t.warn_fg),
-            _ => (t.up, t.text_2),
-        };
-        row = row.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(7.))
-                .when(n > 0, |d| d.border_l_1().border_color(t.border_2))
-                .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(t.faint).child(w.label.clone()))
-                .child(div().w(px(34.)).h(px(5.)).rounded_full().overflow_hidden().bg(t.border_2).child(div().h_full().rounded_full().bg(bar_c).w(relative((w.width / 100.) as f32))))
-                .child(div().min_w(px(22.)).flex().justify_end().text_color(val_c).when(w.level == "hot", |d| d.font_weight(FontWeight::SEMIBOLD)).child(w.value.clone())),
-        );
-    }
-    row.into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{MainWindow, Page, Panel, TaskTab, alerts_dialog_view, banner_view, conn_pill, dismiss_alert, dismiss_all_alerts, page_title, usage_view};
@@ -2552,17 +2430,6 @@ mod tests {
             Some(u) => json!({"stale": u.stale, "title": u.title, "windows": u.windows.iter().map(|w| json!({"level": w.level, "label": w.label,
                 "width": if w.width.fract() == 0. { json!(w.width as i64) } else { json!(w.width) }, "value": w.value})).collect::<Vec<_>>()}),
         });
-    }
-
-    #[::core::prelude::v1::test]
-    fn update_pill_shows_only_once_a_release_is_ready() {
-        use crate::updater::{State, set_for_test};
-        let t = crate::theme::Theme::new(crate::theme::ThemeMode::Light, "Helvetica Neue".into(), "Menlo".into());
-        set_for_test(State::Downloading { version: "9.0.0".into() });
-        assert!(super::update_pill(&t).is_none(), "not while it downloads");
-        set_for_test(State::Ready { version: "9.0.0".into(), page: String::new() });
-        assert!(super::update_pill(&t).is_some());
-        set_for_test(State::Idle);
     }
 
     #[::core::prelude::v1::test]

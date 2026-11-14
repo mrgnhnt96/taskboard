@@ -113,7 +113,7 @@ impl Daemon {
             *down = Some(why);
         }
         crate::install::daemon_unreachable();
-        CallError { status: 0, message: "Can’t reach the task board server.".into() }
+        CallError { status: 0, message: "Can’t reach the board.".into() }
     }
 
     fn reached(&self) {
@@ -590,7 +590,7 @@ mod tests {
         // Nothing listens on port 9 (discard) on a dev machine.
         let d = Daemon::at("http://127.0.0.1:9");
         let e = d.get("state", &[]).unwrap_err();
-        assert_eq!(e.message, "Can’t reach the task board server.");
+        assert_eq!(e.message, "Can’t reach the board.");
         assert_eq!(e.status, 0);
     }
 
