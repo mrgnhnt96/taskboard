@@ -58,7 +58,7 @@ impl EventEmitter<FieldChanged> for TextField {}
 impl TextField {
     pub fn new(cx: &mut Context<Self>, secret: bool, placeholder: impl Into<SharedString>) -> TextField {
         TextField {
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             content: String::new(),
             selected: 0..0,
             reversed: false,

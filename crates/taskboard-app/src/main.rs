@@ -19,6 +19,7 @@
 //! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit;
 //!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips),
 //!   `TASKBOARD_SNAPSHOT_CLICK=x,y;x,y` clicks there in turn first (menus and opened rows),
+//!   `TASKBOARD_SNAPSHOT_KEYS=tab tab` presses those keys in turn after the clicks (focus rings),
 //!   `TASKBOARD_SNAPSHOT_SCROLL=x,y,dy` scrolls what's under x,y down dy px after the clicks.
 mod app;
 mod backend;
@@ -220,6 +221,15 @@ fn snapshot(any: AnyWindowHandle, cx: &mut App) {
                 window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers, click_count }), cx);
             });
             cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+        }
+        let keys = std::env::var("TASKBOARD_SNAPSHOT_KEYS").unwrap_or_default();
+        for key in keys.split_whitespace().filter_map(|k| Keystroke::parse(k).ok()) {
+            let _ = cx.update_window(any, |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                window.dispatch_keystroke(key, cx);
+            });
+            cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
         }
         if let Some((at, dy)) = std::env::var("TASKBOARD_SNAPSHOT_SCROLL").ok().and_then(|v| {
             let (xy, dy) = v.rsplit_once(',')?;

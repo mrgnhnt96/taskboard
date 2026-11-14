@@ -2,6 +2,7 @@
 //! control, text fields, tooltips, popover menus and the modal shell. Their sizes follow the
 //! web board's `app.css` so the native app reads the same.
 use crate::theme::{Theme, height, opacity, radius, space, text as size};
+use crate::ui::focus;
 use crate::ui::text_input::TextField;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -149,7 +150,7 @@ pub enum Size {
 
 /// The one button: every button on every page is this in a kind and a size.
 pub fn button(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Kind, size: Size) -> Stateful<Div> {
-    let b = button_shape(id, label, size);
+    let b = button_shape(t, id, label, size);
     match kind {
         Kind::Primary => {
             let (hover, down) = (t.accent_hover, t.accent_down);
@@ -172,18 +173,17 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString
 
 /// A primary button filled in another colour (a status colour): it darkens on hover and press
 /// instead of turning accent blue.
-pub fn filled(id: impl Into<ElementId>, label: impl Into<SharedString>, fill: Hsla, text: Hsla) -> Stateful<Div> {
-    button_shape(id, label, Size::Regular).bg(fill).border_color(fill).text_color(text).hover(|s| s.opacity(0.9)).active(|s| s.opacity(0.8))
+pub fn filled(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, fill: Hsla, text: Hsla) -> Stateful<Div> {
+    button_shape(t, id, label, Size::Regular).bg(fill).border_color(fill).text_color(text).hover(|s| s.opacity(0.9)).active(|s| s.opacity(0.8))
 }
 
 /// Every button's size, corners and label, before its kind's colours.
-fn button_shape(id: impl Into<ElementId>, label: impl Into<SharedString>, size: Size) -> Stateful<Div> {
+fn button_shape(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, size: Size) -> Stateful<Div> {
     let (h, pad, text, gap) = match size {
         Size::Small => (height::SMALL, space::S2, size::META, space::S1),
         Size::Regular => (height::CONTROL, space::S3, size::BODY, space::S2),
     };
-    div()
-        .id(id)
+    focus::stop(t, div().id(id))
         .flex()
         .flex_none()
         .items_center()
@@ -242,12 +242,12 @@ pub fn icon_btn(t: &Theme, id: impl Into<ElementId>, child: impl IntoElement) ->
 /// A borderless text button (links inside rows).
 pub fn link(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let fg = t.accent;
-    div().id(id).flex_none().cursor_pointer().text_color(fg).hover(|s| s.underline()).child(label.into())
+    focus::stop(t, div().id(id)).flex_none().cursor_pointer().text_color(fg).hover(|s| s.underline()).child(label.into())
 }
 
-/// Disabled look for any button (the caller simply doesn't attach `on_click`).
+/// Disabled look for any button (the caller simply doesn't attach `on_click`). Tab skips it.
 pub fn disabled(b: Stateful<Div>) -> Stateful<Div> {
-    b.opacity(opacity::DISABLED).cursor_default()
+    b.opacity(opacity::DISABLED).cursor_default().tab_stop(false)
 }
 
 /// A label that takes the bold width even while regular, so choosing it never shifts its row.
@@ -270,8 +270,7 @@ where
     for (i, l) in labels.iter().enumerate() {
         let sel = i == on;
         let (text, hover) = (t.text, t.border);
-        let item = div()
-            .id(SharedString::from(format!("{id}-{i}")))
+        let item = focus::stop(t, div().id(SharedString::from(format!("{id}-{i}"))))
             .flex()
             .items_center()
             .h(px(height::SMALL))
@@ -354,8 +353,7 @@ pub fn menu_box(t: &Theme, width: f32) -> Div {
 /// One row in a popover menu.
 pub fn menu_item(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
     let h = t.panel_2;
-    div()
-        .id(id)
+    focus::stop(t, div().id(id))
         .flex()
         .items_center()
         .gap(px(space::S2))

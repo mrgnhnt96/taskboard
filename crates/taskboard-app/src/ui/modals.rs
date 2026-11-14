@@ -107,8 +107,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let t = cx.global::<Theme>().clone();
     // The alerts dialog closes itself once nothing needs you (renderBanner).
     if matches!(m.modal, Some(Modal::Alerts)) && arr(m.state(), "alerts").is_empty() && m.data.state.is_some() {
-        m.modal = None;
-        window.focus(&m.focus, cx);
+        m.set_modal(None, window, cx);
         return div().into_any_element();
     }
     let body = match &m.modal {
@@ -124,6 +123,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     };
     deferred(
         kit::scrim(&t, "modal-scrim")
+            .track_focus(&m.modal_focus)
             .flex()
             .items_center()
             .justify_center()
@@ -135,10 +135,10 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     .into_any_element()
 }
 
-/// Esc in the dialog closes it.
+/// Esc in the dialog closes its top layer: a menu open in it, else the dialog.
 pub fn on_escape(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     if m.modal.is_some() {
-        close(m, window, cx);
+        m.escape(window, cx);
     }
 }
 

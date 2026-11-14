@@ -226,6 +226,12 @@ pub struct MainWindow {
     /// Why the last `GET /state` failed (the "isn't answering" banner).
     pub down: Option<String>,
     pub focus: FocusHandle,
+    /// The open dialog's own focus: keys go to the dialog, and Tab stays inside it.
+    pub modal_focus: FocusHandle,
+    /// What had focus before the dialog opened; it gets it back when the dialog closes.
+    modal_return: Option<FocusHandle>,
+    /// Whether the last frame drew a dialog, so one opened or closed by assignment still moves focus.
+    modal_shown: bool,
     // Per-page state.
     pub board: ui::board::State,
     pub goal_page: ui::goal::State,
@@ -308,6 +314,9 @@ impl MainWindow {
             toasts: Vec::new(),
             down: None,
             focus,
+            modal_focus: cx.focus_handle(),
+            modal_return: None,
+            modal_shown: false,
             board: Default::default(),
             goal_page: Default::default(),
             backlog: Default::default(),
@@ -708,10 +717,36 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Opens or closes the dialog. Opening one moves focus into it; closing gives focus back to
+    /// what had it before. A caller may then focus a field inside the dialog.
     pub fn set_modal(&mut self, modal: Option<ui::modals::Modal>, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = modal;
-        window.focus(&self.focus, cx);
+        self.sync_modal_focus(window, cx);
         cx.notify();
+    }
+
+    /// Moves focus into a dialog that just opened, or back out of one that just closed.
+    fn sync_modal_focus(&mut self, window: &mut Window, cx: &mut App) {
+        match (self.modal.is_some(), self.modal_shown) {
+            (true, false) => {
+                self.modal_shown = true;
+                self.modal_return = window.focused(cx).filter(|f| *f != self.modal_focus);
+                window.focus(&self.modal_focus, cx);
+            }
+            (false, true) => {
+                self.modal_shown = false;
+                // Back to what had focus, unless it's gone with the dialog (a menu item, say).
+                let back = self.modal_return.take().filter(|f| self.focus.contains(f, window)).unwrap_or_else(|| self.focus.clone());
+                window.focus(&back, cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Page keys (pages, Back, Forward, Search, Copy link) pause while a dialog is open, so they
+    /// never act on the page behind it.
+    pub fn page_keys(&self) -> bool {
+        self.modal.is_none()
     }
 
     pub fn toggle_menu(&mut self, key: &str, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -777,16 +812,13 @@ impl MainWindow {
         page_title(&self.page, self.needs_count())
     }
 
-    /// Esc (the web's keydown handler, in its order): an open menu, then the alerts dialog, then the task panel (or an issue panel on the board),
-    /// then, on the board with nothing focused, the board's filters.
+    /// Esc closes only the top layer: an open menu, then a dialog, then a popover in the panel,
+    /// then the panel, then the Backlog's checked issues, then (on the board with nothing
+    /// focused) the board's filters.
     pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // An open picker closes first, giving focus back and keeping the Backlog's checks.
         if self.issue_panel.picker.as_ref().is_some_and(|p| self.menu_open(&p.key).is_some()) {
             return ui::issue_panel::close_picker(self, window, cx);
-        }
-        // On the Backlog page esc unchecks everything, closing its menu too.
-        if ui::backlog::escape(self, cx) {
-            return;
         }
         if self.menu.is_some() {
             self.menu = None;
@@ -805,7 +837,11 @@ impl MainWindow {
             Some(Panel::Issue { .. }) => return self.close_panel(cx),
             None => {}
         }
-        if self.page == Page::Board && self.focus.is_focused(window) && (self.filters.goal != "all" || self.filters.project != "all") {
+        // The checked issues go only once nothing is open over them.
+        if ui::backlog::escape(self, cx) {
+            return;
+        }
+        if self.page == Page::Board && !ui::focus::typing(window) && (self.filters.goal != "all" || self.filters.project != "all") {
             self.rail_clear(cx);
         }
     }
@@ -1625,11 +1661,13 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward, FocusNext, FocusPrev]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", CloseOverlay, Some("MainWindow")),
+        KeyBinding::new("tab", FocusNext, Some("MainWindow")),
+        KeyBinding::new("shift-tab", FocusPrev, Some("MainWindow")),
         // In the sidebar's order.
         KeyBinding::new("cmd-1", GoBoard, Some("MainWindow")),
         KeyBinding::new("cmd-2", GoProjects, Some("MainWindow")),
@@ -1654,9 +1692,47 @@ pub fn bind_keys(cx: &mut App) {
 
 // ------------------------------------------------------------------ render
 
+impl MainWindow {
+    /// A page key (a page, Back, Forward, Search, Copy link). It does nothing while a dialog is open.
+    pub fn on_page_key(&mut self, a: &dyn Action, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.page_keys() {
+            return;
+        }
+        let a = a.as_any();
+        if a.is::<GoBoard>() {
+            self.go(Page::Board, cx)
+        } else if a.is::<GoBacklog>() {
+            self.go(Page::Backlog, cx)
+        } else if a.is::<GoProjects>() {
+            self.go(Page::Projects, cx)
+        } else if a.is::<GoDays>() {
+            self.go(Page::Days, cx)
+        } else if a.is::<GoGoals>() {
+            self.go(Page::Goals, cx)
+        } else if a.is::<CopyRef>() {
+            copy_ref(self, cx)
+        } else if a.is::<Search>() {
+            ui::search::open(self, window, cx)
+        } else if a.is::<NavBack>() {
+            self.go_back(cx)
+        } else if a.is::<NavForward>() {
+            self.go_forward(cx)
+        }
+    }
+
+    /// Tab and Shift-Tab: the next or previous control, kept inside an open dialog.
+    pub fn on_focus_key(&mut self, a: &dyn Action, window: &mut Window, cx: &mut Context<Self>) {
+        let trap = self.modal.is_some().then(|| self.modal_focus.clone());
+        ui::focus::step(a.as_any().is::<FocusPrev>(), trap.as_ref(), window, cx);
+        cx.notify();
+    }
+}
+
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drawn = Instant::now();
+        // A dialog opened or closed by assignment moves focus here, as `set_modal` does.
+        self.sync_modal_focus(window, cx);
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
 
@@ -1686,17 +1762,19 @@ impl Render for MainWindow {
             .key_context("MainWindow")
             .track_focus(&self.focus)
             .on_action(cx.listener(|m, _: &CloseOverlay, window, cx| m.escape(window, cx)))
-            .on_action(cx.listener(|m, _: &GoBoard, _, cx| m.go(Page::Board, cx)))
-            .on_action(cx.listener(|m, _: &GoBacklog, _, cx| m.go(Page::Backlog, cx)))
-            .on_action(cx.listener(|m, _: &GoProjects, _, cx| m.go(Page::Projects, cx)))
-            .on_action(cx.listener(|m, _: &GoDays, _, cx| m.go(Page::Days, cx)))
-            .on_action(cx.listener(|m, _: &GoGoals, _, cx| m.go(Page::Goals, cx)))
+            .on_action(cx.listener(|m, a: &FocusNext, window, cx| m.on_focus_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &FocusPrev, window, cx| m.on_focus_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &GoBoard, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &GoBacklog, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &GoProjects, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &GoDays, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &GoGoals, window, cx| m.on_page_key(a, window, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
-            .on_action(cx.listener(|m, _: &CopyRef, _, cx| copy_ref(m, cx)))
+            .on_action(cx.listener(|m, a: &CopyRef, window, cx| m.on_page_key(a, window, cx)))
             .on_action(|_: &CopySelection, window, cx| ui::select::copy(window, cx))
-            .on_action(cx.listener(|m, _: &Search, window, cx| ui::search::open(m, window, cx)))
-            .on_action(cx.listener(|m, _: &NavBack, _, cx| m.go_back(cx)))
-            .on_action(cx.listener(|m, _: &NavForward, _, cx| m.go_forward(cx)))
+            .on_action(cx.listener(|m, a: &Search, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &NavBack, window, cx| m.on_page_key(a, window, cx)))
+            .on_action(cx.listener(|m, a: &NavForward, window, cx| m.on_page_key(a, window, cx)))
             .relative()
             .flex()
             .flex_col()
