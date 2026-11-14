@@ -72,6 +72,7 @@ fn a_spec_is_filled_from_the_facts_by_key_and_ref() {
     assert_eq!(page["highlights"], json!(["3 merged."]));
     let ids: Vec<&str> = page["components"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["open", "story", "kpis", "fact"], "in the spec's order");
+    assert!(page["components"][1].get("why").is_none(), "why a component was picked stays in the spec, off the page");
     let story = &page["components"][1];
     assert_eq!(story["props"]["goal"]["ref"], format!("G{g}"));
     assert_eq!(story["props"]["goal"]["value"]["name"], "Ship login", "a ref is filled with what the facts say about it");

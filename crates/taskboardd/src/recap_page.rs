@@ -383,7 +383,7 @@ pub fn check(spec: &Value, facts: &Value) -> std::result::Result<Value, String> 
                 _ => {}
             }
         }
-        let mut entry = json!({"id": c.id, "name": c.name, "group": c.group, "span": c.span, "why": item["why"].as_str().unwrap_or_default(), "props": props});
+        let mut entry = json!({"id": c.id, "name": c.name, "group": c.group, "span": c.span, "props": props});
         let text = item["text"].as_str().unwrap_or_default().trim();
         if c.text {
             if text.is_empty() {
