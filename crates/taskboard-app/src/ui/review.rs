@@ -497,12 +497,14 @@ fn commands_el(m: &MainWindow, t: &Theme, v: &View, cx: &mut Context<MainWindow>
     Some(card(t).child(head(t, "Commands", Some(seg.into_any_element()))).child(lines(t, "cmd", tabs[on].2, true, color, cx)))
 }
 
-/// Day | Week: the Days page and the weekly review, from either one.
-pub fn day_week(t: &Theme, week: bool, cx: &mut Context<MainWindow>) -> Div {
-    kit::seg(t, "day-week", &["Day", "Week"], week as usize, |i, item| {
-        item.on_click(cx.listener(move |m, _, _, cx| match (i, m.page == Page::Review) {
-            (0, true) => m.go(Page::Days, cx),
-            (1, false) => open(m, None, cx),
+/// Day | Week | Recaps: the Days page, the weekly review and the recaps, from any of them.
+/// `on` is the one shown.
+pub fn day_week(t: &Theme, on: usize, cx: &mut Context<MainWindow>) -> Div {
+    kit::seg(t, "day-week", &["Day", "Week", "Recaps"], on, |i, item| {
+        item.on_click(cx.listener(move |m, _, _, cx| match i {
+            0 if m.page != Page::Days => m.go(Page::Days, cx),
+            1 if m.page != Page::Review => open(m, None, cx),
+            2 if m.page != Page::Recap => crate::ui::recap::open(m, None, cx),
             _ => {}
         }))
     })
@@ -600,7 +602,7 @@ fn first_week(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     });
     let callout = card(t).flex_row().flex_wrap().px(px(20.)).items_center().justify_between().gap(px(16.)).child(left).children(next_at.map(strip));
     let content = v.filter(|_| tracked).map(|v| body(m, t, &v, cx));
-    page(header(t, title, sub, day_week(t, true, cx))).child(callout).children(content)
+    page(header(t, title, sub, day_week(t, 1, cx))).child(callout).children(content)
 }
 
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -614,7 +616,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     let shown = m.data.review.clone().filter(|r| r["id"].as_i64().is_some() && r["id"].as_i64() == want);
     let Some(r) = shown else {
         let msg = m.data.errs.review.clone().unwrap_or_else(|| "Loading…".into());
-        let nav = div().flex().child(day_week(&t, true, cx));
+        let nav = div().flex().child(day_week(&t, 1, cx));
         return shell.child(page(header(&t, String::new(), None, nav)).child(kit::empty(&t, msg))).into_any_element();
     };
     mark_seen(m, &r, cx);
@@ -643,7 +645,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             }
         })))
         .child(div().w(px(6.)))
-        .child(day_week(&t, true, cx));
+        .child(day_week(&t, 1, cx));
 
     let mut menus: Vec<AnyElement> = vec![];
     if let Some(at) = m.menu_open(MENU_WEEK) {

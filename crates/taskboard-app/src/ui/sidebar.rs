@@ -101,6 +101,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
     let goals = active_goals(&all_goals);
     let active_goals = goals.len();
     let untriaged = i(counts, "untriaged");
+    let recaps = i(counts, "recaps_unseen");
 
     let nav = |id: &'static str, label: &'static str, mark: Div, count: Option<(String, bool)>, to: Page, on: bool, cx: &mut Context<MainWindow>| {
         nav_item(t, id, label, mark, count, on).on_click(cx.listener(move |m, _, _, cx| {
@@ -130,7 +131,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         .child(nav("nav-goals", "Goals", square(t.goal, false), (active_goals > 0).then(|| (active_goals.to_string(), false)), Page::Goals, on(Page::Goals) || matches!(page, Page::Goal(_)), cx))
         .child(nav("nav-backlog", "Backlog", kit::dot(t.backlog_dot, 8.), (untriaged > 0).then(|| (untriaged.to_string(), false)), Page::Backlog, on(Page::Backlog), cx))
         .child(nav("nav-ideas", "Ideas", kit::dot(t.goal, 8.), None, Page::Ideas, on(Page::Ideas) || matches!(page, Page::Idea(_)), cx))
-        .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days) || page == Page::Review, cx));
+        .child(nav("nav-days", "Days", square(t.results, false), (recaps > 0).then(|| (recaps.to_string(), true)), Page::Days, on(Page::Days) || page == Page::Review || page == Page::Recap, cx));
     if !crate::ui::releases::projects_on(&st).is_empty() {
         col = col.child(nav("nav-releases", "Releases", square(t.up, true), None, Page::Releases, on(Page::Releases) || matches!(page, Page::ReleasesOf(_)), cx));
     }

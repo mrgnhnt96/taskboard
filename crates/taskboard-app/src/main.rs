@@ -10,6 +10,7 @@
 //! - `TASKBOARD_FAKE_STOPPED=1` — with the fake backend, two tasks whose terminals were closed by hand.
 //! - `TASKBOARD_FAKE_NEEDS=1` — with the fake backend, misses, an alert, to-dos and items put off on Needs you.
 //! - `TASKBOARD_FAKE_QUIET=1` — with the fake backend, work gone quiet under Agents waiting.
+//! - `TASKBOARD_FAKE_RECAPS=1` — with the fake backend, this week's and this month's recaps, unseen.
 //! - `TASKBOARD_W` / `TASKBOARD_H` — window size.
 //! - `taskboard://task/T12` (also `goal/G3`, `issue/B7`, `session/<id>`) opens that page; the
 //!   daemon's notifications link there. `TASKBOARD_LINK=<url>` follows one at startup.
@@ -17,7 +18,8 @@
 //! - `TASKBOARD_PICK=B2,B3` — check these issues on the Backlog page.
 //! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit;
 //!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips),
-//!   `TASKBOARD_SNAPSHOT_CLICK=x,y;x,y` clicks there in turn first (menus and opened rows).
+//!   `TASKBOARD_SNAPSHOT_CLICK=x,y;x,y` clicks there in turn first (menus and opened rows),
+//!   `TASKBOARD_SNAPSHOT_SCROLL=x,y,dy` scrolls what's under x,y down dy px after the clicks.
 mod app;
 mod backend;
 mod fingerprint;
@@ -74,6 +76,8 @@ fn main() {
         let (ui_font, mono_font) = theme::load_fonts(cx);
         let system_dark = matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
         cx.set_global(Theme::new(theme::startup_mode(system_dark), ui_font, mono_font));
+        // Entrances and transitions stay still when the Mac asks for less motion.
+        gpui_kit::base::apply_system_reduce_motion(cx);
         app::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
@@ -214,6 +218,18 @@ fn snapshot(any: AnyWindowHandle, cx: &mut App) {
                 let (button, modifiers, click_count) = (MouseButton::Left, Modifiers::default(), 1);
                 window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers, click_count, first_mouse: false }), cx);
                 window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers, click_count }), cx);
+            });
+            cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+        }
+        if let Some((at, dy)) = std::env::var("TASKBOARD_SNAPSHOT_SCROLL").ok().and_then(|v| {
+            let (xy, dy) = v.rsplit_once(',')?;
+            Some((spot(xy)?, dy.trim().parse::<f32>().ok()?))
+        }) {
+            let _ = cx.update_window(any, |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                let delta = ScrollDelta::Pixels(point(px(0.), px(-dy)));
+                window.dispatch_event(PlatformInput::ScrollWheel(ScrollWheelEvent { position: at, delta, modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved }), cx);
             });
             cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
         }

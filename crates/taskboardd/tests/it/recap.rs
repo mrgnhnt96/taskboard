@@ -235,7 +235,9 @@ fn the_app_lists_reads_and_marks_recaps_seen() {
     assert_eq!(one["facts"]["totals"]["tasks"], 1);
     assert_eq!(one["writing"], Value::Null);
 
+    assert_eq!(call(&app, "GET", "/state").unwrap()["counts"]["recaps_unseen"], 2, "the sidebar's Days badge reads this");
     let seen = call(&app, "POST", &format!("/recaps/{id}/seen")).unwrap();
+    assert_eq!(call(&app, "GET", "/state").unwrap()["counts"]["recaps_unseen"], 1);
     let at_first = seen["seen_at"].clone();
     assert!(at_first.is_string());
     assert_eq!(call(&app, "POST", &format!("/recaps/{id}/seen")).unwrap()["seen_at"], at_first, "the first time it was opened stays");

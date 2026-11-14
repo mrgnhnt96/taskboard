@@ -52,6 +52,8 @@ pub enum Page {
     Days,
     /// The weekly time review (`ui::review`): which week is in `MainWindow::review`.
     Review,
+    /// A weekly or monthly recap (`ui::recap`): which one is in `MainWindow::recap`.
+    Recap,
     /// Each project's releases, for the projects with releases on (`ui::releases`).
     Releases,
     /// One project's releases, by project name (`ui::releases`).
@@ -111,6 +113,9 @@ pub struct Data {
     /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
     pub reviews: Option<Value>,
     pub review: Option<Value>,
+    /// `GET /recaps` and the one shown, `GET /recaps/:id`, for the Recap page.
+    pub recaps: Option<Value>,
+    pub recap: Option<Value>,
     /// `GET /ideas/:id` for an idea's page (the Ideas page holds its own, `ui::ideas`).
     pub idea: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
@@ -127,6 +132,7 @@ pub struct Errs {
     pub sessions: Option<String>,
     pub days: Option<String>,
     pub review: Option<String>,
+    pub recap: Option<String>,
     pub ideas: Option<String>,
     pub idea: Option<String>,
 }
@@ -228,6 +234,7 @@ pub struct MainWindow {
     pub hours: ui::hours::State,
     pub days: ui::days::State,
     pub review: ui::review::State,
+    pub recap: ui::recap::State,
     pub goals: ui::goals_page::State,
     pub projects: ui::projects::State,
     pub releases: ui::releases::State,
@@ -308,6 +315,7 @@ impl MainWindow {
             hours: Default::default(),
             days: Default::default(),
             review: Default::default(),
+            recap: Default::default(),
             goals: Default::default(),
             projects: Default::default(),
             releases: Default::default(),
@@ -335,6 +343,7 @@ impl MainWindow {
                 "backlog" | "plan" => Page::Backlog,
                 "days" => Page::Days,
                 "review" => Page::Review,
+                "recap" => Page::Recap,
                 "goals" => Page::Goals,
                 "projects" => Page::Projects,
                 "releases" => Page::Releases,
@@ -671,6 +680,7 @@ impl MainWindow {
             ("backlog" | "plan", _) => self.go(Page::Backlog, cx),
             ("days", _) => self.go(Page::Days, cx),
             ("review" | "reviews", id) => ui::review::open(self, id.parse().ok(), cx),
+            ("recap" | "recaps", id) => ui::recap::open(self, id.parse().ok(), cx),
             ("tasks", _) => self.go(Page::Projects, cx),
             ("projects", p) => {
                 if !p.is_empty() {
@@ -1154,6 +1164,8 @@ struct Wants {
     loose: Option<String>,
     /// The Review page: the list, and the picked review (`None`: the newest).
     review: Option<Option<i64>>,
+    /// The Recap page: the list, and the picked recap (`None`: the newest).
+    recap: Option<Option<i64>>,
     /// A Releases page: the projects it lists (with how many releases of each), and its rows in full.
     releases: Vec<(String, usize)>,
     release_rows: Vec<String>,
@@ -1185,6 +1197,8 @@ struct Got {
     loose: Option<(String, Answer)>,
     reviews: Option<Answer>,
     review: Option<(i64, Answer)>,
+    recaps: Option<Answer>,
+    recap: Option<(i64, Answer)>,
     releases: Vec<(String, Answer)>,
     release_rows: Vec<(String, Answer)>,
     ideas: Option<Result<ui::paged::Fresh, String>>,
@@ -1226,6 +1240,7 @@ impl Wants {
             palette: ui::search::query(m, cx),
             loose: (m.page == Page::Projects).then(|| ui::projects::picked(m)).flatten(),
             review: (m.page == Page::Review).then_some(m.review.id),
+            recap: (m.page == Page::Recap).then_some(m.recap.id),
             releases: releases_shown(m),
             release_rows: ui::releases::open_rows(&m.releases, &m.page),
             ideas: (m.page == Page::Ideas).then(|| m.ideas.held.recheck(ui::ideas::is_open)),
@@ -1250,7 +1265,7 @@ impl Wants {
             q.extend(since.map(|s| ("since", s)));
             q
         }
-        let Wants { state_q, task, issue, goal, goal_rows, sessions, days_q, home, palette, loose, review, releases, release_rows, ideas, idea } = self;
+        let Wants { state_q, task, issue, goal, goal_rows, sessions, days_q, home, palette, loose, review, recap, releases, release_rows, ideas, idea } = self;
         let Since { state: state_since, goals: goals_since } = since;
         add(&mut c, "state", move |be| Got { state: Some(be.get("state", &since_q(state_q, state_since))), ..Got::default() });
         add(&mut c, "goals", move |be| Got { goals: get(be, "goals", &since_q(vec![], goals_since)).ok(), ..Got::default() });
@@ -1295,6 +1310,14 @@ impl Wants {
                 let newest = list.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
                 let review = id.or(newest).map(|id| (id, get(be, &format!("reviews/{id}"), &[])));
                 Got { reviews: Some(list), review, ..Got::default() }
+            });
+        }
+        if let Some(id) = recap {
+            add(&mut c, "recaps", move |be| {
+                let list = get(be, "recaps", &[]);
+                let newest = list.as_ref().ok().and_then(|l| arr(l, "recaps").first()?["id"].as_i64());
+                let recap = id.or(newest).map(|id| (id, get(be, &format!("recaps/{id}"), &[])));
+                Got { recaps: Some(list), recap, ..Got::default() }
             });
         }
         for (p, n) in releases {
@@ -1387,7 +1410,7 @@ impl Got {
         // The board and goal list by their stamps, so an unchanged answer prints as the one it stands for.
         f.add(&self.state.as_ref().map(|a| a.as_ref().map(Stamped))).add(&self.goals.as_ref().map(Stamped)).add(&self.task).add(&self.issue).add(&self.goal).add(&self.goal_rows);
         f.add(&self.sessions).add(&self.home).add(&self.palette);
-        f.add(&self.loose).add(&self.reviews).add(&self.review).add(&self.releases).add(&self.release_rows);
+        f.add(&self.loose).add(&self.reviews).add(&self.review).add(&self.recaps).add(&self.recap).add(&self.releases).add(&self.release_rows);
         f.add(&self.ideas).add(&self.idea);
         f.skip = fingerprint::DAY_CLOCKS;
         f.add(&self.days).add(&self.today);
@@ -1406,6 +1429,8 @@ impl Got {
             || err(self.days.as_ref())
             || err(self.reviews.as_ref())
             || err(self.review.as_ref().map(|(_, a)| a))
+            || err(self.recaps.as_ref())
+            || err(self.recap.as_ref().map(|(_, a)| a))
             || err(self.ideas.as_ref())
             || err(self.idea.as_ref().map(|(_, a)| a))
     }
@@ -1542,6 +1567,16 @@ impl Got {
                 }
             }
         }
+        if m.page == Page::Recap {
+            if let Some(v) = self.recaps {
+                land(&mut d.recaps, &mut d.errs.recap, v, |v| v);
+            }
+            if let Some((id, v)) = self.recap {
+                if m.recap.id.is_none_or(|want| want == id) {
+                    land(&mut d.recap, &mut d.errs.recap, v, |v| v);
+                }
+            }
+        }
         if let Some((p, Ok(v))) = self.loose.filter(|_| m.page == Page::Projects) {
             m.projects.land_loose(p, v);
         }
@@ -1613,6 +1648,7 @@ impl Render for MainWindow {
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),
+            Page::Recap => ui::recap::render(self, window, cx),
             Page::Releases | Page::ReleasesOf(_) => ui::releases::render(self, window, cx),
             Page::Ideas => ui::ideas::render(self, window, cx),
             Page::Idea(_) => ui::idea::render(self, cx),
@@ -1697,7 +1733,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Goal(_) | Page::Goals => "Goals",
         Page::Projects => "Projects",
         Page::Backlog => "Backlog",
-        Page::Days => "Days",
+        Page::Days | Page::Recap => "Days",
         Page::Review => "Review",
         Page::Releases | Page::ReleasesOf(_) => "Releases",
         Page::Ideas | Page::Idea(_) => "Ideas",
@@ -2468,6 +2504,41 @@ mod tests {
         .unwrap();
         let seen = format!("reviews/{id}/seen");
         assert_eq!(rec.posts().iter().filter(|(p, _)| *p == seen).count(), 1, "opening it marks it seen once");
+    }
+
+    /// A recap link opens the recap under Days, marks it seen once, and a component the app doesn't
+    /// know in its stored page is left out rather than stopping the page.
+    #[gpui_kit::test]
+    fn a_recap_link_opens_the_recap_marks_it_seen_and_skips_an_unknown_component(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend as _;
+        let (w, rec) = window(cx);
+        let app = rec.board().app();
+        let id = taskboardd::recap::save(app, "weekly", chrono::Local::now().date_naive()).unwrap();
+        let mut writing = taskboardd::recap_page::compose(app, id, None).unwrap();
+        writing["page"]["components"].as_array_mut().unwrap().insert(0, json!({"component": "hologram", "props": {}}));
+        app.db.x("UPDATE recaps SET writing = ? WHERE id = ?", taskboardd::p![writing.to_string(), id]).unwrap();
+        assert_eq!(rec.board().get("state", &[]).unwrap()["counts"]["recaps_unseen"], 1);
+
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link(&format!("taskboard://recap/{id}"), cx)).unwrap();
+        settle(cx);
+        {
+            use gpui_kit::AppContext as _;
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert!(m.page == Page::Recap);
+            assert_eq!(m.recap.id, Some(id));
+            assert!(m.data.recap.as_ref().is_some_and(|r| !r["seen_at"].is_null()), "the seen answer replaces what's shown");
+        })
+        .unwrap();
+        let seen = format!("recaps/{id}/seen");
+        assert_eq!(rec.posts().iter().filter(|(p, _)| *p == seen).count(), 1, "opening it marks it seen once");
+        assert_eq!(rec.board().get("state", &[]).unwrap()["counts"]["recaps_unseen"], 0, "the Days badge goes");
     }
 
     /// Review opened without a pick (the sidebar) shows the newest review.
