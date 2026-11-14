@@ -1,0 +1,54 @@
+diff --color -ru src/markup.html /Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-5/design/menus-shortcuts-links-search/src/markup.html
+--- src/markup.html	2026-11-14 02:12:59
++++ /Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-5/design/menus-shortcuts-links-search/src/markup.html	2026-11-14 02:12:03
+@@ -184,6 +184,8 @@
+             <li><input type="checkbox" id="k4"><label for="k4">Page keys, Back, Forward and Search do nothing while a dialog is open, and their menu items are greyed.</label></li>
+             <li><input type="checkbox" id="k7"><label for="k7">⌘3, ⌘7, ⌘[ returns to Goals; ⌘7, ⌘2, ⌘[ returns to the page before Releases.</label></li>
+             <li><input type="checkbox" id="k8"><label for="k8">Closing a menu, search or a dialog puts focus back on what opened it.</label></li>
++            <li><input type="checkbox" id="k9"><label for="k9">⌘N with New idea open keeps the draft and puts focus in Title.</label></li>
++            <li><input type="checkbox" id="k10"><label for="k10">One Esc closes a menu, search or a dialog, even while a tip is showing.</label></li>
+             <li><input type="checkbox" id="k5"><label for="k5">[ and ] change the week only while Days has focus.</label></li>
+             <li><input type="checkbox" id="k6"><label for="k6">Task and Idea menu items are greyed when no task or idea is open.</label></li>
+           </ul>
+diff --color -ru src/setup.js /Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-5/design/menus-shortcuts-links-search/src/setup.js
+--- src/setup.js	2026-11-14 02:12:59
++++ /Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-5/design/menus-shortcuts-links-search/src/setup.js	2026-11-14 02:12:03
+@@ -55,7 +55,7 @@
+     const task = A && A.panel; const page = A ? A.page : 'needs'; const dlg = !!(A && A.dialog); const hasPr = !!(task && (TASKS.find(t => t.r === task) || {}).pr);
+     return [
+       ['app', 'Task board', [{ l: 'About Task board' }, '-', { l: 'Check for Updates…' }, { l: 'Settings…', k: '⌘,', act: 'settings' }, '-', { l: 'Install Hooks', disabled: true }, { l: 'Restart Daemon' }, '-', { l: 'Hide Task board', k: '⌘H' }, { l: 'Hide Others', k: '⌥⌘H' }, { l: 'Show All' }, '-', { l: 'Quit Task board', k: '⌘Q' }]],
+-      ['file', 'File', [{ l: 'New Idea…', k: '⌘N', act: 'new-idea' }, '-', { l: 'Close Window', k: '⌘W' }]],
++      ['file', 'File', [{ l: 'New Idea…', k: '⌘N', disabled: dlg, act: 'new-idea' }, '-', { l: 'Close Window', k: '⌘W' }]],
+       ['edit', 'Edit', [{ l: A && A.undoLabel ? A.undoLabel : 'Undo', k: '⌘Z', disabled: !(A && A.undoLabel), act: 'undo' }, { l: 'Redo', k: '⇧⌘Z', disabled: true }, '-', { l: 'Cut', k: '⌘X', disabled: true }, { l: 'Copy', k: '⌘C' }, { l: 'Paste', k: '⌘V', disabled: true }, { l: 'Select All', k: '⌘A' }, '-', { l: 'Copy Reference', k: '⇧⌘C', disabled: !task, act: 'copy-ref' }]],
+       ['view', 'View', [...PAGES.map(p => ({ l: p[1], k: p[2], checked: page === p[0], disabled: dlg, act: 'go:' + p[0] })), '-', { l: 'Search…', k: '⌘K', disabled: dlg, act: 'search' }, '-', { l: 'Back', k: '⌘[', disabled: dlg || !(A && A.back.length), act: 'back' }, { l: 'Forward', k: '⌘]', disabled: dlg || !(A && A.fwd.length), act: 'fwd' }, '-', { l: 'Refresh', k: '⌘R', act: 'refresh' }]],
+       ['task', 'Task', [{ l: 'Focus in Midna', disabled: !task, act: 'midna' }, { l: 'Open Pull Request', k: '⌘↩', disabled: !hasPr }, '-', { l: 'Start', disabled: !task }, { l: 'Stop', disabled: !task }, { l: 'Done', disabled: !task }]],
+@@ -431,7 +431,7 @@
+       case 'search': A.palOpener = opener(); A.menu = null; A.pal = { q: '', scope: A.page.startsWith('goal:') ? A.page.slice(5) : null }; return render();
+       case 'unscope': A.pal.scope = null; return render('.pal-in input');
+       case 'retry': A.pal.down = false; A.pal.wait = true; render(); setTimeout(() => { if (A.pal) { A.pal.wait = false; render(); } }, 900); return;
+-      case 'new-idea': if (!A.dialog) A.dlgOpener = A.pal ? A.palOpener : opener(); A.menu = null; A.pal = null; A.dialog = A.draft || {}; A.toasts = A.toasts.filter(t => t.act !== 'new-idea'); return render();
++      case 'new-idea': if (A.dialog) { $('.dialog input', host)?.focus(); return; } A.dlgOpener = A.pal ? A.palOpener : opener(); A.menu = null; A.pal = null; A.dialog = A.draft || {}; A.toasts = A.toasts.filter(t => t.act !== 'new-idea'); return render();
+       case 'close-dialog': return closeDialog();
+       case 'add-idea': A.dialog = false; A.draft = null; render([A.dlgOpener, '[data-mb="file"]']); return toast('done', 'Idea added');
+       case 'close-panel': A.panel = null; return render([A.panelOpener, '.main h1']);
+@@ -528,16 +528,16 @@
+     const cmd = e.metaKey || e.ctrlKey, k = e.key;
+     const inField = e.composedPath()[0]?.matches?.('input, textarea');
+     if (k === 'Escape') {
+-      if ($('.wtip', host)) hideTip();
+-      else if (A.menu) { const id = A.menu; A.menu = null; A.mbFocus = id; render(`[data-mb="${id}"]`); }
++      const tip = !!$('.wtip', host); hideTip();
++      if (A.menu) { const id = A.menu; A.menu = null; A.mbFocus = id; render(`[data-mb="${id}"]`); }
+       else if ($('.wlayer .menu', host)) { $('.wlayer', host).innerHTML = ''; if (ctxRow && ctxRow.isConnected) ctxRow.focus(); }
+       else if (A.pal) closePal();
+       else if (A.dialog) closeDialog();
+       else if (A.panel) { A.panel = null; render([A.panelOpener, '.main h1']); }
+-      else return;
++      else if (!tip) return;
+       e.preventDefault(); e.stopPropagation(); return;
+     }
+-    if (A.pal && !cmd) {
++    if (A.pal && !cmd && e.composedPath()[0]?.matches?.('.pal-in input')) {
+       const keys = A.pal.keys || [];
+       if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); const i = keys.indexOf(A.pal.sel); A.pal.sel = keys[(i + (k === 'ArrowDown' ? 1 : -1) + keys.length) % keys.length]; refreshList(); return; }
+       if (k === 'Enter') { e.preventDefault(); const s = $('.pr[aria-selected="true"]', host); if (s) s.click(); return; }

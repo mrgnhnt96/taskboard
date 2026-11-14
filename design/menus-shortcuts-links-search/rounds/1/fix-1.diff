@@ -1,0 +1,477 @@
+diff --color -ru rounds/1/src/markup.html src/markup.html
+--- rounds/1/src/markup.html	2026-11-14 02:00:27
++++ src/markup.html	2026-11-14 02:00:27
+@@ -51,7 +51,7 @@
+       <section class="part" id="solution">
+         <h2 class="t-title-lg h2">Solution</h2>
+         <ul class="rules">
+-          <li>One macOS menu bar holds every command, greyed when it can’t run, with its key beside it.</li>
++          <li>One macOS menu bar holds every command, greyed when nothing is open for it to act on, with its key beside it.</li>
+           <li>One key table: pages on ⌘1–⌘7 in the order the sidebar lists them, and standard Mac keys left alone.</li>
+           <li>Search shows one highlight that follows the pointer and the arrow keys, five rows a group, and a plain line for each failure.</li>
+           <li>A link closes an open dialog first, keeping what was typed, then opens its task in the side panel.</li>
+@@ -74,7 +74,7 @@
+ 
+       <section class="part" id="keys">
+         <h2 class="t-title-lg h2">Keyboard shortcuts, settled into one table</h2>
+-        <p class="prose">Every key here is also shown in its menu and in the tip of the control it presses. Page keys pause while a dialog is open.</p>
++        <p class="prose">Every key here is also shown in its menu and in the tip of the control it presses. While a dialog is open, page keys, Back, Forward and Search pause and their menu items grey out; a link from a notification still opens. ⌃F2 reaches the menu bar from the keyboard, and ← → move across it.</p>
+         <div class="scroll-x">
+           <table class="spec ktab">
+             <thead><tr><th scope="col">Key</th><th scope="col">Does</th><th scope="col">Today</th></tr></thead>
+@@ -99,10 +99,10 @@
+         <h2 class="t-title-lg h2">Search: one highlight, best match first</h2>
+         <ul class="rules">
+           <li>One highlight. It follows the pointer and the arrow keys; there’s no separate hover look.</li>
+-          <li>Each row shows its reference, the title with the typed text marked, its status in words, and its goal. Below 640 points of width the goal drops.</li>
++          <li>Each row shows its reference, the title with the typed text marked, its status in words, and its goal. When the search is narrower than about 40 characters of text, the goal drops, so at 200% text the title keeps its room.</li>
+           <li>Five rows a group, then “Show all”. The list scrolls in one place and draws only the rows in view.</li>
+           <li>A match found only in the description or details says so under the title.</li>
+-          <li>Terminal rows say once that Midna isn’t running, and open the task, not the terminal.</li>
++          <li>While Midna isn’t running, terminals are one line that says so, instead of rows that repeat the tasks.</li>
+           <li>↑ ↓ move, ↩ opens, ⌘↩ opens the pull request, Esc closes.</li>
+         </ul>
+         <h3 class="t-title">Nothing typed</h3>
+@@ -181,7 +181,9 @@
+             <li><input type="checkbox" id="k1"><label for="k1">⌘1 to ⌘7 open the pages in sidebar order, and the View menu shows each key.</label></li>
+             <li><input type="checkbox" id="k2"><label for="k2">⌘[ and ⌘← go back; ⌘] and ⌘→ go forward; in a text field ⌘← moves the caret.</label></li>
+             <li><input type="checkbox" id="k3"><label for="k3">⇧⌘C copies the open task’s reference and is greyed with nothing open.</label></li>
+-            <li><input type="checkbox" id="k4"><label for="k4">Page keys do nothing while a dialog is open.</label></li>
++            <li><input type="checkbox" id="k4"><label for="k4">Page keys, Back, Forward and Search do nothing while a dialog is open, and their menu items are greyed.</label></li>
++            <li><input type="checkbox" id="k7"><label for="k7">⌘3, ⌘7, ⌘[ returns to Goals; ⌘7, ⌘2, ⌘[ returns to the page before Releases.</label></li>
++            <li><input type="checkbox" id="k8"><label for="k8">Closing a menu, search or a dialog puts focus back on what opened it.</label></li>
+             <li><input type="checkbox" id="k5"><label for="k5">[ and ] change the week only while Days has focus.</label></li>
+             <li><input type="checkbox" id="k6"><label for="k6">Task and Idea menu items are greyed when no task or idea is open.</label></li>
+           </ul>
+@@ -191,7 +193,7 @@
+             <li><input type="checkbox" id="s1"><label for="s1">Only one row is ever highlighted, by pointer or arrow keys.</label></li>
+             <li><input type="checkbox" id="s2"><label for="s2">Each group shows five rows, and “Show all” opens the rest in place.</label></li>
+             <li><input type="checkbox" id="s3"><label for="s3">Typing a reference such as G1 puts that item first and selected.</label></li>
+-            <li><input type="checkbox" id="s4"><label for="s4">With Midna stopped, the Terminals header says so once and rows open the task.</label></li>
++            <li><input type="checkbox" id="s4"><label for="s4">With Midna stopped, terminals show as one line that says so, with no rows.</label></li>
+             <li><input type="checkbox" id="s5"><label for="s5">A slow board shows “Searching…”; a stopped one shows the time it stopped and Retry.</label></li>
+             <li><input type="checkbox" id="s6"><label for="s6">A board with 2,000 tasks scrolls the results smoothly.</label></li>
+           </ul>
+diff --color -ru rounds/1/src/own.css src/own.css
+--- rounds/1/src/own.css	2026-11-14 02:00:27
++++ src/own.css	2026-11-14 02:06:51
+@@ -28,7 +28,7 @@
+ .fig { margin: 0; display: grid; gap: var(--space-inset-xs); min-width: 0; }
+ .fig-c { font-size: var(--type-caption-font-size); line-height: var(--type-caption-line-height); color: var(--color-on-surface-variant); }
+ .shot { display: block; width: 100%; height: auto; border-radius: var(--radius-control); box-shadow: 0 0 0 1px var(--color-divider); }
+-:host([data-scheme="dark"]) .shot.lt, :host(:not([data-scheme="dark"])) .shot.dk { display: none; }
++[data-screen="doc"].is-dark .shot.lt, [data-screen="doc"]:not(.is-dark) .shot.dk { display: none; }
+ .mini { position: relative; width: 100%; overflow: hidden; border-radius: var(--radius-control); box-shadow: 0 0 0 1px var(--color-divider); background: var(--color-surface); cursor: zoom-in; }
+ .mini:focus-visible { outline: var(--focus-width) solid var(--color-focus-ring); outline-offset: var(--focus-offset); }
+ .mini > .win { position: absolute; top: 0; left: 0; transform-origin: 0 0; pointer-events: none; }
+@@ -137,7 +137,7 @@
+ 
+ /* search palette */
+ .pscrim { position: absolute; inset: 0; z-index: 20; display: flex; justify-content: center; align-items: flex-start; padding: 64px var(--space-inset-md) var(--space-page-margin); background: var(--color-scrim); }
+-.pal { container: pal / inline-size; display: flex; flex-direction: column; width: min(45rem, 100%); max-height: 100%; min-height: 0; border-radius: var(--radius-dialog); background: var(--color-surface-raised); border: var(--border-width) solid var(--color-divider); box-shadow: var(--elevation-modal); overflow: hidden; }
++.pal { container: pal / inline-size; font-size: var(--type-body-font-size); display: flex; flex-direction: column; width: min(45rem, 100%); max-height: 100%; min-height: 0; border-radius: var(--radius-dialog); background: var(--color-surface-raised); border: var(--border-width) solid var(--color-divider); box-shadow: var(--elevation-modal); overflow: hidden; }
+ .pal-in { display: flex; align-items: center; gap: var(--space-inset-sm); min-height: 48px; padding: 0 var(--space-inset-md); border-bottom: var(--border-width) solid var(--color-divider); }
+ .pal-in input { all: unset; flex: 1; min-width: 0; font-family: var(--type-title-font-family); font-size: var(--type-title-font-size); color: var(--color-on-surface); }
+ .pal-in input::placeholder { color: var(--color-on-surface-variant); }
+@@ -153,12 +153,14 @@
+ .pr .ref { font-family: var(--type-code-font-family); font-size: var(--type-label-sm-font-size); color: var(--color-on-surface-variant); }
+ .pr .tl { display: grid; min-width: 0; }
+ .pr .tl > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
++.pr .tl > span:first-child { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
++.pr > .pill { justify-self: start; white-space: nowrap; }
+ .pr .why { font-size: var(--type-caption-font-size); color: var(--color-on-surface-variant); }
+ .pr .gn { font-size: var(--type-caption-font-size); color: var(--color-on-surface-variant); text-align: right; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+ .pr.dim { color: var(--color-on-surface-variant); }
+ .pr.more { grid-template-columns: 3rem 1fr; color: var(--color-link); font-family: var(--type-label-font-family); font-size: var(--type-label-font-size); font-weight: var(--type-label-font-weight); }
+ .pr.wide { grid-template-columns: 3rem 1fr; }
+-@container pal (width < 640px) { .pr { grid-template-columns: 3rem minmax(0,1fr) auto; } .pr .gn { display: none; } }
++@container pal (width < 40em) { .pr { grid-template-columns: 3rem minmax(0,1fr) auto; } .pr .gn { display: none; } }
+ mark { background: var(--color-mark); color: var(--color-on-mark); border-radius: 2px; }
+ .pmsg { display: grid; gap: var(--space-inset-sm); justify-items: start; padding: var(--space-inset-lg) var(--space-inset-md); }
+ .pmsg p { margin: 0; max-width: 34rem; }
+@@ -167,7 +169,7 @@
+ /* in-window menus, dialogs and toasts */
+ .wlayer { position: absolute; inset: 0; z-index: 30; pointer-events: none; }
+ .wlayer > * { pointer-events: auto; }
+-.wmenu { position: absolute; top: 24px; }
++.wmenu { position: absolute; top: 24px; max-height: calc(100% - 32px); overflow-y: auto; overscroll-behavior: contain; }
+ .dscrim { position: absolute; inset: 0; z-index: 25; display: grid; place-items: center; padding: var(--space-inset-md); background: var(--color-scrim); }
+ .dialog .dh { display: flex; align-items: center; justify-content: space-between; gap: var(--space-inset-sm); }
+ .dialog .fld { display: grid; gap: var(--space-inset-xs); }
+@@ -178,3 +180,13 @@
+ .wtoasts { position: absolute; left: var(--size-sidebar); right: 0; bottom: var(--space-inset-lg); z-index: 40; display: flex; flex-direction: column; align-items: center; gap: var(--space-gap-related); padding: 0 var(--space-inset-md); pointer-events: none; }
+ .wtoasts .toast { pointer-events: auto; }
+ .wtip { position: absolute; z-index: 45; pointer-events: none; }
++
++/* service status in the sidebar footer: a state, not a task status */
++.svc { display: inline-flex; align-items: center; gap: var(--space-inset-xs); min-height: 24px; padding: 0 var(--space-inset-xs); margin-left: calc(-1 * var(--space-inset-xs)); border-radius: var(--radius-control); color: var(--color-on-surface-variant); font-family: var(--type-label-sm-font-family); font-size: var(--type-label-sm-font-size); font-weight: var(--type-label-sm-font-weight); text-align: left; }
++.svc svg { flex: none; stroke: var(--color-on-warning-container); }
++.svc:hover { background: var(--color-surface-container); color: var(--color-on-surface); }
++.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
++.toast.flash { animation: tflash 0.4s ease-out; }
++@keyframes tflash { 0% { transform: scale(1.03); } 100% { transform: none; } }
++@keyframes tflashrm { 0% { outline: 2px solid currentColor; outline-offset: 2px; } 100% { outline: 2px solid transparent; outline-offset: 2px; } }
++@media (prefers-reduced-motion: reduce) { .toast.flash { animation: tflashrm 0.6s linear; } }
+diff --color -ru rounds/1/src/setup.js src/setup.js
+--- rounds/1/src/setup.js	2026-11-14 02:00:27
++++ src/setup.js	2026-11-14 02:02:50
+@@ -21,7 +21,7 @@
+     { r: 'T9', t: 'Drop the extra redirect', s: 'planned', sl: 'Planned', gr: 'G2' },
+     { r: 'T5', t: 'Upgrade the HTTP client', s: 'planned', sl: 'Planned', proj: 'webapp' },
+     { r: 'T4', t: 'Docs: passkey support', s: 'planned', sl: 'Planned', gr: 'G1' },
+-    { r: 'T1', t: 'Add the WebAuthn registration endpoint', s: 'done', sl: 'Done', gr: 'G1', kw: 'passkey', why: 'Matched in its description', at: '11:52 AM' },
++    { r: 'T1', t: 'Add the WebAuthn registration endpoint', s: 'done', sl: 'Done', gr: 'G1', kw: 'passkey', why: 'Matched in its description', at: '11:52 AM', pr: true },
+   ];
+   const GOALS = [
+     { r: 'G2', t: 'Faster sign-in', s: 'working', sl: 'Working', side: '2 of 7 done' },
+@@ -42,7 +42,7 @@
+     { r: '', t: 'api · api shell', dim: true },
+   ];
+   const GROUPS = [['tasks', 'Tasks', TASKS], ['goals', 'Goals', GOALS], ['ideas', 'Ideas', IDEAS], ['backlog', 'Backlog', BACKLOG], ['terms', 'Terminals', TERMS]];
+-  const PAGES = [['needs', 'Needs you', '⌘1', '1'], ['projects', 'Projects', '⌘2', '2'], ['goals', 'Goals', '⌘3', '2'], ['backlog', 'Backlog', '⌘4', '2'], ['ideas', 'Ideas', '⌘5', ''], ['days', 'Days', '⌘6', ''], ['releases', 'Releases', '⌘7', '']];
++  const PAGES = [['needs', 'Needs you', '⌘1', '1'], ['projects', 'Projects', '⌘2', '2'], ['goals', 'Goals', '⌘3', '2'], ['backlog', 'Backlog', '⌘4', '2'], ['ideas', 'Ideas', '⌘5', '3'], ['days', 'Days', '⌘6', ''], ['releases', 'Releases', '⌘7', '']];
+   const PNAME = Object.fromEntries(PAGES.map(p => [p[0], p[1]]));
+ 
+   /* ---------------- Menus ---------------- */
+@@ -52,13 +52,13 @@
+     ['View', [['Needs you', '⌘1'], ['Projects', '⌘2'], ['Goals', '⌘3'], ['Backlog', '⌘5'], ['Days', '⌘6'], '-', ['Search…', '⌘K'], '-', ['Back', '⌘←'], ['Forward', '⌘→'], '-', ['Refresh', '⌘R']]],
+   ];
+   function menusFor(A) {
+-    const task = A && A.panel; const page = A ? A.page : 'needs';
++    const task = A && A.panel; const page = A ? A.page : 'needs'; const dlg = !!(A && A.dialog); const hasPr = !!(task && (TASKS.find(t => t.r === task) || {}).pr);
+     return [
+       ['app', 'Task board', [{ l: 'About Task board' }, '-', { l: 'Check for Updates…' }, { l: 'Settings…', k: '⌘,', act: 'settings' }, '-', { l: 'Install Hooks', disabled: true }, { l: 'Restart Daemon' }, '-', { l: 'Hide Task board', k: '⌘H' }, { l: 'Hide Others', k: '⌥⌘H' }, { l: 'Show All' }, '-', { l: 'Quit Task board', k: '⌘Q' }]],
+       ['file', 'File', [{ l: 'New Idea…', k: '⌘N', act: 'new-idea' }, '-', { l: 'Close Window', k: '⌘W' }]],
+       ['edit', 'Edit', [{ l: A && A.undoLabel ? A.undoLabel : 'Undo', k: '⌘Z', disabled: !(A && A.undoLabel), act: 'undo' }, { l: 'Redo', k: '⇧⌘Z', disabled: true }, '-', { l: 'Cut', k: '⌘X', disabled: true }, { l: 'Copy', k: '⌘C' }, { l: 'Paste', k: '⌘V', disabled: true }, { l: 'Select All', k: '⌘A' }, '-', { l: 'Copy Reference', k: '⇧⌘C', disabled: !task, act: 'copy-ref' }]],
+-      ['view', 'View', [...PAGES.map(p => ({ l: p[1], k: p[2], checked: page === p[0], act: 'go:' + p[0] })), '-', { l: 'Search…', k: '⌘K', act: 'search' }, '-', { l: 'Back', k: '⌘[', disabled: !(A && A.back.length), act: 'back' }, { l: 'Forward', k: '⌘]', disabled: !(A && A.fwd.length), act: 'fwd' }, '-', { l: 'Refresh', k: '⌘R', act: 'refresh' }]],
+-      ['task', 'Task', [{ l: 'Focus in Midna', disabled: !task, act: 'midna' }, { l: 'Open Pull Request', k: '⌘↩', disabled: !task }, '-', { l: 'Start', disabled: !task }, { l: 'Stop', disabled: !task }, { l: 'Done', disabled: !task }]],
++      ['view', 'View', [...PAGES.map(p => ({ l: p[1], k: p[2], checked: page === p[0], disabled: dlg, act: 'go:' + p[0] })), '-', { l: 'Search…', k: '⌘K', disabled: dlg, act: 'search' }, '-', { l: 'Back', k: '⌘[', disabled: dlg || !(A && A.back.length), act: 'back' }, { l: 'Forward', k: '⌘]', disabled: dlg || !(A && A.fwd.length), act: 'fwd' }, '-', { l: 'Refresh', k: '⌘R', act: 'refresh' }]],
++      ['task', 'Task', [{ l: 'Focus in Midna', disabled: !task, act: 'midna' }, { l: 'Open Pull Request', k: '⌘↩', disabled: !hasPr }, '-', { l: 'Start', disabled: !task }, { l: 'Stop', disabled: !task }, { l: 'Done', disabled: !task }]],
+       ['idea', 'Idea', [{ l: 'Dig', k: '⌘D', disabled: true }, { l: 'Plan', k: '⇧⌘P', disabled: true }, { l: 'Talk It Over', k: '⌘T', disabled: true }, '-', { l: 'Close Idea', disabled: true }]],
+       ['window', 'Window', [{ l: 'Minimize', k: '⌘M' }, { l: 'Zoom' }, '-', { l: 'Bring All to Front' }, '-', { l: (PNAME[page] || 'Sign-in with passkeys') + ' — Task board', checked: true }]],
+       ['help', 'Help', [{ l: 'Open Log' }, { l: 'Export for Debugging…' }]],
+@@ -102,8 +102,8 @@
+       case 'link-bad': v.toasts = [{ k: 'error', t: 'Couldn’t open T99: it’s not on this board.' }]; break;
+       case 'midna': v.panel = 'T3'; v.toasts = [{ k: 'error', t: 'Midna isn’t running, so it can’t show T3’s terminal.' }]; break;
+       case 'releases-off': v.page = 'releases'; break;
+-      case 'undo': v.menu = 'edit'; v.undoLabel = 'Undo Mark Done'; v.toasts = [{ k: 'undo', t: 'Marked T6 done', a: 'Undo', key: '⌘Z', act: 'undo' }]; break;
+-      case 'no-undo': v.menu = 'edit'; v.toasts = [{ k: 'done', t: 'Marked T6 done' }]; break;
++      case 'undo': v.menu = 'edit'; v.undoLabel = 'Undo Mark Done'; v.toasts = [{ k: 'undo', t: 'Marked T4 done', a: 'Undo', key: '⌘Z', act: 'undo' }]; break;
++      case 'no-undo': v.menu = 'edit'; v.toasts = [{ k: 'done', t: 'Marked T4 done' }]; break;
+     }
+     v.back = []; v.fwd = [];
+     return v;
+@@ -141,26 +141,31 @@
+     const groups = results(p);
+     if (!groups.length) return `<div class="pmsg" role="status"><p>Nothing matches “${esc(p.q)}” in ${p.scope ? 'this goal' : 'tasks, goals, ideas, backlog or terminals'}.</p>${p.scope ? `<button class="btn secondary sm" data-act="unscope">Search everything</button>` : ''}</div>`;
+     let sel = p.sel; const keys = [];
++    let total = 0;
+     const out = groups.map(g => {
++      if (g.id === 'terms') return `<div class="pg t-label-sm" role="presentation">${g.name} <span class="pg-n">· ${g.list.length}</span> <span class="warn">· Midna isn’t running, so terminals can’t be shown</span></div>`;
++      total += g.list.length;
+       const show = p.all === g.id ? g.list : g.list.slice(0, 5);
+-      const head = `<div class="pg t-label-sm" role="presentation">${g.name} <span class="pg-n">· ${g.list.length}</span>${g.id === 'terms' ? ' <span class="warn">· Midna isn’t running</span>' : ''}</div>`;
++      const hid = 'pg-' + g.id;
++      const head = `<div class="pg t-label-sm" id="${hid}" role="presentation">${g.name} <span class="pg-n">· ${g.list.length}</span></div>`;
+       const rows = show.map(it => {
+         const key = g.id + ':' + (it.r || it.t); if (!it.dim) keys.push(key);
+         const go = it.open ? 'T:' + it.open : g.id === 'tasks' ? 'T:' + it.r : g.id === 'goals' ? 'G:' + it.r : g.id === 'ideas' ? 'P:ideas' : 'P:backlog';
+         const gn = it.gr ? GNAME[it.gr] : it.proj || it.side || '';
+-        return `<button class="pr${it.dim ? ' dim' : ''}" role="option" tabindex="-1" data-key="${esc(key)}" ${it.dim ? 'aria-disabled="true"' : `data-open="${go}"`}><span class="ref">${it.r}</span><span class="tl"><span>${hl(it.t, p.q.trim())}</span>${it.viaText ? `<span class="why">${it.why}</span>` : ''}</span>${it.sl ? `<span class="pill ${it.s}">${it.sl}</span>` : '<span></span>'}<span class="gn">${esc(g.id === 'goals' ? it.side : gn)}</span></button>`;
++        return `<div class="pr${it.dim ? ' dim' : ''}" role="option" id="${optId(key)}" data-key="${esc(key)}" ${it.dim ? 'aria-disabled="true"' : `data-open="${go}"`}><span class="ref">${it.r}</span><span class="tl"><span>${hl(it.t, p.q.trim())}</span>${it.viaText ? `<span class="why">${it.why}</span>` : ''}</span>${it.sl ? `<span class="pill ${it.s}">${it.sl}</span>` : '<span></span>'}<span class="gn">${esc(g.id === 'goals' ? it.side : gn)}</span></div>`;
+       }).join('');
+-      const more = g.list.length > 5 && p.all !== g.id ? `<button class="pr more" tabindex="-1" data-act="all:${g.id}" data-key="more:${g.id}"><span></span><span>Show all ${g.list.length} ${g.name.toLowerCase()}</span></button>` : '';
++      const more = g.list.length > 5 && p.all !== g.id ? `<div class="pr more" role="option" id="${optId('more:' + g.id)}" data-act="all:${g.id}" data-key="more:${g.id}"><span></span><span>Show all ${g.list.length} ${g.name.toLowerCase()}</span></div>` : '';
+       if (more) keys.push('more:' + g.id);
+-      return head + rows + more;
++      return head + `<div role="group" aria-labelledby="${hid}">` + rows + more + '</div>';
+     }).join('');
+-    const every = p.scope ? `<button class="pr more" tabindex="-1" data-act="unscope" data-key="every"><span>${IC.search}</span><span>Search everything for “${esc(p.q.trim())}”</span></button>` : '';
++    const every = p.scope ? `<div class="pr more" role="option" id="${optId('every')}" data-act="unscope" data-key="every"><span>${IC.search}</span><span>Search everything for “${esc(p.q.trim())}”</span></div>` : '';
+     if (p.scope) keys.push('every');
+     if (!sel || !keys.includes(sel)) sel = keys[0];
+-    p.sel = sel; p.keys = keys;
++    p.sel = sel; p.keys = keys; p.total = total;
+     return (out + every).replace(`data-key="${esc(sel)}"`, `data-key="${esc(sel)}" aria-selected="true"`);
+   }
+-  const palHTML = p => `<div class="pscrim" data-scrim="pal"><div class="pal" role="dialog" aria-label="Search"><div class="pal-in">${p.wait ? '<span class="spin" aria-hidden="true"></span>' : IC.search}${p.scope ? `<span class="scope"><span>In ${GNAME[p.scope]}</span><button data-act="unscope" aria-label="Search everything" data-tip="Search everything">${IC.x}</button></span>` : ''}<input type="text" aria-label="Search" placeholder="Search" value="${esc(p.q)}" spellcheck="false" autocomplete="off"></div><div class="pal-list" role="listbox" aria-label="Results">${palListHTML(p)}</div></div></div>`;
++  const optId = k => 'opt-' + String(k).replace(/[^a-z0-9]/gi, '-');
++  const palHTML = p => `<div class="pscrim" data-scrim="pal"><div class="pal" role="dialog" aria-modal="true" aria-label="Search"><div class="pal-in">${p.wait ? '<span class="spin" aria-hidden="true"></span>' : IC.search}${p.scope ? `<span class="scope"><span>In ${GNAME[p.scope]}</span><button data-act="unscope" aria-label="Search everything" data-tip="Search everything">${IC.x}</button></span>` : ''}<input type="text" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" aria-label="Search" placeholder="Search" value="${esc(p.q)}" spellcheck="false" autocomplete="off"></div><div class="sr-only" role="status" aria-live="polite" id="pal-count"></div><div class="pal-list" id="pal-list" role="listbox" aria-label="Results">${palListHTML(p)}</div></div></div>`;
+ 
+   /* ---------------- Window parts ---------------- */
+   function sideHTML(v) {
+@@ -170,14 +175,15 @@
+       <div class="nav">${PAGES.map(p => `<button class="nv" data-act="go:${p[0]}" ${cur === p[0] ? 'aria-current="page"' : ''} data-tip="${p[1]}" data-tk="${p[2]}">${p[1]}<span class="n${p[0] === 'needs' ? ' hot' : ''}">${p[3]}</span></button>`).join('')}</div>
+       <div><p class="side-h eyebrow">Active goals</p>${GOALS.map(g => `<button class="gl" data-act="goal:${g.r}" style="width:100%"><span class="gl-t"><span class="gl-r">${g.r}</span><span>${g.t}</span></span><span class="gl-m">${g.side}</span></button>`).join('')}</div>
+       <div class="side-f">
+-        <span class="pill needs" data-tip="Starting, messaging and showing terminals wait until it’s back.">Midna isn’t running</span>
++        <button class="svc" data-tip="Starting, messaging and showing terminals wait until it’s back." data-tip-click aria-describedby="svc-why">${IC.alert}<span>Midna isn’t running</span></button><span class="sr-only" id="svc-why">Starting, messaging and showing terminals wait until it’s back.</span>
+         <span class="foot-t">No work hours</span>
+         <div class="row2"><span class="chip">Sample board</span><button class="icon-btn" data-act="settings" aria-label="Settings" data-tip="Settings" data-tk="⌘,">${IC.gear}</button></div>
+       </div>
+     </nav>`;
+   }
+   const trow = (it, cur) => `<button class="trow" data-open="T:${it.r}" ${cur === it.r ? 'aria-current="true"' : ''}><span class="pill ${it.s}">${it.sl}</span><span class="ref">${it.r}</span><span class="tt">${esc(it.t)}</span><span class="when">${it.at || ''}</span></button>`;
+-  function pageHTML(v) {
++  function pageHTML(v) { return pageInner(v).replace(/<h1 class="t-headline">/, '<h1 class="t-headline" tabindex="-1">'); }
++  function pageInner(v) {
+     const pg = v.page;
+     if (pg === 'needs') return `<div class="main-in">
+       <div class="ph"><h1 class="t-headline">Needs you</h1></div>
+@@ -210,15 +216,17 @@
+   }
+   const dialogHTML = d => `<div class="dscrim" data-scrim="dlg"><div class="dialog" role="dialog" aria-modal="true" aria-label="New idea">
+       <div class="dh"><h2 class="t-title">New idea</h2><button class="icon-btn" data-act="close-dialog" aria-label="Close" data-tip="Close" data-tk="Esc">${IC.x}</button></div>
+-      <label class="field live"><input data-f="title" placeholder="Title" value="${esc(d.title || '')}"></label>
+-      <label class="field live area"><textarea data-f="detail" placeholder="Details">${esc(d.detail || '')}</textarea></label>
++      <label class="fld"><span class="t-label-sm">Title</span><span class="field live"><input data-f="title" value="${esc(d.title || '')}"></span></label>
++      <label class="fld"><span class="t-label-sm">Details</span><span class="field live area"><textarea data-f="detail">${esc(d.detail || '')}</textarea></span></label>
+       <div class="actions"><button class="btn secondary sm">Choose a project</button><button class="btn primary" data-act="add-idea">Add idea</button></div>
+     </div></div>`;
+   const toastHTML = (t, i) => `<div class="toast${t.k === 'error' ? ' error' : ''}" role="${t.k === 'error' ? 'alert' : 'status'}" data-ti="${i}"><span class="ti">${t.k === 'error' ? IC.alert : IC.check}</span><span class="tt">${esc(t.t)}</span>${t.a ? `<button class="ta" data-act="${t.act || ''}" data-toast="${i}">${t.a}</button>${t.key ? `<span class="tk">${t.key}</span>` : ''}` : ''}<button class="tx" data-act="close-toast" data-toast="${i}" aria-label="Close">${IC.x}</button></div>`;
+   function winHTML(v, bar) {
++    const modal = v.pal || v.dialog ? ' inert' : '';
++    const rove = v.menu || v.mbFocus || 'app';
+     return `<div class="win" ${bar ? 'data-bar' : ''}>
+-      <div class="mbar" role="menubar" aria-label="Menu bar">${menusFor(v).map(([id, n]) => `<button class="mb${id === 'app' ? ' app' : ''}" role="menuitem" aria-haspopup="menu" aria-expanded="${v.menu === id}" data-mb="${id}">${n}</button>`).join('')}</div>
+-      <div class="wbody">${sideHTML(v)}<main class="main">${pageHTML(v)}</main>${v.panel ? panelHTML(v.panel) : ''}${v.pal ? palHTML(v.pal) : ''}${v.dialog ? dialogHTML(v.dialog) : ''}<div class="wtoasts">${v.toasts.map(toastHTML).join('')}</div></div>
++      <div class="mbar" role="menubar" aria-label="Menu bar"${modal}>${menusFor(v).map(([id, n]) => `<button class="mb${id === 'app' ? ' app' : ''}" role="menuitem" tabindex="${id === rove ? 0 : -1}" aria-haspopup="menu" aria-expanded="${v.menu === id}" data-mb="${id}">${n}</button>`).join('')}</div>
++      <div class="wbody">${sideHTML(v).replace('<nav class="side"', '<nav class="side"' + modal)}<main class="main"${modal}>${pageHTML(v)}</main>${v.panel ? panelHTML(v.panel).replace('<aside class="panel"', '<aside class="panel"' + modal) : ''}${v.pal ? palHTML(v.pal) : ''}${v.dialog ? dialogHTML(v.dialog) : ''}<div class="wtoasts">${v.toasts.map(toastHTML).join('')}</div></div>
+       <div class="wlayer"></div></div>`;
+   }
+   function placeMenu(win, v) {
+@@ -304,6 +312,7 @@
+     $$('.toc-i').forEach(b => b.setAttribute('aria-current', b === cur ? 'true' : 'false'));
+   }
+   docEl.addEventListener('scroll', markCurrent, { passive: true }); markCurrent();
++  canvas.onResize(sz => docEl.classList.toggle('is-dark', sz.scheme === 'dark'));
+   // Narrow: contents as a menu
+   const tocBtn = $('[data-menu-toc]');
+   tocBtn.addEventListener('click', () => {
+@@ -350,27 +359,63 @@
+   const host = $('#appwin');
+   let A = viewFor('default');
+   let menuFromKey = false;
+-  function render(keepFocus) {
+-    const focusPal = A.pal && keepFocus !== false;
++  // Focus survives every re-render: remember what had it, find its twin after.
++  const REGION = ['.wlayer', '.pal', '.dialog', '.panel', '.mbar', '.side', '.main', '.wtoasts'];
++  function focusSel() {
++    const a = R.activeElement; if (!a || !host.contains(a)) return null;
++    if (a.matches('.pal-in input')) return '.pal .pal-in input';
++    if (a.matches('.main h1')) return '.main h1';
++    const attr = ['data-mb', 'data-act', 'data-open', 'data-f', 'data-key'].find(x => a.hasAttribute(x));
++    if (!attr) return null;
++    return (REGION.find(r => a.closest(r)) || '') + ` [${attr}="${CSS.escape(a.getAttribute(attr))}"]`;
++  }
++  function render(focus) {
++    const was = focusSel();
+     host.innerHTML = winHTML(A, true);
+     const win = host.firstElementChild;
+     const m = placeMenu(win, A);
+     if (m) {
+-      const set = menuKeys(m, it => { const act = it.dataset.act; A.menu = null; render(); if (act) run(act); }, () => { const id = A.menu; A.menu = null; render(); $(`[data-mb="${id}"]`)?.focus(); }, d => { const ids = menusFor(A).map(x => x[0]); A.menu = ids[(ids.indexOf(A.menu) + d + ids.length) % ids.length]; menuFromKey = true; render(); });
++      const set = menuKeys(m,
++        it => { const act = it.dataset.act, id = A.menu; A.menu = null; A.mbFocus = id; render(`[data-mb="${id}"]`); if (act) { run(act); if (/^(go:|goal:|back|fwd)/.test(act)) $('.main h1', host)?.focus(); } },
++        () => { const id = A.menu; A.menu = null; A.mbFocus = id; render(`[data-mb="${id}"]`); },
++        d => { const ids = menusFor(A).map(x => x[0]); A.menu = ids[(ids.indexOf(A.menu) + d + ids.length) % ids.length]; A.mbFocus = A.menu; menuFromKey = true; render(); });
+       if (menuFromKey) set(0); menuFromKey = false;
++      canvas.refresh(); return;
+     }
+-    if (focusPal) { const inp = $('.pal-in input', win); if (inp) { inp.focus({ preventScroll: true }); inp.setSelectionRange(inp.value.length, inp.value.length); } }
+-    if (A.dialog) $('.dialog input', win)?.focus();
++    const layer = A.dialog ? '.dialog' : A.pal ? '.pal' : null;
++    const tries = [].concat(typeof focus === 'string' || Array.isArray(focus) ? focus : []).filter(Boolean);
++    if (was && (!layer || was.startsWith(layer))) tries.push(was);
++    if (layer) tries.push(layer === '.pal' ? '.pal-in input' : '.dialog input');
++    else if (was) tries.push('.main h1');
++    const el = tries.map(t => $(t, win)).find(Boolean);
++    if (el) { el.focus({ preventScroll: true }); if (el.matches('.pal-in input')) el.setSelectionRange(el.value.length, el.value.length); }
++    if (A.pal) { palActive(); palCount(); }
+     canvas.refresh();
+   }
+-  function refreshList() { const l = $('.pal-list', host); if (l) { l.innerHTML = palListHTML(A.pal); } const sel = $('.pr[aria-selected="true"]', host); if (sel && l) { const a = sel.offsetTop - 40, b = sel.offsetTop + sel.offsetHeight - l.clientHeight; if (l.scrollTop > a) l.scrollTop = a; else if (l.scrollTop < b) l.scrollTop = b; } }
++  const opener = () => { const f = focusSel(); return f && !f.startsWith('.wlayer') && !f.startsWith('.pal') ? f : null; };
++  function closePal() { const o = A.palOpener; A.pal = null; render([o, '.sfind']); }
++  function closeDialog() { const o = A.dlgOpener; A.draft = A.dialog; A.dialog = false; render([o, '[data-mb="file"]']); }
++  function palActive() {
++    const inp = $('.pal-in input', host); if (!inp) return;
++    const sel = $('.pr[aria-selected="true"]', host);
++    if (sel) inp.setAttribute('aria-activedescendant', sel.id); else inp.removeAttribute('aria-activedescendant');
++  }
++  let countT = null;
++  function palCount() {
++    clearTimeout(countT);
++    countT = setTimeout(() => { const c = $('#pal-count', host); if (!c || !A.pal) return; const n = $('.pr', host) ? A.pal.total : 0; c.textContent = n ? n + (n === 1 ? ' result' : ' results') : ''; }, 500);
++  }
++  function refreshList() { const l = $('.pal-list', host); if (l) { l.innerHTML = palListHTML(A.pal); } const sel = $('.pr[aria-selected="true"]', host); if (sel && l) { const a = sel.offsetTop - 40, b = sel.offsetTop + sel.offsetHeight - l.clientHeight; if (l.scrollTop > a) l.scrollTop = a; else if (l.scrollTop < b) l.scrollTop = b; } palActive(); }
++  // Releases with releases off never joins Back and Forward.
+   function go(page) {
+-    if (A.page !== page) { if (page !== 'releases') A.back.push(A.page); A.fwd = []; A.page = page; }
++    if (A.page !== page) { if (A.page !== 'releases') A.back.push(A.page); A.fwd = []; A.page = page; }
+     A.pal = null; A.menu = null; render();
+   }
+   let timers = [];
+   function toast(k, t, opt) {
+     opt = opt || {};
++    const same = A.toasts.find(x => x.k === k && x.t === t);
++    if (same) { const el = $(`.toast[data-ti="${A.toasts.indexOf(same)}"]`, host); if (el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } return; }
+     A.toasts = A.toasts.filter(x => x.k !== 'undo' || k !== 'undo').slice(-2);
+     const item = { k, t, a: opt.a, key: opt.key, act: opt.act, id: Math.random() };
+     A.toasts.push(item); render(false);
+@@ -378,38 +423,42 @@
+   }
+   function run(act) {
+     if (!act) return;
++    if (A.dialog && /^(go:|goal:|back$|fwd$|search$)/.test(act)) return;
+     if (act.startsWith('go:')) return go(act.slice(3));
+     if (act.startsWith('goal:')) return go('goal:' + act.slice(5));
+     if (act.startsWith('all:')) { A.pal.all = act.slice(4); refreshList(); return; }
+     switch (act) {
+-      case 'search': A.menu = null; A.pal = { q: '', scope: A.page.startsWith('goal:') ? A.page.slice(5) : null }; return render();
+-      case 'unscope': A.pal.scope = null; return render();
++      case 'search': A.palOpener = opener(); A.menu = null; A.pal = { q: '', scope: A.page.startsWith('goal:') ? A.page.slice(5) : null }; return render();
++      case 'unscope': A.pal.scope = null; return render('.pal-in input');
+       case 'retry': A.pal.down = false; A.pal.wait = true; render(); setTimeout(() => { if (A.pal) { A.pal.wait = false; render(); } }, 900); return;
+-      case 'new-idea': A.menu = null; A.pal = null; A.dialog = A.draft || {}; A.toasts = A.toasts.filter(t => t.act !== 'new-idea'); return render();
+-      case 'close-dialog': A.draft = A.dialog; A.dialog = false; return render();
+-      case 'add-idea': A.dialog = false; A.draft = null; render(); return toast('done', 'Idea added');
+-      case 'close-panel': A.panel = null; return render();
+-      case 'back': if (A.back.length) { A.fwd.push(A.page); A.page = A.back.pop(); render(); } return;
+-      case 'fwd': if (A.fwd.length) { A.back.push(A.page); A.page = A.fwd.pop(); render(); } return;
++      case 'new-idea': if (!A.dialog) A.dlgOpener = A.pal ? A.palOpener : opener(); A.menu = null; A.pal = null; A.dialog = A.draft || {}; A.toasts = A.toasts.filter(t => t.act !== 'new-idea'); return render();
++      case 'close-dialog': return closeDialog();
++      case 'add-idea': A.dialog = false; A.draft = null; render([A.dlgOpener, '[data-mb="file"]']); return toast('done', 'Idea added');
++      case 'close-panel': A.panel = null; return render([A.panelOpener, '.main h1']);
++      case 'back': if (A.back.length) { if (A.page !== 'releases') A.fwd.push(A.page); A.page = A.back.pop(); render(); } return;
++      case 'fwd': if (A.fwd.length) { if (A.page !== 'releases') A.back.push(A.page); A.page = A.fwd.pop(); render(); } return;
+       case 'refresh': return toast('done', 'Up to date');
+       case 'settings': return toast('done', 'Settings opens in its own window');
+       case 'copy-ref': if (A.panel) toast('done', 'Copied ' + A.panel); return;
+       case 'midna': return toast('error', `Midna isn’t running, so it can’t show ${A.panel || 'T3'}’s terminal.`);
+-      case 'undo': if (A.undoLabel) { A.undoLabel = null; A.toasts = []; render(); toast('done', 'T6 is open again'); } return;
++      case 'undo': if (A.undoLabel) { A.undoLabel = null; A.toasts = []; render(); toast('done', 'T4 is open again'); } return;
+       case 'answer': return toast('done', 'Answered T3');
+       case 'talk': return toast('done', 'Opening a talk about T3');
+     }
+   }
+   function open(spec) {
+     const [k, v] = spec.split(':');
++    if (k === 'T') A.panelOpener = A.pal ? A.palOpener : opener();
+     A.pal = null;
+-    if (k === 'T') { A.panel = v; render(); $('.panel .icon-btn', host)?.focus(); return; }
++    if (k === 'T') { A.panel = v; return render('.panel .icon-btn'); }
+     if (k === 'G') return go('goal:' + v);
+     if (k === 'P') return go(v);
+   }
+   host.addEventListener('click', e => {
+     const mb = e.target.closest('[data-mb]');
+-    if (mb) { A.menu = A.menu === mb.dataset.mb ? null : mb.dataset.mb; return render(false); }
++    if (mb) { A.menu = A.menu === mb.dataset.mb ? null : mb.dataset.mb; A.mbFocus = mb.dataset.mb; return render(A.menu ? false : `[data-mb="${mb.dataset.mb}"]`); }
++    const tc = e.target.closest('[data-tip-click]');
++    if (tc) { clearTimeout(tipT); showTip(tc); return; }
+     if (A.menu && !e.target.closest('.wmenu')) { A.menu = null; render(false); }
+     const tx = e.target.closest('[data-act="close-toast"]');
+     if (tx) { A.toasts.splice(+tx.dataset.toast, 1); return render(false); }
+@@ -418,18 +467,39 @@
+     const o = e.target.closest('[data-open]');
+     if (o) return open(o.dataset.open);
+     const sc = e.target.closest('[data-scrim]');
+-    if (sc && e.target === sc) { if (sc.dataset.scrim === 'pal') A.pal = null; else { A.draft = A.dialog; A.dialog = false; } render(); }
++    if (sc && e.target === sc) { if (sc.dataset.scrim === 'pal') closePal(); else closeDialog(); }
+   });
+-  host.addEventListener('pointerover', e => {
++  // Slide between open menus on real pointer moves only, not when a re-render lands under a still pointer.
++  host.addEventListener('pointermove', e => {
++    if (!e.movementX && !e.movementY) return;
+     const mb = e.target.closest('[data-mb]');
+-    if (mb && A.menu && A.menu !== mb.dataset.mb) { A.menu = mb.dataset.mb; render(false); }
++    if (mb && A.menu && A.menu !== mb.dataset.mb) { A.menu = mb.dataset.mb; A.mbFocus = A.menu; render(false); }
+   });
++  // Menu bar: one Tab stop; ← → move across it, ↓ ↩ Space open.
++  host.addEventListener('keydown', e => {
++    const mb = e.target.closest && e.target.closest('[data-mb]'); if (!mb) return;
++    const ids = $$('[data-mb]', host).map(b => b.dataset.mb), i = ids.indexOf(mb.dataset.mb);
++    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
++      e.preventDefault(); const id = ids[(i + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length]; A.mbFocus = id;
++      $$('[data-mb]', host).forEach(b => b.tabIndex = b.dataset.mb === id ? 0 : -1); $(`[data-mb="${id}"]`, host).focus();
++    } else if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); A.menu = mb.dataset.mb; A.mbFocus = A.menu; menuFromKey = true; render(); }
++  });
++  // Search and dialogs keep Tab inside them.
++  host.addEventListener('keydown', e => {
++    if (e.key !== 'Tab') return;
++    const layer = $('.dialog', host) || $('.pal', host); if (!layer) return;
++    const f = $$('input, textarea, button:not([disabled])', layer).filter(x => x.getClientRects().length);
++    if (!f.length) return;
++    e.preventDefault();
++    const i = f.indexOf(R.activeElement);
++    f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
++  });
+   host.addEventListener('pointermove', e => {
+     const pr = e.target.closest('.pr'); if (!pr || !A.pal || pr.getAttribute('aria-disabled')) return;
+-    if (A.pal.sel !== pr.dataset.key) { A.pal.sel = pr.dataset.key; $$('.pr[aria-selected]', host).forEach(x => x.removeAttribute('aria-selected')); pr.setAttribute('aria-selected', 'true'); }
++    if (A.pal.sel !== pr.dataset.key) { A.pal.sel = pr.dataset.key; $$('.pr[aria-selected]', host).forEach(x => x.removeAttribute('aria-selected')); pr.setAttribute('aria-selected', 'true'); palActive(); }
+   });
+   host.addEventListener('input', e => {
+-    if (e.target.matches('.pal-in input')) { A.pal.q = e.target.value; A.pal.sel = null; A.pal.all = null; refreshList(); }
++    if (e.target.matches('.pal-in input')) { A.pal.q = e.target.value; A.pal.sel = null; A.pal.all = null; refreshList(); palCount(); }
+     if (e.target.dataset.f && A.dialog) A.dialog[e.target.dataset.f] = e.target.value;
+   });
+   host.addEventListener('contextmenu', e => {
+@@ -439,9 +509,12 @@
+   host.addEventListener('keydown', e => {
+     if (e.shiftKey && e.key === 'F10') { const row = e.target.closest('.trow'); if (row) { e.preventDefault(); const r = row.getBoundingClientRect(); ctxMenu(row, r.left + 24, r.bottom); } }
+   });
++  let ctxRow = null;
+   function ctxMenu(row, x, y) {
++    ctxRow = row;
+     const lay = $('.wlayer', host); const ref = row.dataset.open.slice(2);
+-    lay.innerHTML = menuHTML([{ l: 'Open', act: 'ctx-open' }, { l: 'Open Pull Request', k: '⌘↩', disabled: true }, '-', { l: 'Copy Reference', k: '⇧⌘C', act: 'ctx-copy' }, { l: 'Focus in Midna', act: 'midna' }]);
++    const hasPr = !!(TASKS.find(t => t.r === ref) || {}).pr;
++    lay.innerHTML = menuHTML([{ l: 'Open', act: 'ctx-open' }, { l: 'Open Pull Request', k: '⌘↩', disabled: !hasPr }, '-', { l: 'Copy Reference', k: '⇧⌘C', act: 'ctx-copy' }, { l: 'Focus in Midna', act: 'midna' }]);
+     const m = lay.firstElementChild; m.classList.add('wmenu'); const wr = host.getBoundingClientRect(), k = zk(host);
+     m.style.top = Math.min((y - wr.top) / k, host.offsetHeight - m.offsetHeight - 8) + 'px'; m.style.left = Math.min((x - wr.left) / k, host.offsetWidth - m.offsetWidth - 8) + 'px';
+     menuKeys(m, it => { lay.innerHTML = ''; const a = it.dataset.act; if (a === 'ctx-open') open(row.dataset.open); else if (a === 'ctx-copy') toast('done', 'Copied ' + ref); else run(a); }, () => { lay.innerHTML = ''; row.focus(); });
+@@ -455,12 +528,14 @@
+     const cmd = e.metaKey || e.ctrlKey, k = e.key;
+     const inField = e.composedPath()[0]?.matches?.('input, textarea');
+     if (k === 'Escape') {
+-      if ($('.wlayer .menu', host)) { $('.wlayer', host).innerHTML = ''; if (A.menu) { A.menu = null; render(); } }
+-      else if (A.pal) { A.pal = null; render(); }
+-      else if (A.dialog) { A.draft = A.dialog; A.dialog = false; render(); }
+-      else if (A.panel) { A.panel = null; render(); }
++      if ($('.wtip', host)) hideTip();
++      else if (A.menu) { const id = A.menu; A.menu = null; A.mbFocus = id; render(`[data-mb="${id}"]`); }
++      else if ($('.wlayer .menu', host)) { $('.wlayer', host).innerHTML = ''; if (ctxRow && ctxRow.isConnected) ctxRow.focus(); }
++      else if (A.pal) closePal();
++      else if (A.dialog) closeDialog();
++      else if (A.panel) { A.panel = null; render([A.panelOpener, '.main h1']); }
+       else return;
+-      e.preventDefault(); return;
++      e.preventDefault(); e.stopPropagation(); return;
+     }
+     if (A.pal && !cmd) {
+       const keys = A.pal.keys || [];
+@@ -468,7 +543,7 @@
+       if (k === 'Enter') { e.preventDefault(); const s = $('.pr[aria-selected="true"]', host); if (s) s.click(); return; }
+     }
+     if (!cmd) return;
+-    if (A.dialog && /^[1-7\[\]]$/.test(k)) return;
++    if (A.dialog && (/^[1-7\[\]kK]$/.test(k) || k === 'ArrowLeft' || k === 'ArrowRight')) return;
+     let act = null;
+     if (PAGE_KEYS[k] && !e.shiftKey) act = 'go:' + PAGE_KEYS[k];
+     else if (k === 'k' || k === 'K') act = 'search';
+@@ -498,12 +573,11 @@
+   host.addEventListener('pointerover', e => { const el = e.target.closest('[data-tip]'); if (!el) return; clearTimeout(tipT); tipT = setTimeout(() => showTip(el), 500); });
+   host.addEventListener('pointerout', e => { if (e.target.closest('[data-tip]')) hideTip(); });
+   host.addEventListener('focusin', e => { const el = e.target.closest('[data-tip]'); if (el && el.matches(':focus-visible')) showTip(el); else hideTip(); });
+-  host.addEventListener('keydown', e => { if (e.key === 'Escape' && $('.wtip', host)) { hideTip(); } }, true);
+ 
+   canvas.onState(st => {
+     timers.forEach(clearTimeout); timers = [];
+     A = viewFor(st);
+     if (canvas.screen === 'app') render(false); else host.innerHTML = '';
+   });
+-  canvas.onNavigate(({ screen }) => { if (screen === 'app') render(false); });
++  canvas.onNavigate(({ screen }) => { if (screen === 'app') { render(false); requestAnimationFrame(() => { if (A.pal) $('.pal-in input', host)?.focus(); else if (A.dialog) $('.dialog input', host)?.focus(); }); } });
+ };

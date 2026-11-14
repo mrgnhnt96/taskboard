@@ -1,0 +1,224 @@
+<section data-screen="doc" data-title="Design">
+<!-- Design for board task T1990 (goal G140, wave 5). Builds on the shared look (T1989); today's pictures come from the capture task (T1421). -->
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <p class="toc-h t-label-sm muted">Contents</p>
+    <ul>
+      <li><button class="toc-i" data-go="problem">Problem</button></li>
+      <li><button class="toc-i" data-go="solution">Solution</button></li>
+      <li><button class="toc-i" data-go="menus">Menu bar</button></li>
+      <li><button class="toc-i" data-go="keys">Keyboard shortcuts</button></li>
+      <li><button class="toc-i" data-go="search">Search</button></li>
+      <li><button class="toc-i" data-go="links">Links from notifications</button></li>
+      <li><button class="toc-i" data-go="midna">When Midna isn’t running</button></li>
+      <li><button class="toc-i" data-go="releases">Releases page when it’s off</button></li>
+      <li><button class="toc-i" data-go="undo">Option: Undo after Done</button></li>
+      <li><button class="toc-i" data-go="risks">Risks</button></li>
+      <li><button class="toc-i" data-go="testing">Testing</button></li>
+    </ul>
+  </nav>
+  <div>
+    <div class="topbar"><span class="t-label">Menus, keys, links and search</span><button class="btn secondary sm" data-menu-toc>Contents</button></div>
+    <main class="content">
+      <header class="hero part" id="top">
+        <p class="eyebrow">Mac app design</p>
+        <h1 class="t-headline">Menus, keyboard shortcuts, links and search</h1>
+        <p class="lede">The menu bar, the shortcut keys, links from notifications and the search box, drawn as they look once every fix in this part of the review is in. Each drawing sits beside today’s app at the largest and smallest window; click a drawing to try it.</p>
+        <div class="tldr">
+          <h2 class="t-title">TL;DR</h2>
+          <dl>
+            <dt>Problem</dt><dd>Menus miss most pages and commands, Backlog skips ⌘4, and search shows two highlights and live-looking terminals that aren’t running.</dd>
+            <dt>Fix</dt><dd>Every command lives in the menu bar with its key, pages take ⌘1–⌘7 in sidebar order, and search has one highlight.</dd>
+            <dt>What users notice</dt><dd>⌘K finds tasks, goals, ideas, backlog and terminals, and a notification link opens on top of any dialog.</dd>
+            <dt>How we know it worked</dt><dd>Every key in the table does what its menu item says, at the smallest and largest window.</dd>
+          </dl>
+        </div>
+      </header>
+
+      <section class="part" id="problem">
+        <h2 class="t-title-lg h2">Problem</h2>
+        <ul class="rules">
+          <li>The menu bar has three menus. View lists five of the six pages, Ideas has no key, and Backlog sits on ⌘5 with nothing on ⌘4.</li>
+          <li>There’s no Edit menu, so Copy Reference and Undo can’t be found, and the debugging export sits in File.</li>
+          <li>Search highlights the chosen row and the row under the pointer at once, so two rows look picked.</li>
+          <li>Search lists terminals as “idle under a minute” while Midna isn’t running, and has no state for a slow or unreachable board.</li>
+          <li>A link from a notification opens its task behind an open dialog.</li>
+          <li>Asking Midna to show a terminal while it’s not running says “Showing it in Midna”, and nothing happens.</li>
+          <li>With releases off on every project, the Releases page has no way in and nothing explains why.</li>
+        </ul>
+      </section>
+
+      <section class="part" id="solution">
+        <h2 class="t-title-lg h2">Solution</h2>
+        <ul class="rules">
+          <li>One macOS menu bar holds every command, greyed when nothing is open for it to act on, with its key beside it.</li>
+          <li>One key table: pages on ⌘1–⌘7 in the order the sidebar lists them, and standard Mac keys left alone.</li>
+          <li>Search shows one highlight that follows the pointer and the arrow keys, five rows a group, and a plain line for each failure.</li>
+          <li>A link closes an open dialog first, keeping what was typed, then opens its task in the side panel.</li>
+          <li>When something can’t happen, the toast says so and stays until it’s closed.</li>
+        </ul>
+      </section>
+
+      <section class="part" id="menus">
+        <h2 class="t-title-lg h2">Menu bar: every page and command, with its key</h2>
+        <p class="prose">The app menu gains About, updates, hooks and the daemon restart. Edit is new, so Copy, Copy Reference and Undo have a home. View lists all seven pages. Task and Idea hold the one-click signals for the open task or idea and are greyed when none is open. The export moves to Help.</p>
+        <div class="mcmp">
+          <span class="cmp-l">Today</span>
+          <div class="mstrip today-c" id="menus-old"></div>
+          <span class="cmp-l">With fixes</span>
+          <div class="mstrip" id="menus-new"></div>
+        </div>
+        <h3 class="t-title">View menu open, in the window</h3>
+        <div class="minis" data-minis="menu" data-bar></div>
+      </section>
+
+      <section class="part" id="keys">
+        <h2 class="t-title-lg h2">Keyboard shortcuts, settled into one table</h2>
+        <p class="prose">Every key here is also shown in its menu and in the tip of the control it presses. While a dialog is open, page keys, Back, Forward and Search pause and their menu items grey out; a link from a notification still opens. ⌃F2 reaches the menu bar from the keyboard, and ← → move across it.</p>
+        <div class="scroll-x">
+          <table class="spec ktab">
+            <thead><tr><th scope="col">Key</th><th scope="col">Does</th><th scope="col">Today</th></tr></thead>
+            <tbody id="keyrows"></tbody>
+          </table>
+        </div>
+        <h3 class="t-title">Clashes between the review proposals</h3>
+        <div class="scroll-x">
+          <table class="spec">
+            <thead><tr><th scope="col">Key</th><th scope="col">Asked for</th><th scope="col">Settled</th><th scope="col">Why</th></tr></thead>
+            <tbody>
+              <tr><th scope="row"><span class="k">⌘4</span></th><td>Ideas (Ideas review) · Backlog (fix plan)</td><td>Backlog ⌘4, Ideas ⌘5</td><td>Keys follow the sidebar from top to bottom, so the number matches the row.</td></tr>
+              <tr><th scope="row"><span class="k">⌘[ ⌘]</span></th><td>Back and Forward (Insights review) · today’s ⌘← ⌘→</td><td>Both pairs work</td><td>⌘[ ⌘] are the Mac standard; ⌘← ⌘→ stay so nobody loses a habit. Inside a text field ⌘← ⌘→ move the caret.</td></tr>
+              <tr><th scope="row"><span class="k">[ ]</span></th><td>Previous and next week on Days (Insights review) · Back and Forward</td><td>Plain [ ] on Days only</td><td>No ⌘, so they can’t clash with Back. They act only while the Days page has focus, never in a text field.</td></tr>
+              <tr><th scope="row"><span class="k">⌘7</span></th><td>Releases (Insights review), greyed with releases off (fix plan)</td><td>Always on</td><td>A greyed key gives no reason. The page opens and says releases are off and how to turn them on.</td></tr>
+                          </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="part" id="search">
+        <h2 class="t-title-lg h2">Search: one highlight, best match first</h2>
+        <ul class="rules">
+          <li>One highlight. It follows the pointer and the arrow keys; there’s no separate hover look.</li>
+          <li>Each row shows its reference, the title with the typed text marked, its status in words, and its goal. When the search is narrower than about 40 characters of text, the goal drops, so at 200% text the title keeps its room.</li>
+          <li>Five rows a group, then “Show all”. The list scrolls in one place and draws only the rows in view.</li>
+          <li>A match found only in the description or details says so under the title.</li>
+          <li>While Midna isn’t running, terminals are one line that says so, instead of rows that repeat the tasks.</li>
+          <li>↑ ↓ move, ↩ opens, ⌘↩ opens the pull request, Esc closes.</li>
+        </ul>
+        <h3 class="t-title">Nothing typed</h3>
+        <div class="cmpx" data-cap="shell/search-empty" data-st="search-empty" data-what="Search open with nothing typed"></div>
+        <h3 class="t-title">Typed “pass”</h3>
+        <div class="cmpx" data-cap="shell/search-pass" data-st="search-typed" data-what="Search with “pass” typed"></div>
+        <h3 class="t-title">Searching inside a goal</h3>
+        <p class="prose">Opened from a goal page, search starts inside that goal. The chip names the goal instead of its reference, and the last row searches everything.</p>
+        <div class="cmpx" data-cap="shell/search-goal" data-st="search-goal" data-what="Search from the goal page"></div>
+        <h3 class="t-title">Nothing found</h3>
+        <div class="cmpx" data-cap="shell/search-none" data-st="search-none" data-what="Search with no match"></div>
+        <h3 class="t-title">New states: show all, a typed reference, still looking, board down</h3>
+        <div class="minis" data-minis="search-all search-ref search-wait search-down"></div>
+      </section>
+
+      <section class="part" id="links">
+        <h2 class="t-title-lg h2">Links from notifications open on top</h2>
+        <div class="cmp">
+          <div class="cmp-h"><span></span><span>Today</span><span>With fixes</span></div>
+          <div class="cmp-r">
+            <span class="cmp-l">Clicking a notification while New idea is open</span>
+            <figure class="fig">
+              <div class="tflow">
+                <div class="flow"><span class="flow-n">New idea open</span><span class="flow-a">click a notification →</span><span class="flow-n">Task opens behind it</span></div>
+                <div class="flow"><span class="flow-n">Dialog still on top</span><span class="flow-a">close it →</span><span class="flow-n">Task found</span></div>
+              </div>
+            </figure>
+            <figure class="fig">
+              <div class="tflow">
+                <div class="flow"><span class="flow-n">New idea open</span><span class="flow-a">click a notification →</span><span class="flow-n">Dialog closes, draft kept</span></div>
+                <div class="flow"><span class="flow-n">Window comes forward</span><span class="flow-a">→</span><span class="flow-n">Task in the side panel</span></div>
+              </div>
+            </figure>
+          </div>
+        </div>
+        <div class="minis" data-minis="link link-bad"></div>
+      </section>
+
+      <section class="part" id="midna">
+        <h2 class="t-title-lg h2">When Midna isn’t running, say so</h2>
+        <p class="prose">Today the toast says the terminal is showing when nothing happened. The new error toast names the task and stays until it’s closed.</p>
+        <div class="cmpx" data-cap="needs-you/hover-midna" data-st="midna" data-what="Midna status in the sidebar" data-old-toast="Showing T3’s terminal in Midna"></div>
+      </section>
+
+      <section class="part" id="releases">
+        <h2 class="t-title-lg h2">Releases page when no project has releases on</h2>
+        <p class="prose">Releases is always the seventh row and always on ⌘7. With releases off it explains why it’s empty and doesn’t join Back and Forward.</p>
+        <div class="cmpx" data-cap="insights/releases-off" data-st="releases-off" data-what="Releases with releases off"></div>
+      </section>
+
+      <section class="part" id="undo">
+        <h2 class="t-title-lg h2">Option: Undo after Done, Not needed and Close</h2>
+        <p class="prose">This one needs a choice. With Undo, the toast after a closing signal offers Undo for 8 seconds and Edit ▸ Undo names it. Without, the toast only says what closed and Undo stays greyed.</p>
+        <div class="opts">
+          <div class="opt"><div class="opt-h"><span class="t-title">With Undo</span></div><div class="minis" data-minis="undo" data-bar></div></div>
+          <div class="opt"><div class="opt-h"><span class="t-title">Without Undo</span></div><div class="minis" data-minis="no-undo" data-bar></div></div>
+        </div>
+      </section>
+
+      <section class="part" id="risks">
+        <h2 class="t-title-lg h2">Risks</h2>
+        <div>
+          <div class="risk"><div class="risk-h"><span class="pill needs">Medium</span><span class="t-label">Backlog moves from ⌘5 to ⌘4</span></div><span class="muted">Anyone used to ⌘5 lands on Ideas. The View menu shows the new keys, and Ideas is one key away.</span></div>
+          <div class="risk"><div class="risk-h"><span class="pill neutral">Low</span><span class="t-label">Plain [ ] on Days fire by accident</span></div><span class="muted">They act only while the Days page has focus and never in a text field.</span></div>
+          <div class="risk"><div class="risk-h"><span class="pill needs">Medium</span><span class="t-label">A link closes a dialog someone was typing in</span></div><span class="muted">The draft is kept and the toast offers Reopen ⌘N.</span></div>
+          <div class="risk"><div class="risk-h"><span class="pill neutral">Low</span><span class="t-label">Big boards make search slow</span></div><span class="muted">Five rows a group, rows drawn only in view, and “Searching…” while the board answers.</span></div>
+          <div class="risk"><div class="risk-h"><span class="pill neutral">Low</span><span class="t-label">Ideas crowd the results</span></div><span class="muted">Ideas sit after goals and are capped at five like every group.</span></div>
+        </div>
+      </section>
+
+      <section class="part" id="testing">
+        <h2 class="t-title-lg h2">Testing</h2>
+        <div class="passbar"><div class="passbar-t"><div class="passbar-f" id="passf" style="width:0"></div></div><span class="t-label-sm" id="passn"></span></div>
+        <details class="more"><summary>Keys and menus</summary>
+          <ul class="checks" data-checks>
+            <li><input type="checkbox" id="k1"><label for="k1">⌘1 to ⌘7 open the pages in sidebar order, and the View menu shows each key.</label></li>
+            <li><input type="checkbox" id="k2"><label for="k2">⌘[ and ⌘← go back; ⌘] and ⌘→ go forward; in a text field ⌘← moves the caret.</label></li>
+            <li><input type="checkbox" id="k3"><label for="k3">⇧⌘C copies the open task’s reference and is greyed with nothing open.</label></li>
+            <li><input type="checkbox" id="k4"><label for="k4">Page keys, Back, Forward and Search do nothing while a dialog is open, and their menu items are greyed.</label></li>
+            <li><input type="checkbox" id="k7"><label for="k7">⌘3, ⌘7, ⌘[ returns to Goals; ⌘7, ⌘2, ⌘[ returns to the page before Releases.</label></li>
+            <li><input type="checkbox" id="k8"><label for="k8">Closing a menu, search or a dialog puts focus back on what opened it.</label></li>
+            <li><input type="checkbox" id="k9"><label for="k9">⌘N with New idea open keeps the draft and puts focus in Title.</label></li>
+            <li><input type="checkbox" id="k10"><label for="k10">One Esc closes a menu, search or a dialog, even while a tip is showing.</label></li>
+            <li><input type="checkbox" id="k5"><label for="k5">[ and ] change the week only while Days has focus.</label></li>
+            <li><input type="checkbox" id="k6"><label for="k6">Task and Idea menu items are greyed when no task or idea is open.</label></li>
+          </ul>
+        </details>
+        <details class="more"><summary>Search</summary>
+          <ul class="checks" data-checks>
+            <li><input type="checkbox" id="s1"><label for="s1">Only one row is ever highlighted, by pointer or arrow keys.</label></li>
+            <li><input type="checkbox" id="s2"><label for="s2">Each group shows five rows, and “Show all” opens the rest in place.</label></li>
+            <li><input type="checkbox" id="s3"><label for="s3">Typing a reference such as G1 puts that item first and selected.</label></li>
+            <li><input type="checkbox" id="s4"><label for="s4">With Midna stopped, terminals show as one line that says so, with no rows.</label></li>
+            <li><input type="checkbox" id="s5"><label for="s5">A slow board shows “Searching…”; a stopped one shows the time it stopped and Retry.</label></li>
+            <li><input type="checkbox" id="s6"><label for="s6">A board with 2,000 tasks scrolls the results smoothly.</label></li>
+          </ul>
+        </details>
+        <details class="more"><summary>Links and messages</summary>
+          <ul class="checks" data-checks>
+            <li><input type="checkbox" id="l1"><label for="l1">A notification link with New idea open closes it, keeps the draft and opens the task panel.</label></li>
+            <li><input type="checkbox" id="l2"><label for="l2">A link to a task that isn’t on the board shows the error toast.</label></li>
+            <li><input type="checkbox" id="m1"><label for="m1">Focus in Midna with Midna stopped shows the error toast, not “Showing”.</label></li>
+            <li><input type="checkbox" id="r1"><label for="r1">With releases off, ⌘7 opens the Releases page with the explanation.</label></li>
+            <li><input type="checkbox" id="w1"><label for="w1">Every state here looks right at 900 × 560 and 2560 × 1440, light and dark.</label></li>
+          </ul>
+        </details>
+        <details class="more"><summary>Setup</summary>
+          <p class="prose">Today’s pictures were taken from the app running the sample board, at 1728 × 1084 and 900 × 560, light and dark. The drawings use the same sample board at 2560 × 1440 and 900 × 560; the light and dark switch in the toolbar swaps both.</p>
+        </details>
+      </section>
+    </main>
+  </div>
+</div>
+<div class="layer" id="doclayer"></div>
+</section>
+
+<section data-screen="app" data-title="The app">
+  <div id="appwin" style="position:absolute;inset:0"></div>
+</section>

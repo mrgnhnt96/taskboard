@@ -1,0 +1,123 @@
+{
+  "title": "Menus, keys, links and search",
+  "device": "desktop",
+  "minTarget": 24,
+  "limits": {
+    "minWidth": 900,
+    "minHeight": 560,
+    "maxWidth": 2560,
+    "maxHeight": 1440
+  },
+  "presets": [
+    {
+      "id": "smallest",
+      "label": "Smallest window",
+      "width": 900,
+      "height": 560,
+      "window": "mac",
+      "group": "Mac",
+      "platform": "macos"
+    },
+    {
+      "id": "macbook",
+      "label": "MacBook",
+      "width": 1440,
+      "height": 900,
+      "window": "mac",
+      "group": "Mac",
+      "platform": "macos"
+    },
+    {
+      "id": "largest",
+      "label": "Largest window",
+      "width": 2560,
+      "height": 1440,
+      "window": "mac",
+      "group": "Mac",
+      "platform": "macos"
+    }
+  ],
+  "initialPreset": "macbook",
+  "states": [
+    {
+      "id": "default",
+      "label": "Needs you"
+    },
+    {
+      "id": "menu",
+      "label": "View menu open"
+    },
+    {
+      "id": "search-empty",
+      "label": "Search, nothing typed"
+    },
+    {
+      "id": "search-typed",
+      "label": "Search, typed"
+    },
+    {
+      "id": "search-all",
+      "label": "Search, all 8 tasks"
+    },
+    {
+      "id": "search-goal",
+      "label": "Search inside a goal"
+    },
+    {
+      "id": "search-ref",
+      "label": "Search, typed a goal ref"
+    },
+    {
+      "id": "search-none",
+      "label": "Search, nothing found"
+    },
+    {
+      "id": "search-wait",
+      "label": "Search, still looking"
+    },
+    {
+      "id": "search-down",
+      "label": "Search, board down"
+    },
+    {
+      "id": "link",
+      "label": "Link over a dialog"
+    },
+    {
+      "id": "link-bad",
+      "label": "Link to a missing task"
+    },
+    {
+      "id": "midna",
+      "label": "Midna isn't running"
+    },
+    {
+      "id": "releases-off",
+      "label": "Releases are off"
+    },
+    {
+      "id": "undo",
+      "label": "With Undo"
+    },
+    {
+      "id": "no-undo",
+      "label": "Without Undo"
+    }
+  ],
+  "extraChecks": [
+    {
+      "id": "min-window",
+      "label": "Min window \u00b7 900 \u00d7 560",
+      "width": 900,
+      "height": 560,
+      "window": "plain"
+    },
+    {
+      "id": "short",
+      "label": "Short window \u00b7 1366 \u00d7 600",
+      "width": 1366,
+      "height": 600,
+      "window": "plain"
+    }
+  ]
+}

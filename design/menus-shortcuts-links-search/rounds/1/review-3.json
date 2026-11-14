@@ -1,0 +1,42 @@
+{
+  "brief": "/Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-5/design/menus-shortcuts-links-search/rounds/1/brief-3.md",
+  "model": "opus",
+  "effort": null,
+  "ok": true,
+  "error": null,
+  "turns": 21,
+  "seconds": 147,
+  "costUsd": 0.6588217999999999,
+  "tokens": {
+    "input": 40,
+    "output": 12765,
+    "cacheWrite": 40511,
+    "cacheRead": 1004034
+  },
+  "firstTurn": {
+    "cacheWrite": 2719,
+    "cacheRead": 28676
+  },
+  "systemPrompt": "ultrahand-review-8e6b53a46d78.md",
+  "compactions": 0,
+  "peakContext": 69189,
+  "report": {
+    "verdict": "This was a fix check on a macOS desktop design (pointer and keyboard), tested on the rebuilt ultrahand canvas with trusted keyboard and mouse input from drive.mjs. The app screen was tested at 1440 × 900 (macbook, light); the Design page's Testing list was checked at 900 × 560 (smallest). I compared the canvas against fix-2.diff (src/setup.js, src/markup.html) and read LESSONS.md first (L1 grouping, L2 no tabs for growing sets); neither lesson applies to these changes. All three open findings are fixed and the changes broke nothing I could find: 0 Catastrophe, 0 Major, 0 Minor, 0 Cosmetic. R14 fixed: with 'Dark icon' typed in Title and 'Some details' in Details, ⌘N pressed once and then twice more kept both fields, left a single dialog, and put focus back in Title. After Esc, ⌘N reopened the draft intact. R15 fixed: with the Close tooltip showing ('Close Esc'), one Esc closed New idea and focus went to File. With the 'Search everything' tip showing on the scope chip ×, one Esc closed search and focus went back to Search ⌘K. R16 fixed: in 'Search inside a goal', Tab to the chip × and Enter widened the search (scope chip gone, 8 results, the live region read '8 results', focus back in the field) and opened no panel. Space did the same. ↓ and Enter in the field still move the highlight (aria-activedescendant opt-tasks-T2) and open the task in the panel. The two new Testing items (k9, k10) show under Testing › Keys and menus, and clicking each label ticks its box. Composition was not re-reviewed: this round changed behaviour only, apart from two lines in a list.",
+    "findings": [],
+    "what_works": [
+      "R14: run('new-idea') now returns early when the dialog is already open and focuses Title, so ⌘N can't rebuild the dialog from a null draft. The draft also survives Esc followed by ⌘N.",
+      "R15: Esc hides the tooltip and closes the layer in the same press. When only a tip is showing, Esc still just hides it (the '!tip' guard) and doesn't fall through.",
+      "R16: the palette's ↑ ↓ Enter branch now runs only when the search field has focus, so the chip × does what it's named for, from Enter and from Space.",
+      "The two new Testing checks (k9, k10) describe exactly the behaviour that was fixed, so the fixes can be re-tested by hand."
+    ],
+    "not_checked": [
+      "Live File › New Idea… greyed while the dialog is open: the menu bar is inert while the dialog is open (R2's fix), so the disabled item can't be seen or reached in the running window. The disabled state was confirmed only from the source (disabled: dlg).",
+      "The rest of the design: out of scope for this fix check, which covered only R14–R16 and the lines fix-2.diff touched.",
+      "Dark mode, 200% text and the largest preset for these fixes: the changes are key handling only and add no visual change apart from two list lines.",
+      "The State picker was set with the driver's choose step, which fell back to setting the value by script (input: 'script'). The picker itself wasn't driven with real input.",
+      "Screen-reader output (VoiceOver): the live region's '8 results' was read from the DOM, not heard.",
+      "An aside, outside this scope and not a finding: with the scope chip × focused, ↓ does nothing in the app (it nudged the canvas stage by 1 px, which is a canvas artifact). This matches the combobox pattern, where arrows work from the field.",
+      "One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE]."
+    ]
+  }
+}
