@@ -230,6 +230,31 @@ fn backlog_groups_have_true_totals_in_the_order_the_page_shows() {
 }
 
 #[test]
+fn backlog_filter_words_and_kind_counts() {
+    let b = new_board();
+    let crash = issue(&b, "Sign-in crashes on reload", "bug");
+    issue(&b, "Sidebar flickers", "bug");
+    let gap = issue(&b, "No test for sign-in", "gap");
+    issue(&b, "Tidy the logger", "clean");
+
+    let v = b.get("backlog/triage?lens=similar");
+    assert_eq!(v["kind_counts"], json!({"bug": 2, "gap": 1, "clean": 1}), "{v}");
+
+    // `q` matches the title or the ref, any case, and the counts and groups follow it.
+    let v = b.get("backlog/triage?lens=similar&q=SIGN-IN");
+    assert_eq!(refs(&v["issues"]).len(), 2, "{v}");
+    assert_eq!(v["kind_counts"], json!({"bug": 1, "gap": 1}));
+    let totals: i64 = v["groups"].as_array().unwrap().iter().map(|g| g["total"].as_i64().unwrap()).sum();
+    assert_eq!(totals, 2);
+    // The kind choice narrows the rows but not the counts, so the other kinds' counts stay.
+    let v = b.get("backlog/triage?lens=similar&q=sign-in&kinds=gap");
+    assert_eq!(refs(&v["issues"]), vec![gap]);
+    assert_eq!(v["kind_counts"], json!({"bug": 1, "gap": 1}));
+    let v = b.get(&format!("backlog/triage?q={}", crash.to_lowercase()));
+    assert_eq!(refs(&v["issues"]), vec![crash]);
+}
+
+#[test]
 fn backlog_groups_by_priority_rank() {
     let b = new_board();
     let low = issue(&b, "Low", "bug");

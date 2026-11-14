@@ -269,6 +269,18 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                             m.post(path.clone(), serde_json::json!({}), cx, |_, _, _| {});
                         }))
                 }))
+                .children(m.backlog.open_toast.clone().filter(|(when, _)| *when == at).map(|(_, task)| {
+                    div()
+                        .id("toast-open")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.accent_soft)
+                        .cursor_pointer()
+                        .child("Open it")
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            m.dismiss_toast(at, cx);
+                            m.open_task(task.clone(), cx);
+                        }))
+                }))
                 .children(x.err.then(|| {
                     div()
                         .id(("toast-dismiss", i))
