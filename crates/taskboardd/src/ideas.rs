@@ -60,9 +60,22 @@ pub fn get(app: &App, r: &str) -> Result<Row> {
         .ok_or_else(|| ApiError::new(404, format!("There's no idea {}.", rf("idea", id))))
 }
 
+/// How many of an idea's questions are still open, as SQL on `ideas`: the questions its newest
+/// report asks that have no answer yet.
+const QUESTIONS: &str = "(SELECT COUNT(*) FROM idea_rounds r, json_each(r.report, '$.blocks') b \
+     WHERE r.id = (SELECT MAX(id) FROM idea_rounds WHERE idea_id = ideas.id AND report IS NOT NULL) \
+       AND json_extract(b.value, '$.type') = 'question' \
+       AND NOT EXISTS (SELECT 1 FROM idea_notes n WHERE n.round_id = r.id AND n.question = json_extract(b.value, '$.id')))";
+
 /// The idea as `list` shows it: its fields, the goal it became, how many notes and rounds it has,
-/// and the verdict of its newest report.
+/// the verdict of its newest report, and how many of that report's `questions` are still open (0
+/// once the idea is planned or put aside).
 pub fn dict(app: &App, i: &Row) -> Result<Value> {
+    let questions = if OPEN.contains(&i.st("state").as_str()) {
+        app.db.count(&format!("SELECT {QUESTIONS} FROM ideas WHERE id = ?"), p![i.id()])?
+    } else {
+        0
+    };
     let notes = app.db.count("SELECT COUNT(*) FROM idea_notes WHERE idea_id = ?", p![i.id()])?;
     let rounds = app.db.count("SELECT COUNT(*) FROM idea_rounds WHERE idea_id = ?", p![i.id()])?;
     let verdict = app
@@ -75,7 +88,7 @@ pub fn dict(app: &App, i: &Row) -> Result<Value> {
         "id": i.id(), "ref": rf("idea", i.id()), "project": i.v("project"), "title": i.v("title"),
         "detail": i.st("detail"), "state": i.v("state"), "goal": rf_opt("goal", i.i("goal_id")),
         "source": i.v("source"), "created_at": i.v("created_at"), "updated_at": i.v("updated_at"),
-        "notes": notes, "rounds": rounds, "verdict": verdict, "planning": app.shared.lock().idea_planning.contains(&i.id()),
+        "notes": notes, "rounds": rounds, "verdict": verdict, "questions": questions, "planning": app.shared.lock().idea_planning.contains(&i.id()),
     }))
 }
 
@@ -110,7 +123,7 @@ pub fn show(app: &App, i: &Row) -> Result<Value> {
 fn round_dict(r: &Row) -> Value {
     let report = r.s("report").and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null);
     json!({
-        "id": r.id(), "focus": r.st("focus"), "report": report, "sha": r.v("sha"), "web": r.b("web"),
+        "stopped": r.s("error") == Some(crate::dig::STOPPED), "id": r.id(), "focus": r.st("focus"), "report": report, "sha": r.v("sha"), "web": r.b("web"),
         "started_at": r.v("started_at"), "finished_at": r.v("finished_at"), "error": r.v("error"), "source": r.v("source"),
     })
 }
@@ -174,19 +187,33 @@ fn add_note(app: &App, i: &Row, text: &str, body: &Value) -> Result<()> {
     app.db.update("ideas", &json!(i.id()), fields!["updated_at" => now])
 }
 
+/// `POST /ideas/:ref/note {text, round?, question?}`: a note on the idea. With a `round` and the id
+/// of one of its report's questions, the note is that question's answer, in whatever words (a talk
+/// settling the question links back this way).
 fn note(app: &App, r: &str, body: &Value) -> Result<Value> {
     let i = get(app, r)?;
     let text = clean_long(&body_str(body, "text"), NOTE_MAX, "A note")?;
     if text.is_empty() {
         return err(400, "Say what the note is.");
     }
+    if body_has(body, "round") || body_has(body, "question") {
+        return answer_with(app, r, body, &text, true);
+    }
     add_note(app, &i, &text, body)?;
     show(app, &get(app, r)?)
 }
 
-/// Answer one of a round's open questions with one of its choices. The answer is a note the next
-/// dig and the planner read; answering the same question again changes that note.
+/// `POST /ideas/:ref/answer {round, question, answer}`: answer one of a round's open questions with
+/// one of its choices, or in words when it has none. The answer is a note the next dig and the
+/// planner read; answering the same question again changes that note.
 fn answer(app: &App, r: &str, body: &Value) -> Result<Value> {
+    let ans = clean_long(&body_str(body, "answer"), NOTE_MAX, "An answer")?;
+    answer_with(app, r, body, &ans, false)
+}
+
+/// Keep `ans` as the answer to the question `body` names; `any` takes words even when the question
+/// has choices.
+fn answer_with(app: &App, r: &str, body: &Value, ans: &str, any: bool) -> Result<Value> {
     let i = get(app, r)?;
     let me = rf("idea", i.id());
     if i.st("state") == "planned" {
@@ -207,8 +234,11 @@ fn answer(app: &App, r: &str, body: &Value) -> Result<Value> {
     let Some(q) = report["blocks"].as_array().into_iter().flatten().find(|b| b["type"] == "question" && b["id"] == qid.as_str()) else {
         return err(404, format!("That report has no question “{qid}”."));
     };
-    let ans = body_str(body, "answer");
-    if !q["choices"].as_array().into_iter().flatten().any(|c| c == ans.as_str()) {
+    let choices = q["choices"].as_array().cloned().unwrap_or_default();
+    if ans.is_empty() {
+        return err(400, "Say what the answer is.");
+    }
+    if !any && !choices.is_empty() && !choices.iter().any(|c| c == ans) {
         return err(400, "Pick one of the question's choices.");
     }
     let text = format!("Answered “{}”: {ans}", q["text"].as_str().unwrap_or(""));
@@ -268,6 +298,43 @@ fn move_to(app: &App, r: &str, to: &str, body: &Value) -> Result<Value> {
     show(app, &get(app, r)?)
 }
 
+/// `POST /ideas/:ref/unplan`: undo a plan before any of its work starts. The goal the idea became
+/// is deleted with its tasks, and the idea is reported again (new when it has no report), with a
+/// note saying so. Refused once any of the goal's tasks has left planned.
+fn unplan(app: &App, r: &str, body: &Value) -> Result<Value> {
+    let i = get(app, r)?;
+    let me = rf("idea", i.id());
+    if app.shared.lock().idea_planning.contains(&i.id()) {
+        return err(409, format!("{me} is being planned into a goal; wait for it."));
+    }
+    if i.st("state") != "planned" {
+        return err(409, format!("{me} isn't planned."));
+    }
+    let gone = match i.i("goal_id") {
+        Some(g) if app.db.q1("SELECT id FROM goals WHERE id = ?", p![g])?.is_some() => {
+            let started: Vec<String> = app
+                .db
+                .q("SELECT id, status FROM tasks WHERE goal_id = ? AND status != 'planned' ORDER BY position, id", p![g])?
+                .iter()
+                .map(|t| format!("{} is {}", rf("task", t.id()), t.st("status")))
+                .collect();
+            if !started.is_empty() {
+                return err(409, format!("{}'s work has started ({}), so {me} can't be un-planned.", rf("goal", g), started.join(", ")));
+            }
+            crate::api::dispatch(app, "POST", &format!("/goals/{g}/delete"), &crate::api::Query::new(), &json!({"tasks": true}))?;
+            format!("{} and its tasks were deleted", rf("goal", g))
+        }
+        Some(g) => format!("{} was deleted already", rf("goal", g)),
+        None => "it had no goal".to_string(),
+    };
+    app.db.tx(|| {
+        add_note(app, &i, &format!("Un-planned: {gone}."), body)?;
+        let state = crate::dig::settled_state(app, i.id())?;
+        app.db.update("ideas", &json!(i.id()), fields!["state" => state, "goal_id" => null, "updated_at" => now_iso()])
+    })?;
+    show(app, &get(app, r)?)
+}
+
 /// Where an idea sorts on the Ideas page: open ones first, then planned, shelved and dropped.
 const RANK: &str = "CASE state WHEN 'planned' THEN 1 WHEN 'shelved' THEN 2 WHEN 'dropped' THEN 3 ELSE 0 END";
 
@@ -277,7 +344,8 @@ const RANK: &str = "CASE state WHEN 'planned' THEN 1 WHEN 'shelved' THEN 2 WHEN 
 /// page's order (by project, open first, each group newest change first), with the `total` that
 /// match and the `next` page's cursor (null at the end). `projects` is each project with ideas under
 /// `state`, how many are open, how many are closed (shelved or dropped) and its `total`, whatever
-/// `project` picked.
+/// `project` picked. `first=questions` puts the open ideas with open questions ahead of the other
+/// open ones.
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let q = |k: &str| query.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty());
     let every = q("project") == Some("all");
@@ -290,6 +358,17 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     if state != "open" && state != "all" && !STATES.contains(&state) {
         return err(400, format!("An idea's state is open, all or one of {}.", STATES.join(", ")));
     }
+    let asked_first = match q("first") {
+        None => false,
+        Some("questions") => true,
+        Some(_) => return err(400, "Ideas can come with open questions first (first=questions)."),
+    };
+    // Open ideas with open questions rank 0 and the other open ones 1, when asked; else all open are 0.
+    let rank = if asked_first {
+        format!("(CASE WHEN {RANK} = 0 AND {QUESTIONS} > 0 THEN 0 WHEN {RANK} = 0 THEN 1 ELSE {RANK} + 1 END)")
+    } else {
+        RANK.to_string()
+    };
     let page = crate::api::Paging::of(query);
     let (mut by_state, mut state_args) = (String::new(), p![]);
     match state {
@@ -312,21 +391,22 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
         args.extend(ids.iter().map(|i| json!(i)));
     }
     if page.limit.is_none() {
-        let rows = app.db.q(&format!("{sql} ORDER BY updated_at DESC, id DESC"), args)?;
+        let first = if asked_first { format!("{rank}, ") } else { String::new() };
+        let rows = app.db.q(&format!("{sql} ORDER BY {first}updated_at DESC, id DESC"), args)?;
         let out = rows.iter().map(|i| dict(app, i)).collect::<Result<Vec<_>>>()?;
         return Ok(json!({"project": project, "ideas": out}));
     }
     let total = app.db.count(&sql.replacen("SELECT *", "SELECT COUNT(*)", 1), args.clone())?;
-    let at = format!("project, {RANK} AS rk, COALESCE(updated_at, '') AS u, id");
+    let at = format!("project, {rank} AS rk, COALESCE(updated_at, '') AS u, id");
     if let Some(b) = page.before.as_deref().and_then(|b| b.parse::<i64>().ok()) {
         if let Some(c) = app.db.q1(&format!("SELECT {at} FROM ideas WHERE id = ?"), p![b])? {
             sql += &format!(
-                " AND (project > ? OR (project = ? AND ({RANK} > ? OR ({RANK} = ? AND (COALESCE(updated_at, '') < ? OR (COALESCE(updated_at, '') = ? AND id < ?))))))"
+                " AND (project > ? OR (project = ? AND ({rank} > ? OR ({rank} = ? AND (COALESCE(updated_at, '') < ? OR (COALESCE(updated_at, '') = ? AND id < ?))))))"
             );
             args.extend([c.v("project"), c.v("project"), c.v("rk"), c.v("rk"), c.v("u"), c.v("u"), json!(b)]);
         }
     }
-    sql += &format!(" ORDER BY project, {RANK}, COALESCE(updated_at, '') DESC, id DESC LIMIT ?");
+    sql += &format!(" ORDER BY project, {rank}, COALESCE(updated_at, '') DESC, id DESC LIMIT ?");
     args.extend(page.sql_limit().map(|l| json!(l)));
     let mut rows = app.db.q(&sql, args)?;
     let more = page.cut(&mut rows);
@@ -362,6 +442,8 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("POST", [r, "reopen"]) => app.db.tx(|| move_to(app, r, "reopen", body)),
         ("POST", [r, "dig"]) => crate::dig::start(app, r, body),
         ("POST", [r, "plan"]) => crate::idea_plan::start(app, r, body),
+        ("POST", [r, "unplan"]) => unplan(app, r, body),
+        ("POST", [r, "stop"]) => crate::dig::stop(app, r),
         ("POST", [r, "talk"]) => crate::idea_talk::start(app, r, body),
         _ => err(404, "There's nothing at that address."),
     }

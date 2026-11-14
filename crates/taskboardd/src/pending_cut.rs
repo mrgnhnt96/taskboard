@@ -206,11 +206,30 @@ pub fn cancel(app: &App, project: &str) -> Result<Value> {
     Ok(json!({"project": project, "name": r.v("name"), "cancelled": true}))
 }
 
+fn dropped_key(project: &str) -> String {
+    format!("pending_cut_dropped:{project}")
+}
+
+/// The project's last dropped pending cut: its name, why it dropped, when, and the command that cuts it
+/// by hand. Null once a cut by that name went out or a new cut is pending.
+pub fn dropped(app: &App, project: &str) -> Result<Value> {
+    let Some(raw) = app.db.get_setting(&dropped_key(project))? else { return Ok(Value::Null) };
+    let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let Some(name) = v["name"].as_str() else { return Ok(Value::Null) };
+    if for_project(app, project)?.is_some() || crate::releases::named(app, project, name, 0)? {
+        return Ok(Value::Null);
+    }
+    Ok(v)
+}
+
 fn drop_cut(app: &App, r: &Row, why: &str) -> Result<()> {
     let (project, name) = (r.st("project"), r.st("name"));
     app.db.x("DELETE FROM pending_cuts WHERE id = ?", p![r.id()])?;
+    let next = format!("tb release cut {name}");
+    let kept = json!({"name": name, "why": why, "at": now_iso(), "next": next});
+    app.db.set_setting(&dropped_key(&project), Some(&jdumps(&kept)))?;
     app.info(format!("pending cut: {project}: dropped {name}: {why}"));
-    let text = format!("The pending release {name} for {project} was dropped: {why}. Cut it by hand with tb release cut {name} once it's ready.");
+    let text = format!("The pending release {name} for {project} was dropped: {why}. Cut it by hand with {next} once it's ready.");
     if let Err(e) = crate::dispatch::raise(app, &text, None, None, Some(&format!("pending-cut:{project}:{name}")), false) {
         app.info(format!("pending cut: {project}: couldn't tell the owner {name} was dropped: {e}"));
     }

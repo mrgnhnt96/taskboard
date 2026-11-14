@@ -180,3 +180,36 @@ fn no_plan_while_digging_or_put_aside() {
     assert!(msg.contains("reopen it first"), "{msg}");
     assert_eq!(b.calls(), "", "Claude wasn't asked");
 }
+
+#[test]
+fn a_plan_can_be_undone_until_its_work_starts() {
+    let b = board();
+    let i = b.idea();
+    let (code, msg) = b.try_post(&format!("/ideas/{i}/unplan"), json!({})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("isn't planned"), "{msg}");
+
+    b.answer(plan());
+    let g = b.post(&format!("/ideas/{i}/plan"), json!({}))["goal"].as_str().unwrap().to_string();
+    let gid: i64 = g[1..].parse().unwrap();
+    let v = b.post(&format!("/ideas/{i}/unplan"), json!({}));
+    assert_eq!((v["state"].clone(), v["goal"].clone()), (json!("new"), Value::Null), "open again; it has no report");
+    assert_eq!(v["notes"].as_array().unwrap().last().unwrap()["text"], format!("Un-planned: {g} and its tasks were deleted."));
+    assert!(b.app.db.q1("SELECT id FROM goals WHERE id = ?", p![gid]).unwrap().is_none(), "the goal is gone");
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks WHERE goal_id = ?", p![gid]).unwrap(), 0, "with its tasks");
+
+    let g = b.post(&format!("/ideas/{i}/plan"), json!({}))["goal"].as_str().unwrap().to_string();
+    let gid: i64 = g[1..].parse().unwrap();
+    let t = b.app.db.q1("SELECT id FROM tasks WHERE goal_id = ? ORDER BY id LIMIT 1", p![gid]).unwrap().unwrap().id();
+    b.app.db.update("tasks", &json!(t), fields!["status" => "queued"]).unwrap();
+    let (code, msg) = b.try_post(&format!("/ideas/{i}/unplan"), json!({})).unwrap_err();
+    assert_eq!(code, 409, "not once its work has started");
+    assert!(msg.contains(&format!("T{t} is queued")), "{msg}");
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks WHERE goal_id = ?", p![gid]).unwrap(), 2, "nothing was deleted");
+
+    b.app.db.x("DELETE FROM tasks WHERE goal_id = ?", p![gid]).unwrap();
+    b.app.db.x("DELETE FROM goals WHERE id = ?", p![gid]).unwrap();
+    let v = b.post(&format!("/ideas/{i}/unplan"), json!({}));
+    assert_eq!(v["state"], "new", "a goal deleted by hand un-plans too");
+    assert!(v["notes"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap().contains("deleted already"));
+}

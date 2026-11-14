@@ -345,7 +345,39 @@ pub fn report(app: &App, start: f64, end: f64) -> Result<Value> {
     });
     r["change"] = change(app, &r, start)?;
     r["suggestions"] = json!(suggest(&r));
+    r["shipped"] = shipped(app, &iso(start), &iso(end))?;
     Ok(r)
+}
+
+/// What the period shipped, from `start` up to `end` (ISO times): the tasks finished done (not
+/// failed), the goals that finished, and the releases cut (not failed), each newest first.
+pub fn shipped(app: &App, start: &str, end: &str) -> Result<Value> {
+    let tasks: Vec<Value> = app
+        .db
+        .q("SELECT * FROM tasks WHERE status = 'done' AND COALESCE(failed, 0) = 0 AND finished_at >= ? AND finished_at < ? \
+            ORDER BY finished_at DESC, id DESC", p![start, end])?
+        .iter()
+        .map(|t| json!({"ref": crate::human::task_ref(t), "title": t.v("title"), "project": t.v("project"),
+                        "goal": rf_opt("goal", t.i("goal_id")), "finished_at": t.v("finished_at")}))
+        .collect();
+    let mut goals = vec![];
+    let candidates = app.db.q(
+        "SELECT g.id, g.name, g.project, MAX(COALESCE(t.finished_at, t.updated_at)) AS at FROM goals g JOIN tasks t ON t.goal_id = g.id \
+         GROUP BY g.id HAVING at >= ? AND at < ? ORDER BY at DESC, g.id DESC",
+        p![start, end],
+    )?;
+    for g in candidates {
+        if crate::board::goal_finished(app, g.id())? {
+            goals.push(json!({"ref": rf("goal", g.id()), "name": g.v("name"), "project": g.v("project"), "finished_at": g.v("at")}));
+        }
+    }
+    let releases: Vec<Value> = app
+        .db
+        .q("SELECT * FROM releases WHERE failed_at IS NULL AND cut_at >= ? AND cut_at < ? ORDER BY cut_at DESC, id DESC", p![start, end])?
+        .iter()
+        .map(|r| json!({"project": r.v("project"), "name": r.v("name"), "cut_at": r.v("cut_at")}))
+        .collect();
+    Ok(json!({"tasks": tasks, "goals": goals, "releases": releases}))
 }
 
 fn category_secs(r: &Value, name: &str) -> f64 {
@@ -509,6 +541,10 @@ pub fn get(app: &App, id: i64) -> Result<Value> {
     let Some(r) = app.db.q1("SELECT * FROM reviews WHERE id = ?", p![id])? else { return err(404, "There's no review with that id.") };
     let mut v = card(&r);
     v["data"] = serde_json::from_str(&r.st("data")).unwrap_or(Value::Null);
+    // A review kept before reviews listed what shipped.
+    if v["data"].is_object() && v["data"].get("shipped").is_none() {
+        v["data"]["shipped"] = shipped(app, &r.st("period_start"), &r.st("period_end"))?;
+    }
     v["fix_issues"] = json!(crate::review_fixes::issues(app, id)?);
     Ok(v)
 }

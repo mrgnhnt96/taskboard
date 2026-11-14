@@ -330,7 +330,7 @@ const PAGE_MAX: i64 = 500;
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let project = query_project(app, query)?;
     if !on(app, &project) {
-        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "total": 0, "pending": null, "more": false}));
+        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "total": 0, "pending": null, "dropped": null, "more": false}));
     }
     let num = |k: &str| query.get(k).and_then(|s| s.parse::<i64>().ok());
     let limit = num("limit").map(|n| n.clamp(1, PAGE_MAX));
@@ -357,7 +357,8 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     });
     Ok(json!({
         "project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases,
-        "total": counts["total"], "pending": pending, "more": more, "counts": counts,
+        "total": counts["total"], "pending": pending, "dropped": crate::pending_cut::dropped(app, &project)?, "more": more,
+        "counts": counts,
     }))
 }
 

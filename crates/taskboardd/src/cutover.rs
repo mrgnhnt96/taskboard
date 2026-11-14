@@ -113,14 +113,49 @@ pub fn problems(host: &str, port: u16, path_var: &str, claude_dir: &Path) -> Vec
     port_taken(host, port).into_iter().chain(other_problems(path_var, claude_dir)).collect()
 }
 
-/// Another program holds the board's port (after a rollback, the old board): why, in one sentence.
+/// Another program holds the board's port (after a rollback, the old board): why, in one sentence, with
+/// the program and its process id when lsof can tell.
 pub fn port_taken(host: &str, port: u16) -> Option<String> {
     match who_listens(host, port) {
-        Listener::Other(what) => Some(format!(
-            "Something else is listening on {host}:{port}: {what}. Stop it (for the old board: launchctl bootout its LaunchAgent), or give this board another port in config.toml."
-        )),
+        Listener::Other(what) => {
+            let held = port_holder(port).map(|h| format!(" ({}, process {})", h.command, h.pid)).unwrap_or_default();
+            Some(format!(
+                "Something else is listening on {host}:{port}: {what}{held}. Stop it (for the old board: launchctl bootout its LaunchAgent), or give this board another port in config.toml."
+            ))
+        }
         _ => None,
     }
+}
+
+/// The program listening on a TCP port.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Holder {
+    pub pid: u32,
+    pub command: String,
+}
+
+/// Who listens on `port`, from lsof. None when nothing does or lsof can't say.
+pub fn port_holder(port: u16) -> Option<Holder> {
+    let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].iter().map(PathBuf::from).find(|p| p.exists()).or_else(|| crate::proc::which("lsof"))?;
+    let args: Vec<String> = ["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"].iter().map(|a| a.to_string()).collect();
+    let out = crate::proc::run(&lsof, &args, None, 5.0).ok()?;
+    parse_lsof(&out.stdout)
+}
+
+/// The first process in lsof's `-Fpc` output: `p<pid>` then `c<command>` lines.
+pub fn parse_lsof(out: &str) -> Option<Holder> {
+    let mut pid = None;
+    for line in out.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            if pid.is_some() {
+                break;
+            }
+            pid = p.trim().parse::<u32>().ok();
+        } else if let (Some(pid), Some(c)) = (pid, line.strip_prefix('c')) {
+            return Some(Holder { pid, command: c.trim().to_string() });
+        }
+    }
+    pid.map(|pid| Holder { pid, command: "a program".into() })
 }
 
 /// What's in the way besides the port: another `tb` first on the PATH, another task-board plugin.
@@ -138,6 +173,23 @@ pub fn other_problems(path_var: &str, claude_dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lsof_names_the_first_listener() {
+        assert_eq!(parse_lsof("p4021\ncPython\nf5\np77\ncnode\n"), Some(Holder { pid: 4021, command: "Python".into() }));
+        assert_eq!(parse_lsof("p88\nf5\n"), Some(Holder { pid: 88, command: "a program".into() }));
+        assert_eq!(parse_lsof(""), None);
+    }
+
+    #[test]
+    fn a_port_held_by_this_test_names_it() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        if let Some(h) = port_holder(port) {
+            assert_eq!(h.pid, std::process::id());
+        }
+        drop(l);
+    }
 
     #[test]
     fn tells_this_board_from_others() {

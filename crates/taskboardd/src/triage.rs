@@ -223,6 +223,26 @@ pub(crate) fn ask_model_limited(
     app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64,
     budget_usd: &str, max_turns: Option<u32>,
 ) -> std::result::Result<Value, String> {
+    ask_stoppable(app, model, prompt, schema, repo, extra, timeout_secs, budget_usd, max_turns, None)
+}
+
+/// [`ask_in_with`] that gives up as soon as `stop` says so, killing Claude: the answer is then an
+/// error, [`STOPPED`].
+pub(crate) fn ask_in_until(
+    app: &App, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64, stop: &dyn Fn() -> bool,
+) -> std::result::Result<Value, String> {
+    let (model, budget) = (&app.cfg.backlog.model, &app.cfg.backlog.budget_usd);
+    ask_stoppable(app, model, prompt, schema, repo, extra, timeout_secs, budget, None, Some(stop))
+}
+
+/// What [`ask_in_until`] answers when it was stopped.
+pub(crate) const STOPPED: &str = "stopped before Claude answered";
+
+#[allow(clippy::too_many_arguments)]
+fn ask_stoppable(
+    app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64,
+    budget_usd: &str, max_turns: Option<u32>, stop: Option<&dyn Fn() -> bool>,
+) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let read: &[&str] = if repo.is_some() { &["Read", "Grep", "Glob"] } else { &[] };
     let tools = read.iter().chain(extra).copied().collect::<Vec<_>>().join(",");
@@ -251,7 +271,16 @@ pub(crate) fn ask_model_limited(
         args.extend(["--max-turns".into(), n.to_string()]);
     }
     let cwd = repo.unwrap_or(app.cfg.data.as_path());
-    let out = proc::run(&claude, &args, Some(cwd), timeout_secs as f64).map_err(|_| "claude didn't answer in time".to_string())?;
+    let late = |_| "claude didn't answer in time".to_string();
+    let out = match stop {
+        None => proc::run(&claude, &args, Some(cwd), timeout_secs as f64).map_err(late)?,
+        Some(stop) => {
+            if stop() {
+                return Err(STOPPED.into());
+            }
+            proc::run_until(&claude, &args, Some(cwd), timeout_secs as f64, &[], None, stop).map_err(late)?.ok_or_else(|| STOPPED.to_string())?
+        }
+    };
     let d: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| "claude's answer wasn't JSON".to_string())?;
     d.get("structured_output")
         .cloned()

@@ -78,7 +78,7 @@ pub fn mark_drift(app: &App, project: &str, rounds: &mut [Value]) -> Result<()> 
 }
 
 /// The state an idea goes back to once a dig is over: reported when a round has a report, else new.
-fn settled_state(app: &App, id: i64) -> Result<&'static str> {
+pub(crate) fn settled_state(app: &App, id: i64) -> Result<&'static str> {
     let reported = app.db.count("SELECT COUNT(*) FROM idea_rounds WHERE idea_id = ? AND report IS NOT NULL", p![id])? > 0;
     Ok(if reported { "reported" } else { "new" })
 }
@@ -151,11 +151,17 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
     let id = i.id();
     app.queue_slow(Box::new(move |a: &App| {
         let extra: &[&str] = if web { &WEB_TOOLS } else { &[] };
-        let answer = triage::ask_in_with(a, prompt, schema(), Some(&repo), extra, TIMEOUT_SECS).and_then(|v| checked(&v, &known));
+        let stopped = || a.shared.lock().dig_stop.contains(&round);
+        let answer =
+            triage::ask_in_until(a, prompt, schema(), Some(&repo), extra, TIMEOUT_SECS, &stopped).and_then(|v| checked(&v, &known));
         if let Err(e) = finish(a, id, round, answer) {
             a.info(format!("ideas: recording {}'s dig failed: {}", rf("idea", id), e.message));
         }
-        a.shared.lock().digging.remove(&id);
+        // A stopped round let go of its idea when it was stopped; a new dig may hold it now.
+        let mut s = a.shared.lock();
+        if !s.dig_stop.remove(&round) {
+            s.digging.remove(&id);
+        }
     }));
     ideas::show(app, &ideas::get(app, r)?)
 }
@@ -170,9 +176,45 @@ fn diggable(i: &Row) -> Result<()> {
     }
 }
 
+/// The error a round stopped from the app keeps.
+pub const STOPPED: &str = "Stopped before Claude answered.";
+
+/// `POST /ideas/:ref/stop`: stop the dig running on the idea. Its round closes as stopped at once
+/// and the idea goes back to how it was (reported, or new); Claude is stopped as soon as the board
+/// sees it, or never asked when the dig was still waiting its turn. 409 when no dig is running.
+pub fn stop(app: &App, r: &str) -> Result<Value> {
+    let i = ideas::get(app, r)?;
+    let me = rf("idea", i.id());
+    let running = app.shared.lock().digging.contains(&i.id());
+    let open = app.db.q1("SELECT id FROM idea_rounds WHERE idea_id = ? AND finished_at IS NULL ORDER BY id DESC LIMIT 1", p![i.id()])?;
+    let (true, Some(round)) = (running && i.st("state") == "digging", open.map(|r| r.id())) else {
+        return err(409, format!("{me} isn't being dug into."));
+    };
+    app.db.tx(|| {
+        let now = now_iso();
+        app.db.x("UPDATE idea_rounds SET error = ?, finished_at = ? WHERE id = ? AND finished_at IS NULL", p![STOPPED, now, round])?;
+        if ideas::get(app, r)?.st("state") == "digging" {
+            app.db.update("ideas", &json!(i.id()), fields!["state" => settled_state(app, i.id())?, "updated_at" => now])?;
+        }
+        Ok(())
+    })?;
+    {
+        // The worker lets go of the idea itself when it finished first.
+        let mut s = app.shared.lock();
+        if s.digging.remove(&i.id()) {
+            s.dig_stop.insert(round);
+        }
+    }
+    ideas::show(app, &ideas::get(app, r)?)
+}
+
 fn finish(app: &App, id: i64, round: i64, answer: std::result::Result<Value, String>) -> Result<()> {
     app.db.tx(|| {
         let now = now_iso();
+        // Stopped from the app: the round is closed already.
+        if app.db.q1("SELECT finished_at FROM idea_rounds WHERE id = ?", p![round])?.is_none_or(|r| r.s("finished_at").is_some()) {
+            return Ok(());
+        }
         match &answer {
             Ok(report) => app.db.update("idea_rounds", &json!(round), fields!["report" => jdumps(report), "finished_at" => now])?,
             Err(e) => {

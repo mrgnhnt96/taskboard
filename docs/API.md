@@ -1017,7 +1017,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | Path | Body | Notes |
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
-| `POST /usage/daily` | `{base?: "off"\|"even"\|number\|"15%", carry?: "next_day"\|"spread"}` | The daily limit (`tb usage daily`). A number is 1–100; anything else is a 400. A new base, carry or 7-day reset starts a fresh plan from the week's % now; `off` drops the plan. **Response read:** the `usage` object. |
+| `POST /usage/daily` | `{base?: "off"\|"even"\|number\|"15%", carry?: "next_day"\|"spread"}` | The daily limit (`tb usage daily`). A number is 1–100; anything else is a 400. A 7-day reset starts a fresh plan from the week's % now; a new base or carry starts one from where today began, so what today already used still counts. `off` keeps the plan, so turning the limit back on the same day keeps today's start. **Response read:** the `usage` object. |
 | `POST /usage/override` | `{off?: bool}` | Lifts today's limit until local midnight (`tb usage override`); `off: true` puts it back. **Response read:** the `usage` object. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
 | `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. A new alert is marked `suggest: "pending"` (unless `[alerts] suggest = false`), as an agent's question alert is: the board then asks Haiku for its card's `title`, `detail` and one to three `actions` (`{label, prompt, command: ""}`, each opening a Claude terminal with `prompt` typed in), and sets `suggest` to `"done"`, or `"failed"` with the alert left as plain text. **Response read:** `{alert}`. |
@@ -1058,8 +1058,16 @@ by the board's, and once after an upgrade every repo the board has known is swep
 ### History
 | Path | Body | Notes |
 |---|---|---|
-| `POST /history` | `{detail_days?: 30\|90\|180\|365, summary_days?: 180\|365\|730\|0}` | Answers `GET /history`. |
+| `POST /history` | `{detail_days?: 30\|90\|180\|365, summary_days?: 180\|365\|730\|0, preview?: bool}` | Answers `GET /history`. With `preview: true` nothing is saved: answers `{preview: true, detail_days, summary_days, removes: {events, status_changes, terminal_lines, day_rows, days, events_total}}`, what the next cleanup would remove under those settings (a key left out is the current setting). `days` counts the day summaries that would go; `events_total` sums the first three. |
 | `POST /history/cleanup` | `{}` | Runs the nightly cleanup now: events, status changes and terminal lines of finished tasks older than `detail_days` (each day's summary is kept first), day summaries older than `summary_days`. Answers `{"removed": {"events", "status_changes", "terminal_lines", "day_rows"}, "history": …}`. |
+
+### Restarts
+| Path | Body | Notes |
+|---|---|---|
+| `GET /restart` | | What restarting the daemon (an update) would cut short: `{count, code_reviews: [{ref, title, project, round, since}], agents_keep_running: true}`, the tasks whose reviewer is running now, newest first. Their round runs again once the board is back; agents and triage terminals keep running. |
+
+### Weekly reviews
+A review's `data` (`GET /reviews/now`, `GET /reviews/:id`) has `shipped: {tasks: [{ref, title, project, goal, finished_at}], goals: [{ref, name, project, finished_at}], releases: [{project, name, cut_at}]}`: the tasks finished done (not failed), the goals that finished, and the releases cut (not failed) in its period, newest first. A review kept before this lists it too, worked out when it's read.
 
 ### Accounts
 Every one answers with `GET /accounts`'s `{"accounts": […]}`.
@@ -1302,7 +1310,7 @@ the order their first task finished, tasks with no goal last.
 
 | Request | Body | What |
 |---|---|---|
-| `GET /releases` | query `project`, else `by_session` (that terminal's task's project) or `cwd`; `limit` (1–500), `before` (a release id) | `tb releases`. `{project, on: bool, unreleased: int, pending: pending\|null, releases: [release], more: bool, counts: {total, recent, failed}}`, newest first; `limit` caps the page and `before` starts after that release, `more` saying older ones are left. `counts` is the whole project's: every release, those cut in the last 30 days, and those marked failed. With releases off, `on: false` and nothing else. |
+| `GET /releases` | query `project`, else `by_session` (that terminal's task's project) or `cwd`; `limit` (1–500), `before` (a release id) | `tb releases`. `{project, on: bool, unreleased: int, pending: pending\|null, dropped: {name, why, at, next}\|null, releases: [release], more: bool, counts: {total, recent, failed}}`, newest first; `limit` caps the page and `before` starts after that release, `more` saying older ones are left. `counts` is the whole project's: every release, those cut in the last 30 days, and those marked failed. `dropped` is the project's last dropped pending cut, why it dropped and `next`, the command that cuts it by hand; null once a release by that name is cut or a new cut is pending. With releases off, `on: false` and nothing else. |
 | `POST /releases` | `{name, project?, notes?, by_session?, cwd?, who?, after?: ["T4"\|"G2"]\|str, no_script?: bool}` | `tb release cut`. Cut a release holding every task in Unreleased; each gets a "release" log line. The name (80 characters at most, not "unreleased") is unique in the project, any case, and not held by its pending cut (409). 409 when Unreleased is empty. With `after` (`tb release cut <name> --after T4 --after G2`), nothing is cut now: the project gets a pending cut instead (see Pending cuts). **Response read:** as `GET /releases/:ref`; with `after`, the pending cut. |
 | `POST /releases/pending/cancel` | `{project?, by_session?, cwd?}` | `tb release cancel`. Drop the project's pending cut. 404 when there is none, 409 while it is cutting. `{project, name, cancelled: true}`. |
 | `GET /releases/:ref` | `R<n>`, or `unreleased` with the project query above | `tb release show`. The release (or `{ref: "unreleased", project, name: "Unreleased", tasks}`) with `groups: [group]` and `markdown`: a changelog ready to paste (`tb release show --markdown`): `## <name> (<date>)`, the notes, then `### <goal>` per group (`Other changes` for no goal) with `- <title> ([#<n>](<pr>))`. |
@@ -1315,13 +1323,15 @@ An idea (`I<n>`) is something the owner may want built one day, kept in a projec
 `new` when added, `digging` while a report round runs, `reported` once one has, `planned` once it became a goal, or
 put aside as `shelved` (for later) or `dropped` (won't be built). New, digging and reported are open. Ideas are
 separate from bits (feature flags). Search finds ideas by their title and detail (`GET /search?kind=idea`; a hit's
-`state` is the idea's, open as above).
+`state` is the idea's, open as above), and the app's palette (`GET /search?palette=1`) lists them under `ideas`
+(with `ideas_total`), matched by ref, title, project and detail.
 
 `idea`: `{id, ref: "I4", project, title, detail, state, goal: "G9"|null, source, created_at, updated_at, notes: int,
-rounds: int, planning: bool}`. `planning` is true while Claude plans it into a goal. Shown on its own (every response below but the list), `notes` is `[{id, text, source, at}]` oldest
+rounds: int, planning: bool, questions: int}`. `planning` is true while Claude plans it into a goal. `questions` is how
+many of its newest report's questions have no answer yet (0 once it's planned, shelved or dropped). Shown on its own (every response below but the list), `notes` is `[{id, text, source, at}]` oldest
 first and `rounds` is `[round]` newest first. `round`: `{id, focus: str ("" for the whole idea), report: object|null,
 sha: str|null (the commit it ran at), web: bool, started_at, finished_at, error: str|null, source, behind: int|null,
-stale: bool}`. `source` is who added it (`by_session`'s terminal, `who`, else the owner). `behind` is how many commits
+stale: bool, stopped: bool}`. `stopped` is true when the owner stopped the dig. `source` is who added it (`by_session`'s terminal, `who`, else the owner). `behind` is how many commits
 the project's checkout is past the round's `sha` (null with no checkout or no sha); `stale` is true at 50 or more, or
 when the sha is no longer in the checkout's history.
 
@@ -1349,17 +1359,20 @@ open_questions: [str], related: [ref]}`, and are still served as kept.
 
 | Request | Body | What |
 |---|---|---|
-| `GET /ideas` | query `project` (`all` for every project), else `cwd`; `state`: `open` (default), `all`, or one state | `tb idea list`. `{project, ideas: [idea]}`, the most recently changed first. |
+| `GET /ideas` | query `project` (`all` for every project), else `cwd`; `state`: `open` (default), `all`, or one state; `first=questions` | `tb idea list`. `{project, ideas: [idea]}`, the most recently changed first. With `first=questions`, open ideas with unanswered questions come first (any other `first` is a 400). |
 | `POST /ideas` | `{title, detail?, project?, by_session?, cwd?, who?}` | `tb idea add`. The title is one line, 200 characters at most; the detail 20000. The project defaults to the caller's task's, else the `cwd`'s; 400 when there's none. |
 | `GET /ideas/:ref` | | `tb idea show`. The idea. |
 | `POST /ideas/:ref` | `{title?, detail?, project?}` | `tb idea set`. At least one key; `detail: ""` clears it. |
-| `POST /ideas/:ref/note` | `{text, by_session?, who?}` | `tb idea note`. Add a note (4000 characters at most). |
+| `POST /ideas/:ref/note` | `{text, round?, question?, by_session?, who?}` | `tb idea note`. Add a note (4000 characters at most). With `round` and `question` (a report's question id; `tb idea note --round --question`), the note answers that question and is linked to it, replacing an earlier answer (404 for an unknown round or question). |
+| `POST /ideas/:ref/answer` | `{round, question, answer, by_session?, who?}` | The app's answer to a report's question: one of its choices, or any words when it has none (400 for an empty answer or one that isn't a choice). Kept as a note linked to the question, replacing an earlier answer. 409 on a `planned` idea or while it's being planned. |
 | `POST /ideas/:ref/shelve` | `{reason?, by_session?, who?}` | `tb idea shelve`. Put it aside for later; a reason is kept as a note. |
 | `POST /ideas/:ref/drop` | `{reason?, by_session?, who?}` | `tb idea drop`. It won't be built; a reason is kept as a note. |
 | `POST /ideas/:ref/reopen` | `{reason?, by_session?, who?}` | `tb idea reopen`. A shelved or dropped idea goes back to `reported` when a round has a report, else `new`; an open one is left as it is. |
 | `POST /ideas/:ref/dig` | `{focus?, web?, by_session?, who?}` | `tb idea dig`. Starts a report round and answers with the idea (now `digging`, the round open). A headless `claude -p` reads the project's checkout with Read, Grep and Glob only (WebSearch and WebFetch too when `web` is true; off by default), for up to 15 minutes. The round then gets its `report`, or its `error`, and the idea goes back to `reported` (or `new` with no report yet). The focus is 1000 characters at most. 409 on a `planned`, `shelved` or `dropped` idea, while it's being dug into already, when claude isn't installed, or when the project has no checkout on this Mac. Nothing digs on its own. |
+| `POST /ideas/:ref/stop` | `{}` | `tb idea stop`. Stops a running dig: its round closes with the error "Stopped before Claude answered." and `stopped: true`, and the idea goes back as after a failed dig. 409 when it isn't being dug into. |
 | `POST /ideas/:ref/plan` | `{by_session?, who?}` | `tb idea plan`. Answers with the idea (`planning` true). A headless `claude -p` reads the project's checkout with Read, Grep and Glob only, for up to 15 minutes, with the idea's detail, notes and every dig report in its prompt, and drafts one goal (name, TLDR, outcome) and up to 12 tasks by the planning rules in force (`GET /planning`). The board makes the goal in the idea's project and its tasks `planned` (pickup `queue`, waits and stacks as drafted, a model only while `[models]` is on): nothing is started or queued. The goal gets a pinned decision note naming the idea, and the idea becomes `planned` with `goal` set. When Claude fails or the plan is unusable, nothing is made and the idea keeps a note saying why. 409 on a `planned`, `shelved` or `dropped` idea, while it's `digging` or being planned already, when claude isn't installed, or when the project has no checkout on this Mac. |
-| `POST /ideas/:ref/talk` | `{question?}` | The app's Talk it over. Answers `{ok, job}`: an agent job (purpose `idea_talk`) opens a Claude terminal in the project's checkout and brings it to the front. The idea, its notes and every dig report are in its context; Claude waits for the owner and keeps what the talk settles as notes on the idea (`tb idea note`). `question`, the text of one of the reports' open questions, is typed into the prompt for the owner to send, with its choices; 404 when no report asks it. 409 on a `planned` idea, while Midna is down, or when the project has no checkout on this Mac. |
+| `POST /ideas/:ref/unplan` | `{by_session?, who?}` | `tb idea unplan`. Undoes a plan while none of its work has started: deletes the goal and its tasks, and the idea goes back to `reported` (or `new`) with a note saying so. 409 while it's being planned, when it isn't planned, or when any of the goal's tasks has left `planned` (the message names them). **Response read:** the idea. |
+| `POST /ideas/:ref/talk` | `{question?}` | The app's Talk it over. Answers `{ok, job}`: an agent job (purpose `idea_talk`) opens a Claude terminal in the project's checkout and brings it to the front. The idea, its notes and every dig report are in its context; Claude waits for the owner and keeps what the talk settles as notes on the idea (`tb idea note`); a question's answer is kept linked to it (`--round`, `--question`). `question`, the text of one of the reports' open questions, is typed into the prompt for the owner to send, with its choices; 404 when no report asks it. 409 on a `planned` idea, while Midna is down, or when the project has no checkout on this Mac. |
 
 Shelve, drop and reopen are 409 on a `planned` idea (work on its goal instead), while it's `digging`, and while it's
 being planned. A dig is 409 while the idea is being planned. A plan the board lost (it stopped while Claude read)

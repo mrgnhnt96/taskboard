@@ -194,3 +194,52 @@ fn a_board_seeded_before_the_sample_reviews_gets_just_those() {
     assert_eq!(get(&app, "/reviews")["reviews"].as_array().unwrap().len(), 2);
     assert!(taskboardd::seed::seed_reviews_only(&app).is_err(), "seeding them twice is refused");
 }
+
+#[test]
+fn the_report_leads_with_what_the_week_shipped() {
+    let (app, _d) = board();
+    let start = now_ts() - 7.0 * 86400.0;
+    let end = now_ts();
+    let at = |days_ago: f64| iso(end - days_ago * 86400.0);
+    let goal = |name: &str| app.db.insert("goals", taskboardd::fields!["name" => name, "project" => "webapp"]).unwrap();
+    let task = |goal: Option<i64>, title: &str, status: &str, failed: bool, finished: Option<String>| {
+        app.db
+            .insert("tasks", taskboardd::fields!["goal_id" => goal, "title" => title, "status" => status, "failed" => failed as i64,
+                                                 "project" => "webapp", "finished_at" => finished.clone(), "updated_at" => finished])
+            .unwrap()
+    };
+    let done = goal("Offline mode");
+    let a = task(Some(done), "Queue writes", "done", false, Some(at(3.0)));
+    let b = task(Some(done), "Send them", "done", false, Some(at(1.0)));
+    let open = goal("Dark mode");
+    task(Some(open), "Colors", "done", false, Some(at(2.0)));
+    task(Some(open), "Toggle", "queued", false, None);
+    let earlier = goal("Search");
+    task(Some(earlier), "Index", "done", false, Some(at(9.0)));
+    task(None, "Broke", "done", true, Some(at(2.0)));
+    let loose = task(None, "Typo", "done", false, Some(at(0.5)));
+    let release = |name: &str, cut: String, failed: bool| {
+        app.db.insert("releases", taskboardd::fields!["project" => "webapp", "name" => name, "cut_at" => cut,
+                                                       "failed_at" => if failed { Some(at(0.1)) } else { None }]).unwrap()
+    };
+    release("v1.2.0", at(2.0), false);
+    release("v1.2.1", at(1.0), true);
+    release("v1.1.0", at(10.0), false);
+
+    let s = &review::report(&app, start, end).unwrap()["shipped"];
+    let refs = |k: &str| s[k].as_array().unwrap().iter().map(|v| v["ref"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(refs("tasks").len(), 4, "done in the week, not failed or earlier: {s}");
+    assert_eq!(refs("tasks")[0], format!("T{loose}"), "newest first");
+    assert!(refs("tasks").contains(&format!("T{a}")) && refs("tasks").contains(&format!("T{b}")));
+    assert_eq!(refs("goals"), [format!("G{done}")], "only the goal that finished in the week");
+    assert_eq!(s["goals"][0]["name"], "Offline mode");
+    let cut: Vec<&str> = s["releases"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(cut, ["v1.2.0"], "a failed cut and an earlier one aren't shipped");
+
+    let id = review::save(&app, start, end, false).unwrap();
+    let kept = get(&app, &format!("/reviews/{id}"));
+    assert_eq!(kept["data"]["shipped"], *s);
+    app.db.x("UPDATE reviews SET data = json_remove(data, '$.shipped') WHERE id = ?", taskboardd::p![id]).unwrap();
+    let old = get(&app, &format!("/reviews/{id}"));
+    assert_eq!(old["data"]["shipped"], *s, "a review kept before this lists it too");
+}

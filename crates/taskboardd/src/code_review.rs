@@ -113,6 +113,23 @@ fn rounds_run(done: &[Value]) -> u64 {
     done.iter().filter_map(|r| r["round"].as_u64()).max().unwrap_or(0)
 }
 
+/// `GET /restart`: the code reviews a daemon restart would cut short (their reviewer runs under the
+/// daemon and starts its round over after), newest first. Agents, triage terminals included, keep running.
+pub fn restart_would_interrupt(app: &App) -> Result<Value> {
+    let rows = app.db.q(
+        "SELECT * FROM tasks WHERE code_review IS NOT NULL AND json_valid(code_review) AND json_extract(code_review, '$.state') = 'running' ORDER BY id DESC",
+        p![],
+    )?;
+    let reviews: Vec<Value> = rows
+        .iter()
+        .map(|t| {
+            let s = stage(t).unwrap_or_default();
+            json!({"ref": rf("task", t.id()), "title": t.v("title"), "project": t.v("project"), "round": s["round"].as_u64().unwrap_or(1), "since": s["since"]})
+        })
+        .collect();
+    Ok(json!({"count": reviews.len(), "code_reviews": reviews, "agents_keep_running": true}))
+}
+
 pub(crate) fn save_stage(app: &App, id: i64, stage: Option<&Value>) -> Result<()> {
     board::update_task(app, id, fields!["code_review" => stage.map(jdumps)])
 }

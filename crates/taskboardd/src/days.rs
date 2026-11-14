@@ -832,17 +832,54 @@ pub fn history(app: &App) -> Result<Value> {
     }))
 }
 
-/// `POST /history {detail_days, summary_days}`.
+/// `POST /history {detail_days, summary_days}`. With `preview`, saves nothing and says what the next
+/// cleanup would remove under those settings instead.
 pub fn set_history(app: &App, body: &Value) -> Result<Value> {
+    let mut detail = None;
+    let mut summary = None;
     if let Some(v) = body.get("detail_days").filter(|v| !v.is_null()) {
-        let n = v.as_i64().filter(|n| DETAIL_CHOICES.contains(n)).ok_or_else(|| ApiError::new(400, "Keep every event for 30, 90, 180 or 365 days."))?;
-        app.db.set_setting(DETAIL_KEY, Some(&n.to_string()))?;
+        detail = Some(v.as_i64().filter(|n| DETAIL_CHOICES.contains(n)).ok_or_else(|| ApiError::new(400, "Keep every event for 30, 90, 180 or 365 days."))?);
     }
     if let Some(v) = body.get("summary_days").filter(|v| !v.is_null()) {
-        let n = v.as_i64().filter(|n| SUMMARY_CHOICES.contains(n)).ok_or_else(|| ApiError::new(400, "Keep day summaries for 180, 365 or 730 days, or 0 for always."))?;
+        summary = Some(v.as_i64().filter(|n| SUMMARY_CHOICES.contains(n)).ok_or_else(|| ApiError::new(400, "Keep day summaries for 180, 365 or 730 days, or 0 for always."))?);
+    }
+    if body["preview"] == true {
+        let (detail, summary) = (detail.unwrap_or_else(|| detail_days(app)), summary.unwrap_or_else(|| summary_days(app)));
+        return Ok(json!({"preview": true, "detail_days": detail, "summary_days": summary, "removes": would_remove(app, detail, summary)?}));
+    }
+    if let Some(n) = detail {
+        app.db.set_setting(DETAIL_KEY, Some(&n.to_string()))?;
+    }
+    if let Some(n) = summary {
         app.db.set_setting(SUMMARY_KEY, Some(&n.to_string()))?;
     }
     history(app)
+}
+
+/// What a cleanup would remove keeping events `detail` days and summaries `summary` days (0 for always),
+/// counted as `cleanup` counts it, plus the days whose summaries would go.
+fn would_remove(app: &App, detail: i64, summary: i64) -> Result<Value> {
+    let today = today();
+    let before = iso(start_of(today - Duration::days(detail)));
+    let done = "SELECT id FROM tasks WHERE status = 'done'";
+    let events = app.db.count(&format!("SELECT COUNT(*) FROM events WHERE at < ? AND task_id IN ({done})"), p![before])?;
+    let states = app.db.count(
+        &format!("SELECT COUNT(*) FROM task_states WHERE at < ? AND task_id IN ({done}) AND id NOT IN (SELECT MAX(id) FROM task_states GROUP BY task_id)"),
+        p![before],
+    )?;
+    let lines = app.db.count("SELECT COUNT(*) FROM session_events WHERE at < ?", p![before])?;
+    let (rows, days) = match summary {
+        0 => (0, 0),
+        n => {
+            let cut = date_str(today - Duration::days(n));
+            (
+                app.db.count("SELECT COUNT(*) FROM day_stats WHERE date < ?", p![cut])?,
+                app.db.count("SELECT COUNT(DISTINCT date) FROM day_stats WHERE date < ? AND project != ''", p![cut])?,
+            )
+        }
+    };
+    Ok(json!({"events": events, "status_changes": states, "terminal_lines": lines, "day_rows": rows, "days": days,
+              "events_total": events + states + lines}))
 }
 
 /// Remove what's older than the History settings allow: events (and status changes and terminal
@@ -956,6 +993,15 @@ mod tests {
             app.db.x("INSERT INTO session_events(session_id, at, kind, text) VALUES('s1', ?, 'line', 'x')", p![old.clone()]).unwrap();
         }
         app.db.x("INSERT INTO day_stats(date, project, data) VALUES('2020-01-01', '', '')", p![]).unwrap();
+
+        let shorter = set_history(&app, &json!({"detail_days": 30, "summary_days": 180, "preview": true})).unwrap();
+        assert_eq!(shorter["preview"], true);
+        assert_eq!(shorter["removes"], json!({"events": 3, "status_changes": 2, "terminal_lines": 4, "day_rows": 1, "days": 0, "events_total": 9}));
+        assert_eq!(detail_days(&app), DETAIL_DAYS, "a preview saves nothing");
+        let longer = set_history(&app, &json!({"detail_days": 365, "summary_days": 0, "preview": true})).unwrap();
+        assert_eq!(longer["removes"]["events_total"], 0);
+        assert_eq!(longer["removes"]["day_rows"], 0, "0 keeps summaries always");
+        assert_eq!(set_history(&app, &json!({"detail_days": 7, "preview": true})).unwrap_err().status, 400);
 
         let out = cleanup(&app).unwrap();
         assert_eq!(out["removed"], json!({"events": 3, "status_changes": 2, "terminal_lines": 4, "day_rows": 1}));
