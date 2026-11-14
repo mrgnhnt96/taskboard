@@ -5,6 +5,7 @@ use super::*;
 // (and `#[gpui_kit::test]` expands to a plain `#[test]`).
 #[allow(unused_imports)]
 use ::core::prelude::v1::test;
+use crate::app::Page;
 use crate::backend::Backend;
 use crate::parity::{self, golden};
 use gpui_kit::{TestAppContext, WindowHandle};
@@ -172,4 +173,94 @@ fn other_do_words_just_open_the_task(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert!(rec.posts().is_empty());
+}
+
+/// Opens the alerts dialog (with an alert, so it stays) and draws it.
+fn open_alerts(w: W, cx: &mut TestAppContext) {
+    w.update(cx, |m, window, cx| {
+        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = one_alert();
+        m.set_modal(Some(Modal::Alerts), window, cx);
+    })
+    .unwrap();
+    redraw(w, cx);
+}
+
+#[gpui_kit::test]
+fn a_dialog_takes_focus_and_gives_it_back(cx: &mut TestAppContext) {
+    let (w, _) = parity::window(cx);
+    redraw(w, cx);
+    // A control on the page has focus, as after a Tab.
+    let before = w
+        .update(cx, |m, window, cx| {
+            window.focus(&m.focus, cx);
+            window.focus_next(cx);
+            window.focused(cx).filter(|f| *f != m.focus).expect("the page has a tab stop")
+        })
+        .unwrap();
+    open_alerts(w, cx);
+    w.update(cx, |m, window, cx| assert!(m.modal_focus.contains_focused(window, cx), "the dialog has focus")).unwrap();
+    cx.simulate_keystrokes(w.into(), "escape");
+    redraw(w, cx);
+    w.update(cx, |m, window, cx| {
+        assert!(m.modal.is_none());
+        assert_eq!(window.focused(cx), Some(before), "focus goes back where it was");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn tab_stays_inside_an_open_dialog(cx: &mut TestAppContext) {
+    let (w, _) = parity::window(cx);
+    open_alerts(w, cx);
+    for keys in ["tab", "tab", "tab", "tab", "tab", "shift-tab", "shift-tab", "shift-tab"] {
+        cx.simulate_keystrokes(w.into(), keys);
+        redraw(w, cx);
+        w.update(cx, |m, window, cx| {
+            assert!(m.modal_focus.contains_focused(window, cx), "{keys} keeps focus in the dialog");
+            assert!(window.focused(cx) != Some(m.modal_focus.clone()), "{keys} lands on a control in it");
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn page_keys_pause_while_a_dialog_is_open(cx: &mut TestAppContext) {
+    let (w, _) = parity::window(cx);
+    open_alerts(w, cx);
+    cx.simulate_keystrokes(w.into(), "cmd-5");
+    parity::settle(cx);
+    cx.simulate_keystrokes(w.into(), "cmd-k");
+    parity::settle(cx);
+    w.update(cx, |m, _, _| {
+        assert!(m.page == Page::Board, "the page behind stays put");
+        assert!(matches!(m.modal, Some(Modal::Alerts)), "search doesn't open over the dialog");
+    })
+    .unwrap();
+    cx.simulate_keystrokes(w.into(), "escape");
+    redraw(w, cx);
+    cx.simulate_keystrokes(w.into(), "cmd-5");
+    parity::settle(cx);
+    w.update(cx, |m, _, _| assert!(m.page == Page::Backlog, "once it closes, they work again")).unwrap();
+}
+
+#[gpui_kit::test]
+fn esc_closes_the_top_layer_and_keeps_the_checked_issues(cx: &mut TestAppContext) {
+    let (w, _) = parity::window(cx);
+    w.update(cx, |m, window, cx| {
+        m.page = Page::Backlog;
+        m.backlog.picked = vec!["B1".into(), "B2".into()];
+        m.menu = Some(("plan-B1".into(), point(px(0.), px(0.))));
+        m.panel = Some(crate::app::Panel::Issue { r: "B1".into() });
+        m.escape(window, cx);
+        assert!(m.menu.is_none(), "the menu closes first");
+        assert!(m.panel.is_some() && m.backlog.picked.len() == 2, "the panel and checks stay");
+        m.set_modal(Some(Modal::Note("x".into())), window, cx);
+        m.escape(window, cx);
+        assert!(m.modal.is_none() && m.panel.is_some() && m.backlog.picked.len() == 2, "then the dialog alone");
+        m.escape(window, cx);
+        assert!(m.panel.is_none() && m.backlog.picked.len() == 2, "then the panel alone");
+        m.escape(window, cx);
+        assert!(m.backlog.picked.is_empty(), "then the checks");
+    })
+    .unwrap();
 }

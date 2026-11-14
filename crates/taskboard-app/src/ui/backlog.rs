@@ -1045,7 +1045,7 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
             box_ = box_.child(item_el(t, it, "u", cx));
         }
         let label = if d.never_planned { "Plan waves with Claude" } else { "Re-plan with Claude" };
-        let b = if d.never_planned { kit::filled("plan-plan", label, t.goal, t.on_status) } else { kit::btn(t, "plan-plan", label).text_color(t.goal).border_color(t.goal_line) };
+        let b = if d.never_planned { kit::filled(t, "plan-plan", label, t.goal, t.on_status) } else { kit::btn(t, "plan-plan", label).text_color(t.goal).border_color(t.goal_line) };
         box_ = box_.child(b.mt(px(4.)).h(px(34.)).on_click(cx.listener(|m, _, _, cx| plan_waves(m, cx))));
         col = col.child(box_);
     }
@@ -1058,7 +1058,7 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
     } else {
         "Create goal".into()
     };
-    let mut btn = kit::filled("plan-create", label, t.goal, t.on_status).h(px(38.));
+    let mut btn = kit::filled(t, "plan-create", label, t.goal, t.on_status).h(px(38.));
     if d.can_create() && !m.backlog.busy {
         let dd = d.clone();
         btn = btn.on_click(cx.listener(move |m, _, _, cx| create(m, &dd, cx)));

@@ -668,6 +668,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
 
     deferred(
         kit::scrim(&t, "search-scrim")
+            .track_focus(&m.modal_focus)
             .flex()
             .flex_col()
             .items_center()

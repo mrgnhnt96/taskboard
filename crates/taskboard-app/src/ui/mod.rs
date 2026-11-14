@@ -10,6 +10,7 @@ pub mod hours;
 pub mod idea;
 pub mod ideas;
 pub mod issue_panel;
+pub mod focus;
 pub mod kit;
 pub mod md;
 pub mod paged;
