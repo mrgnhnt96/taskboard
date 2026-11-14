@@ -132,6 +132,9 @@ fn best<T>(mut found: Vec<((u8, u8, i64), T)>, limit: usize) -> (Vec<T>, usize) 
 ///
 /// Attachments too, once something is typed: the goal's and its tasks' (else every one), by their
 /// title, then their summary, kind and link; each says whose it is (`task` or `goal`, a ref).
+///
+/// Ideas too, once something is typed and outside a goal: by their ref, title, then project and
+/// detail, open ones ahead of planned and put-aside ones, as `GET /ideas` sends them.
 pub fn find(app: &App, q: &str, limit: usize, goal_id: Option<i64>) -> Result<Value> {
     let w = words(q);
     let in_goal = |id: Option<i64>| goal_id.is_none() || id == goal_id;
@@ -213,7 +216,20 @@ pub fn find(app: &App, q: &str, limit: usize, goal_id: Option<i64>) -> Result<Va
         d["detail"] = b.v("detail");
         cards.push(d);
     }
-    Ok(json!({"tasks": cards_t, "tasks_total": tasks_total, "issues": cards, "issues_total": issues_total, "attachments": atts, "attachments_total": atts_total}))
+    let mut ideas = vec![];
+    if !w.is_empty() && goal_id.is_none() {
+        for i in app.db.q("SELECT * FROM ideas", p![])? {
+            let s = |k| i.s(k).unwrap_or("");
+            if let Some((sc, _)) = score(&rf("idea", i.id()), s("title"), &[s("project"), s("detail")], &w) {
+                let open = crate::ideas::OPEN.contains(&s("state"));
+                ideas.push(((sc, !open as u8, -i.id()), i));
+            }
+        }
+    }
+    let (ideas, ideas_total) = best(ideas, limit);
+    let ideas = ideas.iter().map(|i| crate::ideas::dict(app, i)).collect::<Result<Vec<_>>>()?;
+    Ok(json!({"tasks": cards_t, "tasks_total": tasks_total, "issues": cards, "issues_total": issues_total, "attachments": atts,
+              "attachments_total": atts_total, "ideas": ideas, "ideas_total": ideas_total}))
 }
 
 #[cfg(test)]
@@ -339,5 +355,28 @@ mod tests {
         assert_eq!(search_in(&app, "spec.md", "6", Some(g))["attachments_total"], 1, "its link too");
         assert_eq!(search(&app, "rename", "6")["attachments_total"], 3, "unscoped: every one still attached");
         assert_eq!(search_in(&app, "", "6", Some(g))["attachments_total"], 0, "none until something's typed");
+    }
+
+    #[test]
+    fn ideas_are_found_by_ref_title_project_and_detail() {
+        let (_d, app) = board();
+        let idea = |title: &str, detail: &str, state: &str| {
+            app.db.insert("ideas", crate::fields!["project" => "webapp", "title" => title, "detail" => detail, "state" => state]).unwrap()
+        };
+        let shelved = idea("Offline sync", "", "shelved");
+        let open = idea("Offline mode", "", "new");
+        let deep = idea("Inbox zero", "Works offline too", "reported");
+        idea("Dark mode", "", "new");
+        let v = search(&app, "offline", "6");
+        assert_eq!(refs(&v, "ideas"), [format!("I{open}"), format!("I{shelved}"), format!("I{deep}")],
+                   "title matches first, open ahead of put aside; then the detail");
+        assert_eq!(v["ideas_total"], 3);
+        assert_eq!(v["ideas"][0]["questions"], 0, "as the Ideas page lists them");
+        assert_eq!(refs(&search(&app, &format!("I{deep}"), "6"), "ideas"), [format!("I{deep}")], "by its ref");
+        assert_eq!(search(&app, "webapp", "1")["ideas_total"], 4, "by its project");
+        assert_eq!(search(&app, "offline", "1")["ideas"].as_array().unwrap().len(), 1, "the best few");
+        assert_eq!(search(&app, "", "6")["ideas_total"], 0, "none until something's typed");
+        let g = app.db.insert("goals", crate::fields!["name" => "Offline"]).unwrap();
+        assert_eq!(search_in(&app, "offline", "6", Some(g))["ideas_total"], 0, "nor on a goal's page");
     }
 }
