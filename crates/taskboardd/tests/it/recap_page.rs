@@ -114,6 +114,14 @@ fn a_spec_is_rejected_for_an_unknown_component_fact_key_or_ref_or_a_number_it_wr
     assert!(reject(&|s| s["components"][3]["props"] = json!([{"name": "a", "fact": "totals.tasks"}])).contains("needs its `b` prop"));
     assert!(reject(&|s| s["components"][1]["props"][0] = json!({"name": "goal", "fact": "goals"})).contains("takes a ref"));
     assert!(reject(&|s| s["components"] = json!([])).contains("no components"));
+    assert!(reject(&|s| s["components"][3]["props"][0] = json!({"name": "a", "ref": format!("G{g}")})).contains("takes a fact key"));
+
+    let mut s = good_spec(g);
+    s["components"][3]["props"][0] = json!({"name": "a", "ref": "totals.tasks"});
+    s["summary"] = json!("{projects.count} project.");
+    let page = recap_page::check(&s, &f).unwrap();
+    assert_eq!(page["components"][3]["props"]["a"]["fact"], "totals.tasks", "a fact key sent as a ref is taken as the key");
+    assert_eq!(page["summary"], "1 project.", "a list's count is a key of its own");
     assert!(reject(&|s| s["components"][0] = json!({"component": "train", "why": "", "props": []})).contains("doesn't fit"));
 
     let mut month = f.clone();
@@ -145,6 +153,7 @@ fn a_failed_or_rejected_pass_is_asked_again_with_the_reason_then_the_default_pag
     assert_eq!(w["why"], "no spec from Claude passed the checks");
     let errors: Vec<&str> = w["attempts"].as_array().unwrap().iter().map(|a| a["error"].as_str().unwrap()).collect();
     assert_eq!(errors, ["claude didn't answer in time", "unknown component `pie`", "ref `G999` in `story` isn't in the facts"]);
+    assert_eq!(w["attempts"][1]["spec"]["components"][0]["component"], "pie", "a turned-down spec is kept with its reason");
     assert_eq!(w["page"]["summary"], "3 tasks finished. 1 goal finished.", "the daemon's own summary; no PRs merged in this week's facts");
     assert_eq!(recap::get(&app, id).unwrap()["writing_status"], "done", "a recap always shows");
 

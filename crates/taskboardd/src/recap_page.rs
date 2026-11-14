@@ -11,7 +11,7 @@
 //! [`default_page`], so a recap always shows.
 //!
 //! The result goes in `recaps.writing`: `source` (`ai` or `default`), why the default was used,
-//! each failed attempt, the spec as Claude gave it, and the `page` the app draws. `writing_status`
+//! each failed attempt with its spec, the spec that passed, and the `page` the app draws. `writing_status`
 //! is `writing` while the pass is queued and `done` once a page is kept, whichever made it.
 
 use std::collections::BTreeSet;
@@ -181,16 +181,23 @@ fn component(id: &str) -> Option<&'static Component> {
 const NOT_KEYS: &[&str] = &["version", "kind", "period", "labels"];
 const REF_FIELDS: &[&str] = &["task", "release", "lesson", "goal"];
 
-/// Every fact key: the dotted path to each non-null value through objects (never into lists).
+/// Every fact key: the dotted path to each non-null value through objects (never into lists), and
+/// each list's length as `<list>.count`.
 fn keys(facts: &Value) -> BTreeSet<String> {
     fn walk(v: &Value, path: String, out: &mut BTreeSet<String>) {
         if v.is_null() {
             return;
         }
-        if let Value::Object(m) = v {
-            for (k, x) in m {
-                walk(x, if path.is_empty() { k.clone() } else { format!("{path}.{k}") }, out);
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    walk(x, if path.is_empty() { k.clone() } else { format!("{path}.{k}") }, out);
+                }
             }
+            Value::Array(_) => {
+                out.insert(format!("{path}.count"));
+            }
+            _ => {}
         }
         if !path.is_empty() {
             out.insert(path);
@@ -207,6 +214,14 @@ fn keys(facts: &Value) -> BTreeSet<String> {
 
 fn at<'a>(facts: &'a Value, key: &str) -> &'a Value {
     key.split('.').fold(facts, |v, k| &v[k])
+}
+
+/// The fact behind `key`, a list's `.count` included.
+fn value(facts: &Value, key: &str) -> Value {
+    if let Some(Value::Array(a)) = key.strip_suffix(".count").map(|b| at(facts, b)) {
+        return json!(a.len());
+    }
+    at(facts, key).clone()
 }
 
 /// The ref an object stands for: its first of task, release, lesson and goal.
@@ -291,7 +306,7 @@ fn unfit(c: &Component, facts: &Value) -> Option<String> {
         return Some("it's left out of a month".into());
     }
     c.props.iter().find_map(|p| match p.points {
-        Points::Fact(Some(k)) if !meets(at(facts, k), p.need) => Some(format!("`{k}` is empty or too small here")),
+        Points::Fact(Some(k)) if !meets(&value(facts, k), p.need) => Some(format!("`{k}` is empty or too small here")),
         _ => None,
     })
 }
@@ -332,11 +347,13 @@ pub fn check(spec: &Value, facts: &Value) -> std::result::Result<Value, String> 
             let (fact_key, ref_key) = (g.and_then(|g| g["fact"].as_str()).filter(|s| !s.is_empty()), g.and_then(|g| g["ref"].as_str()).filter(|s| !s.is_empty()));
             let filled = match p.points {
                 Points::Fact(default) => {
-                    if ref_key.is_some() {
-                        return Err(format!("`{id}`'s `{}` takes a fact key, not a ref", p.name));
-                    }
+                    let fact_key = match (fact_key, ref_key) {
+                        (None, Some(r)) if keys.contains(r) => Some(r),
+                        (_, Some(_)) => return Err(format!("`{id}`'s `{}` takes a fact key: put it in `fact`, not `ref`", p.name)),
+                        (k, None) => k,
+                    };
                     match fact_key.or(default) {
-                        Some(k) if keys.contains(k) => Some(json!({"fact": k, "value": at(facts, k)})),
+                        Some(k) if keys.contains(k) => Some(json!({"fact": k, "value": value(facts, k)})),
                         Some(k) if fact_key.is_some() => return Err(format!("unknown fact key `{k}` in `{id}`'s `{}`", p.name)),
                         _ => None,
                     }
@@ -404,7 +421,8 @@ fn fill(text: &str, facts: &Value, keys: &BTreeSet<String>, words: &[String]) ->
         if !keys.contains(k) {
             return Err(format!("unknown fact key `{k}`"));
         }
-        if !(at(facts, k).is_number() || at(facts, k).is_string()) {
+        let v = value(facts, k);
+        if !(v.is_number() || v.is_string()) {
             return Err(format!("`{k}` isn't a single number or word"));
         }
     }
@@ -420,7 +438,7 @@ fn fill(text: &str, facts: &Value, keys: &BTreeSet<String>, words: &[String]) ->
         let around: String = rest[start..].chars().take(40).collect();
         return Err(format!("it writes a number itself (\"{}\"); use a {{fact}} placeholder", around.trim()));
     }
-    Ok(PLACEHOLDER.replace_all(text, |cap: &regex::Captures| show(&cap[1], at(facts, &cap[1]))).to_string())
+    Ok(PLACEHOLDER.replace_all(text, |cap: &regex::Captures| show(&cap[1], &value(facts, &cap[1]))).to_string())
 }
 
 /// A fact as the page writes it: minutes as hours, usage in percent, big numbers grouped.
@@ -648,7 +666,7 @@ fn catalog_text(facts: &Value) -> String {
 fn key_list(facts: &Value) -> String {
     keys(facts)
         .iter()
-        .map(|k| match at(facts, k) {
+        .map(|k| match value(facts, k) {
             Value::Array(a) => format!("{k}: list of {}", a.len()),
             Value::Object(_) => format!("{k}: object"),
             v => format!("{k}: {v}"),
@@ -666,9 +684,9 @@ pub fn prompt(app: &App, facts: &Value, rejected: Option<&str>) -> String {
         "You lay out the {span}ly recap page {owner} reads about their AI agents' work for the {span} {} to {}. \
          Pick components from the catalog below, in order, and write a one-sentence summary and up to {MAX_HIGHLIGHTS} short highlights.\n\n\
          Rules:\n\
-         - Never write a number, a date or a count yourself, not even in words (\"three\", \"a dozen\", \"twice\"). Every number in text is a {{key}} placeholder for a fact key from the list below that holds a number, such as {{totals.tasks}}; the board fills it in, with units (minutes show as hours). Write plain words around it: \"{{totals.tasks}} tasks finished\".\n\
+         - Never write a number, a date or a count yourself, not even in words (\"three\", \"a dozen\", \"twice\"). Every number in text is a {{key}} placeholder for a fact key from the list below that holds a number, such as {{totals.tasks}}; the board fills it in, with units (minutes show as hours). Write plain words around it: \"{{totals.tasks}} tasks finished\". A list's length is its `.count` key, such as {{projects.count}}.\n\
          - Goal, project, task and release names may be quoted exactly as the facts give them. Refs (G12, T340, R7) may be used only when they're in the facts.\n\
-         - Props point at facts by key or at a goal by ref; they never hold values. Leave a prop out to use its default key.\n\
+         - Props point at facts by key or at a goal by ref; they never hold values. A fact key goes in `fact` ({{\"name\": \"a\", \"fact\": \"totals.added\"}}), and only a goal's ref goes in `ref` ({{\"name\": \"goal\", \"ref\": \"G12\"}}). Leave a prop out to use its default key.\n\
          - Each component's `why` says in a few plain words why it's on this page.\n\
          - Choose by what stands out in this {span} so different periods get different pages: lead with the period's real story (one big goal, a run of releases, a quiet stretch, an ordinary busy {span}). Don't fall back to the same layout every time.\n\
          - Use 5 to 9 components. Start with an opener (open, hero or heroR), then the lead story, then support. Left-out components give their place to the next one that fits.\n\
@@ -712,14 +730,20 @@ pub fn compose(app: &App, id: i64, ask: Option<&dyn Fn(String) -> std::result::R
     if let Some(ask) = ask {
         let mut rejected: Option<String> = None;
         for _ in 0..TRIES {
-            let answer = ask(prompt(app, &facts, rejected.as_deref()));
-            match answer.and_then(|spec| check(&spec, &facts).map(|page| (spec, page))) {
-                Ok(done) => {
-                    made = Some(done);
+            let (spec, result) = match ask(prompt(app, &facts, rejected.as_deref())) {
+                Ok(spec) => {
+                    let page = check(&spec, &facts);
+                    (spec, page)
+                }
+                Err(e) => (Value::Null, Err(e)),
+            };
+            match result {
+                Ok(page) => {
+                    made = Some((spec, page));
                     break;
                 }
                 Err(e) => {
-                    attempts.push(json!({"at": now_iso(), "error": e}));
+                    attempts.push(json!({"at": now_iso(), "error": e, "spec": spec}));
                     rejected = Some(e);
                 }
             }
