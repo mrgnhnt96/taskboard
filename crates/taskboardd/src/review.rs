@@ -358,7 +358,8 @@ pub fn shipped(app: &App, start: &str, end: &str) -> Result<Value> {
             ORDER BY finished_at DESC, id DESC", p![start, end])?
         .iter()
         .map(|t| json!({"ref": crate::human::task_ref(t), "title": t.v("title"), "project": t.v("project"),
-                        "goal": rf_opt("goal", t.i("goal_id")), "finished_at": t.v("finished_at")}))
+                        "goal": rf_opt("goal", t.i("goal_id")), "finished_at": t.v("finished_at"),
+                        "pr_num": t.v("pr_num"), "pr_url": t.v("pr_url")}))
         .collect();
     let mut goals = vec![];
     let candidates = app.db.q(
@@ -375,7 +376,7 @@ pub fn shipped(app: &App, start: &str, end: &str) -> Result<Value> {
         .db
         .q("SELECT * FROM releases WHERE failed_at IS NULL AND cut_at >= ? AND cut_at < ? ORDER BY cut_at DESC, id DESC", p![start, end])?
         .iter()
-        .map(|r| json!({"project": r.v("project"), "name": r.v("name"), "cut_at": r.v("cut_at")}))
+        .map(|r| json!({"ref": rf("release", r.id()), "project": r.v("project"), "name": r.v("name"), "notes": r.v("notes"), "cut_at": r.v("cut_at")}))
         .collect();
     Ok(json!({"tasks": tasks, "goals": goals, "releases": releases}))
 }

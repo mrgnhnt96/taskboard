@@ -1226,6 +1226,10 @@ impl MainWindow {
         if is_releases(&self.page) && releases_wanted(self).iter().any(|k| !asked_releases.contains(k)) {
             self.refresh(cx);
         }
+        // This answer moved Releases (turned off) to Needs you, which it didn't ask for: ask now.
+        if self.page == Page::Board && asked.home.is_none() {
+            self.refresh(cx);
+        }
     }
 
     /// Run `f` once the board's answer after a change has landed (the clicked button shows what
@@ -1662,16 +1666,7 @@ impl Got {
                 // That project's releases were turned off.
                 m.page = Page::Releases;
             }
-            for (p, v) in self.releases {
-                if let Ok(v) = v {
-                    m.releases.lists.insert(p, v);
-                }
-            }
-            for (k, v) in self.release_rows {
-                if let Ok(v) = v {
-                    m.releases.details.insert(k, v);
-                }
-            }
+            ui::releases::land(&mut m.releases, self.releases, self.release_rows);
         }
         // Only keep answers for what is still open.
         if let Some((q, v)) = self.palette {
