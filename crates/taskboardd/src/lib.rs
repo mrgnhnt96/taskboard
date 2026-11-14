@@ -108,6 +108,7 @@ pub mod seed;
 pub mod server;
 pub mod setup;
 pub mod shared;
+pub mod recap;
 pub mod review;
 pub mod review_fixes;
 pub mod review_triage;

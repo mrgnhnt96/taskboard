@@ -230,7 +230,7 @@ fn rerun_chains(spans: &[&Span]) -> Vec<Value> {
 /// period. Like the day view, it counts only while the owner could answer: not while the Mac slept, the
 /// owner was away from it, or outside the work hours. The total is the time at least one task waited, so
 /// tasks waiting side by side count once; the reasons and tasks keep each task's own wait.
-fn owner_wait(app: &App, start: f64, end: f64) -> Result<Value> {
+pub(crate) fn owner_wait(app: &App, start: f64, end: f64) -> Result<Value> {
     let rows = app.db.q(
         "SELECT task_id, at, status, needs_reason FROM task_states WHERE at < ?2 AND task_id IN (
            SELECT task_id FROM task_states WHERE at >= ?1 AND at < ?2

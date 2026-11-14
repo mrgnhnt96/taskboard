@@ -99,6 +99,10 @@ fn review_id(s: &str) -> Result<i64> {
     s.parse().map_err(|_| ApiError::new(404, "There's no review with that id."))
 }
 
+fn recap_id(s: &str) -> Result<i64> {
+    s.parse().map_err(|_| ApiError::new(404, "There's no recap with that id."))
+}
+
 fn required(body: &Value, key: &str, limit: usize, label: &str) -> Result<String> {
     let v = clip(&body_str(body, key), limit);
     if v.is_empty() {
@@ -522,6 +526,9 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["reviews", id]) => crate::review::get(app, review_id(id)?),
         ("POST", ["reviews", id, "fixes"]) => crate::review_fixes::start(app, review_id(id)?),
         ("POST", ["reviews", id, "seen"]) => app.db.tx(|| crate::review::seen(app, review_id(id)?)),
+        ("GET", ["recaps"]) => crate::recap::list(app),
+        ("GET", ["recaps", id]) => crate::recap::get(app, recap_id(id)?),
+        ("POST", ["recaps", id, "seen"]) => app.db.tx(|| crate::recap::seen(app, recap_id(id)?)),
         ("GET", ["tasks", id, "spans"]) => crate::review::task_spans(app, tid(id)?),
         ("GET", ["lanes"]) => crate::lanes::page(app, q(query, "goals", "0") == "1"),
         ("GET", ["days"]) => days::page(app, query.get("date").map(|s| s.as_str()), query.get("hide").map(|s| s.as_str())),
