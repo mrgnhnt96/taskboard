@@ -129,7 +129,8 @@ fn lens_groups(lens: Lens, rows: &[&Row], with: Option<&str>) -> (Vec<Value>, Ha
 /// `GET /backlog/triage`: the untriaged issues with their grouping, and how much of the backlog is triaged.
 /// `limit` caps the page (newest first), `before` (an issue id) starts after that issue and `ids`
 /// keeps those issues only; a page says where the next starts (`next`). `untriaged` counts them all.
-/// `kinds` (comma-separated) keeps those kinds only. With `lens` (similar, area, impact or priority)
+/// `kinds` (comma-separated) keeps those kinds only, and `q` the issues whose ref or title holds
+/// it; `kind_counts` counts each kind among the issues `q` keeps. With `lens` (similar, area, impact or priority)
 /// the issues come in the page's order, group by group and newest first in each, and `groups` holds
 /// every group's true total and issues, so a group's count and Select all cover the issues not
 /// loaded yet.
@@ -141,9 +142,19 @@ pub fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let ids: Option<Vec<i64>> = query.get("ids").map(|s| s.split(',').filter_map(|x| parse_ref_str(x.trim(), "issue").ok().flatten()).collect());
     let kinds: Option<Vec<&str>> = query.get("kinds").map(|s| s.split(',').map(str::trim).filter(|k| !k.is_empty()).collect());
     let lens = query.get("lens").and_then(|l| Lens::of(l));
-    let mut rows: Vec<&Row> = all
+    let words = query.get("q").map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
+    let found: Vec<&Row> = all
         .iter()
         .filter(|b| ids.as_ref().is_none_or(|ids| ids.contains(&b.id())))
+        .filter(|b| words.as_ref().is_none_or(|w| matches(b, w)))
+        .collect();
+    let mut kind_counts = serde_json::Map::new();
+    for b in &found {
+        let n = kind_counts.entry(b.st("kind")).or_insert(json!(0));
+        *n = json!(n.as_u64().unwrap_or(0) + 1);
+    }
+    let mut rows: Vec<&Row> = found
+        .into_iter()
         .filter(|b| kinds.as_ref().is_none_or(|k| k.contains(&b.st("kind").as_str())))
         .collect();
     let cursor = match page.before.as_deref().and_then(|b| parse_ref_str(b, "issue").ok().flatten()) {
@@ -193,7 +204,13 @@ pub fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     Ok(json!({
         "issues": out, "untriaged": all.len(), "triaged": total - all.len() as i64, "total": total, "next": next,
         "projects": projects, "grouping": sh.grouping, "ai": ai_on(app), "groups": groups,
+        "kind_counts": kind_counts,
     }))
+}
+
+/// Whether the issue's ref or title holds `words` (already lower case).
+fn matches(b: &Row, words: &str) -> bool {
+    rf("issue", b.id()).to_lowercase().contains(words) || b.st("title").to_lowercase().contains(words)
 }
 
 // ------------------------------------------------------------------ asking Claude
