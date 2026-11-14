@@ -3,6 +3,14 @@
 //! see `recap_page.rs`). `POST /recaps` makes one for a named period; the app reads them
 //! (`GET /recaps`, `GET /recaps/<id>`, `POST /recaps/<id>/seen`). There's no `tb` command for them.
 //!
+//! # Schedule
+//!
+//! `[recap]` makes them on its own: the week's on `weekly_day` (Monday) at `at` (9:00 AM), for the
+//! last Monday to Sunday that has ended, and the month's on `monthly_day` (the 1st) at `at`, for the
+//! last calendar month that has ended. Each period is made once however late the board wakes, and a
+//! period with no finished task is skipped. Once its page is written, or its writing failed, a
+//! notification opens the recap; there's no Needs you item.
+//!
 //! # Periods
 //!
 //! A week runs from Monday 12:00 AM to the next Monday 12:00 AM, whatever `first_weekday` says,
@@ -43,13 +51,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{Datelike, Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::days::{self, NO_PROJECT};
 use crate::util::*;
-use crate::{dispatch, human, p, quality};
+use crate::{dispatch, hours, human, midna, p, quality};
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS recaps(
@@ -681,4 +690,212 @@ pub fn seen(app: &App, id: i64) -> Result<Value> {
     dispatch::clear_alert_key(app, &key(id))?;
     dispatch::withdraw_id(app, &notification_id(id));
     get(app, id)
+}
+
+// ------------------------------------------------------------------ the schedule
+
+/// `[recap]` in config.toml: `weekly_day` and `at` are the Mac's local time; `monthly_day` is 1 to 28.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RecapConfig {
+    pub on: bool,
+    pub weekly_day: String,
+    pub monthly_day: u32,
+    pub at: String,
+}
+
+impl Default for RecapConfig {
+    fn default() -> Self {
+        RecapConfig { on: true, weekly_day: "monday".into(), monthly_day: 1, at: "9:00 AM".into() }
+    }
+}
+
+const TICK_SECS: f64 = 60.0;
+/// The first day of the last `kind` period the schedule made, per kind.
+const LAST_KEY: &str = "recap_last_";
+/// Recaps the schedule made whose notification waits for their page.
+const PENDING_KEY: &str = "recap_announce";
+
+pub fn run(app: std::sync::Arc<App>) {
+    if let Err(e) = rewrite_stale(&app) {
+        app.info(format!("recap: {}", e.message));
+    }
+    while !app.stopping() {
+        if let Err(e) = tick(&app, hours::now_local()) {
+            app.info(format!("recap: {}", e.message));
+        }
+        app.sleep(TICK_SECS);
+    }
+}
+
+/// A page still `writing` when the board starts lost its place on the AI queue when the board
+/// stopped: it's written again.
+fn rewrite_stale(app: &App) -> Result<()> {
+    for r in app.db.q("SELECT id FROM recaps WHERE writing_status = 'writing'", p![])? {
+        app.db.x("UPDATE recaps SET writing_status = 'none' WHERE id = ?", p![r.id()])?;
+        crate::recap_page::queue(app, r.id())?;
+    }
+    Ok(())
+}
+
+fn at_time(cfg: &RecapConfig) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(&hours::parse_time(&cfg.at, "recap").ok()?, "%H:%M").ok()
+}
+
+/// The latest moment at or before `now` the `kind` recap is due, if the schedule is on.
+pub fn due_at(cfg: &RecapConfig, kind: &str, now: NaiveDateTime) -> Option<NaiveDateTime> {
+    if !cfg.on {
+        return None;
+    }
+    let at = at_time(cfg)?;
+    let today = now.date();
+    let day = match kind {
+        "weekly" => {
+            let wd = crate::config::parse_weekday(&cfg.weekly_day)?;
+            today - Duration::days(((today.weekday().num_days_from_monday() + 7 - wd.num_days_from_monday()) % 7) as i64)
+        }
+        "monthly" => today.with_day(cfg.monthly_day.clamp(1, 28))?,
+        _ => return None,
+    };
+    let when = day.and_time(at);
+    if when <= now {
+        return Some(when);
+    }
+    let earlier = match kind {
+        "weekly" => day - Duration::days(7),
+        _ => (day.with_day(1)? - Duration::days(1)).with_day(day.day())?,
+    };
+    Some(earlier.and_time(at))
+}
+
+/// Whether a task finished in the `kind` period starting `first` (one whose PR was closed unmerged doesn't count).
+pub fn finished_work(app: &App, kind: &str, first: NaiveDate) -> Result<bool> {
+    let (first, end) = period(kind, first)?;
+    Ok(done_tasks(app, days::start_of(first), days::start_of(end))?.iter().any(|d| d.shipped != "closed"))
+}
+
+fn pending(app: &App) -> Result<Vec<i64>> {
+    Ok(app.db.get_setting(PENDING_KEY)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+}
+
+fn set_pending(app: &App, ids: &[i64]) -> Result<()> {
+    app.db.set_setting(PENDING_KEY, if ids.is_empty() { None } else { Some(jdumps(&json!(ids))) }.as_deref())
+}
+
+/// Makes each recap that's due and hasn't been made (once, however late the board wakes), then
+/// sends the notification of each whose page is written or failed. Returns the recaps it made.
+pub fn tick(app: &App, now: NaiveDateTime) -> Result<Vec<i64>> {
+    let mut made = Vec::new();
+    for kind in KINDS {
+        let Some(when) = due_at(&app.cfg.recap, kind, now) else { continue };
+        let (first, _) = last_complete(kind, when.date())?;
+        let key = format!("{LAST_KEY}{kind}");
+        let start = date_str(first);
+        if app.db.get_setting(&key)?.as_deref() >= Some(start.as_str()) {
+            continue;
+        }
+        app.db.set_setting(&key, Some(&start))?;
+        if !finished_work(app, kind, first)? {
+            continue;
+        }
+        let id = make(app, kind, first, false)?;
+        let mut ids = pending(app)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+            set_pending(app, &ids)?;
+        }
+        made.push(id);
+    }
+    announce_ready(app)?;
+    Ok(made)
+}
+
+/// Sends the notification of each waiting recap whose page is written or failed; one the owner
+/// already opened, or that's gone, needs none.
+fn announce_ready(app: &App) -> Result<()> {
+    let ids = pending(app)?;
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut left = Vec::new();
+    for id in ids {
+        let Some(r) = app.db.q1("SELECT writing_status, seen_at FROM recaps WHERE id = ?", p![id])? else { continue };
+        if r.s("seen_at").is_some() {
+            continue;
+        }
+        if matches!(r.st("writing_status").as_str(), "done" | "failed") {
+            announce(app, id)?;
+        } else {
+            left.push(id);
+        }
+    }
+    set_pending(app, &left)
+}
+
+fn month_day(d: NaiveDate) -> String {
+    format!("{} {}", d.format("%b"), d.day())
+}
+
+/// The notification for recap `id`: "Weekly recap: Nov 2 – 8", "12 tasks finished", opening the recap.
+pub fn notice(app: &App, id: i64) -> Result<Value> {
+    let r = get(app, id)?;
+    let day = |k: &str| r[k].as_str().and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+    let (Some(first), Some(last)) = (day("first_day"), day("last_day")) else { return err(500, "The recap has no period.") };
+    let title = if r["kind"] == "monthly" {
+        format!("Monthly recap: {}", first.format("%B %Y"))
+    } else if first.month() == last.month() {
+        format!("Weekly recap: {} – {}", month_day(first), last.day())
+    } else {
+        format!("Weekly recap: {} – {}", month_day(first), month_day(last))
+    };
+    let n = r["tasks"].as_i64().unwrap_or(0);
+    let mut body = format!("{n} {} finished", if n == 1 { "task" } else { "tasks" });
+    if r["writing_status"] == "failed" {
+        body.push_str(", numbers only");
+    }
+    let url = dispatch::page_link(app, &format!("recap/{id}"));
+    Ok(json!({"title": title, "body": body, "category": "board", "sound": true, "open": url, "id": notification_id(id)}))
+}
+
+/// Tells the owner recap `id` is ready with a notification that opens it.
+pub fn announce(app: &App, id: i64) -> Result<()> {
+    let params = notice(app, id)?;
+    if app.cfg.notify && app.cfg.runner {
+        let m = app.cfg.midna.clone();
+        std::thread::spawn(move || {
+            let _ = midna::notify_send(&m, &params);
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(d: &str, t: &str) -> NaiveDateTime {
+        NaiveDateTime::new(NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap(), NaiveTime::parse_from_str(t, "%H:%M").unwrap())
+    }
+
+    #[test]
+    fn the_week_is_due_monday_at_nine() {
+        let c = RecapConfig::default();
+        assert_eq!(due_at(&c, "weekly", at("2026-11-09", "09:00")), Some(at("2026-11-09", "09:00")));
+        assert_eq!(due_at(&c, "weekly", at("2026-11-09", "08:59")), Some(at("2026-11-02", "09:00")));
+        assert_eq!(due_at(&c, "weekly", at("2026-11-14", "12:00")), Some(at("2026-11-09", "09:00")));
+        let off = RecapConfig { on: false, ..RecapConfig::default() };
+        assert_eq!(due_at(&off, "weekly", at("2026-11-09", "10:00")), None);
+        let wed = RecapConfig { weekly_day: "wed".into(), at: "5pm".into(), ..RecapConfig::default() };
+        assert_eq!(due_at(&wed, "weekly", at("2026-11-14", "12:00")), Some(at("2026-11-11", "17:00")));
+    }
+
+    #[test]
+    fn the_month_is_due_on_the_first_at_nine() {
+        let c = RecapConfig::default();
+        assert_eq!(due_at(&c, "monthly", at("2026-11-01", "09:00")), Some(at("2026-11-01", "09:00")));
+        assert_eq!(due_at(&c, "monthly", at("2026-11-01", "08:00")), Some(at("2026-10-01", "09:00")));
+        assert_eq!(due_at(&c, "monthly", at("2026-01-01", "08:00")), Some(at("2025-12-01", "09:00")), "across the year");
+        let late = RecapConfig { monthly_day: 31, ..RecapConfig::default() };
+        assert_eq!(due_at(&late, "monthly", at("2026-03-10", "08:00")), Some(at("2026-02-28", "09:00")), "past 28 runs on the 28th");
+    }
 }

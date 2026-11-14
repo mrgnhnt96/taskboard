@@ -206,6 +206,7 @@ pub fn start_threads(app: &Arc<App>) {
         spawn(app, "suggest", suggest::run);
         spawn(app, "spans", spans::run);
         spawn(app, "review", review::run);
+        spawn(app, "recap", recap::run);
         spawn(app, "code-review", code_review::run);
         spawn(app, "merged-lines", merges::fill_loop);
     } else {
