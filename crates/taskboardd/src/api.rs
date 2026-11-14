@@ -182,6 +182,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["accounts", id, "disconnect"]) => accounts::disconnect(app, id),
         ("POST", ["accounts", id]) => accounts::connect(app, id, body),
         ("GET", ["info"]) => Ok(info()),
+        ("GET", ["restart"]) => crate::code_review::restart_would_interrupt(app),
         ("GET", ["summary"]) => get_summary(app),
         ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["slots"]) => crate::slots::overview(app, query.get("project").map(|s| s.as_str())),

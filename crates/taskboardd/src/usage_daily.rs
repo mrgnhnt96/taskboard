@@ -143,18 +143,22 @@ pub fn days_left(today: NaiveDate, reset_local: NaiveDateTime) -> i64 {
 const SAME_WINDOW_SECS: f64 = 3600.0;
 
 /// The plan for `today`: the one kept, rolled to today, or a fresh one when there's none, the setting
-/// changed, the weekly window reset, or the clock went back past its start.
+/// changed, the weekly window reset, or the clock went back past its start. A fresh plan for a new
+/// setting in the same window keeps today's start, so what today already used still counts.
 pub fn advance(kept: Option<Plan>, s: &Setting, w: &Week, today: NaiveDate) -> Plan {
     let sig = s.sig();
+    let same_window = |p: &Plan| (p.resets_at - w.resets_at).abs() < SAME_WINDOW_SECS;
+    let today_start = kept.as_ref().filter(|p| same_window(p) && p.day == day_str(today)).map(|p| p.day_pct.min(w.pct));
     let kept = kept.filter(|p| {
-        p.setting == sig && (p.resets_at - w.resets_at).abs() < SAME_WINDOW_SECS && date(&p.start_day).is_some_and(|d| d <= today) && date(&p.day).is_some_and(|d| d <= today)
+        p.setting == sig && same_window(p) && date(&p.start_day).is_some_and(|d| d <= today) && date(&p.day).is_some_and(|d| d <= today)
     });
     let Some(mut p) = kept else {
+        let start = today_start.unwrap_or(w.pct);
         let base = match s.base {
             Base::Pct(n) => n,
-            _ => (100.0 - w.pct).max(0.0) / days_left(today, w.reset_local) as f64,
+            _ => (100.0 - start).max(0.0) / days_left(today, w.reset_local) as f64,
         };
-        return Plan { setting: sig, resets_at: w.resets_at, start_day: day_str(today), start_pct: w.pct, base, day: day_str(today), day_pct: w.pct };
+        return Plan { setting: sig, resets_at: w.resets_at, start_day: day_str(today), start_pct: start, base, day: day_str(today), day_pct: start };
     };
     if p.day != day_str(today) {
         p.day = day_str(today);
@@ -199,10 +203,8 @@ pub fn set(app: &App, body: &Value) -> Result<Setting> {
     if let Some(c) = body.get("carry").filter(|v| !v.is_null()) {
         s.carry = parse_carry(c).map_err(|e| ApiError::new(400, e))?;
     }
+    // The plan stays while the limit is off, so turning it back on today keeps today's start.
     app.db.set_setting(SETTING_KEY, Some(&s.to_json().to_string()))?;
-    if !s.on() {
-        app.db.set_setting(PLAN_KEY, None)?;
-    }
     app.notify_jobs();
     Ok(s)
 }
@@ -493,6 +495,22 @@ mod tests {
         let fresh = advance(Some(p), &other, &week(55.0), d("2026-11-03"));
         assert_eq!(fresh.start_day, "2026-11-03");
         assert!(close(fresh.base, 12.0) && close(fresh.start_pct, 55.0));
+    }
+
+    #[test]
+    fn a_new_setting_keeps_what_today_already_used() {
+        let p = walk(&even(Carry::NextDay), &[("2026-11-02", 30.0), ("2026-11-03", 34.0)]);
+        let s = fixed(12.0, Carry::NextDay);
+        let fresh = advance(Some(p.clone()), &s, &week(40.0), d("2026-11-03"));
+        assert!(close(fresh.day_pct, 34.0) && close(fresh.start_pct, 34.0), "today began at 34%: {fresh:?}");
+        let t = today(&fresh, s.carry, 40.0, d("2026-11-03"), week(40.0).reset_local);
+        assert!(close(t.used, 6.0) && close(t.allowed, 12.0) && close(t.left, 6.0), "{t:?}");
+
+        let e = advance(Some(p.clone()), &even(Carry::Spread), &week(40.0), d("2026-11-03"));
+        assert!(close(e.base, 66.0 / 6.0), "even splits the week left at today's start: {e:?}");
+
+        let tomorrow = advance(Some(p), &s, &week(40.0), d("2026-11-04"));
+        assert!(close(tomorrow.day_pct, 40.0), "a plan from an earlier day doesn't carry its start: {tomorrow:?}");
     }
 
     #[test]

@@ -114,7 +114,8 @@ fn serve(cfg: Config) -> i32 {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 return match taskboardd::cutover::who_listens(&addr.ip().to_string(), addr.port()) {
                     taskboardd::cutover::Listener::Other(what) => {
-                        eprintln!("taskboardd: {addr} is taken by {what}, not this board. Stop it (see docs/CUTOVER.md for the old board) or set another port in config.toml.");
+                        let held = taskboardd::cutover::port_holder(addr.port()).map(|h| format!(" ({}, process {})", h.command, h.pid)).unwrap_or_default();
+                        eprintln!("taskboardd: {addr} is taken by {what}{held}, not this board. Stop it (see docs/CUTOVER.md for the old board) or set another port in config.toml.");
                         1
                     }
                     _ => {

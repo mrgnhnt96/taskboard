@@ -450,6 +450,21 @@ fn a_pending_cut_drops_and_tells_the_owner_when_its_work_fails() {
     taskboardd::pending_cut::check(&app).unwrap();
     assert_eq!(pending(&app, "webapp"), Value::Null);
     assert!(alert_texts(&app).iter().any(|a| a.contains("v1.6") && a.contains("closed without merging")));
+
+    // The list keeps the last drop, why and what to run next, until a cut takes its name or a new one waits.
+    let d = get(&app, "/releases", "webapp")["dropped"].clone();
+    assert_eq!((d["name"].as_str(), d["next"].as_str()), (Some("v1.6"), Some("tb release cut v1.6")), "{d}");
+    assert!(d["why"].as_str().unwrap().contains("closed without merging"), "{d}");
+    assert!(d["at"].is_string());
+    assert_eq!(get(&app, "/releases", "api")["dropped"], Value::Null);
+    let t3 = task(&app, "webapp", "Settings", None);
+    call(&app, "POST", "/releases", json!({"name": "v1.7", "project": "webapp", "after": [format!("T{t3}")]}));
+    assert_eq!(get(&app, "/releases", "webapp")["dropped"], Value::Null, "a new pending cut hides it");
+    call(&app, "POST", "/releases/pending/cancel", json!({"project": "webapp"}));
+    assert_eq!(get(&app, "/releases", "webapp")["dropped"]["name"], "v1.6");
+    done(&app, t3, None);
+    call(&app, "POST", "/releases", json!({"name": "v1.6", "project": "webapp"}));
+    assert_eq!(get(&app, "/releases", "webapp")["dropped"], Value::Null, "cut by hand");
 }
 
 #[test]

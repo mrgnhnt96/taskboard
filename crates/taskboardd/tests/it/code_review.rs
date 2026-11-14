@@ -598,3 +598,26 @@ fn triage_backlog_says_what_it_blocks_and_a_minor_finding_off_the_diff_cant_hold
     let r = &code_review::rounds(&b.app, id).unwrap()[0];
     assert_eq!((r["triage"]["F1"]["blocks"].as_str(), r["triage"]["F2"]["blocks"].as_str()), (Some("pr"), Some("goal")), "{r}");
 }
+
+#[test]
+fn a_restart_names_the_reviews_it_would_cut_short() {
+    let b = new_board(|_| None);
+    let task = |title: &str, stage: Option<Value>| {
+        let id = b.post("/tasks", json!({"title": title, "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+        b.app.db.x("UPDATE tasks SET code_review = ? WHERE id = ?", p![stage.map(|s| s.to_string()), id]).unwrap();
+        id
+    };
+    let none = b.get("restart");
+    assert_eq!((none["count"].as_u64(), none["agents_keep_running"].as_bool()), (Some(0), Some(true)));
+    task("Queued", Some(json!({"state": "queued", "round": 1})));
+    task("Triaging", Some(json!({"state": "triaging", "round": 1})));
+    task("Not in review", None);
+    let a = task("Login", Some(json!({"state": "running", "round": 2, "since": "2026-11-14T09:00:00Z"})));
+    let c = task("Signup", Some(json!({"state": "running"})));
+    let v = b.get("restart");
+    assert_eq!(v["count"], 2, "{v}");
+    assert_eq!(v["code_reviews"][0]["ref"], format!("T{c}"));
+    assert_eq!(v["code_reviews"][0]["round"], 1);
+    assert_eq!((v["code_reviews"][1]["ref"].as_str(), v["code_reviews"][1]["round"].as_u64()), (Some(format!("T{a}").as_str()), Some(2)));
+    assert_eq!(v["code_reviews"][1]["title"], "Login");
+}
