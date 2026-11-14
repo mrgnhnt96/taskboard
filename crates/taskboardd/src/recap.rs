@@ -1,7 +1,7 @@
 //! Weekly and monthly recaps: the facts of a finished week or month, kept in `recaps` with the
-//! writing made from them later (`writing`, and `writing_status`: `none`, `writing`, `done` or
-//! `failed`). The app reads them (`GET /recaps`, `GET /recaps/<id>`, `POST /recaps/<id>/seen`);
-//! there's no `tb` command for them.
+//! page made from them (`writing`, and `writing_status`: `none`, `writing`, `done` or `failed`;
+//! see `recap_page.rs`). `POST /recaps` makes one for a named period; the app reads them
+//! (`GET /recaps`, `GET /recaps/<id>`, `POST /recaps/<id>/seen`). There's no `tb` command for them.
 //!
 //! # Periods
 //!
@@ -620,6 +620,25 @@ pub fn save(app: &App, kind: &str, day: NaiveDate) -> Result<i64> {
         "INSERT INTO recaps(kind, period_start, period_end, created_at, facts) VALUES(?, ?, ?, ?, ?)",
         p![kind, start, iso(days::start_of(end)), now_iso(), jdumps(&f)],
     )
+}
+
+/// Makes the recap of the `kind` period holding `day`: its facts are kept first, then its page is
+/// written (on the AI queue when Claude is there). A recap that already has a page keeps it unless
+/// `again`. Returns its id.
+pub fn make(app: &App, kind: &str, day: NaiveDate, again: bool) -> Result<i64> {
+    let id = app.db.tx(|| save(app, kind, day))?;
+    let status = app.db.q1("SELECT writing_status FROM recaps WHERE id = ?", p![id])?.map(|r| r.st("writing_status")).unwrap_or_default();
+    if again || matches!(status.as_str(), "none" | "failed") {
+        crate::recap_page::queue(app, id)?;
+    }
+    Ok(id)
+}
+
+/// The day a `POST /recaps` names: `2026-11-02`, or `2026-10` for a month.
+pub fn parse_day(s: &str) -> Result<NaiveDate> {
+    let s = s.trim();
+    let full = if s.len() == 7 { format!("{s}-01") } else { s.to_string() };
+    NaiveDate::parse_from_str(&full, "%Y-%m-%d").or_else(|_| err(400, "Give the day as YYYY-MM-DD, or a month as YYYY-MM."))
 }
 
 /// The Needs you key a recap's alert uses.
