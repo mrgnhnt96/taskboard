@@ -3,6 +3,7 @@
 //! one. A wave the goal stopped at, held or failed offers its one signal: let the goal go on.
 use super::*;
 use crate::ui::status::{self, St};
+use crate::ui::stop::Kind;
 
 /// A wave card's header.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,6 +20,8 @@ pub struct Head {
 /// What a stopped, held or failed wave says, and its button.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gate {
+    /// Held, failed or ready for review, said as the goal's stop says it.
+    pub kind: Kind,
     pub bad: bool,
     pub text: String,
     pub button: String,
@@ -75,9 +78,9 @@ pub fn head(w: &Value, prev: Option<&Value>, tasks: &[&Value]) -> Head {
             let last = tasks.iter().filter_map(|t| fmt::opt_s(t, "finished_at").or(fmt::opt_s(t, "when"))).filter(|x| fmt::parse(x).is_some()).max_by_key(|x| fmt::parse(x));
             (last.map(done_at).unwrap_or_else(|| "Done".into()), St::Done)
         }
-        "stopped" => ("Done · waiting for your review".into(), St::Needs),
-        "failed" => ("A task failed".into(), St::Failed),
-        "held" => ("Held".into(), St::Needs),
+        "stopped" => (format!("{} Done · ready for review", Kind::Review.glyph()), St::Needs),
+        "failed" => (Kind::Failed.label(), St::Failed),
+        "held" => (Kind::Held.label(), St::Needs),
         "running" => ("Now".into(), St::Working),
         _ => match prev {
             Some(p) if stopping(p) || s(p, "state") == "stopped" => (format!("After wave {} and your review", i(p, "wave")), St::Queued),
@@ -95,13 +98,13 @@ pub fn gate(w: &Value, next: Option<&Value>) -> Option<Gate> {
     let on = next.map(|n| format!("wave {}", i(n, "wave"))).unwrap_or_else(|| "the rest of the goal".into());
     let failed: Vec<&str> = arr(w, "failed").iter().filter_map(|x| x.as_str()).collect();
     if s(w, "state") == "held" || (b(w, "held") && s(w, "state") == "running") {
-        return Some(Gate { bad: false, text: format!("Wave {wave} is held."), button: format!("Let wave {wave} start"), wave });
+        return Some(Gate { kind: Kind::Held, bad: false, text: format!("Wave {wave} is held."), button: format!("Let wave {wave} start"), wave });
     }
     if s(w, "state") == "stopped" {
-        return Some(Gate { bad: false, text: format!("Wave {wave} is done. Look it over, then let {on} start."), button: format!("Continue to {on}"), wave });
+        return Some(Gate { kind: Kind::Review, bad: false, text: format!("Wave {wave} is done. Look it over, then let {on} start."), button: format!("Continue to {on}"), wave });
     }
     if (s(w, "state") == "failed" || !failed.is_empty()) && !b(w, "passed") {
-        return Some(Gate { bad: true, text: format!("{} failed. {} waits.", failed.join(", "), fmt::cap(&on)), button: "Continue anyway".into(), wave });
+        return Some(Gate { kind: Kind::Failed, bad: true, text: format!("{} failed. {} waits.", failed.join(", "), fmt::cap(&on)), button: "Continue anyway".into(), wave });
     }
     None
 }
@@ -215,13 +218,14 @@ fn gate_el(m: &MainWindow, t: &Theme, gr: &str, g: Gate, cx: &mut Context<MainWi
     let id = SharedString::from(format!("wave-continue-{}", g.wave));
     let (gr2, n) = (gr.to_string(), g.wave);
     let btn = if busy { kit::disabled(kit::btn_primary(t, id, "Continuing…")) } else { kit::btn_primary(t, id, g.button).on_click(cx.listener(move |m, _, _, cx| continue_wave(m, &gr2, n, cx))) };
+    let (fg, soft, _) = g.kind.colors(t);
     div()
         .flex()
         .flex_col()
         .gap(px(6.))
         .px(px(18.))
         .py(px(10.))
-        .bg(if g.bad { t.down_soft } else { t.warn_soft })
+        .bg(soft)
         .border_b_1()
         .border_color(t.divider)
         .child(
@@ -230,7 +234,8 @@ fn gate_el(m: &MainWindow, t: &Theme, gr: &str, g: Gate, cx: &mut Context<MainWi
                 .items_center()
                 .gap(px(12.))
                 .text_size(px(13.))
-                .text_color(if g.bad { t.text } else { t.warn_text })
+                .text_color(t.text)
+                .child(div().flex_none().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(fg).child(g.kind.label().to_uppercase()))
                 .child(div().flex_1().min_w_0().child(g.text))
                 .child(div().flex_none().child(btn)),
         )
@@ -353,6 +358,9 @@ mod tests {
         assert_eq!(head(&w1, None, &[]).title, "Wave 1 · Foundation");
         let stopped = json!({"wave": 1, "state": "stopped"});
         assert_eq!(gate(&stopped, Some(&w2)).unwrap().button, "Continue to wave 2");
+        assert_eq!(gate(&stopped, Some(&w2)).unwrap().kind, Kind::Review);
+        assert_eq!(head(&stopped, None, &[]).meta, "◐ Done · ready for review");
+        assert_eq!(head(&json!({"wave": 2, "state": "held"}), Some(&w1), &[]).meta, "‖ Held");
         assert_eq!(gate(&w1, Some(&w2)), None);
     }
 

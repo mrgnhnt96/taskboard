@@ -215,6 +215,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_NEEDS").is_ok() {
             seed_needs(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_STOPS").is_ok() {
+            seed_stops(&board);
+        }
         if std::env::var("TASKBOARD_FAKE_RECAPS").is_ok() {
             seed_recaps(&board);
         }
@@ -369,6 +372,56 @@ fn seed_needs(board: &Board) {
             post(format!("/alerts/task:T{t}/snooze"), json!({"until": "next_week"}));
         }
     }
+}
+
+/// Dev (`TASKBOARD_FAKE_STOPS=1`): a goal at each wave stop (failed, held, review), a paused goal,
+/// one chained after another and one whose outcome missed, for the stop state on the sidebar, Goals and the goal page.
+fn seed_stops(board: &Board) {
+    use taskboardd::{board as b, fields, ops, util, waves};
+    let ago = |s: f64| util::iso(util::now_ts() - s);
+    let goal = |name: &str, extra: Value| {
+        let mut body = json!({"name": name, "project": "webapp", "outcome": "it works end to end", "run_in_order": false});
+        if let (Some(o), Some(x)) = (body.as_object_mut(), extra.as_object()) {
+            o.extend(x.clone());
+        }
+        ops::new_goal(board, &body).ok().and_then(|g| g["id"].as_i64()).unwrap_or(0)
+    };
+    let task = |g: i64, title: &str, wave: i64, status: &str| {
+        let c = ops::new_task(board, &json!({"title": title, "detail": "Sample work.", "project": "webapp", "goal_id": g, "wave": wave,
+                                             "status": "queued", "pickup": {"mode": "queue"}, "not_backlog": true}), b::OWNER, None);
+        let id = c.ok().and_then(|c| c["id"].as_i64()).unwrap_or(0);
+        if status == "done" {
+            let _ = b::update_task(board, id, fields!["status" => "done", "started_at" => ago(7200.0), "finished_at" => ago(3600.0), "summary" => "Done."]);
+        }
+        id
+    };
+    let failed = goal("Offline drafts", json!({}));
+    task(failed, "Store drafts in IndexedDB", 1, "done");
+    let f = task(failed, "Sync drafts on reconnect", 1, "done");
+    let _ = b::update_task(board, f, fields!["failed" => 1, "summary" => "Tests failed on reconnect."]);
+    task(failed, "Show a drafts badge", 2, "queued");
+    let held = goal("Billing emails", json!({}));
+    task(held, "Template the receipt", 1, "done");
+    task(held, "Send the receipt on payment", 2, "queued");
+    let _ = waves::set_wave(board, held, 2, fields!["held_at" => ago(1800.0)]);
+    let review = goal("Search filters", json!({}));
+    task(review, "Filter by date", 1, "done");
+    task(review, "Filter by owner", 1, "done");
+    task(review, "Save a filter", 2, "queued");
+    let _ = waves::set_wave(board, review, 1, fields!["name" => "Filters", "stop_after" => 1]);
+    let paused = goal("Dark mode", json!({}));
+    task(paused, "Theme tokens", 1, "done");
+    task(paused, "Dark palette", 1, "queued");
+    task(paused, "Settings switch", 1, "queued");
+    let _ = board.db.update("goals", &json!(paused), fields!["paused" => 1]);
+    let chained = goal("Billing reports", json!({"after": [held]}));
+    task(chained, "Monthly totals", 1, "queued");
+    let missed = goal("Export to CSV", json!({}));
+    task(missed, "Write the CSV export", 1, "done");
+    let now = util::now_iso();
+    let _ = board.db.insert("issues", fields!["project" => "webapp", "goal_id" => missed, "kind" => "gap", "title" => "Dates export in UTC, not local time",
+                                              "said" => "Dates export in UTC.", "how" => "Found while checking the goal.", "source" => "terminal", "state" => "open",
+                                              "misses_goal" => 1, "created_at" => now.clone(), "updated_at" => now]);
 }
 
 /// Dev (`TASKBOARD_FAKE_PLAN_REVIEW=1`): a finished review of the passkeys goal's plan (G1) with

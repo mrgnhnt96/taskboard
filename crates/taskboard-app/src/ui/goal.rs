@@ -442,6 +442,85 @@ fn with_waits(said: String, v: &Value) -> String {
     format!("{}.", out.join(". "))
 }
 
+/// The header's buttons: the run signals, said for this goal. A paused goal's Start says it resumes
+/// it too, and its plain Resume moves to the Paused band; a goal stopped for the owner offers no
+/// Pause; a goal chained after another shows "Starts after G7" in place of Start.
+pub fn header_buttons(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
+    let (split, list) = run_buttons_view(g, hours);
+    let (paused, stopped) = (b(g, "paused"), crate::ui::stop::of(g).is_some());
+    let after = crate::ui::goals_page::after_ref(g);
+    let mut out = vec![];
+    for mut bt in list {
+        match bt.act {
+            "goal-run" if paused && bt.label == "Resume" => continue,
+            "goal-run" if after.is_some() && bt.label.starts_with("Start") => {
+                let r = after.clone().unwrap_or_default();
+                out.push(RunButton { act: "after-goal", label: format!("Starts after {r}"), title: format!("It starts once {r} is finished"), busy_label: "" });
+                continue;
+            }
+            "goal-run" if paused && bt.label.starts_with("Start") => {
+                bt.label = format!("Resume and s{}", &bt.label[1..]);
+                bt.title = format!("Resumes the goal. {}", bt.title);
+            }
+            "goal-pause" | "wait-menu" if stopped => continue,
+            _ => {}
+        }
+        out.push(bt);
+    }
+    (split && out.iter().any(|x| x.act == "goal-run"), out)
+}
+
+/// What Resume starts on a paused goal: "Resume: 3 tasks start", "Resume: PRs move again".
+pub fn resume_label(g: &Value) -> String {
+    let tasks = arr(g, "tasks");
+    let queued = if tasks.is_empty() { i(g, "queued") } else { tasks.iter().filter(|x| s(x, "status") == "queued").count() as i64 };
+    let prs = if tasks.is_empty() { !arr(g, "prs_open").is_empty() } else { tasks.iter().any(awaiting_merge) };
+    match (queued, prs) {
+        (q, _) if q > 0 => format!("Resume: {} start", fmt::plural(q, "task", "tasks")),
+        (_, true) => "Resume: PRs move again".into(),
+        _ => "Resume".into(),
+    }
+}
+
+/// Resume a paused goal. With planned tasks it only lifts the pause (Start queues those); otherwise
+/// it also picks up tasks parked while paused. `here`: on its page, the answer shows under the band.
+pub fn resume(m: &mut MainWindow, gr: &str, planned: bool, here: bool, cx: &mut Context<MainWindow>) {
+    let grp = here.then(|| format!("ggate:{gr}"));
+    if planned {
+        run(m, format!("goal-pause:off:{gr}"), grp, true, format!("goals/{gr}"), json!({"paused": false}), cx, |_, _, _| "Going again".into());
+    } else {
+        run(m, format!("goal-run::{gr}"), grp, true, format!("goals/{gr}/run"), json!({}), cx, |m, v, _| run_toast(v, &hours(m)));
+    }
+}
+
+/// A stop's next step. `here`: on the goal's page, where a Continue answers under the band and the
+/// misses open as a menu at `at`; from elsewhere it answers in a toast and the misses open the page.
+pub fn take_step(m: &mut MainWindow, gr: &str, step: &crate::ui::stop::Step, here: bool, at: Point<Pixels>, cx: &mut Context<MainWindow>) {
+    use crate::ui::stop::Step;
+    match step {
+        Step::Continue(n) => {
+            let n = *n;
+            let grp = here.then(|| format!("ggate:{gr}"));
+            run(m, format!("wave-continue:{gr}:{n}"), grp, true, format!("goals/{gr}/waves/{n}/continue"), json!({}), cx, move |_, v, _| {
+                if v["let_start"] == true { format!("Wave {n} can start") } else { "The goal goes on".into() }
+            });
+        }
+        Step::Task(r) => m.open_task(r.clone(), cx),
+        Step::Misses if here => m.toggle_menu(MISSES_MENU, point(at.x - px(300.), at.y + px(14.)), cx),
+        Step::Misses | Step::Goal => open(m, gr, false, cx),
+    }
+}
+
+/// Whether a paused goal's Resume is running.
+pub fn resume_busy(m: &MainWindow, gr: &str, planned: bool) -> bool {
+    busy(m, &if planned { format!("goal-pause:off:{gr}") } else { format!("goal-run::{gr}") })
+}
+
+/// Whether a stop's step is running.
+pub fn step_busy(m: &MainWindow, gr: &str, step: &crate::ui::stop::Step) -> bool {
+    matches!(step, crate::ui::stop::Step::Continue(n) if busy(m, &format!("wave-continue:{gr}:{n}")))
+}
+
 /// A paused or deprioritized goal's banner: (label, text, (act, button)).
 pub fn gate_view(g: &Value) -> Option<(&'static str, &'static str, (&'static str, &'static str))> {
     if b(g, "deprioritized") {
@@ -954,7 +1033,7 @@ fn open_project(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>)
 
 fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
-    let (split, list) = run_buttons_view(g, &hours(m));
+    let (split, list) = header_buttons(g, &hours(m));
     let planned = arr(g, "tasks").iter().any(|x| s(x, "status") == "planned");
     let mut row = div().flex().flex_none().items_center().gap(px(8.));
     for bt in list {
@@ -996,6 +1075,10 @@ fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -
             "goal-pause" => {
                 let b = kit::btn(t, "goal-pause", label).tooltip(kit::tip(bt.title.clone()));
                 if is_busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| set_paused(m, &gr2, true, cx))) }.into_any_element()
+            }
+            "after-goal" => {
+                let first = crate::ui::goals_page::after_ref(g).unwrap_or_default();
+                kit::btn(t, "goal-after", label).tooltip(kit::tip(bt.title.clone())).on_click(cx.listener(move |m, _, _, cx| open(m, &first, false, cx))).into_any_element()
             }
             "sched-menu" => {
                 let is_busy = busy(m, &format!("goal-run-now::{gr}")) || busy(m, &format!("goal-run::{gr}")) || busy(m, &format!("goal-at::{gr}"));
@@ -1369,47 +1452,129 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, loaded: bool, cx: &mut Context<M
         )
 }
 
+/// The bands under the header: deprioritized, then the goal's stop, then paused; the answer to
+/// their buttons shows under them.
 fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
     let gr = fmt::ref_of(g, "G");
     let note = inline_note(m, t, &format!("ggate:{gr}"));
-    let Some((label, text, (act, button))) = gate_view(g) else {
+    let mut bands = vec![];
+    if b(g, "deprioritized") {
+        if let Some((label, text, (_, button))) = gate_view(g) {
+            let is_busy = busy(m, &format!("goal-deprio:off:{gr}"));
+            let gr2 = gr.clone();
+            let bt = kit::btn_primary(t, "goal-gate", if is_busy { "Sending…" } else { button });
+            let bt = if is_busy { kit::disabled(bt) } else { bt.on_click(cx.listener(move |m, _, _, cx| bring_back(m, &gr2, cx))) };
+            bands.push(band(t, (t.warn_fg, t.warn_soft, t.warn_line), label.to_uppercase(), None, text.to_string(), div().flex_none().child(bt)));
+        }
+    }
+    if let Some(st) = crate::ui::stop::of(g) {
+        bands.push(stop_band(m, t, &gr, st, cx));
+    }
+    if b(g, "paused") {
+        let planned = arr(g, "tasks").iter().any(|x| s(x, "status") == "planned");
+        let is_busy = resume_busy(m, &gr, planned);
+        let gr2 = gr.clone();
+        let bt = kit::btn_primary(t, "goal-gate-resume", if is_busy { "Sending…".to_string() } else { resume_label(g) });
+        let bt = if is_busy { kit::disabled(bt) } else { bt.on_click(cx.listener(move |m, _, _, cx| resume(m, &gr2, planned, true, cx))) };
+        let text = "Nothing new starts in this goal. Tasks already running carry on.".to_string();
+        bands.push(band(t, (t.warn_fg, t.warn_soft, t.warn_line), "‖ PAUSED".into(), None, text, div().flex_none().child(bt)));
+    }
+    if bands.is_empty() {
         return note.map(|n| div().child(n));
-    };
-    let key = if act == "goal-deprio" { format!("goal-deprio:off:{gr}") } else { format!("goal-pause:off:{gr}") };
-    let is_busy = busy(m, &key);
-    let bt = kit::btn_primary(t, "goal-gate", if is_busy { "Sending…" } else { button });
-    let bt = if is_busy {
-        kit::disabled(bt)
+    }
+    Some(div().flex().flex_col().gap(px(8.)).children(bands).children(note))
+}
+
+/// A band: its label (glyph and word, so it never rests on colour), a title, a line, its buttons.
+fn band(t: &Theme, (fg, soft, line): (Hsla, Hsla, Hsla), label: String, title: Option<String>, text: String, buttons: Div) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(18.))
+        .py(px(12.))
+        .rounded(px(12.))
+        .bg(soft)
+        .border_1()
+        .border_color(line)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(fg).child(label))
+                .when_some(title, |d, x| d.child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(x)))
+                .child(div().text_size(px(13.)).text_color(t.text_2).child(text)),
+        )
+        .child(buttons)
+}
+
+const STOP_REVIEW_MENU: &str = "goal-stop-review";
+
+/// The goal's stop as a band: what stopped and its next step; a review stop's Review lists the
+/// wave's tasks to look over.
+fn stop_band(m: &MainWindow, t: &Theme, gr: &str, st: crate::ui::stop::Stop, cx: &mut Context<MainWindow>) -> Div {
+    let colors = st.kind.colors(t);
+    let mut row = div().flex().flex_none().items_center().gap(px(10.));
+    if st.review {
+        row = row.child(kit::link(t, "goal-stop-review", "Review").text_size(px(13.)).child(kit::anchor(STOP_REVIEW_MENU)).tooltip(kit::tip("The wave’s tasks, to look over")).on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
+            let p = e.position();
+            m.toggle_menu(STOP_REVIEW_MENU, point(p.x - px(300.), p.y + px(14.)), cx);
+        })));
+    }
+    if let Some((label, step)) = st.secondary.clone() {
+        row = row.child(step_btn(m, t, gr, "goal-stop-2", label, step, false, cx));
+    }
+    let (label, step) = st.primary.clone();
+    row = row.child(step_btn(m, t, gr, "goal-stop-1", label, step, true, cx));
+    band(t, colors, st.kind.label().to_uppercase(), Some(st.title), st.detail, row)
+}
+
+fn step_btn(m: &MainWindow, t: &Theme, gr: &str, id: &'static str, label: String, step: crate::ui::stop::Step, primary: bool, cx: &mut Context<MainWindow>) -> AnyElement {
+    let is_busy = step_busy(m, gr, &step);
+    let bt = if primary { kit::btn_primary(t, id, if is_busy { "Sending…".to_string() } else { label }) } else { kit::btn(t, id, if is_busy { "Sending…".to_string() } else { label }) };
+    let bt = if matches!(step, crate::ui::stop::Step::Misses) { bt.child(kit::anchor(MISSES_MENU)) } else { bt };
+    let gr = gr.to_string();
+    if is_busy {
+        kit::disabled(bt).into_any_element()
     } else {
-        bt.on_click(cx.listener(move |m, _, _, cx| if act == "goal-deprio" { bring_back(m, &gr, cx) } else { set_paused(m, &gr, false, cx) }))
-    };
-    Some(
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .px(px(18.))
-            .py(px(12.))
-            .rounded(px(12.))
-            .bg(t.warn_soft)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.warn_fg).child(label.to_uppercase()))
-                            .child(div().text_size(px(13.)).text_color(t.warn_text).child(text)),
-                    )
-                    .child(div().flex_none().child(bt)),
-            )
-            .children(note),
-    )
+        bt.on_click(cx.listener(move |m, e: &ClickEvent, _, cx| take_step(m, &gr, &step, true, e.position(), cx))).into_any_element()
+    }
+}
+
+/// A review stop's Review: the stopped wave's tasks, each opening in the panel.
+fn stop_review_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let at = m.menu_open(STOP_REVIEW_MENU)?;
+    let n = crate::ui::stop::of(g).filter(|x| x.review).and_then(|x| x.wave)?;
+    let mut menu = kit::menu_box(t, 380.).id("goal-stop-review-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for x in arr(g, "tasks").iter().filter(|x| x["wave"].as_i64() == Some(n)) {
+        let r = fmt::ref_of(x, "T");
+        let hover = t.panel_2;
+        let target = r.clone();
+        let pr = has_pr(x);
+        menu = menu.child(
+            div()
+                .id(SharedString::from(format!("goal-stop-review-{r}")))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(6.))
+                .text_size(px(13.))
+                .cursor_pointer()
+                .hover(move |d| d.bg(hover))
+                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r))
+                .child(div().flex_1().min_w_0().truncate().child(s(x, "title").to_string()))
+                .when(pr, |d| d.child(div().flex_none().text_size(px(11.)).text_color(t.muted).child("PR")))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    m.menu = None;
+                    m.open_task(target.clone(), cx)
+                })),
+        );
+    }
+    Some(kit::menu_under(STOP_REVIEW_MENU, kit::Align::Left, at, menu))
 }
 
 fn how_runs_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
@@ -1590,7 +1755,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .children(review::section(m, &t, &g, cx)),
         )
         .child(body)
-        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(attached::menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)).children(at_menu(m, &t, &g, cx)).children(sched_menu(m, &t, &g, cx)))
+        .when(loaded, |d| d.children(start_menu(m, &t, &g, cx)).children(attached::menu(m, &t, &g, cx)).children(wait_menu(m, &t, &g, cx)).children(misses_menu(m, &t, &g, cx)).children(stop_review_menu(m, &t, &g, cx)).children(at_menu(m, &t, &g, cx)).children(sched_menu(m, &t, &g, cx)))
         .into_any_element()
 }
 
@@ -1685,6 +1850,25 @@ mod tests {
         assert_eq!(acts(&paused)[0], ("goal-run", "Resume".to_string()));
         let merged = json!({"tasks": [{"status": "done", "pr": {"num": 5, "state": "MERGED"}}]});
         assert_eq!(acts(&merged).len(), 1, "only Open in Claude with nothing left to hold");
+    }
+
+    /// The header says what Start does to a paused goal and leaves its plain Resume to the band; a
+    /// goal stopped for the owner offers no Pause; a chained goal shows what it starts after.
+    #[test]
+    fn the_header_says_what_start_and_resume_do() {
+        let hours = json!({"on": false, "open": true});
+        let acts = |g: &Value| header_buttons(g, &hours).1.iter().map(|b| (b.act, b.label.clone())).collect::<Vec<_>>();
+        let in_review = json!({"status": "done", "pr": {"num": 5, "state": "OPEN"}});
+        let paused = json!({"paused": true, "tasks": [{"status": "done"}, in_review]});
+        assert_eq!(acts(&paused), [("goal-plan-edit", "Open in Claude".to_string())]);
+        assert_eq!(resume_label(&paused), "Resume: PRs move again");
+        let planned = json!({"paused": true, "tasks": [{"status": "planned"}, {"status": "queued"}, {"status": "queued"}]});
+        assert_eq!(acts(&planned)[0], ("goal-run", "Resume and start 1 more task".to_string()));
+        assert_eq!(resume_label(&planned), "Resume: 2 tasks start");
+        let held = json!({"stop": {"kind": "held", "wave": 2}, "tasks": [{"status": "done", "wave": 1}, {"status": "working", "wave": 1}]});
+        assert!(acts(&held).iter().all(|(a, _)| *a != "goal-pause"), "a stopped goal offers its step, not Pause");
+        let chained = json!({"after": ["G7"], "after_blocker": "Its goal runs after G7 (Seven), which isn't finished yet", "tasks": [{"status": "planned"}]});
+        assert_eq!(acts(&chained)[0], ("after-goal", "Starts after G7".to_string()));
     }
 
     /// The run signals still match the web board's, less Deprioritize (only the banner's "Bring it

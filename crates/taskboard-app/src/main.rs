@@ -9,6 +9,7 @@
 //! - `TASKBOARD_FAKE_RELEASES=1` — with the fake backend, sample releases and a pending cut too.
 //! - `TASKBOARD_FAKE_STOPPED=1` — with the fake backend, two tasks whose terminals were closed by hand.
 //! - `TASKBOARD_FAKE_NEEDS=1` — with the fake backend, misses, an alert, to-dos and items put off on Needs you.
+//! - `TASKBOARD_FAKE_STOPS=1` — with the fake backend, goals stopped at a failed, held and review wave, a paused goal and a chained one.
 //! - `TASKBOARD_FAKE_QUIET=1` — with the fake backend, work gone quiet under Agents waiting.
 //! - `TASKBOARD_FAKE_RECAPS=1` — with the fake backend, this week's and this month's recaps, unseen.
 //! - `TASKBOARD_W` / `TASKBOARD_H` — window size.

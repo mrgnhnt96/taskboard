@@ -25,6 +25,7 @@ pub mod search;
 pub mod select;
 pub mod sidebar;
 pub mod status;
+pub mod stop;
 pub mod task_panel;
 pub mod text_input;
 

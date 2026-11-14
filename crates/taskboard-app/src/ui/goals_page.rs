@@ -8,6 +8,7 @@ use crate::ui::goals::nav_kind;
 use crate::ui::issue_panel as ip;
 use crate::ui::modals::locale_cmp;
 use crate::ui::status::{self, St};
+use crate::ui::stop::{self as stop_state, Step, Stop};
 use crate::ui::{goal, kit};
 use chrono::{DateTime, Datelike, Duration, Utc};
 use gpui_kit::prelude::*;
@@ -77,7 +78,9 @@ impl Built {
         }
         let shown: Vec<&Value> = all.iter().copied().filter(|g| in_project(g, &project)).collect();
         let going = in_progress(goals, &project);
-        let rows = going.iter().filter_map(|r| shown.iter().find(|g| fmt::ref_of(g, "G") == *r)).map(|g| goal_row(g, details.get(&fmt::ref_of(g, "G")))).collect();
+        let mut rows: Vec<GoalRow> = going.iter().filter_map(|r| shown.iter().find(|g| fmt::ref_of(g, "G") == *r)).map(|g| goal_row(g, details.get(&fmt::ref_of(g, "G")))).collect();
+        // Goals stopped for the owner first, the worst stop first; the rest keep their order.
+        rows.sort_by_key(|r| (r.stop.is_none(), r.stop.as_ref().map(|x| x.kind)));
         let shelves = shelves(&shown, now);
         Built { goals: goals.clone(), asked, tabs, project, none: all.is_empty(), none_shown: shown.is_empty(), going, rows, shelves }
     }
@@ -103,6 +106,7 @@ pub fn goal_group(g: &Value) -> GoalGroup {
         "deprio" => GoalGroup::Deprioritized,
         _ if fmt::b(g, "paused") => GoalGroup::Paused,
         _ if fmt::opt_s(g, "after_blocker").is_some() => GoalGroup::Next,
+        _ if stop_state::of(g).is_some() => GoalGroup::Active,
         _ if i(g, "done") == 0 && i(g, "active") == 0 && i(g, "needs") == 0 && i(g, "queued") == 0 && fmt::opt_s(g, "stopped").is_none() && fmt::arr(g, "prs_open").is_empty() => GoalGroup::Next,
         _ => GoalGroup::Active,
     }
@@ -196,12 +200,12 @@ impl Tally {
     }
 }
 
-/// The signal a goal row offers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The buttons a goal row offers: Pause while it runs; a stopped goal's next step instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Pause,
-    /// Continue past the wave it stopped after for your review.
-    Continue(i64),
+    /// A stop's step: (label, what it does, the main one).
+    Step(String, Step, bool),
 }
 
 /// One goal in progress, folded.
@@ -222,7 +226,9 @@ pub struct GoalRow {
     pub now_st: St,
     /// What comes after, or what it waits on.
     pub next: String,
-    pub action: Option<Action>,
+    pub actions: Vec<Action>,
+    /// What the goal stopped for, when it waits on the owner.
+    pub stop: Option<Stop>,
 }
 
 pub(crate) fn waves(d: Option<&Value>) -> Vec<Value> {
@@ -239,15 +245,12 @@ fn tasks_in(d: &Value, wave: i64) -> Vec<&Value> {
 }
 
 /// "G4" from the chain's "Its goal runs after G4 (…), which isn't finished yet".
-fn after_ref(g: &Value) -> Option<String> {
+pub(crate) fn after_ref(g: &Value) -> Option<String> {
     let line = opt_s(g, "after_blocker")?;
     line.split(|c: char| !c.is_ascii_alphanumeric()).find(|w| w.len() > 1 && w.starts_with('G') && w[1..].chars().all(|c| c.is_ascii_digit())).map(str::to_string)
 }
 
-fn now_line(t: &Tally, stopped: bool) -> (String, St) {
-    if stopped {
-        return ("Stopped for your review".into(), St::Needs);
-    }
+fn now_line(t: &Tally) -> (String, St) {
     let mut bits = vec![];
     if t.working > 0 {
         bits.push(format!("{} working", t.working));
@@ -326,8 +329,18 @@ fn next_line(g: &Value, d: Option<&Value>) -> String {
 pub fn goal_row(g: &Value, d: Option<&Value>) -> GoalRow {
     let tally = Tally::of(g, d);
     let ws = waves(d);
-    let stopped = ws.iter().find(|w| s(w, "state") == "stopped").map(|w| i(w, "wave"));
-    let (now, now_st) = now_line(&tally, stopped.is_some() || (d.is_none() && opt_s(g, "stopped").is_some()));
+    let stop = stop_state::of(d.filter(|d| d["tasks"].is_array()).unwrap_or(g));
+    let (now, now_st, next) = match &stop {
+        Some(st) => (st.kind.label(), if st.kind.bad() { St::Failed } else { St::Needs }, st.line.clone()),
+        None => {
+            let (now, st) = now_line(&tally);
+            (now, st, next_line(g, d))
+        }
+    };
+    let actions = match &stop {
+        Some(st) => st.secondary.iter().map(|(l, x)| Action::Step(l.clone(), x.clone(), false)).chain([Action::Step(st.primary.0.clone(), st.primary.1.clone(), true)]).collect(),
+        None => vec![Action::Pause],
+    };
     let wave = match (d, current_wave(&ws)) {
         (None, _) => String::new(),
         (Some(_), _) if ws.is_empty() => String::new(),
@@ -345,8 +358,9 @@ pub fn goal_row(g: &Value, d: Option<&Value>) -> GoalRow {
         wave,
         now,
         now_st,
-        next: next_line(g, d),
-        action: Some(stopped.map_or(Action::Pause, Action::Continue)),
+        next,
+        actions,
+        stop,
     }
 }
 
@@ -358,9 +372,9 @@ fn wave_meta(w: &Value, tasks: &[&Value], now: DateTime<Utc>) -> String {
             let last = tasks.iter().filter_map(|t| fmt::parse(opt_s(t, "finished_at").or(opt_s(t, "when")).unwrap_or(""))).max();
             last.map(|t| format!("Done {}", day(t, now))).unwrap_or_else(|| "Done".into())
         }
-        "stopped" => "Done · waiting for your review".into(),
-        "failed" => "A task failed".into(),
-        "held" => "Held".into(),
+        "stopped" => format!("{} {}", stop_state::Kind::Review.glyph(), "Done · ready for review"),
+        "failed" => stop_state::Kind::Failed.label(),
+        "held" => stop_state::Kind::Held.label(),
         "running" if fmt::b(w, "stop_after") && opt_s(w, "released_at").is_none() => "Now · stops for your review after".into(),
         "running" => "Now".into(),
         _ if n > 1 => format!("After wave {}", n - 1),
@@ -391,6 +405,8 @@ pub struct Line {
     pub meta: String,
     /// The goal's tl;dr, else its outcome: shown when the strip has the page to itself.
     pub about: String,
+    /// A paused goal's Resume, saying what it starts, and whether the goal has planned tasks.
+    pub resume: Option<(String, bool)>,
 }
 
 /// A tile in the strip: "Up next", "Paused", "Set aside", "Finished this week".
@@ -421,14 +437,17 @@ pub fn shelves(goals: &[&Value], now: DateTime<Utc>) -> Vec<Shelf> {
     let progress = |g: &Value| format!("{} of {}", i(g, "done"), i(g, "total"));
     let line = |g: &Value, meta: String| {
         let about = opt_s(g, "tldr").or_else(|| opt_s(g, "outcome")).unwrap_or_default().to_string();
-        Line { r: fmt::ref_of(g, "G"), name: s(g, "name").into(), meta, about }
+        Line { r: fmt::ref_of(g, "G"), name: s(g, "name").into(), meta, about, resume: None }
     };
     let next_meta = |g: &Value| {
         let tasks = fmt::plural(i(g, "total"), "task", "tasks");
-        after_ref(g).map(|r| format!("{tasks} · After {r}")).unwrap_or(tasks)
+        after_ref(g).map(|r| format!("{tasks} · Starts after {r}")).unwrap_or(tasks)
     };
     let next = of(GoalGroup::Next).into_iter().map(|g| line(g, next_meta(g))).collect();
-    let paused = of(GoalGroup::Paused).into_iter().map(|g| line(g, format!("Paused · {}", progress(g)))).collect();
+    let paused = of(GoalGroup::Paused)
+        .into_iter()
+        .map(|g| Line { resume: Some((goal::resume_label(g), i(g, "planned") > 0)), ..line(g, format!("‖ Paused · {}", progress(g))) })
+        .collect();
     let aside = of(GoalGroup::Deprioritized).into_iter().map(|g| line(g, progress(g))).collect();
     let mut fin = of(GoalGroup::Finished);
     let at = |g: &Value| fmt::parse(s(g, "finished_at")).map(|t| t.timestamp_millis()).unwrap_or(0);
@@ -501,32 +520,40 @@ fn group_label(t: &Theme, title: &str, n: usize) -> Div {
         .child(div().font_weight(FontWeight::MEDIUM).text_color(t.faint).child(n.to_string()))
 }
 
-fn action_btn(t: &Theme, r: &str, a: Action, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn action_btn(t: &Theme, r: &str, ix: usize, a: Action, busy: bool, cx: &mut Context<MainWindow>) -> AnyElement {
     let gr = r.to_string();
     match a {
-        Action::Pause => kit::btn_small(t, SharedString::from(format!("goals-pause-{r}")), "Pause").on_click(cx.listener(move |m, _, _, cx| {
-            cx.stop_propagation();
-            goal::set_paused(m, &gr, true, cx);
-        })),
-        Action::Continue(n) => kit::btn_primary(t, SharedString::from(format!("goals-continue-{r}")), "Continue")
-            .h(px(24.))
-            .px(px(10.))
-            .rounded(px(6.))
-            .text_size(px(12.))
+        Action::Pause => kit::btn_small(t, SharedString::from(format!("goals-pause-{r}")), "Pause")
+            .tooltip(kit::tip("Nothing new starts; running tasks carry on"))
             .on_click(cx.listener(move |m, _, _, cx| {
                 cx.stop_propagation();
-                m.post(format!("goals/{gr}/waves/{n}/continue"), serde_json::json!({}), cx, move |m, v, cx| {
-                    let msg = if v["let_start"] == true { format!("Wave {n} can start") } else { "The goal goes on".into() };
-                    m.toast(msg, false, cx);
-                });
-            })),
+                goal::set_paused(m, &gr, true, cx);
+            }))
+            .into_any_element(),
+        Action::Step(label, step, main) => {
+            let id = SharedString::from(format!("goals-step-{r}-{ix}"));
+            let label = if busy && matches!(step, Step::Continue(_)) { "Sending…".to_string() } else { label };
+            let b = if main { kit::button(t, id, label, kit::Kind::Primary, kit::Size::Small) } else { kit::btn_small(t, id, label) };
+            if busy && matches!(step, Step::Continue(_)) {
+                return kit::disabled(b).into_any_element();
+            }
+            b.on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                goal::take_step(m, &gr, &step, false, e.position(), cx);
+            }))
+            .into_any_element()
+        }
     }
 }
 
-fn goal_head(t: &Theme, row: &GoalRow, open: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let (r, r2) = (row.r.clone(), row.r.clone());
+fn goal_head(t: &Theme, row: &GoalRow, open: bool, busy: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let (r, r2, r3) = (row.r.clone(), row.r.clone(), row.r.clone());
     let (now_fg, _, _) = row.now_st.colors(t);
-    let now_fg = if row.now_st == St::Queued { t.text_2 } else { now_fg };
+    let now_fg = match &row.stop {
+        Some(st) => st.kind.colors(t).0,
+        None if row.now_st == St::Queued => t.text_2,
+        None => now_fg,
+    };
     let goal_link = t.goal;
     let name = div()
         .flex()
@@ -577,9 +604,17 @@ fn goal_head(t: &Theme, row: &GoalRow, open: bool, cx: &mut Context<MainWindow>)
         .text_size(px(13.))
         .child(div().font_weight(FontWeight::SEMIBOLD).text_color(now_fg).truncate().child(row.now.clone()))
         .when(!row.next.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(row.next.clone())));
-    let mut act = div().flex().flex_none().w(px(110.)).justify_end();
-    if let Some(a) = row.action {
-        act = act.child(action_btn(t, &row.r, a, cx));
+    let mut act = div().flex().flex_none().w(px(240.)).items_center().justify_end().gap(px(8.));
+    if row.stop.as_ref().is_some_and(|x| x.review) {
+        // Its review: the wave's tasks, open in place.
+        act = act.child(kit::link(t, SharedString::from(format!("goals-review-{}", row.r)), "Review").text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            m.goals.open.insert(r3.clone());
+            m.refresh(cx);
+        })));
+    }
+    for (ix, a) in row.actions.iter().cloned().enumerate() {
+        act = act.child(action_btn(t, &row.r, ix, a, busy, cx));
     }
     div()
         .id(SharedString::from(format!("goals-row-{}", row.r)))
@@ -710,21 +745,26 @@ fn goal_body(t: &Theme, d: Option<&Value>, now: DateTime<Utc>, cx: &mut Context<
     body
 }
 
-fn goal_card(t: &Theme, row: &GoalRow, d: Option<&Value>, open: bool, now: DateTime<Utc>, cx: &mut Context<MainWindow>) -> Div {
+fn goal_card(t: &Theme, row: &GoalRow, d: Option<&Value>, open: bool, busy: bool, now: DateTime<Utc>, cx: &mut Context<MainWindow>) -> Div {
+    let line = match &row.stop {
+        _ if open => t.accent_line,
+        Some(st) => st.kind.colors(t).2,
+        None => t.border,
+    };
     div()
         .flex()
         .flex_col()
         .rounded(px(12.))
         .border_1()
-        .border_color(if open { t.accent_line } else { t.border })
+        .border_color(line)
         .bg(t.card)
         .overflow_hidden()
-        .child(goal_head(t, row, open, cx))
+        .child(goal_head(t, row, open, busy, cx))
         .when(open, |c| c.child(goal_body(t, d, now, cx)))
 }
 
 /// `roomy` when the strip has the page to itself: each goal gets a second line saying what it's for.
-fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, cx: &mut Context<MainWindow>) -> Div {
+fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, busy: &dyn Fn(&str, bool) -> bool, cx: &mut Context<MainWindow>) -> Div {
     let mut tile = div().flex().flex_col().gap(px(if roomy { 14. } else { 8. })).p(px(if roomy { 16. } else { 14. })).rounded(px(12.)).border_1().bg(t.card);
     tile = if sh.key == "next" { tile.border_dashed().border_color(t.border_2) } else { tile.border_color(t.border) };
     let mut lines: Vec<&Line> = sh.lines.iter().collect();
@@ -742,7 +782,18 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, cx: &mut Contex
             .children(dot)
             .child(div().flex_none().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
             .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
-            .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()));
+            .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()))
+            .when_some(l.resume.clone(), |d, (label, planned)| {
+                let gr = l.r.clone();
+                let id = SharedString::from(format!("goals-resume-{gr}"));
+                let b = if busy(&gr, planned) { kit::disabled(kit::btn_small(t, id, "Sending…")) } else {
+                    kit::btn_small(t, id, label).on_click(cx.listener(move |m, _, _, cx| {
+                        cx.stop_propagation();
+                        goal::resume(m, &gr, planned, false, cx);
+                    }))
+                };
+                d.child(div().flex_none().child(b))
+            });
         let about = (roomy && !l.about.is_empty()).then(|| {
             div().max_w(px(820.)).text_size(px(12.5)).line_height(relative(1.45)).text_color(t.muted).line_clamp(2).child(l.about.clone())
         });
@@ -769,10 +820,10 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, cx: &mut Contex
     tile
 }
 
-fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, roomy: bool, cx: &mut Context<MainWindow>) -> Div {
+fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, roomy: bool, busy: &dyn Fn(&str, bool) -> bool, cx: &mut Context<MainWindow>) -> Div {
     let mut strip = div().flex().items_start().gap(px(14.));
     for sh in list {
-        let col = div().flex().flex_col().gap(px(10.)).child(group_label(t, sh.title, sh.lines.len())).child(shelf_tile(t, sh, earlier, roomy, cx));
+        let col = div().flex().flex_col().gap(px(10.)).child(group_label(t, sh.title, sh.lines.len())).child(shelf_tile(t, sh, earlier, roomy, busy, cx));
         strip = strip.child(fr(col, 1.));
     }
     strip
@@ -830,16 +881,23 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     if b.none_shown {
         return shell.child(page.child(kit::empty(&t, "No goals"))).into_any_element();
     }
-    if !going.is_empty() {
-        let mut list = div().flex().flex_col().gap(px(8.)).child(div().mb(px(2.)).child(group_label(&t, "In progress", going.len())));
-        for row in &b.rows {
+    // Goals stopped for the owner sit apart from the ones running, each with its next step.
+    let stopped = b.rows.iter().filter(|r| r.stop.is_some()).count();
+    for (title, rows) in [("Stopped", &b.rows[..stopped]), ("In progress", &b.rows[stopped..])] {
+        if rows.is_empty() {
+            continue;
+        }
+        let mut list = div().flex().flex_col().gap(px(8.)).child(div().mb(px(2.)).child(group_label(&t, title, rows.len())));
+        for row in rows {
             let d = m.goals.details.get(&row.r);
-            list = list.child(goal_card(&t, row, d, m.goals.open.contains(&row.r), now, cx));
+            let busy = row.actions.iter().any(|a| matches!(a, Action::Step(_, x, _) if goal::step_busy(m, &row.r, x)));
+            list = list.child(goal_card(&t, row, d, m.goals.open.contains(&row.r), busy, now, cx));
         }
         page = page.child(list);
     }
     if !b.shelves.is_empty() {
-        page = page.child(shelf_strip(&t, &b.shelves, m.goals.earlier, going.is_empty(), cx));
+        let busy = |r: &str, planned: bool| goal::resume_busy(m, r, planned);
+        page = page.child(shelf_strip(&t, &b.shelves, m.goals.earlier, going.is_empty(), &busy, cx));
     }
     shell.child(page).into_any_element()
 }
@@ -901,13 +959,17 @@ mod tests {
         assert_eq!(
             got,
             [
-                ("Up next", vec![("G5", "4 tasks · After G1")], 0),
-                ("Paused", vec![("G6", "Paused · 1 of 8")], 0),
+                ("Up next", vec![("G5", "4 tasks · Starts after G1")], 0),
+                ("Paused", vec![("G6", "‖ Paused · 1 of 8")], 0),
                 ("Set aside", vec![("G2", "0 of 2")], 0),
                 ("Finished this week", vec![("G3", "2 PRs merged · yesterday")], 1),
             ]
         );
         assert_eq!(projects(&gs), [("api".to_string(), 1), ("web".to_string(), 3)]);
+        // A paused goal's Resume says what it starts.
+        assert_eq!(sh_all[1].lines[0].resume, Some(("Resume".to_string(), false)));
+        let queued = goal(8, "web", 1, 4, json!({"paused": true, "queued": 3}));
+        assert_eq!(shelves(&[&queued], now)[0].lines[0].resume, Some(("Resume: 3 tasks start".to_string(), false)));
     }
 
     #[test]
@@ -968,23 +1030,50 @@ mod tests {
         ], "waves": [wave(1, "done", 2, json!({})), wave(2, "running", 3, json!({})), wave(3, "waiting", 1, json!({}))]});
         let row = goal_row(&g, Some(&d));
         assert_eq!((row.done, row.total, row.wave.as_str()), (2, 6, "Wave 2 of 3"));
-        assert_eq!((row.now.as_str(), row.now_st), ("2 working · 1 needs you", St::Needs));
+        // A task waiting on the owner's answer stops the goal for them: its step, not Pause.
+        assert_eq!((row.now.as_str(), row.now_st), ("? Needs your answer", St::Needs));
         assert_eq!(row.next, "T5 waits on your answer");
-        assert_eq!(row.action, Some(Action::Pause));
+        assert_eq!(row.actions, [Action::Step("Answer T5".into(), Step::Task("T5".into()), true)]);
+        let mut running = d.clone();
+        running["tasks"][4]["status"] = json!("working");
+        let row = goal_row(&goal(1, "web", 2, 6, json!({"active": 3})), Some(&running));
+        assert_eq!((row.now.as_str(), row.stop.is_none()), ("3 working", true));
+        assert_eq!(row.actions, [Action::Pause]);
+        let row = goal_row(&g, Some(&d));
         assert_eq!(row.parts.iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 2), (St::Working, 2), (St::Needs, 1), (St::Queued, 1)]);
     }
 
     #[test]
     fn a_wave_stopped_for_review_offers_continue() {
-        let g = goal(1, "web", 2, 6, json!({"stopped": "Wave 1 is done"}));
-        let d = json!({"tasks": [task("T1", 1, "done", json!({})), task("T2", 2, "queued", json!({}))],
+        let stop = json!({"kind": "review", "wave": 1});
+        let g = goal(1, "web", 2, 6, json!({"stopped": "Wave 1 is done", "stop": stop}));
+        let d = json!({"stop": stop, "tasks": [task("T1", 1, "done", json!({})), task("T2", 2, "queued", json!({}))],
             "waves": [wave(1, "stopped", 1, json!({})), wave(2, "waiting", 4, json!({}))]});
         let row = goal_row(&g, Some(&d));
-        assert_eq!((row.now.as_str(), row.next.as_str(), row.action), ("Stopped for your review", "Wave 1 done · 4 tasks in wave 2", Some(Action::Continue(1))));
+        assert_eq!((row.now.as_str(), row.next.as_str()), ("◐ Ready for review", "Wave 1 done · look it over"));
+        assert_eq!(row.actions, [Action::Step("Continue to wave 2".into(), Step::Continue(1), true)]);
         // Before its tasks are in, the summary still says it waits on you.
         let row = goal_row(&g, None);
-        assert_eq!((row.now.as_str(), row.wave.as_str()), ("Stopped for your review", ""));
+        assert_eq!((row.now.as_str(), row.wave.as_str()), ("◐ Ready for review", ""));
         assert_eq!(goal_row(&goal(2, "web", 0, 1, json!({"active": 1})), Some(&json!({"tasks": [], "waves": []}))).wave, "");
+    }
+
+    #[test]
+    fn stopped_goals_sit_apart_first_and_a_failure_comes_first() {
+        let gs = Rc::new(vec![
+            goal(1, "web", 1, 3, json!({"active": 1})),
+            goal(2, "web", 1, 3, json!({"active": 1, "stop": {"kind": "review", "wave": 1}})),
+            goal(3, "web", 1, 3, json!({"active": 1, "stop": {"kind": "failed", "wave": 1, "tasks": ["T9"]}})),
+            goal(4, "web", 0, 3, json!({"stop": {"kind": "held", "wave": 1}})),
+        ]);
+        let now = fmt::parse(&noon(2026, 10, 13)).unwrap();
+        let b = Built::of(&gs, &HashMap::new(), ("all".into(), true, 0), now);
+        let got: Vec<(&str, Option<stop_state::Kind>)> = b.rows.iter().map(|r| (r.r.as_str(), r.stop.as_ref().map(|x| x.kind))).collect();
+        use stop_state::Kind::*;
+        assert_eq!(got, [("G3", Some(Failed)), ("G4", Some(Held)), ("G2", Some(Review)), ("G1", None)]);
+        let failed = &b.rows[0];
+        assert_eq!(failed.actions, [Action::Step("Continue anyway".into(), Step::Continue(1), false), Action::Step("Open T9".into(), Step::Task("T9".into()), true)]);
+        assert_eq!(failed.now_st, St::Failed);
     }
 
     #[test]
