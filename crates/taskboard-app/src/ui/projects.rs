@@ -81,7 +81,8 @@ impl Built {
     fn of(m: &MainWindow) -> Built {
         let (state, goals) = (m.data.state.clone(), m.data.goals.clone());
         let st = state.clone().unwrap_or_default();
-        let (open, idle) = list(&st, &goals);
+        let held = m.projects.loose.as_ref().map(|(p, v)| (p.as_str(), arr(v, "tasks")));
+        let (open, idle) = list_with(&st, &goals, &m.projects.details, held);
         let picked = selected(&m.projects, &open, &idle);
         let p = picked.as_deref().unwrap_or_default();
         let (header, active, done) = (header(&st, p), active(&goals, &m.projects.details, p), finished(&goals, p, m.projects.show_all));
@@ -106,9 +107,10 @@ pub struct ProjectRow {
     pub name: String,
     /// Goals not finished (active, next, paused or set aside).
     pub open: usize,
-    /// Terminals working in it now.
+    /// Goals working, and its tasks outside goals working.
     pub running: usize,
     pub queued: bool,
+    /// A goal pill or a task outside goals says Needs you.
     pub needs: bool,
     pub waits_on: Vec<String>,
     pub finished: usize,
@@ -117,20 +119,26 @@ pub struct ProjectRow {
 }
 
 impl ProjectRow {
-    /// "5 goals · 2 running", "6 goals · queued", "1 goal · waits for lens", "1 goal · 3 tasks",
-    /// "2 tasks".
+    /// What the project's goal pills and open tasks say: "3 goals · needs you · 1 working",
+    /// "1 goal · queued", "1 goal · 3 tasks · waits for lens", "2 tasks · 1 working".
     pub fn sub(&self) -> String {
         let mut v = match (self.open, self.tasks) {
             (0, n) if n > 0 => fmt::plural(n, "task", "tasks"),
-            (g, 0) => fmt::plural(g as i64, "goal", "goals"),
+            (g, n) if n == 0 || self.needs || self.running > 0 => fmt::plural(g as i64, "goal", "goals"),
             (g, n) => format!("{} · {}", fmt::plural(g as i64, "goal", "goals"), fmt::plural(n, "task", "tasks")),
         };
+        if self.needs {
+            v.push_str(" · needs you");
+        }
         if self.running > 0 {
-            v.push_str(&format!(" · {} running", self.running));
-        } else if self.queued {
-            v.push_str(" · queued");
-        } else if !self.waits_on.is_empty() {
-            v.push_str(&format!(" · waits for {}", self.waits_on.join(", ")));
+            v.push_str(&format!(" · {} working", self.running));
+        }
+        if !self.needs && self.running == 0 {
+            if self.queued {
+                v.push_str(" · queued");
+            } else if !self.waits_on.is_empty() {
+                v.push_str(&format!(" · waits for {}", self.waits_on.join(", ")));
+            }
         }
         v
     }
@@ -146,21 +154,54 @@ fn strings(v: &Value, key: &str) -> Vec<String> {
 
 /// The list: projects with open goals, then the ones without, each by name.
 pub fn list(state: &Value, goals: &[Value]) -> (Vec<ProjectRow>, Vec<ProjectRow>) {
+    list_with(state, goals, &HashMap::new(), None)
+}
+
+/// The list, its status words read from the goal pills (from `details` where they've loaded) and
+/// from a project's open tasks outside goals (`loose`, for the project they belong to).
+pub fn list_with(state: &Value, goals: &[Value], details: &HashMap<String, Value>, loose: Option<(&str, &[Value])>) -> (Vec<ProjectRow>, Vec<ProjectRow>) {
     let mut rows: Vec<ProjectRow> = arr(state, "projects")
         .iter()
         .map(|p| {
             let name = s(p, "name").to_string();
-            let (mut open, mut finished, mut queued, mut needs) = (0, 0, false, false);
+            let (mut open, mut finished, mut running, mut queued, mut needs) = (0, 0, 0, false, false);
             for g in goals_in(goals, &name) {
                 if goals_page::goal_group(g) == GoalGroup::Finished {
                     finished += 1;
-                } else {
-                    open += 1;
-                    queued |= i(g, "queued") > 0;
-                    needs |= i(g, "needs") > 0;
+                    continue;
+                }
+                open += 1;
+                let (st, label) = pill(g, &tally(g, details.get(&fmt::ref_of(g, "G"))));
+                match st {
+                    St::Needs => needs = true,
+                    St::Working => running += 1,
+                    St::Queued => queued |= label == St::Queued.label(),
+                    _ => {}
                 }
             }
-            let running = arr(state, "sessions").iter().filter(|x| s(x, "project") == name && s(x, "status") == "working").count();
+            match loose.filter(|(lp, _)| *lp == name) {
+                Some((_, tasks)) => {
+                    for c in tasks {
+                        match status::row(c).st {
+                            St::Needs => needs = true,
+                            St::Working => running += 1,
+                            St::Queued => queued = true,
+                            _ => {}
+                        }
+                    }
+                }
+                // With no open goal, the project's terminals on a task are on its tasks outside goals.
+                None if open == 0 => {
+                    for x in arr(state, "sessions").iter().filter(|x| s(x, "project") == name && opt_s(x, "task_ref").is_some()) {
+                        match s(x, "status") {
+                            "needs" => needs = true,
+                            "working" => running += 1,
+                            _ => {}
+                        }
+                    }
+                }
+                None => {}
+            }
             ProjectRow { name, open, running, queued, needs, waits_on: strings(p, "waits_on"), finished, tasks: i(p, "loose_open") }
         })
         .collect();
@@ -272,8 +313,17 @@ fn pill(g: &Value, t: &Tally) -> (St, &'static str) {
     }
 }
 
+/// The goal's tally from its tasks and the shared tasks it counts, else from its summary (whose
+/// counts already take in the shared ones).
+fn tally(g: &Value, d: Option<&Value>) -> Tally {
+    match d.filter(|d| d["tasks"].is_array() && !arr(d, "shared").is_empty()) {
+        Some(d) => Tally::of(g, Some(&serde_json::json!({"tasks": arr(d, "tasks").iter().chain(arr(d, "shared")).collect::<Vec<_>>()}))),
+        None => Tally::of(g, d),
+    }
+}
+
 fn goal_line(g: &Value, d: Option<&Value>, project: &str) -> GoalLine {
-    let t = Tally::of(g, d);
+    let t = tally(g, d);
     let parts = t.parts();
     let done = parts.iter().find(|(s, _)| *s == St::Done).map(|(_, n)| *n).unwrap_or(0);
     let counted: i64 = parts.iter().map(|(_, n)| n).sum();
@@ -517,117 +567,154 @@ fn toggle(r: &str) -> impl Fn(&mut MainWindow, &ClickEvent, &mut Window, &mut Co
     }
 }
 
-fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Div {
+/// Below this the goal and task rows stack, so titles and status words keep their room.
+const STACK_BELOW: f32 = 1180.;
+/// Where a stacked row's second line starts: under the title, past the chevron and ref.
+const STACK_INDENT: f32 = 16. + 18. + 12. + 44. + 12.;
+
+fn task_row(t: &Theme, c: &Value, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
     let r = s(c, "ref").to_string();
     let row = status::row(c);
     let (loud_fg, _, _) = row.st.colors(t);
     let (o1, o2) = (r.clone(), r.clone());
     let link = t.accent;
-    div()
-        .flex()
+    let ref_cell = div()
+        .id(SharedString::from(format!("projects-task-ref-{r}")))
+        .flex_none()
+        .w(px(44.))
+        .text_size(px(12.))
+        .font_family(t.mono_font.clone())
+        .text_color(t.muted)
+        .cursor_pointer()
+        .hover(move |s| s.text_color(link).underline())
+        .child(r.clone())
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx)));
+    let title = div()
+        .id(SharedString::from(format!("projects-task-{r}")))
+        .min_w_0()
+        .cursor_pointer()
+        .hover(move |s| s.text_color(link).underline())
+        .child(s(c, "title").to_string())
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx)));
+    let meta = div().text_size(px(12.)).text_color(if row.loud { loud_fg } else { t.muted }).child(task_meta(c, &row));
+    let chip = div().flex_none().w(px(status::CHIP_W + 12.)).flex().justify_end().child(status::chip(t, row.st));
+    let base = div().px(px(16.)).py(px(7.)).border_t_1().border_color(t.divider).text_size(px(13.));
+    if narrow {
+        return base
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(div().flex().items_baseline().gap(px(12.)).child(div().flex_none().w(px(18.))).child(ref_cell).child(goals_page::fr(div().flex().child(title.line_clamp(2)), 1.)))
+            .child(div().flex().items_center().gap(px(12.)).pl(px(STACK_INDENT - 16.)).child(goals_page::fr(meta.truncate(), 1.)).child(chip));
+    }
+    base.flex()
         .items_center()
         .gap(px(12.))
-        .px(px(16.))
-        .py(px(7.))
-        .border_t_1()
-        .border_color(t.divider)
-        .text_size(px(13.))
         .child(div().flex_none().w(px(18.)))
-        .child(
-            div()
-                .id(SharedString::from(format!("projects-task-ref-{r}")))
-                .flex_none()
-                .w(px(44.))
-                .text_size(px(12.))
-                .font_family(t.mono_font.clone())
-                .text_color(t.muted)
-                .cursor_pointer()
-                .hover(move |s| s.text_color(link).underline())
-                .child(r.clone())
-                .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx))),
-        )
-        .child(goals_page::fr(
-            div().flex().child(
-                div()
-                    .id(SharedString::from(format!("projects-task-{r}")))
-                    .min_w_0()
-                    .truncate()
-                    .cursor_pointer()
-                    .hover(move |s| s.text_color(link).underline())
-                    .child(s(c, "title").to_string())
-                    .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx))),
-            ),
-            1.,
-        ))
-        .child(div().flex_none().w(px(190.)).truncate().text_size(px(12.)).text_color(if row.loud { loud_fg } else { t.muted }).child(task_meta(c, &row)))
-        .child(div().flex_none().w(px(status::CHIP_W + 12.)).flex().justify_end().child(status::chip(t, row.st)))
+        .child(ref_cell)
+        .child(goals_page::fr(div().flex().child(title.truncate()), 1.))
+        .child(meta.flex_none().w(px(190.)).truncate())
+        .child(chip)
 }
 
-fn goal_tasks(t: &Theme, d: Option<&Value>, cx: &mut Context<MainWindow>) -> Div {
+/// An open goal's tasks by wave, then the shared tasks it counts, under the goal each came from.
+fn goal_tasks(t: &Theme, d: Option<&Value>, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
     let mut body = div().flex().flex_col().bg(t.panel_2);
     let Some(d) = d.filter(|d| d["tasks"].is_array()) else {
-        return body.child(div().px(px(16.)).pl(px(90.)).py(px(8.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).child("Loading…"));
+        return body.child(div().px(px(16.)).pl(px(STACK_INDENT)).py(px(8.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).child("Loading…"));
     };
     let mut tasks: Vec<&Value> = arr(d, "tasks").iter().collect();
     tasks.sort_by_key(|c| (c["wave"].as_i64().unwrap_or(i64::MAX), status::row(c).st.rank(), i(c, "id")));
     for c in tasks {
-        body = body.child(task_row(t, c, cx));
+        body = body.child(task_row(t, c, narrow, cx));
+    }
+    for (from, cards) in shared_by_goal(d) {
+        let (r, name) = (s(from, "ref"), s(from, "name"));
+        body = body
+            .child(div().px(px(16.)).pl(px(STACK_INDENT)).pt(px(10.)).pb(px(6.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).truncate().child(format!("From {r} {name}").trim_end().to_string()));
+        for c in cards {
+            body = body.child(task_row(t, c, narrow, cx));
+        }
     }
     body
 }
 
-fn active_row(t: &Theme, g: &GoalLine, open: bool, d: Option<&Value>, first: bool, cx: &mut Context<MainWindow>) -> Div {
-    let name_color = if g.idle { t.muted } else { t.text };
-    let head = div()
-        .id(SharedString::from(format!("projects-goal-{}", g.r)))
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(16.))
-        .py(px(12.))
-        .cursor_pointer()
-        .child(chevron(t, open))
-        .child(goal_ref(t, &g.r, t.muted, cx))
-        .child(goals_page::fr(
-            div()
-                .flex()
-                .gap(px(6.))
-                .text_size(px(14.))
-                .child(div().min_w_0().truncate().text_color(name_color).when(open || !g.idle, |d| d.font_weight(FontWeight::SEMIBOLD)).child(g.name.clone()))
-                .when(!g.with.is_empty(), |d| d.child(div().flex_none().text_color(t.muted).child(format!("· {}", g.with)))),
-            1.,
-        ))
-        .child(div().flex_none().w(px(150.)).flex().flex_col().gap(px(4.)).child(status::bar(t, &g.parts, 5.)).child(div().text_size(px(12.)).text_color(t.muted).child(g.progress.clone())))
-        .child(div().flex_none().w(px(96.)).flex().justify_end().child(goal_pill(t, g.pill)))
-        .on_click(cx.listener(toggle(&g.r)));
-    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, cx)))
+/// The shared tasks a goal counts, by the goal they came from (lowest ref first), each in id order.
+fn shared_by_goal(d: &Value) -> Vec<(&Value, Vec<&Value>)> {
+    let mut out: Vec<(&Value, Vec<&Value>)> = vec![];
+    for c in arr(d, "shared") {
+        match out.iter_mut().find(|(g, _)| g["id"] == c["goal"]["id"]) {
+            Some((_, v)) => v.push(c),
+            None => out.push((&c["goal"], vec![c])),
+        }
+    }
+    out.sort_by_key(|(g, _)| g["id"].as_i64().unwrap_or(i64::MAX));
+    for (_, v) in &mut out {
+        v.sort_by_key(|c| i(c, "id"));
+    }
+    out
 }
 
-fn done_row(t: &Theme, g: &DoneLine, open: bool, d: Option<&Value>, first: bool, cx: &mut Context<MainWindow>) -> Div {
-    let head = div()
-        .id(SharedString::from(format!("projects-done-{}", g.r)))
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(16.))
-        .py(px(10.))
-        .cursor_pointer()
-        .text_size(px(14.))
-        .child(chevron(t, open))
-        .child(goal_ref(t, &g.r, t.faint, cx))
-        .child(goals_page::fr(div().truncate().text_color(t.text_2).child(g.name.clone()), 1.))
-        .child(div().flex_none().w(px(150.)).text_size(px(12.)).text_color(t.muted).child(g.tasks.clone()))
-        .child(div().flex_none().w(px(96.)).text_right().text_size(px(12.)).text_color(t.muted).child(g.when.clone()))
-        .on_click(cx.listener(toggle(&g.r)));
-    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, cx)))
+fn active_row(t: &Theme, g: &GoalLine, open: bool, d: Option<&Value>, first: bool, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
+    let name_color = if g.idle { t.muted } else { t.text };
+    let name = div().min_w_0().text_color(name_color).when(open || !g.idle, |d| d.font_weight(FontWeight::SEMIBOLD)).child(g.name.clone());
+    let with = (!g.with.is_empty()).then(|| div().flex_none().text_color(t.muted).child(format!("· {}", g.with)));
+    let bar = status::bar(t, &g.parts, 5.);
+    let progress = div().text_size(px(12.)).text_color(t.muted).child(g.progress.clone());
+    let pill = div().flex_none().w(px(96.)).flex().justify_end().child(goal_pill(t, g.pill));
+    let head = div().id(SharedString::from(format!("projects-goal-{}", g.r))).px(px(16.)).py(px(12.)).cursor_pointer();
+    let head = if narrow {
+        head.flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(div().flex().items_baseline().gap(px(12.)).child(chevron(t, open)).child(goal_ref(t, &g.r, t.muted, cx)).child(goals_page::fr(div().flex().flex_wrap().gap_x(px(6.)).text_size(px(14.)).child(name.line_clamp(2)).children(with), 1.)))
+            .child(div().flex().items_center().gap(px(12.)).pl(px(STACK_INDENT - 16.)).child(goals_page::fr(div().max_w(px(150.)).flex().flex_col().gap(px(4.)).child(bar).child(progress), 1.)).child(pill))
+    } else {
+        head.flex()
+            .items_center()
+            .gap(px(12.))
+            .child(chevron(t, open))
+            .child(goal_ref(t, &g.r, t.muted, cx))
+            .child(goals_page::fr(div().flex().gap(px(6.)).text_size(px(14.)).child(name.truncate()).children(with), 1.))
+            .child(div().flex_none().w(px(150.)).flex().flex_col().gap(px(4.)).child(bar).child(progress))
+            .child(pill)
+    };
+    let head = head.on_click(cx.listener(toggle(&g.r)));
+    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, narrow, cx)))
+}
+
+fn done_row(t: &Theme, g: &DoneLine, open: bool, d: Option<&Value>, first: bool, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
+    let name = div().text_color(t.text_2).child(g.name.clone());
+    let tasks = div().text_size(px(12.)).text_color(t.muted).child(g.tasks.clone());
+    let when = div().flex_none().w(px(96.)).text_right().text_size(px(12.)).text_color(t.muted).child(g.when.clone());
+    let head = div().id(SharedString::from(format!("projects-done-{}", g.r))).px(px(16.)).py(px(10.)).cursor_pointer().text_size(px(14.));
+    let head = if narrow {
+        head.flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(div().flex().items_baseline().gap(px(12.)).child(chevron(t, open)).child(goal_ref(t, &g.r, t.faint, cx)).child(goals_page::fr(name.line_clamp(2), 1.)))
+            .child(div().flex().items_center().gap(px(12.)).pl(px(STACK_INDENT - 16.)).child(goals_page::fr(tasks, 1.)).child(when))
+    } else {
+        head.flex()
+            .items_center()
+            .gap(px(12.))
+            .child(chevron(t, open))
+            .child(goal_ref(t, &g.r, t.faint, cx))
+            .child(goals_page::fr(name.truncate(), 1.))
+            .child(tasks.flex_none().w(px(150.)))
+            .child(when)
+    };
+    let head = head.on_click(cx.listener(toggle(&g.r)));
+    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, narrow, cx)))
 }
 
 fn card(t: &Theme) -> Div {
     div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden()
 }
 
-pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
+    let narrow = window.viewport_size().width < px(STACK_BELOW);
     let b = match &m.projects.built {
         Some(b) if b.holds(m) => b.clone(),
         _ => m.projects.built.insert(Rc::new(Built::of(m))).clone(),
@@ -644,7 +731,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         let mut c = card(&t);
         for (n, g) in act.iter().enumerate() {
             let r = &g.r;
-            c = c.child(active_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, cx));
+            c = c.child(active_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, narrow, cx));
         }
         main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, "Active".into()))).child(c);
     }
@@ -652,7 +739,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     if let Some(tasks) = b.loose.as_ref().filter(|v| !v.is_empty()) {
         let mut c = card(&t);
         for (n, task) in tasks.iter().enumerate() {
-            c = c.child(task_row(&t, task, cx).when(n == 0, |d| d.border_t_0()));
+            c = c.child(task_row(&t, task, narrow, cx).when(n == 0, |d| d.border_t_0()));
         }
         main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, format!("Tasks · {}", tasks.len())))).child(c);
     }
@@ -677,7 +764,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         let mut c = card(&t);
         for (n, g) in done.iter().enumerate() {
             let r = &g.r;
-            c = c.child(done_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, cx));
+            c = c.child(done_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, narrow, cx));
         }
         main = main.child(label).child(c);
     }
@@ -736,7 +823,7 @@ mod tests {
     fn the_list_puts_projects_without_open_goals_last() {
         let (open, idle) = list(&state(), &goals());
         let got: Vec<(&str, String, bool)> = open.iter().map(|r| (r.name.as_str(), r.sub(), r.needs)).collect();
-        assert_eq!(got, [("api", "1 goal · queued".to_string(), false), ("docs", "1 goal · waits for web".to_string(), false), ("web", "3 goals · 2 running".to_string(), true)]);
+        assert_eq!(got, [("api", "1 goal · queued".to_string(), false), ("docs", "1 goal · waits for web".to_string(), false), ("web", "3 goals · needs you".to_string(), true)]);
         assert_eq!(idle.iter().map(|r| (r.name.as_str(), r.finished)).collect::<Vec<_>>(), [("lens", 1)]);
     }
 
@@ -837,8 +924,61 @@ mod tests {
         st["projects"][3]["loose_open"] = json!(2);
         let (open, idle) = list(&st, &goals());
         let got: Vec<(&str, String)> = open.iter().map(|r| (r.name.as_str(), r.sub())).collect();
-        assert_eq!(got, [("api", "1 goal · queued".into()), ("docs", "1 goal · 3 tasks · waits for web".into()), ("lens", "2 tasks".into()), ("web", "3 goals · 2 running".into())]);
+        assert_eq!(got, [("api", "1 goal · queued".into()), ("docs", "1 goal · 3 tasks · waits for web".into()), ("lens", "2 tasks".into()), ("web", "3 goals · needs you".into())]);
         assert!(idle.is_empty());
+    }
+
+    fn sub_of(st: &Value, gs: &[Value], details: &HashMap<String, Value>, loose: Option<(&str, &[Value])>, project: &str) -> String {
+        let (open, idle) = list_with(st, gs, details, loose);
+        open.into_iter().chain(idle).find(|r| r.name == project).unwrap().sub()
+    }
+
+    #[test]
+    fn a_projects_line_says_what_its_goal_pills_say() {
+        let st = json!({"projects": [{"name": "web", "waits_on": []}], "sessions": [{"project": "web", "status": "idle", "task_ref": "T1"}]});
+        // Working between turns: the goal's pill says Working, so the project does too, not queued.
+        let working = goal(1, "web", 0, 3, json!({"active": 1, "queued": 2}));
+        assert_eq!(sub_of(&st, std::slice::from_ref(&working), &HashMap::new(), None, "web"), "1 goal · 1 working");
+        // A goal stopped for the owner needs them, though none of its tasks does.
+        let stopped = goal(2, "web", 1, 3, json!({"queued": 2, "stopped": "after wave 1"}));
+        let gs = [working, stopped];
+        assert_eq!(sub_of(&st, &gs, &HashMap::new(), None, "web"), "2 goals · needs you · 1 working");
+        let (open, _) = list(&st, &gs);
+        assert!(open[0].needs);
+        // A goal's loaded tasks win over its summary, as they do for its pill.
+        let d = json!({"tasks": [{"id": 1, "ref": "T1", "title": "a", "status": "queued"}]});
+        assert_eq!(sub_of(&st, &gs[..1], &HashMap::from([("G1".to_string(), d)]), None, "web"), "1 goal · queued");
+    }
+
+    #[test]
+    fn a_projects_tasks_outside_goals_say_what_theyre_doing() {
+        let st = json!({"projects": [{"name": "web", "waits_on": [], "loose_open": 2}], "sessions": [
+            {"project": "web", "status": "working", "task_ref": "T4"},
+            {"project": "web", "status": "working", "task_ref": null},
+        ]});
+        assert_eq!(sub_of(&st, &[], &HashMap::new(), None, "web"), "2 tasks · 1 working");
+        let tasks = [json!({"id": 4, "ref": "T4", "status": "needs"}), json!({"id": 5, "ref": "T5", "status": "working"})];
+        assert_eq!(sub_of(&st, &[], &HashMap::new(), Some(("web", &tasks)), "web"), "2 tasks · needs you · 1 working");
+        assert_eq!(sub_of(&st, &[], &HashMap::new(), Some(("api", &tasks)), "web"), "2 tasks · 1 working");
+    }
+
+    #[test]
+    fn shared_tasks_count_in_the_goals_total_and_list_under_their_goal() {
+        let g = goal(1, "web", 2, 4, json!({"active": 1}));
+        let from = |id: i64| json!({"id": id, "ref": format!("G{id}"), "name": format!("Goal {id}")});
+        let d = json!({"tasks": [
+            {"id": 1, "ref": "T1", "title": "a", "status": "done"},
+            {"id": 2, "ref": "T2", "title": "b", "status": "working"},
+        ], "shared": [
+            {"id": 9, "ref": "T9", "title": "c", "status": "done", "goal": from(6)},
+            {"id": 7, "ref": "T7", "title": "d", "status": "queued", "goal": from(6)},
+            {"id": 8, "ref": "T8", "title": "e", "status": "done", "goal": from(3)},
+        ]});
+        let details = HashMap::from([("G1".to_string(), d.clone())]);
+        let line = &active(std::slice::from_ref(&g), &details, "web")[0];
+        assert_eq!((line.progress.as_str(), line.pill.1), ("3 of 5", "Working"));
+        let groups: Vec<(&str, Vec<&str>)> = shared_by_goal(&d).into_iter().map(|(g, v)| (s(g, "ref"), v.into_iter().map(|c| s(c, "ref")).collect())).collect();
+        assert_eq!(groups, [("G3", vec!["T8"]), ("G6", vec!["T7", "T9"])]);
     }
 
     #[test]

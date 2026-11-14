@@ -264,3 +264,45 @@ fn esc_closes_the_top_layer_and_keeps_the_checked_issues(cx: &mut TestAppContext
     })
     .unwrap();
 }
+
+#[test]
+fn merge_names_the_holds_it_skips() {
+    assert_eq!(super::holds(&json!({"checks": "pending", "review": "pending", "approvals": {"have": 0, "need": 1}})), ["CI, still running", "Review, 0 of 1 approvals"]);
+    assert_eq!(super::holds(&json!({"checks": "fail", "review": "changes"})), ["CI, failing", "Review, changes asked for"]);
+    assert_eq!(super::holds(&json!({"checks": "pass", "review": "pending", "approvals": {"have": 1, "need": 1}})), ["Review, not approved yet"]);
+    assert!(super::holds(&json!({"checks": "pass", "review": "approved"})).is_empty());
+}
+
+#[test]
+fn a_refused_merge_says_who_refused_and_what_next() {
+    assert_eq!(super::refuser(&json!({"host": "github"})), "GitHub");
+    assert_eq!(super::refuser(&json!({})), "The board");
+    assert_eq!(super::after_refusal("The branch is 3 commits behind main."), Some("Rebase it from its terminal, then merge again."));
+    assert_eq!(super::after_refusal("Merge conflict in app.rs"), Some("Rebase it from its terminal, then merge again."));
+    assert_eq!(super::after_refusal("Not allowed"), None);
+}
+
+#[gpui_kit::test]
+fn the_merge_dialog_holds_its_answer_until_closed(cx: &mut TestAppContext) {
+    let (w, _) = parity::window(cx);
+    let refused = Refused { why: "The branch is 3 commits behind main.".into(), at: "3:16 PM".into() };
+    w.update(cx, |m, _, _| {
+        m.modal = Some(Modal::Finish(Finish { r: "T2".into(), ask: Ask::Merge, note: None, busy: true, refused: None }));
+    })
+    .unwrap();
+    redraw(w, cx);
+    w.update(cx, |m, _, _| assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.busy), "merging, the dialog stays")).unwrap();
+    w.update(cx, |m, _, _| {
+        if let Some(Modal::Finish(f)) = &mut m.modal {
+            f.busy = false;
+            f.refused = Some(refused.clone());
+        }
+    })
+    .unwrap();
+    redraw(w, cx);
+    redraw(w, cx);
+    w.update(cx, |m, _, _| assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.refused.as_ref() == Some(&refused)), "a refusal stays on screen")).unwrap();
+    cx.simulate_keystrokes(w.into(), "escape");
+    parity::settle(cx);
+    w.update(cx, |m, _, _| assert!(m.modal.is_none(), "esc closes it")).unwrap();
+}

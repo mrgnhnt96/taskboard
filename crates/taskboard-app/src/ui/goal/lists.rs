@@ -1,5 +1,6 @@
 //! The Goal page body as two lists that draw only what's in view: the wave cards, one item per
-//! card head and task row, and the aside, one item per section piece, note and open issue.
+//! card head and task row, and the aside, one item per section piece, note and open issue. Below
+//! `STACK_BELOW` wide the two make one list, the aside under the waves, so the work keeps its width.
 //!
 //! The goal carries its newest page of notes and their total; older pages are fetched by cursor
 //! as the aside nears its end, the same way the task panel's Full log pages.
@@ -10,11 +11,17 @@ use super::*;
 const NOTE_PAGE: usize = 100;
 /// Fetch the next page once the aside is scrolled within this many items of the notes' end.
 const NOTE_AHEAD: usize = 20;
+/// Narrower than this, the aside stacks under the waves.
+const STACK_BELOW: f32 = 1180.;
 
 #[derive(Default)]
 pub struct Lists {
     waves: Option<Body>,
     aside: Option<Body>,
+    /// The waves then the aside, as one list for a narrow window.
+    stack: Option<Body>,
+    /// The window was narrower than `STACK_BELOW` when the lists last drew.
+    narrow: bool,
     cards: Rc<Vec<waves::Card>>,
     wave_items: Rc<Vec<WItem>>,
     aside_items: Rc<Vec<AItem>>,
@@ -258,19 +265,36 @@ fn build(m: &mut MainWindow, g: &Rc<Value>, total: usize, view: View) {
     l.issues = Rc::new(issues);
     l.attached = Rc::new(rollup);
     l.built = Some((g.clone(), view));
+    let sk = wk[..wk.len() - 1].iter().chain(&ak).cloned().collect();
     Body::sync(&mut l.waves, wk);
     Body::sync(&mut l.aside, ak);
+    Body::sync(&mut l.stack, sk);
+}
+
+/// How many of the stacked list's items are wave pieces: every wave item but the space under them.
+fn wave_pieces(l: &Lists) -> usize {
+    l.wave_items.len().saturating_sub(1)
+}
+
+/// The aside's item at the top of whichever list shows it.
+fn aside_top(l: &Lists) -> Option<usize> {
+    if l.narrow {
+        let top = l.stack.as_ref()?.state.logical_scroll_top().item_ix;
+        Some(top.saturating_sub(wave_pieces(l)))
+    } else {
+        Some(l.aside.as_ref()?.state.logical_scroll_top().item_ix)
+    }
 }
 
 /// Fetch the next older page of notes when the aside is scrolled near their end.
 fn load_older_notes(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     let l = &mut m.goal_page.lists;
-    let Some(aside) = &l.aside else { return };
+    let Some(top) = aside_top(l) else { return };
     if !m.goal_page.notes_open || !l.notes.more || l.cache.loading {
         return;
     }
     let end = l.aside_items.iter().position(|x| matches!(x, AItem::NotesMore)).unwrap_or(0);
-    if end > aside.state.logical_scroll_top().item_ix + NOTE_AHEAD {
+    if end > top + NOTE_AHEAD {
         return;
     }
     l.cache.loading = true;
@@ -303,11 +327,15 @@ fn load_older_notes(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     .detach();
 }
 
-/// The two lists side by side under the header.
+/// The two lists side by side under the header, or the one stacked list in a narrow window.
 pub fn body(m: &MainWindow, cx: &mut Context<MainWindow>) -> Div {
     let l = &m.goal_page.lists;
     let mut out = div().flex_1().min_h_0().flex().gap(px(16.)).pt(px(16.)).px(px(36.));
-    if let (Some(w), Some(a)) = (&l.waves, &l.aside) {
+    if l.narrow {
+        if let Some(st) = &l.stack {
+            out = out.child(list(st.state.clone(), cx.processor(stack_item)).flex_1().min_w_0().h_full());
+        }
+    } else if let (Some(w), Some(a)) = (&l.waves, &l.aside) {
         out = out
             .child(list(w.state.clone(), cx.processor(wave_item)).flex_1().min_w_0().h_full())
             .child(list(a.state.clone(), cx.processor(aside_item)).flex_none().w(px(330.)).h_full());
@@ -315,7 +343,35 @@ pub fn body(m: &MainWindow, cx: &mut Context<MainWindow>) -> Div {
     out
 }
 
-fn wave_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+/// Note the window's width as the lists draw; crossing `STACK_BELOW` draws the body again the
+/// other way.
+fn watch_width(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) {
+    let narrow = window.viewport_size().width < px(STACK_BELOW);
+    if m.goal_page.lists.narrow != narrow {
+        m.goal_page.lists.narrow = narrow;
+        cx.notify();
+    }
+}
+
+fn stack_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    watch_width(m, window, cx);
+    let waves = wave_pieces(&m.goal_page.lists);
+    let el = if ix < waves { wave_el(m, ix, cx) } else { aside_el(m, ix - waves, cx) };
+    // The aside's card sits apart from the last wave card, as the cards do from each other.
+    div().w_full().when(ix == waves, |d| d.pt(px(16.))).child(el).into_any_element()
+}
+
+fn wave_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    watch_width(m, window, cx);
+    wave_el(m, ix, cx)
+}
+
+fn aside_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    watch_width(m, window, cx);
+    aside_el(m, ix, cx)
+}
+
+fn wave_el(m: &mut MainWindow, ix: usize, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let l = &m.goal_page.lists;
     let (items, cards) = (l.wave_items.clone(), l.cards.clone());
@@ -326,7 +382,7 @@ fn wave_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Mai
     }
 }
 
-fn aside_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+fn aside_el(m: &mut MainWindow, ix: usize, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let l = &m.goal_page.lists;
     let Some(g) = l.built.as_ref().map(|(g, _)| g.clone()) else { return div().into_any_element() };
@@ -410,6 +466,44 @@ mod tests {
         draw(cx);
         let (fresh, _) = built(cx);
         assert!(!Rc::ptr_eq(&cards, &fresh), "a new answer builds the cards again");
+    }
+
+    #[gpui_kit::test]
+    fn a_narrow_window_stacks_the_aside_under_the_waves(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{VisualTestContext, size};
+        let (w, _rec) = crate::parity::window(cx);
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        crate::parity::settle(cx);
+        let cx = &mut VisualTestContext::from_window(w.into(), cx);
+        let draw = |cx: &mut VisualTestContext| {
+            for _ in 0..2 {
+                cx.update(|window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                });
+                cx.run_until_parked();
+            }
+        };
+        let narrow = |cx: &mut VisualTestContext| w.update(cx, |m, _, _| m.goal_page.lists.narrow).unwrap();
+        cx.simulate_resize(size(px(1400.), px(900.)));
+        draw(cx);
+        assert!(!narrow(cx), "wide, the aside sits beside the waves");
+
+        cx.simulate_resize(size(px(900.), px(900.)));
+        draw(cx);
+        assert!(narrow(cx), "narrow, the lists stack");
+        let (stack, waves, aside) = w
+            .update(cx, |m, _, _| {
+                let l = &m.goal_page.lists;
+                (l.stack.as_ref().unwrap().keys.clone(), l.waves.as_ref().unwrap().keys.clone(), l.aside.as_ref().unwrap().keys.clone())
+            })
+            .unwrap();
+        let want: Vec<String> = waves[..waves.len() - 1].iter().chain(&aside).cloned().collect();
+        assert_eq!(stack, want, "every wave piece, then the aside, in one list");
+
+        cx.simulate_resize(size(px(1400.), px(900.)));
+        draw(cx);
+        assert!(!narrow(cx), "wide again, side by side again");
     }
 
     #[gpui_kit::test]
