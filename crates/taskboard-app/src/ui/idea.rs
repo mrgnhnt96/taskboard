@@ -38,6 +38,8 @@ pub struct State {
     more: HashSet<String>,
     /// Answered questions showing their choices again after Change, by `I3::<round id>::<question>`.
     changing: HashSet<String>,
+    /// The idea whose Plan is asking to be confirmed, while it is.
+    confirm: Option<String>,
 }
 
 /// The newest round starts open, the older ones collapsed.
@@ -159,6 +161,83 @@ pub fn talk_button(i: &Value) -> Option<Btn> {
 /// The Close menu's items: (what it posts, its label).
 pub fn close_menu_view(i: &Value) -> Vec<(&'static str, &'static str)> {
     if is_closed(i) { vec![("reopen", "Reopen")] } else { vec![("shelve", "Shelve for later"), ("drop", "Won’t do")] }
+}
+
+/// The one filled button, by the idea's state: Dig a new idea, Plan one that fits and asks
+/// nothing, open the goal once planned, and Talk it over while a dig runs. Open questions, a
+/// verdict short of fits, or a closed idea leave every button outlined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Main {
+    Dig,
+    Plan,
+    Goal,
+    Talk,
+    None,
+}
+
+pub fn main_action(i: &Value) -> Main {
+    if matches!(plan_slot(i), PlanSlot::Goal(_)) {
+        return Main::Goal;
+    }
+    if b(i, "planning") {
+        return Main::Plan;
+    }
+    if s(i, "state") == "digging" {
+        return Main::Talk;
+    }
+    if is_closed(i) || s(i, "state") == "planned" || open_count(i) > 0 {
+        return Main::None;
+    }
+    if !arr(i, "rounds").iter().any(|r| r["report"].is_object()) {
+        return Main::Dig;
+    }
+    if s(i, "state") == "reported" && s(i, "verdict") == "fits" { Main::Plan } else { Main::None }
+}
+
+/// The newest report's questions still without an answer.
+pub fn open_questions(i: &Value) -> Vec<String> {
+    let Some(r) = arr(i, "rounds").iter().find(|r| r["report"].is_object()) else { return vec![] };
+    report_blocks(&r["report"])
+        .into_iter()
+        .filter_map(|x| match x {
+            Block::Question { id, text, .. } if id.is_empty() || fmt::opt_s(&r["answers"], &id).is_none() => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Its open questions: the board's count, else counted from the newest report.
+fn open_count(i: &Value) -> usize {
+    i["questions"].as_u64().map_or_else(|| open_questions(i).len(), |n| n as usize)
+}
+
+/// The band over a running dig: what it reads, when it gives up, and how long it has run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DigBand {
+    /// "Reading webapp · stops at 5:50 PM"
+    pub line: String,
+    /// "Running 4m"
+    pub running: String,
+}
+
+/// How long a dig may run before the board stops it.
+const DIG_LIMIT_MINUTES: i64 = 15;
+
+pub fn dig_band(i: &Value, now: DateTime<Utc>) -> Option<DigBand> {
+    if s(i, "state") != "digging" {
+        return None;
+    }
+    let started = open_round(i).and_then(|r| fmt::parse(s(r, "started_at")));
+    let mut line = format!("Reading {}", s(i, "project"));
+    if let Some(t) = started {
+        let stops = cut_at(t + chrono::Duration::minutes(DIG_LIMIT_MINUTES), now);
+        line.push_str(&format!(" · stops at {}", stops.strip_prefix("Today, ").unwrap_or(&stops)));
+    }
+    let running = match started.map(|t| (now - t).num_minutes()) {
+        Some(m) if m >= 1 => format!("Running {}", fmt::span(m)),
+        _ => "Running".into(),
+    };
+    Some(DigBand { line, running })
 }
 
 /// A point: its short line, the detail it opens to, and its kind (security, privacy, …).
@@ -356,6 +435,12 @@ pub fn rounds(i: &Value, now: DateTime<Utc>) -> Vec<RoundView> {
                     *answer = fmt::opt_s(&r["answers"], id).map(str::to_string);
                 }
             }
+            // The decisions sit right after the summary, ahead of the rest of the report.
+            blocks.sort_by_key(|x| match x {
+                Block::Gist(_) => 0,
+                Block::Question { .. } => 1,
+                _ => 2,
+            });
             let gist = blocks.iter().find_map(|x| if let Block::Gist(g) = x { Some(g.clone()) } else { None }).unwrap_or_default();
             RoundView {
                 id: r["id"].to_string(),
@@ -409,6 +494,49 @@ pub(crate) fn start(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Con
         },
     );
     cx.notify();
+}
+
+/// Stop or un-plan it (`stop` / `unplan`), once at a time. The page takes the idea the board sends
+/// back.
+pub(crate) fn undo(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
+    let key = format!("{act}::{r}");
+    if !m.idea.busy.insert(key.clone()) {
+        return;
+    }
+    let k2 = key.clone();
+    let r = r.to_string();
+    let goal = m.data.idea.as_ref().and_then(|i| fmt::opt_s(i, "goal")).unwrap_or("").to_string();
+    m.post_or(
+        format!("ideas/{r}/{act}"),
+        json!({}),
+        cx,
+        move |m, v, cx| {
+            m.idea.busy.remove(&key);
+            if m.data.idea.as_ref().and_then(|i| i["ref"].as_str()) == Some(r.as_str()) && v["ref"] == r.as_str() {
+                m.data.idea = Some(v);
+            }
+            match act {
+                "stop" => m.toast("Dig stopped", false, cx),
+                _ => m.toast(format!("{goal} deleted; {r} is open again"), false, cx),
+            }
+        },
+        move |m, e, cx| {
+            m.idea.busy.remove(&k2);
+            m.toast(e.message, true, cx);
+        },
+    );
+    cx.notify();
+}
+
+/// Plan, asking first while questions are still open.
+pub(crate) fn ask_plan(m: &mut MainWindow, i: &Value, cx: &mut Context<MainWindow>) {
+    let r = fmt::ref_of(i, "I");
+    if open_count(i) > 0 {
+        m.idea.confirm = Some(r);
+        cx.notify();
+    } else {
+        start(m, "plan", &r, cx);
+    }
 }
 
 /// Shelve, drop or reopen it, once at a time. Closing it offers Undo, which reopens it.
@@ -524,6 +652,32 @@ fn open_ideas(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>) {
     m.go(Page::Ideas, cx);
 }
 
+/// A turning arc, for work still running.
+fn spinner(size: f32, color: Hsla) -> impl IntoElement {
+    use std::f32::consts::PI;
+    div().flex_none().size(px(size)).with_animation("idea-spinner", Animation::new(std::time::Duration::from_secs(1)).repeat(), move |d, turn| {
+        d.child(
+            canvas(
+                |_, _, _| {},
+                move |b, _, window, _| {
+                    let k = b.size.width.as_f32() / 24.;
+                    let (from, to) = (45. + turn * 360., 315. + turn * 360.);
+                    let mut p = PathBuilder::stroke(px(2.5 * k));
+                    for n in 0..=40 {
+                        let a = (from + (to - from) * n as f32 / 40.) * PI / 180.;
+                        let at = point(b.origin.x + px((12. + 10. * a.cos()) * k), b.origin.y + px((12. + 10. * a.sin()) * k));
+                        if n == 0 { p.move_to(at) } else { p.line_to(at) }
+                    }
+                    if let Ok(p) = p.build() {
+                        window.paint_path(p, color);
+                    }
+                },
+            )
+            .size_full(),
+        )
+    })
+}
+
 fn button(t: &Theme, id: &'static str, bt: Btn, primary: bool, busy: bool) -> Stateful<Div> {
     let make = if primary { kit::btn_primary } else { kit::btn };
     let label = if busy { "Sending…".to_string() } else { bt.label };
@@ -531,42 +685,143 @@ fn button(t: &Theme, id: &'static str, bt: Btn, primary: bool, busy: bool) -> St
     if bt.enabled && !busy { el } else { kit::disabled(el) }
 }
 
+/// The tip of a button that can be pressed: what it does and its shortcut.
+fn key_tip(bt: Btn, keys: &str) -> Btn {
+    if bt.enabled { Btn { tip: format!("{} {keys}", bt.label), ..bt } } else { bt }
+}
+
+/// The action bar: the state's one filled button first, then the rest outlined.
 fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Div {
     let r = fmt::ref_of(i, "I");
-    let dig = dig_button(i, fmt::now());
-    let dig_busy = m.idea.busy.contains(&format!("dig::{r}"));
-    let can_dig = dig.enabled && !dig_busy;
-    let r1 = r.clone();
-    let dig_el = button(t, "idea-dig", dig, true, dig_busy).when(can_dig, |d| d.on_click(cx.listener(move |m, _, _, cx| start(m, "dig", &r1, cx))));
-    let plan_el = match plan_slot(i) {
+    let main = main_action(i);
+    let digging = s(i, "state") == "digging";
+    let mut out: Vec<(Main, AnyElement)> = vec![];
+    match plan_slot(i) {
         PlanSlot::Goal(g) => {
             let g2 = g.clone();
-            kit::btn(t, "idea-goal", format!("{g} →")).tooltip(kit::tip("Open the goal it became")).on_click(cx.listener(move |m, _, _, cx| goal::open(m, &g2, false, cx)))
+            let open = kit::btn_primary(t, "idea-goal", format!("Open {g}")).tooltip(kit::tip("Open the goal it became")).on_click(cx.listener(move |m, _, _, cx| goal::open(m, &g2, false, cx)));
+            out.push((Main::Goal, open.into_any_element()));
+            let busy = m.idea.busy.contains(&format!("unplan::{r}"));
+            let r0 = r.clone();
+            let undo_el = kit::btn(t, "idea-unplan", if busy { "Undoing…" } else { "Undo plan" }).tooltip(kit::tip(format!("Delete {g} and open the idea again; not once a task has started")));
+            out.push((Main::None, if busy { kit::disabled(undo_el) } else { undo_el.on_click(cx.listener(move |m, _, _, cx| undo(m, "unplan", &r0, cx))) }.into_any_element()));
+        }
+        PlanSlot::Button(bt) if b(i, "planning") => {
+            let el = kit::btn_primary(t, "idea-plan", bt.label.clone()).child(spinner(14., t.on_accent)).cursor_default().tooltip(kit::tip(bt.tip));
+            out.push((Main::Plan, el.into_any_element()));
         }
         PlanSlot::Button(bt) => {
             let busy = m.idea.busy.contains(&format!("plan::{r}"));
             let can = bt.enabled && !busy;
-            let r2 = r.clone();
-            button(t, "idea-plan", bt, false, busy).when(can, |d| d.on_click(cx.listener(move |m, _, _, cx| start(m, "plan", &r2, cx))))
+            let i2 = i.clone();
+            let el = button(t, "idea-plan", key_tip(bt, "⇧⌘P"), main == Main::Plan, busy).when(can, |d| d.on_click(cx.listener(move |m, _, _, cx| ask_plan(m, &i2, cx))));
+            out.push((Main::Plan, el.into_any_element()));
         }
-    };
-    let close_el = close_button(i).map(|bt| {
+    }
+    if !digging && s(i, "state") != "planned" && !b(i, "planning") {
+        let dig = dig_button(i, fmt::now());
+        let busy = m.idea.busy.contains(&format!("dig::{r}"));
+        let can = dig.enabled && !busy;
+        let r1 = r.clone();
+        let el = button(t, "idea-dig", key_tip(dig, "⌘D"), main == Main::Dig, busy).when(can, |d| d.on_click(cx.listener(move |m, _, _, cx| start(m, "dig", &r1, cx))));
+        out.push((Main::Dig, el.into_any_element()));
+    }
+    if let Some(bt) = talk_button(i) {
+        let busy = m.idea.busy.contains(&format!("talk::{r}"));
+        let r3 = r.clone();
+        let el = button(t, "idea-talk", key_tip(bt, "⌘T"), main == Main::Talk, busy).when(!busy, |d| d.on_click(cx.listener(move |m, _, _, cx| talk(m, &r3, None, cx))));
+        out.push((Main::Talk, el.into_any_element()));
+    }
+    if let Some(bt) = close_button(i) {
         let busy = m.idea.busy.contains(&format!("close::{r}"));
         let can = bt.enabled && !busy;
         let bt = Btn { label: format!("{} ▾", bt.label), ..bt };
-        button(t, "idea-close", bt, false, busy).child(kit::anchor(CLOSE_MENU)).when(can, |d| {
+        let el = button(t, "idea-close", bt, false, busy).child(kit::anchor(CLOSE_MENU)).when(can, |d| {
             d.on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                 let p = e.position();
                 m.toggle_menu(CLOSE_MENU, point(p.x - px(160.), p.y + px(14.)), cx);
             }))
-        })
-    });
-    let talk_el = talk_button(i).map(|bt| {
-        let busy = m.idea.busy.contains(&format!("talk::{r}"));
-        let r3 = r.clone();
-        button(t, "idea-talk", bt, false, busy).when(!busy, |d| d.on_click(cx.listener(move |m, _, _, cx| talk(m, &r3, None, cx))))
-    });
-    div().flex().flex_none().items_center().gap(px(8.)).child(dig_el).child(plan_el).children(talk_el).children(close_el)
+        });
+        out.push((Main::None, el.into_any_element()));
+    }
+    if main != Main::None {
+        if let Some(n) = out.iter().position(|(k, _)| *k == main) {
+            let first = out.remove(n);
+            out.insert(0, first);
+        }
+    }
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.))
+        .children(out.into_iter().map(|(_, el)| el))
+        .when(digging, |d| d.child(div().text_size(px(12.5)).text_color(t.muted).child("Plan and Close wait until the dig finishes.")))
+}
+
+/// Plan asks first while questions are open, naming them.
+fn confirm_el(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+    let r = fmt::ref_of(i, "I");
+    if m.idea.confirm.as_deref() != Some(r.as_str()) {
+        return None;
+    }
+    let open = open_questions(i);
+    let n = open.len().max(i["questions"].as_u64().unwrap_or(0) as usize);
+    let (fg, bg) = kit::tone(t, "warn");
+    let r1 = r.clone();
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(14.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(fg.opacity(0.4))
+            .bg(bg)
+            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Plan it now?"))
+            .child(div().text_size(px(13.)).text_color(t.text_2).child(format!("Still open: {}", fmt::plural(n as i64, "question", "questions"))))
+            .children(open.into_iter().map(|q| div().text_size(px(13.)).text_color(t.text_2).child(format!("• {q}"))))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .pt(px(4.))
+                    .child(kit::btn_primary(t, "idea-plan-anyway", "Plan anyway").on_click(cx.listener(move |m, _, _, cx| {
+                        m.idea.confirm = None;
+                        start(m, "plan", &r1, cx);
+                    })))
+                    .child(kit::btn(t, "idea-plan-cancel", "Cancel").on_click(cx.listener(|m, _, _, cx| {
+                        m.idea.confirm = None;
+                        cx.notify();
+                    }))),
+            ),
+    )
+}
+
+/// The band over a running dig, with Stop.
+fn dig_band_el(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+    let band = dig_band(i, fmt::now())?;
+    let r = fmt::ref_of(i, "I");
+    let busy = m.idea.busy.contains(&format!("stop::{r}"));
+    let stop = kit::btn_small(t, "idea-stop", if busy { "Stopping…" } else { "Stop" }).tooltip(kit::tip("Stop the dig; what it found so far is lost"));
+    let stop = if busy { kit::disabled(stop) } else { stop.on_click(cx.listener(move |m, _, _, cx| undo(m, "stop", &r, cx))) };
+    let (fg, bg) = kit::tone(t, "accent");
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(10.))
+            .rounded(px(10.))
+            .bg(bg)
+            .child(spinner(16., fg))
+            .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(fg).child("Digging"))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).text_color(t.text_2).child(band.line))
+            .child(div().flex_none().text_size(px(12.5)).text_color(t.muted).child(band.running))
+            .child(stop),
+    )
 }
 
 fn close_menu(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
@@ -580,13 +835,11 @@ fn close_menu(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>
     Some(kit::menu_under(CLOSE_MENU, kit::Align::Right, at, menu))
 }
 
-fn header(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Div {
+fn header(t: &Theme, i: &Value) -> Div {
     let (state, tone) = state_pill(i);
     let project = div().px(px(7.)).py(px(1.)).rounded(px(9.)).bg(t.panel_2).text_size(px(11.)).text_color(t.muted).child(s(i, "project").to_string());
     div()
         .flex()
-        .items_start()
-        .gap(px(16.))
         .child(
             div()
                 .flex()
@@ -604,9 +857,8 @@ fn header(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) ->
                         .child(kit::tone_pill(t, tone, state))
                         .children(verdict_pill(&i["verdict"]).map(|(label, tone)| kit::tone_pill(t, tone, label))),
                 )
-                .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).line_height(relative(1.2)).child(sel(t, "idea-title", s(i, "title").to_string()))),
+                .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).line_height(relative(1.2)).child(sel(t, "idea-title", s(i, "title").to_string()))),
         )
-        .child(buttons(m, t, i, cx))
 }
 
 fn section(t: &Theme, title: &str) -> Div {
@@ -783,7 +1035,8 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
         let talk_el = talk.map(|r| {
             let busy = m.idea.busy.contains(&format!("talk::{r}::{text}"));
             let (r, q) = (r.to_string(), text.clone());
-            let el = kit::btn_small(t, SharedString::from(format!("idea-talk-{key}::{n}")), if busy { "Sending…" } else { "Talk it over" })
+            let el = kit::link(t, SharedString::from(format!("idea-talk-{key}::{n}")), if busy { "Sending…" } else { "Talk about this question" })
+                .text_size(px(12.5))
                 .tooltip(kit::tip("Talk this one over with Claude in a terminal"));
             if busy { kit::disabled(el) } else { el.on_click(cx.listener(move |m, _, _, cx| self::talk(m, &r, Some(&q), cx))) }
         });
@@ -979,7 +1232,14 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             .pt(px(20.))
             .px(px(36.))
             .child(match err {
-                Some(e) => div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e),
+                Some(e) => div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(8.))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("This idea didn’t load"))
+                    .child(div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e))
+                    .child(kit::btn(&t, "idea-retry", "Try again").on_click(cx.listener(|m, _, _, cx| m.refresh(cx)))),
                 None => kit::help(&t, "Loading…"),
             })
             .into_any_element();
@@ -993,28 +1253,45 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     for (n, rv) in views.iter().enumerate() {
         reports = reports.child(round_card(m, &t, &r, talk, n, rv, cx));
     }
+    // The title and the choices stay in view; the detail and the reports scroll under them.
+    let top = div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .gap(px(12.))
+        .max_w(px(920.))
+        .pt(px(20.))
+        .pb(px(14.))
+        .px(px(36.))
+        .child(crumbs(&t, &i, cx))
+        .child(header(&t, &i))
+        .child(buttons(m, &t, &i, cx))
+        .children(confirm_el(m, &t, &i, cx))
+        .children(dig_band_el(m, &t, &i, cx));
     div()
-        .id("idea-page")
         .flex_1()
         .min_w_0()
-        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .relative()
         .line_height(relative(1.5))
-        .children(menu)
+        .child(div().border_b_1().border_color(t.border).child(top))
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(20.))
-                .max_w(px(920.))
-                .pt(px(20.))
-                .px(px(36.))
-                .pb(px(48.))
-                .child(crumbs(&t, &i, cx))
-                .child(header(m, &t, &i, cx))
-                .when(!detail.is_empty(), |d| d.child(div().text_size(px(14.)).text_color(t.text_2).child(md::render(&t, &detail, DETAIL_MAX, "idea-detail"))))
-                .children(notes(&t, &i))
-                .when(!views.is_empty(), |d| d.child(reports)),
+            div().id("idea-page").flex_1().min_h_0().overflow_y_scroll().child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(20.))
+                    .max_w(px(920.))
+                    .pt(px(20.))
+                    .px(px(36.))
+                    .pb(px(48.))
+                    .when(!detail.is_empty(), |d| d.child(div().text_size(px(14.)).text_color(t.text_2).child(md::render(&t, &detail, DETAIL_MAX, "idea-detail"))))
+                    .children(notes(&t, &i))
+                    .when(!views.is_empty(), |d| d.child(reports)),
+            ),
         )
+        .children(menu)
         .into_any_element()
 }
 
@@ -1089,7 +1366,7 @@ mod tests {
                 id: "2".into(),
                 title: "Round 2".into(),
                 focus: "offline sync".into(),
-                verdict: Some(("Partly fits", "warn")),
+                verdict: Some(("Partly fits", "muted")),
                 gist: "A queue makes it work offline.".into(),
                 stale: false,
                 when: "Today, 10:05 AM".into(),
@@ -1324,5 +1601,139 @@ mod tests {
             assert_eq!(m.toasts.iter().map(|t| (t.text.as_str(), t.err)).collect::<Vec<_>>(), [("I5 became a goal already; work on the goal instead.", true)]);
         })
         .unwrap();
+    }
+
+    fn asked(state: &str, verdict: &str, answers: Value) -> Value {
+        let mut i = idea(state, json!([{"id": 1, "finished_at": "2026-10-15T10:00:00Z", "error": null, "answers": answers,
+            "report": {"verdict": verdict, "blocks": [
+                {"type": "points", "title": "Risks", "items": [{"short": "Sync"}]},
+                {"type": "question", "id": "q1", "text": "Phone too?", "choices": ["Yes", "No"]},
+                {"type": "gist", "text": "It fits."},
+                {"type": "question", "id": "q2", "text": "Behind a flag?", "choices": ["Yes", "No"]}]}}]));
+        i["verdict"] = json!(verdict);
+        i
+    }
+
+    #[test]
+    fn the_filled_button_follows_the_ideas_state() {
+        assert_eq!(main_action(&idea("new", json!([]))), Main::Dig);
+        assert_eq!(main_action(&asked("reported", "fits", json!({"q1": "Yes", "q2": "No"}))), Main::Plan, "fits and all clear");
+        assert_eq!(main_action(&asked("reported", "fits", json!({"q1": "Yes"}))), Main::None, "a question is open");
+        assert_eq!(main_action(&asked("reported", "partly", json!({"q1": "Yes", "q2": "No"}))), Main::None);
+        let mut counted = asked("reported", "fits", json!({"q1": "Yes", "q2": "No"}));
+        counted["questions"] = json!(1);
+        assert_eq!(main_action(&counted), Main::None, "the board's count wins");
+        assert_eq!(main_action(&idea("digging", json!([]))), Main::Talk);
+        let mut planning = asked("reported", "fits", json!({}));
+        planning["planning"] = json!(true);
+        assert_eq!(main_action(&planning), Main::Plan);
+        let mut planned = idea("planned", json!([]));
+        planned["goal"] = json!("G5");
+        assert_eq!(main_action(&planned), Main::Goal);
+        assert_eq!(main_action(&idea("shelved", json!([]))), Main::None);
+    }
+
+    #[test]
+    fn open_questions_are_the_newest_reports_unanswered_ones() {
+        assert_eq!(open_questions(&asked("reported", "fits", json!({"q2": "No"}))), ["Phone too?"]);
+        assert!(open_questions(&asked("reported", "fits", json!({"q1": "Yes", "q2": "No"}))).is_empty());
+        assert!(open_questions(&idea("new", json!([]))).is_empty());
+    }
+
+    #[test]
+    fn the_questions_come_right_after_the_summary() {
+        let v = rounds_of(&asked("reported", "fits", json!({})), at(2026, 10, 15, 16));
+        let kinds: Vec<&str> = v[0].blocks.iter().map(|x| match x {
+            Block::Gist(_) => "gist",
+            Block::Question { .. } => "question",
+            _ => "other",
+        }).collect();
+        assert_eq!(kinds, ["gist", "question", "question", "other"]);
+        let Block::Question { text, .. } = &v[0].blocks[1] else { unreachable!() };
+        assert_eq!(text, "Phone too?", "questions keep their order");
+    }
+
+    #[test]
+    fn a_running_dig_says_what_it_reads_when_it_stops_and_how_long_it_has_run() {
+        let now = at(2026, 10, 15, 17);
+        let started = now - Duration::minutes(4);
+        let i = idea("digging", json!([{"id": 2, "started_at": started.to_rfc3339(), "finished_at": null, "error": null, "report": null}]));
+        let stops = cut_at(started + Duration::minutes(15), now);
+        assert_eq!(dig_band(&i, now), Some(DigBand { line: format!("Reading web · stops at {}", stops.trim_start_matches("Today, ")), running: "Running 4m".into() }));
+        assert_eq!(dig_band(&i, now).unwrap().line, "Reading web · stops at 5:16 PM");
+        assert_eq!(dig_band(&idea("reported", json!([])), now), None);
+    }
+
+    fn added(rec: &crate::parity::Recording) -> String {
+        use crate::backend::Backend;
+        let v = rec.board().post("ideas", json!({"title": "Dark mode", "detail": "", "project": "webapp"})).unwrap();
+        fmt::ref_of(&v, "I")
+    }
+
+    #[gpui_kit::test]
+    fn plan_asks_first_while_questions_are_open(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        let r = added(&rec);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let mut i = asked("reported", "fits", json!({}));
+            i["ref"] = json!(r.clone());
+            ask_plan(m, &i, cx);
+            assert_eq!(m.idea.confirm.as_deref(), Some(r.as_str()), "it asks");
+            m.data.idea = Some(i);
+            m.page = Page::Idea(r.clone());
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert!(rec.last(&format!("ideas/{r}/plan")).is_none(), "nothing is sent until it's confirmed");
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let mut i = asked("reported", "fits", json!({"q1": "Yes", "q2": "No"}));
+            i["ref"] = json!(r.clone());
+            m.idea.confirm = None;
+            ask_plan(m, &i, cx);
+            assert_eq!(m.idea.confirm, None, "nothing open, nothing to ask");
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert!(rec.last(&format!("ideas/{r}/plan")).is_some(), "it plans straight away");
+    }
+
+    #[gpui_kit::test]
+    fn stop_and_undo_plan_send_and_say_when_the_board_refuses(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        let r = added(&rec);
+        for act in ["stop", "unplan"] {
+            w.update(cx, |m: &mut MainWindow, _, cx| undo(m, act, &r, cx)).unwrap();
+            crate::parity::settle(cx);
+            assert!(rec.last(&format!("ideas/{r}/{act}")).is_some(), "{act} is sent");
+            w.update(cx, |m: &mut MainWindow, _, _| {
+                let last = m.toasts.last().unwrap();
+                assert!(last.err, "{act} on a new idea is refused: {}", last.text);
+                assert!(m.idea.busy.is_empty());
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_page_draws_in_every_state(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _) = crate::parity::window(cx);
+        let mut planned = idea("planned", json!([]));
+        planned["goal"] = json!("G5");
+        let mut planning = asked("reported", "fits", json!({}));
+        planning["planning"] = json!(true);
+        let digging = idea("digging", json!([{"id": 2, "started_at": Utc::now().to_rfc3339(), "finished_at": null, "error": null, "report": null}]));
+        for i in [idea("new", json!([])), asked("reported", "fits", json!({})), digging, planning, planned] {
+            w.update(cx, |m: &mut MainWindow, _, _| {
+                m.idea.confirm = Some("I3".into());
+                m.data.idea = Some(i);
+                m.page = Page::Idea("I3".into());
+            })
+            .unwrap();
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
     }
 }

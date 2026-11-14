@@ -1,8 +1,8 @@
-//! The Ideas page (`GET /ideas?project=all&state=all`, a page at a time): each project's ideas as
-//! rows, each with its newest report's verdict and its state, under two tabs: Open (planned ones
-//! last) and Closed (shelved and dropped). A row opens the idea's page (`ui::idea`), where it's
-//! closed and reopened. New idea opens a dialog that adds one (`POST /ideas`); notes go through
-//! `tb idea`.
+//! The Ideas page (`GET /ideas?project=all&state=all&first=questions`, a page at a time): the ideas
+//! as rows with one pill each, under two tabs: Open, where the ones waiting on the owner (open
+//! questions, or ready to plan) come first, and Closed (shelved and dropped). A row opens the
+//! idea's page (`ui::idea`), where it's closed and reopened. New idea opens a dialog that adds one
+//! (`POST /ideas`), its draft kept until it's added; notes go through `tb idea`.
 use crate::app::MainWindow;
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
@@ -11,6 +11,7 @@ use crate::ui::releases::cut_at;
 use crate::ui::kit::KeyOutcome;
 use crate::ui::modals::{self, Modal};
 use crate::ui::paged::Paged;
+use crate::ui::text_input::FieldChanged;
 use crate::ui::{idea, kit};
 use chrono::{DateTime, NaiveDate, Utc};
 use gpui_kit::prelude::*;
@@ -65,31 +66,39 @@ struct View {
 /// One item of the page's list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Line {
-    /// The title, the filter, the tabs and New idea.
+    /// The title and New idea, the tabs and the filter.
     Top,
     /// "No ideas" (or "No closed ideas"), or "Loading…" while older pages are still to come.
     Empty,
-    /// A project's name, over its card when there are several.
+    /// A section's name and count: "Waiting on you 3".
     Group(usize),
-    /// A project's row: the first opens its card, the last closes it.
+    /// A section's row.
     Row(usize, usize),
     End,
 }
 
 /// What every page of `GET /ideas` asks for.
 pub fn query() -> Vec<(&'static str, String)> {
-    vec![("project", "all".into()), ("state", "all".into())]
+    vec![("project", "all".into()), ("state", "all".into()), ("first", "questions".into())]
 }
 
+/// The New idea dialog's draft: kept when the dialog is put away, until the idea is added.
 pub struct Form {
     pub title: kit::Input,
     pub detail: kit::Input,
     /// Empty until one is chosen.
     pub project: String,
+    /// "Say what the idea is.", under the title until it changes.
+    pub title_err: Option<String>,
+    /// "Choose the project it’s for.", under the project until one is picked.
+    pub project_err: Option<String>,
+    /// The board's refusal, over the buttons until anything changes.
     pub error: Option<String>,
     pub busy: bool,
     /// Give the title field focus on the next draw (after a failed add).
     refocus: bool,
+    /// The dialog has been drawn since it last opened, so its leaving can be noticed.
+    shown: bool,
 }
 
 impl State {
@@ -104,8 +113,8 @@ impl State {
 pub fn verdict_pill(v: &Value) -> Option<(&'static str, &'static str)> {
     match v.as_str()? {
         "fits" => Some(("Fits", "up")),
-        "partly" => Some(("Partly fits", "warn")),
-        "doesnt_fit" => Some(("Doesn’t fit", "down")),
+        "partly" => Some(("Partly fits", "muted")),
+        "doesnt_fit" => Some(("Doesn’t fit", "muted")),
         _ => None,
     }
 }
@@ -150,44 +159,70 @@ pub struct Row {
     pub r: String,
     pub title: String,
     pub project: String,
-    pub verdict: Option<(&'static str, &'static str)>,
-    pub state: (&'static str, &'static str),
+    /// Its one pill: its state, or its newest report's verdict once reported.
+    pub pill: (&'static str, &'static str),
+    /// What it waits on the owner for: "2 questions", or "Ready to plan".
+    pub note: Option<String>,
     /// When it last changed.
     pub when: String,
 }
 
-/// The projects shown and each one's rows: the picked project while it has ideas, else every one
-/// with ideas, by name. Rows: open first, each group newest change first.
-pub fn groups(list: &Value, picked: &str, now: DateTime<Utc>) -> Vec<(String, Vec<Row>)> {
-    groups_of(&arr(list, "ideas").iter().collect::<Vec<_>>(), picked, now)
+/// The list's one pill: a plan or dig running, else planned or closed, else the newest report's
+/// verdict, else its state.
+pub fn row_pill(i: &Value) -> (&'static str, &'static str) {
+    let state = state_pill(i);
+    if fmt::b(i, "planning") || s(i, "state") != "reported" {
+        return state;
+    }
+    verdict_pill(&i["verdict"]).unwrap_or(state)
 }
 
-fn groups_of(ideas: &[&Value], picked: &str, now: DateTime<Utc>) -> Vec<(String, Vec<Row>)> {
-    let mut projects: Vec<String> = ideas.iter().map(|i| s(i, "project").to_string()).collect();
-    projects.sort();
-    projects.dedup();
-    if projects.iter().any(|p| p == picked) {
-        projects.retain(|p| p == picked);
+/// Its open questions, from the board's count.
+pub fn questions(i: &Value) -> u64 {
+    i["questions"].as_u64().unwrap_or(0)
+}
+
+/// What an open idea waits on the owner for: its open questions, else a report that says it fits
+/// and asks nothing. Nothing while a dig or plan runs.
+pub fn waiting_note(i: &Value) -> Option<String> {
+    if !is_open(i) || fmt::b(i, "planning") || s(i, "state") == "digging" {
+        return None;
     }
-    projects
-        .into_iter()
-        .map(|p| {
-            let mut mine: Vec<&Value> = ideas.iter().copied().filter(|i| s(i, "project") == p).collect();
-            mine.sort_by(|a, b| rank(s(a, "state")).cmp(&rank(s(b, "state"))).then_with(|| s(b, "updated_at").cmp(s(a, "updated_at"))));
-            let rows = mine
-                .into_iter()
-                .map(|i| Row {
-                    r: fmt::ref_of(i, "I"),
-                    title: s(i, "title").to_string(),
-                    project: p.clone(),
-                    verdict: verdict_pill(&i["verdict"]),
-                    state: state_pill(i),
-                    when: fmt::parse(s(i, "updated_at")).map(|t| cut_at(t, now)).unwrap_or_default(),
-                })
-                .collect();
-            (p, rows)
-        })
-        .collect()
+    match questions(i) {
+        0 if s(i, "state") == "reported" && s(i, "verdict") == "fits" => Some("Ready to plan".into()),
+        0 => None,
+        n => Some(fmt::plural(n as i64, "question", "questions")),
+    }
+}
+
+/// The rows' sections: under Open, "Waiting on you" (open questions first, then ready to plan) over
+/// "Other ideas" (open first, then planned), each newest change first; under Closed, one section
+/// with no name. A section with no rows is left out. Only the picked project's rows when it has any.
+pub fn groups(list: &Value, picked: &str, closed: bool, now: DateTime<Utc>) -> Vec<(String, Vec<Row>)> {
+    groups_of(&arr(list, "ideas").iter().filter(|i| is_closed(i) == closed).collect::<Vec<_>>(), picked, closed, now)
+}
+
+fn groups_of(ideas: &[&Value], picked: &str, closed: bool, now: DateTime<Utc>) -> Vec<(String, Vec<Row>)> {
+    let any_picked = ideas.iter().any(|i| s(i, "project") == picked);
+    let mut mine: Vec<&Value> = ideas.iter().copied().filter(|i| !any_picked || s(i, "project") == picked).collect();
+    mine.sort_by(|a, b| {
+        let key = |i: &Value| (waiting_note(i).is_none(), questions(i) == 0, rank(s(i, "state")));
+        key(a).cmp(&key(b)).then_with(|| s(b, "updated_at").cmp(s(a, "updated_at")))
+    });
+    let row = |i: &Value| Row {
+        r: fmt::ref_of(i, "I"),
+        title: s(i, "title").to_string(),
+        project: s(i, "project").to_string(),
+        pill: row_pill(i),
+        note: waiting_note(i),
+        when: fmt::parse(s(i, "updated_at")).map(|t| cut_at(t, now)).unwrap_or_default(),
+    };
+    if closed {
+        let rows: Vec<Row> = mine.into_iter().map(row).collect();
+        return if rows.is_empty() { vec![] } else { vec![(String::new(), rows)] };
+    }
+    let (waiting, other): (Vec<Row>, Vec<Row>) = mine.into_iter().map(row).partition(|r| r.note.is_some());
+    [("Waiting on you", waiting), ("Other ideas", other)].into_iter().filter(|(_, rows)| !rows.is_empty()).map(|(n, rows)| (n.to_string(), rows)).collect()
 }
 
 /// (project, its open ideas) for the filter: the board's `projects` when it sends them, else
@@ -236,35 +271,81 @@ fn tab_counts(split: &[(String, usize, usize)], picked: &str) -> (usize, usize) 
 
 // ================================================================== new idea
 
-/// Open the New idea dialog, on the project the page shows (none when it shows them all).
+/// Open the New idea dialog: the draft left earlier when there is one, else empty on the project
+/// the page shows (none when it shows them all).
 pub fn open_form(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
-    let project = match m.ideas.project() {
-        "all" => String::new(),
-        p => p.to_string(),
-    };
-    let title = kit::Input::new(cx, "Title", false);
-    let detail = kit::Input::new(cx, "Detail", true);
+    if m.ideas.form.is_none() {
+        let project = match m.ideas.project() {
+            "all" => String::new(),
+            p => p.to_string(),
+        };
+        let title = kit::Input::new(cx, "", false);
+        let detail = kit::Input::new(cx, "", true);
+        cx.subscribe(&title.field, |m: &mut MainWindow, _, _: &FieldChanged, cx| {
+            if let Some(f) = m.ideas.form.as_mut().filter(|f| f.title_err.is_some() || f.error.is_some()) {
+                (f.title_err, f.error) = (None, None);
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe(&detail.field, |m: &mut MainWindow, _, _: &FieldChanged, cx| {
+            if let Some(f) = m.ideas.form.as_mut().filter(|f| f.error.is_some()) {
+                f.error = None;
+                cx.notify();
+            }
+        })
+        .detach();
+        m.ideas.form = Some(Form { title, detail, project, title_err: None, project_err: None, error: None, busy: false, refocus: false, shown: false });
+    }
     m.set_modal(Some(Modal::NewIdea), window, cx);
-    window.focus(&title.focus, cx);
-    m.ideas.form = Some(Form { title, detail, project, error: None, busy: false, refocus: false });
+    if let Some(f) = &m.ideas.form {
+        let to = f.title.focus.clone();
+        window.focus(&to, cx);
+    }
 }
 
-/// Add the idea, then open its page. A refusal shows in the dialog.
+/// Whether the draft holds anything typed or picked.
+fn has_text(f: &Form, cx: &App) -> bool {
+    !f.title.text(cx).trim().is_empty() || !f.detail.text(cx).trim().is_empty()
+}
+
+/// Put the dialog away, keeping what's typed.
+fn close_form(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    m.set_modal(None, window, cx);
+    draft_left(m, cx);
+}
+
+/// Once the dialog is gone (Cancel, esc, or another dialog taking its place), say a typed draft is
+/// kept for next time; an empty one is dropped. Called from every page's draw.
+pub fn draft_left(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if matches!(m.modal, Some(Modal::NewIdea)) {
+        return;
+    }
+    let Some(f) = m.ideas.form.as_mut() else { return };
+    if !std::mem::take(&mut f.shown) || f.busy {
+        return;
+    }
+    if has_text(f, cx) {
+        m.toast("Idea draft kept · Reopen ⌘N", false, cx);
+    } else {
+        m.ideas.form = None;
+    }
+}
+
+/// Add the idea, then open its page. Each missing field says so under itself; a refusal shows
+/// over the buttons.
 fn submit(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(f) = m.ideas.form.as_mut() else { return };
     if f.busy {
         return;
     }
     let title = f.title.text(cx).trim().to_string();
-    let error = if title.is_empty() {
-        Some("Say what the idea is.")
-    } else if f.project.is_empty() {
-        Some("Choose the project it’s for.")
-    } else {
-        None
-    };
-    if let Some(e) = error {
-        f.error = Some(e.into());
+    f.title_err = title.is_empty().then(|| "Say what the idea is.".to_string());
+    f.project_err = f.project.is_empty().then(|| "Choose the project it’s for.".to_string());
+    if f.title_err.is_some() || f.project_err.is_some() {
+        if f.title_err.is_some() {
+            f.refocus = true;
+        }
         cx.notify();
         return;
     }
@@ -294,10 +375,11 @@ fn submit(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
     cx.notify();
 }
 
-/// ↩ in the title (⌘↩ in the detail) adds it, esc closes the dialog, ⇥ moves between the two.
+/// ↩ in the title (⌘↩ in the detail) adds it; esc puts the dialog away with the draft kept. ⇥
+/// walks the fields and buttons in order.
 fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, in_detail: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(f) = m.ideas.form.as_ref() else { return };
-    let (here, other) = if in_detail { (&f.detail, &f.title) } else { (&f.title, &f.detail) };
+    let here = if in_detail { &f.detail } else { &f.title };
     match here.on_key(ev, cx) {
         KeyOutcome::Submit => {
             cx.stop_propagation();
@@ -305,18 +387,28 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, in_detail: bool, window: &mut W
         }
         KeyOutcome::Cancel => {
             cx.stop_propagation();
-            m.set_modal(None, window, cx);
-        }
-        KeyOutcome::Ignored if ev.keystroke.key == "tab" => {
-            cx.stop_propagation();
-            let to = other.focus.clone();
-            window.focus(&to, cx);
+            close_form(m, window, cx);
         }
         KeyOutcome::Ignored => {}
     }
 }
 
-/// The New idea dialog: title, detail, and the project it's for.
+/// A field's name over it.
+fn field_label(t: &Theme, text: &'static str) -> Div {
+    div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(text)
+}
+
+/// What's wrong with a field, under it.
+fn field_error(t: &Theme, e: &Option<String>) -> Option<Div> {
+    e.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).child(e))
+}
+
+/// A shortcut's keys, quiet beside a button's label.
+pub fn keys(t: &Theme, k: &'static str) -> Div {
+    div().px(px(5.)).rounded(px(4.)).bg(t.seg).text_color(t.muted).font_family(t.mono_font.clone()).text_size(px(10.5)).child(k)
+}
+
+/// The New idea dialog: the title, the project it's for and the detail, in that order.
 pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let mut projects = crate::app::project_names(m.state(), m.data.goals.iter());
     for (p, _) in &m.ideas.projects {
@@ -326,74 +418,89 @@ pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context
     }
     projects.sort_by(|a, b| modals::locale_cmp(a, b));
     let Some(f) = m.ideas.form.as_mut() else { return div().into_any_element() };
+    f.shown = true;
     if std::mem::take(&mut f.refocus) {
         window.focus(&f.title.focus, cx);
     }
     let title = f.title.render(t, "new-idea-title", window).on_key_down(cx.listener(|m, ev: &KeyDownEvent, window, cx| on_key(m, ev, false, window, cx)));
+    // Only the detail scrolls once it outgrows its box; the dialog keeps its size.
     let detail = f
         .detail
         .render(t, "new-idea-detail", window)
         .items_start()
         .flex_none()
         .min_h(px(120.))
+        .max_h(px(220.))
+        .overflow_y_scroll()
         .on_key_down(cx.listener(|m, ev: &KeyDownEvent, window, cx| on_key(m, ev, true, window, cx)));
     let cur = f.project.clone();
-    let label = if cur.is_empty() { "Choose a project".to_string() } else { cur.clone() };
+    let label = if cur.is_empty() { "Pick a project".to_string() } else { cur.clone() };
     let project = ip::picker_button(t, "new-idea-project-btn", label, cur.is_empty()).child(kit::anchor(FORM_PROJECT)).on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
         let p = e.position();
         ip::open_project_choice(m, FORM_PROJECT, &cur, &projects, point(p.x - px(10.), p.y + px(14.)), window, cx, |m, p, cx| {
             if let Some(f) = m.ideas.form.as_mut() {
                 f.project = p;
+                f.project_err = None;
                 f.error = None;
             }
             cx.notify();
         });
     }));
     let add = if f.busy { kit::btn_primary(t, "new-idea-add", "Adding…").opacity(0.6) } else {
-        kit::btn_primary(t, "new-idea-add", "Add idea").on_click(cx.listener(|m, _, window, cx| submit(m, window, cx)))
+        kit::btn_primary(t, "new-idea-add", "Add idea").child(keys(t, "⌘↩")).on_click(cx.listener(|m, _, window, cx| submit(m, window, cx)))
     };
-    let error = f.error.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).child(e));
+    let cancel = kit::btn(t, "new-idea-cancel", "Cancel").on_click(cx.listener(|m, _, window, cx| close_form(m, window, cx)));
+    let field = |label: Div, input: AnyElement, err: Option<Div>| div().flex().flex_none().flex_col().gap(px(6.)).child(label).child(input).children(err);
+    let body = div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .gap(px(14.))
+        .px(px(20.))
+        .pb(px(20.))
+        .child(field(field_label(t, "Title"), title.into_any_element(), field_error(t, &f.title_err)))
+        .child(field(field_label(t, "Project"), div().flex().child(project).into_any_element(), field_error(t, &f.project_err)))
+        .child(field(field_label(t, "Detail (optional)"), detail.into_any_element(), None))
+        .children(field_error(t, &f.error))
+        .child(div().flex().flex_none().items_center().justify_end().gap(px(8.)).pt(px(4.)).child(cancel).child(add));
     // Capped by the window: the box's own cap is a share of the dialog's height, which is its own.
     kit::modal_box(t, 560.)
         .max_h(window.viewport_size().height * 0.9)
-        .child(modals::head(t, "New idea", cx))
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .flex_col()
-                .gap(px(10.))
-                .px(px(20.))
-                .pb(px(20.))
-                .child(title)
-                .child(detail)
-                .children(error)
-                .child(div().flex().flex_none().items_center().justify_between().gap(px(10.)).pt(px(4.)).child(project).child(add)),
-        )
+        .child(div().px(px(20.)).pt(px(18.)).pb(px(14.)).text_size(px(16.)).font_weight(FontWeight::BOLD).child("New idea"))
+        .child(body)
         .into_any_element()
 }
 
 // ================================================================== render
 
-fn row(t: &Theme, row: &Row, first: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+/// The list's fixed columns: ref, (title), project, pill, note, time.
+const COL_REF: f32 = 56.;
+const COL_PROJECT: f32 = 120.;
+const COL_PILL: f32 = 112.;
+const COL_NOTE: f32 = 120.;
+const COL_WHEN: f32 = 150.;
+
+fn row(t: &Theme, row: &Row, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let r = row.r.clone();
     let hover = t.panel_2;
+    let cell = |w: f32| div().flex_none().w(px(w)).min_w_0().overflow_hidden();
     div()
         .id(SharedString::from(format!("ideas-row-{}", row.r)))
         .flex()
         .items_center()
         .gap(px(12.))
-        .px(px(20.))
-        .py(px(12.))
-        .when(!first, |d| d.border_t_1().border_color(t.divider))
+        .px(px(12.))
+        .py(px(11.))
+        .border_b_1()
+        .border_color(t.divider)
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .child(div().flex_none().w(px(36.)).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(row.r.clone()))
+        .child(cell(COL_REF).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(row.r.clone()))
         .child(div().min_w_0().flex_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).truncate().child(row.title.clone()))
-        .child(kit::chip(t, row.project.clone()))
-        .children(row.verdict.map(|(label, tone)| kit::tone_pill(t, tone, label)))
-        .child(kit::tone_pill(t, row.state.1, row.state.0))
-        .child(div().flex_none().w(px(140.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(row.when.clone()))
+        .child(cell(COL_PROJECT).text_size(px(12.5)).text_color(t.muted).truncate().child(row.project.clone()))
+        .child(cell(COL_PILL).child(kit::tone_pill(t, row.pill.1, row.pill.0)))
+        .child(cell(COL_NOTE).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn_fg).truncate().children(row.note.clone()))
+        .child(cell(COL_WHEN).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(row.when.clone()))
         .on_click(cx.listener(move |m, _, _, cx| idea::open(m, &r, cx)))
 }
 
@@ -422,7 +529,7 @@ fn sync(m: &mut MainWindow) {
                 .iter()
                 .filter(|i| (key.picked == "all" || fmt::s(i, "project") == key.picked) && is_closed(i) == key.closed)
                 .collect();
-            let groups = groups_of(&mine, &key.picked, now);
+            let groups = groups_of(&mine, &key.picked, key.closed, now);
             View { key, groups, more, lines: vec![] }
         }
     };
@@ -430,9 +537,8 @@ fn sync(m: &mut MainWindow) {
     if v.groups.is_empty() {
         lines.push(Line::Empty);
     }
-    let many = v.groups.len() > 1;
-    for (gi, (_, rows)) in v.groups.iter().enumerate() {
-        if many {
+    for (gi, (name, rows)) in v.groups.iter().enumerate() {
+        if !name.is_empty() {
             lines.push(Line::Group(gi));
         }
         lines.extend((0..rows.len()).map(|ri| Line::Row(gi, ri)));
@@ -479,7 +585,8 @@ fn load_older(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     .detach();
 }
 
-/// The title, the project filter, the Open / Closed tabs and New idea: the list's first line.
+/// The list's first line: the title and New idea, then the Open / Closed tabs and the project
+/// filter.
 fn top(m: &MainWindow, t: &Theme, picked: &str, cx: &mut Context<MainWindow>) -> Div {
     let tabs = &m.ideas.projects;
     let (open, closed) = tab_counts(&m.ideas.split, picked);
@@ -491,50 +598,49 @@ fn top(m: &MainWindow, t: &Theme, picked: &str, cx: &mut Context<MainWindow>) ->
             cx.notify();
         }))
     });
+    let new = kit::btn_primary(t, "ideas-new", "New idea").child(keys(t, "⌘N")).on_click(cx.listener(|m, _, window, cx| open_form(m, window, cx)));
     div()
         .flex()
-        .items_center()
+        .flex_col()
         .gap(px(16.))
-        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Ideas"))
-        .when(tabs.len() > 1, |d| {
-            d.child(ip::project_filter(t, PROJECT_FILTER, picked, tabs, cx, |m, p, cx| {
-                m.ideas.project = p;
-                cx.notify();
-            }))
-        })
-        .child(div().flex_1())
-        .child(which)
-        .child(kit::btn_primary(t, "ideas-new", "New idea").on_click(cx.listener(|m, _, window, cx| open_form(m, window, cx))))
+        .child(div().flex().items_center().gap(px(16.)).child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Ideas")).child(new))
+        .child(
+            div().flex().items_center().gap(px(16.)).child(which).child(div().flex_1()).when(tabs.len() > 1, |d| {
+                d.child(ip::project_filter(t, PROJECT_FILTER, picked, tabs, cx, |m, p, cx| {
+                    m.ideas.project = p;
+                    cx.notify();
+                }))
+            }),
+        )
 }
 
-/// One line of the page's list. A project's card is drawn in pieces: its first row carries the
-/// top edge, each row the sides, the last row the bottom.
+/// One line of the page's list.
 fn line_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let Some(v) = m.ideas.view.take() else { return div().into_any_element() };
     let line = div().px(px(PAGE_X)).line_height(relative(1.4));
     let el = match v.lines.get(ix).copied() {
-        Some(Line::Top) => line.pt(px(22.)).pb(px(20.)).child(top(m, &t, &v.key.picked, cx)),
+        Some(Line::Top) => line.pt(px(22.)).pb(px(12.)).child(top(m, &t, &v.key.picked, cx)),
         Some(Line::Empty) => {
             let none = if v.key.closed { "No closed ideas" } else { "No ideas" };
             line.child(kit::empty(&t, if v.more { "Loading…" } else { none }))
         }
-        Some(Line::Group(gi)) => line
-            .when(gi > 0, |d| d.pt(px(20.)))
-            .pb(px(10.))
-            .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.muted).child(v.groups[gi].0.to_uppercase())),
-        Some(Line::Row(gi, ri)) => {
-            let rows = &v.groups[gi].1;
-            let (first, last) = (ri == 0, ri + 1 == rows.len());
-            let card = div()
-                .bg(t.card)
-                .border_color(t.border)
-                .border_x_1()
-                .overflow_hidden()
-                .when(first, |d| d.border_t_1().rounded_t(px(12.)))
-                .when(last, |d| d.border_b_1().rounded_b(px(12.)));
-            line.child(card.child(row(&t, &rows[ri], first, cx)))
+        Some(Line::Group(gi)) => {
+            let (name, rows) = &v.groups[gi];
+            line.pt(px(18.)).child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .px(px(12.))
+                    .pb(px(8.))
+                    .border_b_1()
+                    .border_color(t.divider)
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(name.clone()))
+                    .child(div().text_size(px(12.5)).text_color(t.muted).child(rows.len().to_string())),
+            )
         }
+        Some(Line::Row(gi, ri)) => line.child(row(&t, &v.groups[gi].1[ri], cx)),
         Some(Line::End) | None => line.h(px(32.)),
     };
     m.ideas.view = Some(v);
@@ -542,6 +648,7 @@ fn line_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<Mai
 }
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    draft_left(m, cx);
     let t = cx.global::<Theme>().clone();
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
     // The dialog's project list: a popover, drawn over the dialog.
@@ -549,9 +656,20 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let shell = div().id("ideas-page").relative().flex().flex_col().flex_1().min_w_0().h_full().children(filter).children(form_project);
 
     if !m.ideas.held.loaded {
-        let msg = m.data.errs.ideas.clone().unwrap_or_else(|| "Loading…".into());
-        let page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4));
-        return shell.child(page.child(top(m, &t, "all", cx)).child(kit::empty(&t, msg))).into_any_element();
+        let page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(top(m, &t, "all", cx));
+        let state = match m.data.errs.ideas.clone() {
+            Some(e) => div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(10.))
+                .py(px(40.))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Ideas didn’t load"))
+                .child(div().text_size(px(12.5)).text_color(t.muted).child(e))
+                .child(kit::btn(&t, "ideas-retry", "Try again").on_click(cx.listener(|m, _, _, cx| m.refresh(cx)))),
+            None => kit::empty(&t, "Loading…"),
+        };
+        return shell.child(page.child(state)).into_any_element();
     }
     sync(m);
     load_older(m, cx);
@@ -577,28 +695,61 @@ mod tests {
     }
 
     #[test]
-    fn open_ideas_come_first_then_planned_shelved_and_dropped() {
+    fn ideas_waiting_on_the_owner_come_first_then_the_rest_and_closed_ones_apart() {
         let now = at(2026, 10, 15, 16);
+        let asks = |mut i: Value, n: u64| {
+            i["questions"] = json!(n);
+            i
+        };
         let list = json!({"ideas": [
             idea(1, "web", "dropped", json!(null), at(2026, 10, 15, 15)),
             idea(2, "web", "planned", json!("fits"), at(2026, 10, 14, 9)),
             idea(3, "web", "new", json!(null), at(2026, 10, 7, 9)),
-            idea(4, "web", "reported", json!("partly"), at(2026, 10, 15, 11)),
+            asks(idea(4, "web", "reported", json!("partly"), at(2026, 10, 15, 11)), 2),
             idea(5, "web", "shelved", json!("doesnt_fit"), at(2025, 12, 1, 9)),
+            idea(6, "web", "reported", json!("fits"), at(2026, 10, 15, 12)),
+            idea(7, "web", "digging", json!(null), at(2026, 10, 15, 13)),
         ]});
-        let got = groups(&list, "all", now);
-        assert_eq!(got.len(), 1);
-        let rows: Vec<(&str, Option<&str>, &str, &str)> = got[0].1.iter().map(|r| (r.r.as_str(), r.verdict.map(|v| v.0), r.state.0, r.when.as_str())).collect();
+        let rows = |g: &(String, Vec<Row>)| g.1.iter().map(|r| (r.r.clone(), r.pill.0, r.note.clone(), r.when.clone())).collect::<Vec<_>>();
+        let open = groups(&list, "all", false, now);
+        assert_eq!(open.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["Waiting on you", "Other ideas"]);
         assert_eq!(
-            rows,
+            rows(&open[0]),
             [
-                ("I4", Some("Partly fits"), "Reported", "Today, 11:05 AM"),
-                ("I3", None, "New", "Oct 7, 9:05 AM"),
-                ("I2", Some("Fits"), "Planned", "Oct 14, 9:05 AM"),
-                ("I5", Some("Doesn’t fit"), "Shelved", "Dec 1, 2025, 9:05 AM"),
-                ("I1", None, "Won’t do", "Today, 3:05 PM"),
+                ("I4".into(), "Partly fits", Some("2 questions".into()), "Today, 11:05 AM".into()),
+                ("I6".into(), "Fits", Some("Ready to plan".into()), "Today, 12:05 PM".into()),
             ]
         );
+        assert_eq!(
+            rows(&open[1]),
+            [
+                ("I7".into(), "Digging", None, "Today, 1:05 PM".into()),
+                ("I3".into(), "New", None, "Oct 7, 9:05 AM".into()),
+                ("I2".into(), "Planned", None, "Oct 14, 9:05 AM".into()),
+            ]
+        );
+        let closed = groups(&list, "all", true, now);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].0, "", "closed ideas sit in one unnamed section");
+        assert_eq!(
+            rows(&closed[0]),
+            [("I5".into(), "Shelved", None, "Dec 1, 2025, 9:05 AM".into()), ("I1".into(), "Won’t do", None, "Today, 3:05 PM".into())]
+        );
+    }
+
+    #[test]
+    fn a_row_has_one_pill_and_only_open_ideas_wait_on_the_owner() {
+        let i = |state: &str, verdict: Value, planning: bool, questions: u64| json!({"state": state, "verdict": verdict, "planning": planning, "questions": questions});
+        assert_eq!(row_pill(&i("reported", json!("fits"), false, 0)), ("Fits", "up"));
+        assert_eq!(row_pill(&i("reported", json!("doesnt_fit"), false, 0)), ("Doesn’t fit", "muted"), "grey: nothing failed");
+        assert_eq!(row_pill(&i("reported", json!("fits"), true, 0)), ("Planning", "accent"));
+        assert_eq!(row_pill(&i("planned", json!("fits"), false, 0)), ("Planned", "goal"));
+        assert_eq!(row_pill(&i("new", json!(null), false, 0)), ("New", "muted"));
+        assert_eq!(waiting_note(&i("reported", json!("doesnt_fit"), false, 1)).as_deref(), Some("1 question"));
+        assert_eq!(waiting_note(&i("reported", json!("partly"), false, 0)), None);
+        assert_eq!(waiting_note(&i("reported", json!("fits"), true, 2)), None, "not while it's planning");
+        assert_eq!(waiting_note(&i("digging", json!("fits"), false, 2)), None, "not while it's digging");
+        assert_eq!(waiting_note(&i("shelved", json!("fits"), false, 0)), None);
     }
 
     #[test]
@@ -634,7 +785,7 @@ mod tests {
         let shown = |cx: &mut gpui_kit::TestAppContext| {
             w.update(cx, |m, _, _| {
                 let v = m.ideas.view.as_ref().unwrap();
-                let rows: Vec<&'static str> = v.lines.iter().filter_map(|l| if let Line::Row(g, r) = l { Some(v.groups[*g].1[*r].state.0) } else { None }).collect();
+                let rows: Vec<&'static str> = v.lines.iter().filter_map(|l| if let Line::Row(g, r) = l { Some(v.groups[*g].1[*r].pill.0) } else { None }).collect();
                 (rows, tab_counts(&m.ideas.split, "all"))
             })
             .unwrap()
@@ -654,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_group_by_name_and_the_filter_counts_open_ideas() {
+    fn a_picked_project_shows_only_its_ideas_and_the_filter_counts_open_ones() {
         let now = at(2026, 10, 15, 16);
         let list = json!({"ideas": [
             idea(1, "web", "new", json!(null), now),
@@ -662,12 +813,16 @@ mod tests {
             idea(3, "web", "planned", json!(null), now),
             idea(4, "api", "digging", json!(null), now),
         ]});
-        let names = |picked: &str| groups(&list, picked, now).into_iter().map(|(p, _)| p).collect::<Vec<_>>();
-        assert_eq!(names("all"), ["api", "web"]);
-        assert_eq!(names("web"), ["web"]);
+        let projects = |picked: &str| {
+            let mut v: Vec<String> = groups(&list, picked, false, now).into_iter().flat_map(|(_, rows)| rows.into_iter().map(|r| r.project)).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        assert_eq!(projects("all"), ["api", "web"]);
+        assert_eq!(projects("web"), ["web"]);
         // A project without ideas falls back to every one.
-        assert_eq!(names("kass"), ["api", "web"]);
-        assert!(groups(&list, "all", now).iter().all(|(p, rows)| rows.iter().all(|r| &r.project == p)), "each row carries its project");
+        assert_eq!(projects("kass"), ["api", "web"]);
         assert_eq!(tabs(&list), [("api".to_string(), 1), ("web".to_string(), 1)]);
     }
 
@@ -695,7 +850,8 @@ mod tests {
         crate::parity::settle(cx);
         w.update(cx, |m: &mut MainWindow, _, _| {
             let f = m.ideas.form.as_mut().unwrap();
-            assert_eq!(f.error.as_deref(), Some("Choose the project it’s for."));
+            assert_eq!(f.project_err.as_deref(), Some("Choose the project it’s for."));
+            assert_eq!(f.title_err, None, "the title is there");
             assert!(rec.last("ideas").is_none(), "nothing is sent without a project");
             f.project = "webapp".into();
         })
@@ -784,6 +940,65 @@ mod tests {
         assert_eq!(rows, open, "every open idea has a line");
         let webapp = w.update(cx, |m, _, _| m.ideas.projects.iter().find(|(p, _)| p == "webapp").map(|(_, n)| *n).unwrap()).unwrap();
         assert!(webapp >= 160, "the filter counts the board's open ideas, not the held ones: {webapp}");
+    }
+
+    #[gpui_kit::test]
+    fn a_put_away_draft_is_kept_and_comes_back_and_an_empty_one_is_dropped(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.open_link("ideas", cx);
+            open_form(m, window, cx);
+            m.ideas.form.as_ref().unwrap().title.set_text("Dark mode", cx);
+            m.ideas.form.as_mut().unwrap().project = "webapp".into();
+        })
+        .unwrap();
+        redraw(w, cx);
+        cx.simulate_keystrokes(w.into(), "escape");
+        redraw(w, cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            assert!(m.modal.is_none(), "esc puts the dialog away");
+            assert!(m.toasts.iter().any(|t| t.text == "Idea draft kept · Reopen ⌘N"), "{:?}", m.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+            open_form(m, window, cx);
+            let f = m.ideas.form.as_ref().unwrap();
+            assert_eq!((f.title.text(cx), f.project.as_str()), ("Dark mode".to_string(), "webapp"), "the draft comes back");
+        })
+        .unwrap();
+        redraw(w, cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.ideas.form.as_ref().unwrap().title.set_text("", cx);
+            close_form(m, window, cx);
+        })
+        .unwrap();
+        redraw(w, cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert!(m.ideas.form.is_none(), "nothing typed, nothing kept")).unwrap();
+        assert!(rec.last("ideas").is_none(), "putting it away sends nothing");
+    }
+
+    #[gpui_kit::test]
+    fn each_missing_field_says_so_under_itself_until_it_changes(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.open_link("ideas", cx);
+            open_form(m, window, cx);
+        })
+        .unwrap();
+        redraw(w, cx);
+        cx.simulate_keystrokes(w.into(), "enter");
+        crate::parity::settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let f = m.ideas.form.as_ref().unwrap();
+            assert_eq!(f.title_err.as_deref(), Some("Say what the idea is."));
+            assert_eq!(f.project_err.as_deref(), Some("Choose the project it’s for."));
+            f.title.set_text("D", cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            let f = m.ideas.form.as_ref().unwrap();
+            assert_eq!(f.title_err, None, "typing clears the title's error");
+            assert!(f.project_err.is_some(), "the project's stays until one is picked");
+        })
+        .unwrap();
     }
 
     #[test]
