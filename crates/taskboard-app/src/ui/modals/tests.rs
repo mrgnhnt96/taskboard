@@ -306,3 +306,25 @@ fn the_merge_dialog_holds_its_answer_until_closed(cx: &mut TestAppContext) {
     parity::settle(cx);
     w.update(cx, |m, _, _| assert!(m.modal.is_none(), "esc closes it")).unwrap();
 }
+
+#[gpui_kit::test]
+fn closing_the_confirm_while_it_works_still_shows_the_answer(cx: &mut TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    w.update(cx, |m, _, cx| m.open_link("taskboard://task/T2?do=done", cx)).unwrap();
+    parity::settle(cx);
+    w.update(cx, |m, _, cx| {
+        confirm_finish(m, cx);
+        m.modal = None;
+    })
+    .unwrap();
+    parity::settle(cx);
+    assert_eq!(rec.posts().iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["tasks/T2/done"]);
+    w.update(cx, |m, _, _| assert_eq!(m.toasts.first().map(|t| t.text.as_str()), Some("Marked T2 done"), "a toast says what happened")).unwrap();
+}
+
+#[test]
+fn each_confirm_says_what_it_skips() {
+    assert!(super::what_it_does(Ask::Done).contains("without waiting for its agent"));
+    assert!(super::what_it_does(Ask::Cancel).contains("cancelled by you"));
+    assert!(super::what_it_does(Ask::Merge).contains("past its checks and reviews"));
+}

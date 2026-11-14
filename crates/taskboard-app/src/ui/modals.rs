@@ -308,7 +308,6 @@ fn refused_view(t: &Theme, pr_word: &str, pr: Option<&serde_json::Value>, r: &Re
 
 fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -> AnyElement {
     let shown = shown_task(m, &f.r).or(m.data.task_card.as_ref().filter(|c| c["ref"].as_str() == Some(f.r.as_str())));
-    let name = shown.and_then(|v| v["title"].as_str()).unwrap_or("").to_string();
     let note = f.note.clone().or_else(|| shown_task(m, &f.r).and_then(|t| already(t, f.ask)));
     let pr_facts = shown.map(|v| &v["pr"]).filter(|p| p.is_object());
     let num = pr_facts.and_then(|p| p["num"].as_i64());
@@ -321,6 +320,8 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
         Ask::Done => format!("Mark {} done?", f.r),
         Ask::Merge => format!("Merge {} without waiting?", num.map(|n| format!("#{n}")).unwrap_or_else(|| "its PR".into())),
     };
+    // What the yes skips or changes, not the task's name again.
+    let does = what_it_does(f.ask);
     let go = match (f.ask, f.busy) {
         (Ask::Cancel, false) => kit::btn_danger(t, "finish-go", "Cancel task"),
         (Ask::Cancel, true) => kit::btn_danger(t, "finish-go", "Cancelling…").opacity(0.6),
@@ -356,12 +357,21 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
                 .gap(px(10.))
                 .px(px(20.))
                 .pb(px(20.))
-                .when(!name.is_empty(), |d| d.child(div().id("finish-name").line_height(relative(1.4)).child(name)))
+                .when(warn.is_none(), |d| d.child(div().id("finish-does").line_height(relative(1.4)).text_color(t.text_2).child(does)))
                 .children(warn)
                 .children(note.map(|n| div().id("finish-note").text_size(px(12.5)).text_color(t.down).child(n)))
                 .children(go.map(|go| div().flex().flex_none().justify_end().gap(px(8.)).pt(px(4.)).children(cancel).child(go))),
         )
         .into_any_element()
+}
+
+/// The one line a Finish dialog says: what the yes skips or changes.
+pub fn what_it_does(ask: Ask) -> &'static str {
+    match ask {
+        Ask::Cancel => "Marks it failed as cancelled by you, without waiting for its agent.",
+        Ask::Done => "Marks it done now, without waiting for its agent to hand it in.",
+        Ask::Merge => "Merges past its checks and reviews; a conflict with its base still stops it.",
+    }
 }
 
 /// The owner's yes: looks the task up again and only marks it done (or failed) while it's still
@@ -392,18 +402,23 @@ pub fn confirm_finish(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             })
             .await;
         let _ = this.update(cx, |m, cx| {
-            let Some(Modal::Finish(f)) = &mut m.modal else { return };
-            if f.r != r {
+            let said = match ask {
+                Ask::Cancel => format!("Cancelled {r}"),
+                Ask::Done => format!("Marked {r} done"),
+                Ask::Merge => format!("Merged {r}'s PR"),
+            };
+            // Closed while it was busy: the answer still shows, as a toast.
+            let Some(Modal::Finish(f)) = m.modal.as_mut().filter(|x| matches!(x, Modal::Finish(f) if f.r == r)) else {
+                match answer {
+                    Ok(_) => m.toast(said, false, cx),
+                    Err((_, note)) => m.toast(note, true, cx),
+                }
+                m.refresh(cx);
                 return;
-            }
+            };
             match answer {
                 Ok(_) => {
                     m.modal = None;
-                    let said = match ask {
-                        Ask::Cancel => format!("Cancelled {r}"),
-                        Ask::Done => format!("Marked {r} done"),
-                        Ask::Merge => format!("Merged {r}'s PR"),
-                    };
                     m.toast(said, false, cx);
                 }
                 // A merge the host refused keeps its answer in the dialog.
