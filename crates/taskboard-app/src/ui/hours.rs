@@ -645,7 +645,7 @@ mod tests {
         assert_eq!((st.today.as_str(), st.pm[2]), ("06:00", false), "tomorrow's 6am shows in the field");
         assert!(st.body("06:00").get("today_until").is_none(), "unchanged: not sent again");
         let p = pill_view(&json!({"on": true, "open": true, "start": "06:00", "end": "14:30", "until": "2026-11-03T06:00"}));
-        assert_eq!(p.label, "Work hours until tomorrow 6am");
+        assert_eq!(p.label, "Work hours until tomorrow 6:00 AM");
     }
 
     #[::core::prelude::v1::test]

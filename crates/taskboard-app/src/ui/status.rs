@@ -183,6 +183,105 @@ pub fn bar(t: &Theme, parts: &[(St, i64)], h: f32) -> Div {
     d
 }
 
+/// Puts a failure in plain words. The board's own sentences pass through; raw text (JSON, error
+/// codes, "os error", a Rust or HTTP message) becomes a plain line saying it didn't work.
+pub fn plain_error(raw: &str) -> String {
+    let t = raw.trim();
+    let lower = t.to_ascii_lowercase();
+    let raw_looking = t.is_empty()
+        || t.starts_with('{')
+        || t.starts_with('[')
+        || ["os error", "errno", "panicked", "stack", "json", "expected value", "connection refused", "timed out", "broken pipe", "unexpected", "::", "http "]
+            .iter()
+            .any(|w| lower.contains(w));
+    if lower.contains("can’t reach") || lower.contains("can't reach") || lower.contains("connection refused") {
+        return "The board isn’t answering. Check that it’s running, then try again.".into();
+    }
+    if raw_looking {
+        return "That didn’t work. Try again in a moment.".into();
+    }
+    // The board answered "The board answered 500." for a failure it gave no sentence for.
+    if lower.starts_with("the board answered") {
+        return "That didn’t work. The board hit a problem.".into();
+    }
+    let mut out = t.to_string();
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
+}
+
+/// Tells VoiceOver (it speaks it without moving focus). A no-op off macOS and in tests.
+#[cfg(all(target_os = "macos", not(test)))]
+pub fn announce(text: &str) {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSDictionary, NSString};
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {
+        fn NSAccessibilityPostNotificationWithUserInfo(element: *mut AnyObject, notification: &NSString, info: &NSDictionary<NSString, AnyObject>);
+    }
+    unsafe {
+        let app: Option<Retained<AnyObject>> = msg_send![class!(NSApplication), sharedApplication];
+        let Some(app) = app else { return };
+        let (note, key) = (NSString::from_str("AXAnnouncementRequested"), NSString::from_str("AXAnnouncement"));
+        let msg = NSString::from_str(text);
+        let info: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::from_retained_objects(&[&*key], &[Retained::cast_unchecked::<AnyObject>(msg)]);
+        NSAccessibilityPostNotificationWithUserInfo(Retained::as_ptr(&app) as *mut AnyObject, &note, &info);
+    }
+}
+#[cfg(not(all(target_os = "macos", not(test))))]
+pub fn announce(_text: &str) {}
+
+/// `.toast`: centred 24px above the bottom, 9px 16px, radius 9, 13px, `--shadow-modal`. Errors carry a
+/// Dismiss button and stay; the rest go on their own.
+pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app::MainWindow>) -> Option<AnyElement> {
+    if m.toasts.is_empty() {
+        return None;
+    }
+    let mut col = div().absolute().bottom(px(24.)).left_0().right_0().px(px(16.)).flex().flex_col().items_center().gap(px(6.));
+    for (i, x) in m.toasts.iter().enumerate() {
+        let at = x.at;
+        col = col.child(
+            div()
+                .id(("toast", i))
+                .px(px(16.))
+                .py(px(9.))
+                .rounded(px(9.))
+                .shadow(kit::shadow_modal(t))
+                .text_size(px(13.))
+                .bg(if x.err { t.down } else { t.text })
+                .text_color(if x.err { gpui_kit::white() } else { t.bg })
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .child(x.text.clone())
+                .children(x.undo.clone().map(|path| {
+                    div()
+                        .id("toast-undo")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.accent_soft)
+                        .cursor_pointer()
+                        .child("Undo")
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            m.dismiss_toast(at, cx);
+                            m.post(path.clone(), serde_json::json!({}), cx, |_, _, _| {});
+                        }))
+                }))
+                .children(x.err.then(|| {
+                    div()
+                        .id(("toast-dismiss", i))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .cursor_pointer()
+                        .child("Dismiss")
+                        .on_click(cx.listener(move |m, _, _, cx| m.dismiss_toast(at, cx)))
+                })),
+        );
+    }
+    Some(deferred(col).with_priority(4).into_any_element())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +363,15 @@ mod tests {
         let closed = row(&card(json!({"status": "needs", "lost": true, "closed_by_hand": true})));
         assert_eq!((closed.st, closed.loud), (St::Stopped, false));
         assert!(closed.line.starts_with("Stopped · "), "{}", closed.line);
+    }
+
+    #[::core::prelude::v1::test]
+    fn errors_are_put_in_plain_words() {
+        assert_eq!(plain_error("Can’t reach the task board server."), "The board isn’t answering. Check that it’s running, then try again.");
+        assert_eq!(plain_error("{\"error\":\"boom\"}"), "That didn’t work. Try again in a moment.");
+        assert_eq!(plain_error("No such file (os error 2)"), "That didn’t work. Try again in a moment.");
+        assert_eq!(plain_error("The board answered 500."), "That didn’t work. The board hit a problem.");
+        assert_eq!(plain_error("T3 has no terminal to stop"), "T3 has no terminal to stop.");
+        assert_eq!(plain_error("Midna isn't running, so the board can't open a terminal."), "Midna isn't running, so the board can't open a terminal.");
     }
 }

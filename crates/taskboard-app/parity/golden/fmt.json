@@ -159,7 +159,7 @@
         "fn": "clock12",
         "hhmm": "00:00"
       },
-      "expect": "12am"
+      "expect": "12:00 AM"
     },
     {
       "name": "clock12 09:00",
@@ -167,7 +167,7 @@
         "fn": "clock12",
         "hhmm": "09:00"
       },
-      "expect": "9am"
+      "expect": "9:00 AM"
     },
     {
       "name": "clock12 09:30",
@@ -175,7 +175,7 @@
         "fn": "clock12",
         "hhmm": "09:30"
       },
-      "expect": "9:30am"
+      "expect": "9:30 AM"
     },
     {
       "name": "clock12 12:00",
@@ -183,7 +183,7 @@
         "fn": "clock12",
         "hhmm": "12:00"
       },
-      "expect": "12pm"
+      "expect": "12:00 PM"
     },
     {
       "name": "clock12 12:05",
@@ -191,7 +191,7 @@
         "fn": "clock12",
         "hhmm": "12:05"
       },
-      "expect": "12:05pm"
+      "expect": "12:05 PM"
     },
     {
       "name": "clock12 15:00",
@@ -199,7 +199,7 @@
         "fn": "clock12",
         "hhmm": "15:00"
       },
-      "expect": "3pm"
+      "expect": "3:00 PM"
     },
     {
       "name": "clock12 23:30",
@@ -207,7 +207,7 @@
         "fn": "clock12",
         "hhmm": "23:30"
       },
-      "expect": "11:30pm"
+      "expect": "11:30 PM"
     },
     {
       "name": "whenLine 0 queued",

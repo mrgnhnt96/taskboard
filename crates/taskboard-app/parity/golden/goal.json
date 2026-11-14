@@ -21104,7 +21104,7 @@
           {
             "act": "goal-run",
             "label": "Start tomorrow",
-            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -21223,7 +21223,7 @@
           {
             "act": "goal-run",
             "label": "Start tomorrow: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -21337,7 +21337,7 @@
           {
             "act": "goal-run",
             "label": "Start tomorrow: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -21456,7 +21456,7 @@
           {
             "act": "goal-run",
             "label": "Start tomorrow: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-pause",
@@ -21552,8 +21552,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until tomorrow 6am",
-            "title": "The queued tasks start when work hours open (tomorrow at 6am)"
+            "label": "Waiting until tomorrow 6:00 AM",
+            "title": "The queued tasks start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -21672,7 +21672,7 @@
           {
             "act": "goal-run",
             "label": "Start tomorrow: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -21857,8 +21857,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until tomorrow 6am",
-            "title": "The queued tasks start when work hours open (tomorrow at 6am)"
+            "label": "Waiting until tomorrow 6:00 AM",
+            "title": "The queued tasks start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -22287,7 +22287,7 @@
           {
             "act": "goal-run",
             "label": "Start tomorrow: 2 more tasks",
-            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (tomorrow at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -22406,7 +22406,7 @@
           {
             "act": "goal-run",
             "label": "Start today",
-            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -22525,7 +22525,7 @@
           {
             "act": "goal-run",
             "label": "Start today: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -22639,7 +22639,7 @@
           {
             "act": "goal-run",
             "label": "Start today: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -22758,7 +22758,7 @@
           {
             "act": "goal-run",
             "label": "Start today: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-pause",
@@ -22854,8 +22854,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until today 6:30pm",
-            "title": "The queued tasks start when work hours open (today at 6:30pm)"
+            "label": "Waiting until today 6:30 PM",
+            "title": "The queued tasks start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -22974,7 +22974,7 @@
           {
             "act": "goal-run",
             "label": "Start today: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -23159,8 +23159,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until today 6:30pm",
-            "title": "The queued tasks start when work hours open (today at 6:30pm)"
+            "label": "Waiting until today 6:30 PM",
+            "title": "The queued tasks start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -23589,7 +23589,7 @@
           {
             "act": "goal-run",
             "label": "Start today: 2 more tasks",
-            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30pm)"
+            "title": "Queue the planned tasks now; they start when work hours open (today at 6:30 PM)"
           },
           {
             "act": "goal-plan-edit",
@@ -23708,7 +23708,7 @@
           {
             "act": "goal-run",
             "label": "Start Saturday",
-            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -23827,7 +23827,7 @@
           {
             "act": "goal-run",
             "label": "Start Saturday: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -23941,7 +23941,7 @@
           {
             "act": "goal-run",
             "label": "Start Saturday: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -24060,7 +24060,7 @@
           {
             "act": "goal-run",
             "label": "Start Saturday: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-pause",
@@ -24156,8 +24156,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until Saturday 6am",
-            "title": "The queued tasks start when work hours open (Saturday at 6am)"
+            "label": "Waiting until Saturday 6:00 AM",
+            "title": "The queued tasks start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -24276,7 +24276,7 @@
           {
             "act": "goal-run",
             "label": "Start Saturday: 1 more task",
-            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -24368,8 +24368,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until Saturday 6am",
-            "title": "The queued tasks start when work hours open (Saturday at 6am)"
+            "label": "Waiting until Saturday 6:00 AM",
+            "title": "The queued tasks start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -24461,8 +24461,8 @@
         "buttons": [
           {
             "act": "wait-menu",
-            "label": "Waiting until Saturday 6am",
-            "title": "The queued tasks start when work hours open (Saturday at 6am)"
+            "label": "Waiting until Saturday 6:00 AM",
+            "title": "The queued tasks start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -24891,7 +24891,7 @@
           {
             "act": "goal-run",
             "label": "Start Saturday: 2 more tasks",
-            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6am)"
+            "title": "Queue the planned tasks now; they start when work hours open (Saturday at 6:00 AM)"
           },
           {
             "act": "goal-plan-edit",
@@ -26310,7 +26310,7 @@
         {
           "act": "goal-run",
           "title": "Start tomorrow",
-          "sub": "Queued now, starts when work hours open at 6am"
+          "sub": "Queued now, starts when work hours open at 6:00 AM"
         },
         {
           "act": "goal-run-now",
@@ -26421,7 +26421,7 @@
         {
           "act": "goal-run",
           "title": "Start tomorrow",
-          "sub": "Queued now, starts when work hours open at 6am"
+          "sub": "Queued now, starts when work hours open at 6:00 AM"
         },
         {
           "act": "goal-run-now",
@@ -26458,7 +26458,7 @@
       },
       "expect": [
         "tomorrow",
-        "6am"
+        "6:00 AM"
       ]
     },
     {
@@ -26597,7 +26597,7 @@
         {
           "act": "goal-run",
           "title": "Start today",
-          "sub": "Queued now, starts when work hours open at 6:30pm"
+          "sub": "Queued now, starts when work hours open at 6:30 PM"
         },
         {
           "act": "goal-run-now",
@@ -26708,7 +26708,7 @@
         {
           "act": "goal-run",
           "title": "Start today",
-          "sub": "Queued now, starts when work hours open at 6:30pm"
+          "sub": "Queued now, starts when work hours open at 6:30 PM"
         },
         {
           "act": "goal-run-now",
@@ -26745,7 +26745,7 @@
       },
       "expect": [
         "today",
-        "6:30pm"
+        "6:30 PM"
       ]
     },
     {
@@ -26884,7 +26884,7 @@
         {
           "act": "goal-run",
           "title": "Start Saturday",
-          "sub": "Queued now, starts when work hours open at 6am"
+          "sub": "Queued now, starts when work hours open at 6:00 AM"
         },
         {
           "act": "goal-run-now",
@@ -26995,7 +26995,7 @@
         {
           "act": "goal-run",
           "title": "Start Saturday",
-          "sub": "Queued now, starts when work hours open at 6am"
+          "sub": "Queued now, starts when work hours open at 6:00 AM"
         },
         {
           "act": "goal-run-now",
@@ -27032,7 +27032,7 @@
       },
       "expect": [
         "Saturday",
-        "6am"
+        "6:00 AM"
       ]
     },
     {
@@ -35744,7 +35744,7 @@
           ]
         ],
         "feedback": {
-          "toast": "3 tasks queued. They start tomorrow at 6am."
+          "toast": "3 tasks queued. They start tomorrow at 6:00 AM."
         }
       }
     },
