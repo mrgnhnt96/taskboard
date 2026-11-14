@@ -15653,7 +15653,7 @@
           }
         }
       },
-      "expect": "Thu 6am"
+      "expect": "Thu 6:00 AM"
     },
     {
       "name": "hoursOpenAt closed today",
@@ -15710,7 +15710,7 @@
           }
         }
       },
-      "expect": "6pm"
+      "expect": "6:00 PM"
     },
     {
       "name": "hoursOpenAt open",

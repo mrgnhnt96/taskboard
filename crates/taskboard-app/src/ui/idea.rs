@@ -1238,7 +1238,7 @@ mod tests {
         let toast = |w: &gpui_kit::WindowHandle<MainWindow>, cx: &mut gpui_kit::TestAppContext| {
             w.update(cx, |m, _, _| {
                 assert!(m.idea.busy.is_empty(), "a refused talk doesn't stay on Sending…");
-                (m.toasts[0].text.clone(), m.toasts[0].err)
+                (m.toasts.last().unwrap().text.clone(), m.toasts.last().unwrap().err)
             })
             .unwrap()
         };

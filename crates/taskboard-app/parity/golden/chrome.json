@@ -19054,7 +19054,7 @@
       },
       "expect": {
         "closed": false,
-        "label": "Work hours 9am–5pm",
+        "label": "Work hours 9:00 AM–5:00 PM",
         "title": "Work hours 9am–5pm: agents start until 5pm"
       }
     },
@@ -19081,7 +19081,7 @@
       },
       "expect": {
         "closed": false,
-        "label": "Work hours until 4pm today",
+        "label": "Work hours until 4:00 PM today",
         "title": "Work hours 9am–5pm: agents start until 5pm"
       }
     },
@@ -19108,7 +19108,7 @@
       },
       "expect": {
         "closed": true,
-        "label": "Agents off until 6:30pm",
+        "label": "Agents off until 6:30 PM",
         "title": "Closed"
       }
     },
@@ -19135,7 +19135,7 @@
       },
       "expect": {
         "closed": true,
-        "label": "Agents off until Thu 6am",
+        "label": "Agents off until Thu 6:00 AM",
         "title": "Agents off until Thu 6am"
       }
     },
@@ -19217,7 +19217,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "5-hour limit: 35% used, resets 6pm\n7-day limit: 78% used, resets Sat 9am",
+        "title": "5-hour limit: 35% used, resets 6:00 PM\n7-day limit: 78% used, resets Sat 9:00 AM",
         "windows": [
           {
             "level": "ok",
@@ -19258,7 +19258,7 @@
       },
       "expect": {
         "stale": true,
-        "title": "5-hour limit: 100% used\n7-day limit: 90% used, resets 8pm\nLast read 2h ago",
+        "title": "5-hour limit: 100% used\n7-day limit: 90% used, resets 8:00 PM\nLast read 2h ago",
         "windows": [
           {
             "level": "hot",
@@ -19365,7 +19365,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM",
         "windows": [
           {
             "level": "ok",
@@ -19399,7 +19399,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM",
         "windows": [
           {
             "level": "ok",
@@ -19440,7 +19440,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 4% used of 12%, 8% left (+2% carried)",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday: 4% used of 12%, 8% left (+2% carried)",
         "windows": [
           {
             "level": "ok",
@@ -19487,7 +19487,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 9.5% used of 12%",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday: 9.5% used of 12%",
         "windows": [
           {
             "level": "ok",
@@ -19534,7 +19534,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 11.2% used of 12%",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday: 11.2% used of 12%",
         "windows": [
           {
             "level": "ok",
@@ -19581,7 +19581,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday’s 12% is used up: new work starts again at 12am",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday’s 12% is used up: new work starts again at 12am",
         "windows": [
           {
             "level": "ok",
@@ -19628,7 +19628,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday’s limit is lifted until midnight: 15% used of 12%",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday’s limit is lifted until midnight: 15% used of 12%",
         "windows": [
           {
             "level": "ok",
@@ -19675,7 +19675,7 @@
       },
       "expect": {
         "stale": false,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 0.4% used of 0%",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday: 0.4% used of 0%",
         "windows": [
           {
             "level": "ok",
@@ -19722,7 +19722,7 @@
       },
       "expect": {
         "stale": true,
-        "title": "7-day limit: 40% used, resets Sat 9am\nToday: 4% used of 12%\nLast read 2h ago",
+        "title": "7-day limit: 40% used, resets Sat 9:00 AM\nToday: 4% used of 12%\nLast read 2h ago",
         "windows": [
           {
             "level": "ok",

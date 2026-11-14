@@ -78,7 +78,7 @@ pub fn ago(iso: &str) -> String {
     }
 }
 
-/// A time today as "3:05 PM", any other day as "Oct 7" (the web's `hhmm`).
+/// A time today as "3:05 PM", any other day as the date, "Oct 7" (the web's `hhmm`).
 pub fn hhmm(iso: &str) -> String {
     let Some(t) = parse(iso) else { return String::new() };
     let l = local(t);
@@ -173,29 +173,44 @@ pub fn when_line(t: &Value) -> String {
     format!("{verb} {a}")
 }
 
-/// "09:30" → "9:30am", "15:00" → "3pm".
+/// "09:30" → "9:30 AM", "15:00" → "3:00 PM".
 pub fn clock12(hhmm: &str) -> String {
     let mut it = hhmm.split(':').map(|p| p.parse::<u32>().unwrap_or(0));
     let (h, m) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
     let h12 = if h % 12 == 0 { 12 } else { h % 12 };
-    let mm = if m > 0 { format!(":{m:02}") } else { String::new() };
-    format!("{h12}{mm}{}", if h < 12 { "am" } else { "pm" })
+    format!("{h12}:{m:02} {}", if h < 12 { "AM" } else { "PM" })
 }
 
-/// A time as "3pm" today or "Thu 6am" another day.
+/// "Today", "Yesterday", "Thu" within the last week, else "Oct 27" (with the year in another year);
+/// empty for a time that is today.
+fn day_word(t: DateTime<Utc>) -> String {
+    let (l, today) = (local(t), local(now()).date_naive());
+    match l.date_naive() {
+        d if d == today => String::new(),
+        d if today.pred_opt() == Some(d) => "Yesterday".into(),
+        d if d.year() == today.year() => l.format("%b %-d").to_string(),
+        _ => l.format("%b %-d, %Y").to_string(),
+    }
+}
+
+/// A time as "3:00 PM" today, "Thu 6:00 AM" for a day coming up, "Yesterday 3:00 PM" or "Oct 27 8:26 AM".
 pub fn day_clock(iso: &str) -> String {
     let Some(t) = parse(iso) else { return String::new() };
     let l = local(t);
-    let day = if is_today(t) { String::new() } else { format!("{} ", l.format("%a")) };
-    format!("{day}{}", clock12(&l.format("%H:%M").to_string()))
+    let clock = clock12(&l.format("%H:%M").to_string());
+    let (today, d) = (local(now()).date_naive(), l.date_naive());
+    if is_today(t) {
+        return clock;
+    }
+    if d > today && (d - today).num_days() < 7 { format!("{} {clock}", l.format("%a")) } else { format!("{} {clock}", day_word(t)) }
 }
 
-/// A time as "8:26am" today or "Oct 27 8:26am" another day.
+/// A time as "8:26 AM" today, else "Yesterday 8:26 AM" or "Oct 27 8:26 AM".
 pub fn day_time(iso: &str) -> String {
     let Some(t) = parse(iso) else { return String::new() };
     let l = local(t);
-    let day = if is_today(t) { String::new() } else { format!("{} ", l.format("%b %-d")) };
-    format!("{day}{}", clock12(&l.format("%H:%M").to_string()))
+    let clock = clock12(&l.format("%H:%M").to_string());
+    if is_today(t) { clock } else { format!("{} {clock}", day_word(t)) }
 }
 
 /// "Compacting since 3:05 PM" while a terminal (or a task's terminal) is compacting its conversation.
@@ -373,9 +388,9 @@ mod tests {
 
     #[test]
     fn clocks_and_spans() {
-        assert_eq!(clock12("09:30"), "9:30am");
-        assert_eq!(clock12("15:00"), "3pm");
-        assert_eq!(clock12("00:00"), "12am");
+        assert_eq!(clock12("09:30"), "9:30 AM");
+        assert_eq!(clock12("15:00"), "3:00 PM");
+        assert_eq!(clock12("00:00"), "12:00 AM");
         assert_eq!(span(0), "under a minute");
         assert_eq!(span(125), "2h 5m");
         assert_eq!(span(120), "2h");

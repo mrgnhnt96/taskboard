@@ -24,9 +24,11 @@ const AGES: Duration = Duration::from_secs(15);
 const POLL_AWAY: Duration = Duration::from_secs(15);
 /// The poll while none of the window is on screen: minimized, covered, on another Space, the app hidden.
 const POLL_HIDDEN: Duration = Duration::from_secs(30);
-/// How long a toast stays (the web's `toast`): 3 s, an error 6 s.
+/// How long a toast stays: 3 s, one with Undo 6 s. An error stays until it is dismissed.
 const TOAST_OK: Duration = Duration::from_secs(3);
-const TOAST_ERR: Duration = Duration::from_secs(6);
+const TOAST_UNDO: Duration = Duration::from_secs(6);
+/// Errors stack, newest last, up to this many.
+const TOASTS_MAX: usize = 3;
 /// How many goals just left stay on hand to show again at once.
 const RECENT_GOALS: usize = 8;
 /// The least a clicked button reads "Sending…", so a quick answer doesn't flash it. None in
@@ -726,29 +728,47 @@ impl MainWindow {
 
     // -------------------------------------------------------------- toasts
 
-    /// One toast at a time, as the web did: a new one replaces the last; it goes after 3 s (6 s
-    /// for an error).
+    /// A toast. A plain one replaces the last plain one and goes after 3 s. An error is put in plain
+    /// words, stays until it is dismissed, is announced to VoiceOver, and stacks (up to three).
     pub fn toast(&mut self, text: impl Into<String>, err: bool, cx: &mut Context<Self>) {
-        self.show_toast(Toast { text: text.into(), err, at: Instant::now(), undo: None }, cx);
+        let text = text.into();
+        let text = if err { ui::status::plain_error(&text) } else { text };
+        self.show_toast(Toast { text, err, at: Instant::now(), undo: None }, cx);
     }
 
-    /// A toast with Undo, which POSTs `undo`; it stays as long as an error's.
+    /// A toast with Undo, which POSTs `undo`; it stays 6 s.
     pub fn toast_undo(&mut self, text: impl Into<String>, undo: impl Into<String>, cx: &mut Context<Self>) {
         self.show_toast(Toast { text: text.into(), err: false, at: Instant::now(), undo: Some(undo.into()) }, cx);
     }
 
+    /// Closes one toast (its ✕, or Undo).
+    pub fn dismiss_toast(&mut self, at: Instant, cx: &mut Context<Self>) {
+        self.toasts.retain(|t| t.at != at);
+        cx.notify();
+    }
+
     fn show_toast(&mut self, toast: Toast, cx: &mut Context<Self>) {
         let at = toast.at;
-        let stay = if toast.err || toast.undo.is_some() { TOAST_ERR } else { TOAST_OK };
-        self.toasts = vec![toast];
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(stay).await;
-            let _ = this.update(cx, |m, cx| {
-                m.toasts.retain(|t| t.at != at);
-                cx.notify();
-            });
-        })
-        .detach();
+        let err = toast.err;
+        if err {
+            ui::status::announce(&toast.text);
+            // The same failure twice shows once.
+            self.toasts.retain(|t| !(t.err && t.text == toast.text));
+        } else {
+            self.toasts.retain(|t| t.err);
+        }
+        let stay = if toast.undo.is_some() { TOAST_UNDO } else { TOAST_OK };
+        self.toasts.push(toast);
+        while self.toasts.len() > TOASTS_MAX {
+            self.toasts.remove(0);
+        }
+        if !err {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(stay).await;
+                let _ = this.update(cx, |m, cx| m.dismiss_toast(at, cx));
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -1714,7 +1734,7 @@ impl Render for MainWindow {
             .children(panel)
             .children(modal)
             .children(hours_menu)
-            .children(toasts(self, &t, cx))
+            .children(ui::status::toasts(self, &t, cx))
             .when(self.menu.is_some(), |d| {
                 // A click anywhere outside an open menu closes it.
                 d.child(deferred(div().id("menu-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
@@ -2225,46 +2245,6 @@ pub(crate) fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
         );
     }
     row.into_any_element()
-}
-
-/// `.toast`: centred 24px above the bottom, 9px 16px, radius 9, 13px, `--shadow-modal`.
-fn toasts(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    if m.toasts.is_empty() {
-        return None;
-    }
-    let mut col = div().absolute().bottom(px(24.)).left_0().right_0().px(px(16.)).flex().flex_col().items_center().gap(px(6.));
-    // (One at a time: `toast` replaces the last.)
-    for (i, x) in m.toasts.iter().enumerate() {
-        col = col.child(
-            div()
-                .id(("toast", i))
-                .px(px(16.))
-                .py(px(9.))
-                .rounded(px(9.))
-                .shadow(ui::kit::shadow_modal(t))
-                .text_size(px(13.))
-                .bg(if x.err { t.down } else { t.text })
-                .text_color(if x.err { gpui_kit::white() } else { t.bg })
-                .flex()
-                .items_center()
-                .gap(px(14.))
-                .child(x.text.clone())
-                .children(x.undo.clone().map(|path| {
-                    let at = x.at;
-                    div()
-                        .id("toast-undo")
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.accent_soft)
-                        .cursor_pointer()
-                        .child("Undo")
-                        .on_click(cx.listener(move |m, _, _, cx| {
-                            m.toasts.retain(|t| t.at != at);
-                            m.post(path.clone(), serde_json::json!({}), cx, |_, _, _| {});
-                        }))
-                })),
-        );
-    }
-    Some(deferred(col).with_priority(4).into_any_element())
 }
 
 #[cfg(test)]
@@ -2950,14 +2930,21 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn one_toast_at_a_time(cx: &mut gpui_kit::TestAppContext) {
+    fn toasts_stack_and_errors_stay(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
             m.toast("first", false, cx);
-            m.toast("second", true, cx);
-            assert_eq!(m.toasts.len(), 1);
-            assert_eq!(m.toasts[0].text, "second");
-            assert!(m.toasts[0].err);
+            m.toast("second", false, cx);
+            assert_eq!(m.toasts.len(), 1, "plain toasts replace each other");
+            m.toast("Couldn’t save that.", true, cx);
+            m.toast("Couldn’t save that.", true, cx);
+            assert_eq!(m.toasts.len(), 2, "a plain toast and one error; the same error shows once");
+            m.toast("Couldn’t start it.", true, cx);
+            m.toast("Couldn’t stop it.", true, cx);
+            m.toast("Couldn’t close it.", true, cx);
+            assert_eq!(m.toasts.len(), 3, "at most three");
+            assert!(m.toasts.iter().all(|t| t.err), "errors stay when a plain toast comes");
+            assert_eq!(m.toasts[0].text, "Couldn’t start it.", "the oldest goes");
         })
         .unwrap();
     }
