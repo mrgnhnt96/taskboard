@@ -3063,7 +3063,9 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
             crate::api::link_issues(r.app, &board::get_task(r.app, ref_id(t))?, &more, &r.name())?;
         }
         note_made(r, &created)?;
-        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})));
+        let wait_line = made_wait_line(r, &created)?;
+        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings,
+                                              "wait_line": wait_line})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
         return err(400, "Only a task in a goal can also finish other goals. Give it its home goal with --goal G<n>.");
@@ -3090,9 +3092,17 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         crate::api::issue_tasked(r.app, b.id(), c["id"].as_i64().unwrap_or(0), &r.name(), &text)?;
         crate::api::link_issues(r.app, &board::get_task(r.app, c["id"].as_i64().unwrap_or(0))?, &more, &r.name())?;
     }
-    note_made(r, &[c["ref"].as_str().unwrap_or("").to_string()])?;
+    let made = [c["ref"].as_str().unwrap_or("").to_string()];
+    note_made(r, &made)?;
+    let wait_line = made_wait_line(r, &made)?;
     Ok(with(ok(None, None), json!({"created": [c["ref"]], "title": title, "status": c["status"], "project": c["project"],
-                                   "warnings": c.get("warnings").cloned().unwrap_or(json!([]))})))
+                                   "warnings": c.get("warnings").cloned().unwrap_or(json!([])), "wait_line": wait_line})))
+}
+
+/// The `tb wait-for` line for this terminal's task when the tasks it just made name it (`waitsfor::caller_needs_line`).
+fn made_wait_line(r: &Report, refs: &[String]) -> Result<Option<String>> {
+    let ids: Vec<i64> = refs.iter().map(|t| ref_id(t)).filter(|n| *n > 0).collect();
+    waitsfor::caller_needs_line(r.app, r.sid(), &ids)
 }
 
 /// `--issue B<n>` (repeated): the backlog issues the new task fixes. The first is the one it's made from; the

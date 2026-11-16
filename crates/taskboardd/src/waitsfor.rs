@@ -56,21 +56,8 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>
         }
         let other = board::get_task(app, n)?;
         if let Some(t) = t {
-            if !crate::projects::may_wait_on(app, &t.st("project"), &other.st("project")) {
-                return err(
-                    409,
-                    format!(
-                        "{} is in {}, not {}, so its work can't be brought into this task. \
-                         To let {}'s tasks wait for {}'s: tb project set {} --waits-on {}",
-                        rf("task", n),
-                        other.st("project"),
-                        t.st("project"),
-                        t.st("project"),
-                        other.st("project"),
-                        t.st("project"),
-                        other.st("project")
-                    ),
-                );
+            if let Some(why) = cross_project_refusal(app, t, &other) {
+                return err(409, why);
             }
             if reaches(app, n, t.id(), &mut vec![])? {
                 return err(409, format!("{} already waits for {}, so this would wait forever.", rf("task", n), rf("task", t.id())));
@@ -81,6 +68,69 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>
         }
     }
     Ok(if out.is_empty() { None } else { Some(jdumps(&json!(out))) })
+}
+
+/// Why `t` may not wait for `other`: it's in a project `t`'s project isn't allowed to wait on. None when it may.
+pub fn cross_project_refusal(app: &App, t: &Row, other: &Row) -> Option<String> {
+    let (mine, theirs) = (t.st("project"), other.st("project"));
+    if crate::projects::may_wait_on(app, &mine, &theirs) {
+        return None;
+    }
+    Some(format!(
+        "{} is in {theirs}, not {mine}, so its work can't be brought into this task. \
+         To let {mine}'s tasks wait for {theirs}'s: tb project set {mine} --waits-on {theirs}",
+        rf("task", other.id())
+    ))
+}
+
+/// What `tb task new` and `tb start` say when this terminal's task makes or starts tasks whose title or detail
+/// names it ("Blocks T12", "report the SHA on T12"): the exact `tb wait-for` line that parks it on them. An
+/// agent that only says it will wait records nothing, so nothing brings its conversation back. Only a mention
+/// of the task's own ref counts, and it's never recorded for the agent: the mention may be a note, not a need.
+/// None when no such task names it, or it waits for them already.
+pub fn caller_needs_line(app: &App, via: Option<&str>, targets: &[i64]) -> Result<Option<String>> {
+    let Some(me) = board::task_for_session(app, via)? else { return Ok(None) };
+    let mine = crate::human::task_ref(&me);
+    let have = ids(&me);
+    let (mut may, mut refused) = (vec![], vec![]);
+    for &n in targets {
+        if n == me.id() || have.contains(&n) {
+            continue;
+        }
+        let Some(o) = board::find_task(app, Some(n))? else { continue };
+        if ready(Some(&o)) || !names(&format!("{}\n{}", o.st("title"), o.st("detail")), &mine) || reaches(app, n, me.id(), &mut vec![])? {
+            continue;
+        }
+        match cross_project_refusal(app, &me, &o) {
+            Some(why) => refused.push(format!("{} names {mine}, but {mine} can't wait for it: {why}", crate::human::task_ref(&o))),
+            None => may.push(crate::human::task_ref(&o)),
+        }
+    }
+    let mut out = vec![];
+    if !may.is_empty() {
+        let (them, it, done) = match may.as_slice() {
+            [one] => (format!("{one} names"), "it", "it's done"),
+            _ => (format!("{} name", crate::dispatch::say_refs(&may)), "them", "they're done"),
+        };
+        out.push(format!(
+            "{them} {mine}, so {mine} may need {it} first. If {mine} can't go on until then, record the wait now and end your \
+             turn; the board carries this conversation on once {done}:\n  {} wait-for {} --why \"<what {mine} needs>\"\n\
+             Only saying you'll wait records nothing, and nothing brings this conversation back.",
+            board::tb_cmd(app),
+            may.join(" ")
+        ));
+    }
+    out.extend(refused);
+    Ok(if out.is_empty() { None } else { Some(out.join("\n")) })
+}
+
+/// Whether `text` names the ref `r` (T12, not T120 or AT12).
+fn names(text: &str, r: &str) -> bool {
+    text.match_indices(r).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + r.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric()) && !after.is_some_and(|c| c.is_ascii_digit())
+    })
 }
 
 pub fn reaches(app: &App, start: i64, target: i64, seen: &mut Vec<i64>) -> Result<bool> {
@@ -1080,6 +1130,16 @@ mod tests {
         let b = task(app, fields!["status" => "done", "pr_num" => 2, "pr_state" => "OPEN", "pr_phase" => "stack", "pr_after" => a, "stack_merge" => "head"]);
         let c = task(app, fields!["status" => "queued", "pr_after" => b, "stack_merge" => "head", "detail" => "Don't start until A has merged"]);
         (a, b, c)
+    }
+
+    #[test]
+    fn a_ref_is_named_only_as_a_whole_word() {
+        assert!(names("Blocks zonai T12", "T12"));
+        assert!(names("report the SHA on T12's PR", "T12"));
+        assert!(names("(T12)", "T12"));
+        assert!(!names("Blocks T120", "T12"));
+        assert!(!names("see AT12", "T12"));
+        assert!(names("see T120 and T12.", "T12"));
     }
 
     #[test]
