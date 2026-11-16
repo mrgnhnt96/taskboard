@@ -1625,7 +1625,7 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         if !crate::startword::granted(app, &via, id, false)? && crate::startword::owners_word(app, &via, id)?.is_none() {
             if let Some(grant) = crate::start_grants::honored(app, &via, &t)? {
                 let started = format!("{grant} via {}", board::session_name(app, Some(&via), None));
-                return launch(app, id, &mode, body["session_id"].as_str(), &started, &via);
+                return with_wait_line(app, &via, &[id], launch(app, id, &mode, body["session_id"].as_str(), &started, &via)?);
             }
             // An ask for the goal ("start the goal") is no word for each of its tasks; the goal runs them.
             let goal = board::find_goal(app, t.i("goal_id"))?
@@ -1644,7 +1644,16 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         }
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
-    launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
+    with_wait_line(app, &via, &[id], launch(app, id, &mode, body["session_id"].as_str(), &started, &via)?)
+}
+
+/// A start's reply with `wait_line` when the terminal that started them is on a task they name
+/// (`waitsfor::caller_needs_line`), so `tb start` prints the `tb wait-for` line to run.
+fn with_wait_line(app: &App, via: &str, ids: &[i64], mut v: Value) -> Result<Value> {
+    if let (Some(line), Some(o)) = (crate::waitsfor::caller_needs_line(app, Some(via), ids)?, v.as_object_mut()) {
+        o.insert("wait_line".into(), json!(line));
+    }
+    Ok(v)
 }
 
 /// `tb start T4 T5 T6` from terminal `via_session`: each task starts on the owner's word there, all or none.
@@ -1728,7 +1737,7 @@ fn start_many(app: &App, body: &Value) -> Result<Value> {
             Err(e) => return err(e.status, format!("{} didn't start: {} {} started before it.", rf("task", id), e.message, alerts::say_refs(&done))),
         }
     }
-    Ok(json!({"tasks": started}))
+    with_wait_line(app, &via, &ids, json!({"tasks": started}))
 }
 
 /// A standing start grant (`tb start-grant add`): only the owner's. From the app it's added; from a terminal

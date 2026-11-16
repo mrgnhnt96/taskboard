@@ -3270,6 +3270,7 @@ fn start_several(c: &Ctx, refs: &[String], queue: bool, now: bool, at: bool) -> 
     for (r, t) in refs.iter().zip(v["tasks"].as_array().into_iter().flatten()) {
         out(&start_said(r, queue, t));
     }
+    print_wait_line(&v);
     Ok(0)
 }
 
@@ -3293,6 +3294,13 @@ fn start_said(r: &str, queue: bool, v: &Value) -> String {
 
 fn then_next(v: &Value) -> String {
     v["context"].as_str().filter(|c| !c.trim().is_empty()).map(|c| format!("\n\n{c}")).unwrap_or_default()
+}
+
+/// The `tb wait-for` line the board sends when the tasks this terminal made or started name its own task.
+fn print_wait_line(v: &Value) {
+    if let Some(l) = v["wait_line"].as_str().filter(|l| !l.trim().is_empty()) {
+        out(&format!("\n{l}"));
+    }
 }
 
 fn print_warnings(v: &Value) {
@@ -6300,6 +6308,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let mode = if queue { "queue" } else { "new" };
             let v = c.call_progress("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
             out(&start_said(&r, queue, &v));
+            print_wait_line(&v);
             Ok(0)
         }
         Cmd::Preview { url, port } => crate::preview::run(&url, port),
@@ -6980,6 +6989,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         };
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
+                        print_wait_line(&v);
                         unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                     }
