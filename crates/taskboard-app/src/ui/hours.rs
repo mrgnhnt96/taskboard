@@ -1,4 +1,4 @@
-//! Work hours: the status-bar pill (`hoursPill`: "Work hours 9am–5pm", "Agents off until Thu 6am")
+//! Work hours: the status-bar pill (`hoursPill`: "9a–5p", "Off until Thu 6a")
 //! and its menu (`hoursMenuHtml`: the on/off check, From / to, the days, "Today until"). Every
 //! change is saved at once (`saveHours`: `POST /hours`, `today_until` only when it changed).
 //! The times are typed as digits only, the colon put in for you ("730" shows "7:30"), with an
@@ -117,14 +117,14 @@ pub fn pill_view(h: &Value) -> Pill {
     let (cls, label) = if !b(h, "on") {
         ("hours", "No work hours".to_string())
     } else if b(h, "open") && fmt::opt_s(h, "today_until").is_some() {
-        ("hours", format!("Work hours until {} today", fmt::clock12(s(h, "today_until"))))
+        ("hours", format!("Until {} today", fmt::clock_short(s(h, "today_until"))))
     } else if b(h, "open") && fmt::opt_s(h, "until").is_some() {
-        ("hours", format!("Work hours until tomorrow {}", fmt::clock12(&extra_end(h))))
+        ("hours", format!("Until {} tomorrow", fmt::clock_short(&extra_end(h))))
     } else if b(h, "open") {
-        ("hours", format!("Work hours {}–{}", fmt::clock12(s(h, "start")), fmt::clock12(s(h, "end"))))
+        ("hours", format!("{}–{}", fmt::clock_short(s(h, "start")), fmt::clock_short(s(h, "end"))))
     } else {
-        let when = fmt::opt_s(h, "next_open").map(fmt::day_clock).unwrap_or_default();
-        ("hours closed", format!("Agents off until {when}").trim_end().to_string())
+        let when = fmt::opt_s(h, "next_open").map(fmt::day_clock_short).unwrap_or_default();
+        ("hours closed", format!("Off until {when}").trim_end().to_string())
     };
     Pill { cls, label, title: s(h, "line").to_string() }
 }
@@ -253,6 +253,7 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
     div()
         .id("hours-pill")
         .flex()
+        .flex_none()
         .items_center()
         .gap(px(6.))
         .py(px(3.))
@@ -711,7 +712,7 @@ mod tests {
         assert_eq!((st.today.as_str(), st.pm[2]), ("06:00", false), "tomorrow's 6am shows in the field");
         assert!(st.body("06:00").get("today_until").is_none(), "unchanged: not sent again");
         let p = pill_view(&json!({"on": true, "open": true, "start": "06:00", "end": "14:30", "until": "2026-11-03T06:00"}));
-        assert_eq!(p.label, "Work hours until tomorrow 6:00 AM");
+        assert_eq!(p.label, "Until 6a tomorrow");
     }
 
     #[::core::prelude::v1::test]
