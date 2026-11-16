@@ -88,4 +88,4 @@ Before you add a task, check the project's other open goals (`tb goals --project
 
 ## Tell the owner
 
-Give the owner the goal's link (`tb goal new` and `tb goal show` print it) and a line or two on anything that needs them. Don't paste the plan into the terminal: the goal page shows it.
+Give the owner a line or two on anything that needs them, naming the goal by its ref (G<n>), not its link. Don't paste the plan into the terminal: the goal page shows it.
