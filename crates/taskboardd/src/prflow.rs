@@ -38,6 +38,9 @@ pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "steps
 pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+/// Slot claims for a task's PR work that failed in a row before the board says so (#1012): one can be a
+/// passing git hiccup, but the same failure again means every retry fails the same way.
+const CLAIM_FAILS_ALERT: i64 = 3;
 /// How long a terminal a visit opened may sit idle before its prompt reaches it (#592).
 const PROMPT_WAIT_SECS: f64 = 120.0;
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -316,7 +319,7 @@ pub fn awaiting_owner(t: &Row) -> bool {
 pub fn wake_stuck(t: &Row) -> bool {
     let f = flow(t);
     WAKE.contains(&t.s("pr_phase").unwrap_or(""))
-        && (f.contains_key("wake_tries") || (t.s("pr_phase") == Some("merge") && f.contains_key("merge_gave_up")))
+        && (f.contains_key("wake_tries") || claim_stuck(&f) || (t.s("pr_phase") == Some("merge") && f.contains_key("merge_gave_up")))
 }
 
 pub fn live_job(app: &App, t: &Row) -> Result<Option<Row>> {
@@ -832,13 +835,10 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
 /// Where PR follow-up work runs. A task that worked in a slot claims one again, on its pushed
 /// branch; while the pool is full there's nowhere yet, and the next wake tries again.
 pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
-    match crate::slots::reclaim(app, t) {
+    match reclaim_for_pr(app, t)? {
         Ok(Some(path)) => return Ok(Some(path)),
         Ok(None) => {}
-        Err(e) => {
-            app.info(format!("worktrees: {} has no slot for its PR work yet: {}", rf("task", t.id()), e.message));
-            return Ok(None);
-        }
+        Err(()) => return Ok(None),
     }
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
@@ -846,6 +846,96 @@ pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
         Some(w) => Some(w),
         None => runner::task_cwd(app, t)?,
     })
+}
+
+/// `slots::reclaim` for PR work, keeping count of the claims that failed in a row (`claim_fails`, with
+/// the last `claim_error`). The third says so once, in the task's log and as an alert, since nothing
+/// runs on the PR meanwhile while its stage still reads as under way (#1012); the claim that works
+/// again clears them. A full pool isn't a failure: the task waits its turn. `Err(())` when there's no
+/// slot for it yet.
+fn reclaim_for_pr(app: &App, t: &Row) -> Result<std::result::Result<Option<String>, ()>> {
+    match crate::slots::reclaim(app, t) {
+        Ok(path) => {
+            if path.is_some() {
+                claim_worked(app, t.id())?;
+            }
+            Ok(Ok(path))
+        }
+        Err(e) => {
+            app.info(format!("worktrees: {} has no slot for its PR work yet: {}", rf("task", t.id()), e.message));
+            if e.message != crate::slots::WAIT {
+                claim_failed(app, t.id(), &e.message)?;
+            }
+            Ok(Err(()))
+        }
+    }
+}
+
+fn claim_alert_key(id: i64) -> String {
+    format!("slot-claim:{}", rf("task", id))
+}
+
+pub fn is_claim_alert_key(key: &str) -> bool {
+    key.starts_with("slot-claim:")
+}
+
+/// The task's PR work has failed to get its slot often enough in a row to say so.
+fn claim_stuck(f: &Row) -> bool {
+    f.i0("claim_fails") >= CLAIM_FAILS_ALERT
+}
+
+fn claim_failed(app: &App, id: i64, why: &str) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let tries = flow(&t).i0("claim_fails") + 1;
+    let why = one_line(why, 300);
+    let why = why.trim_end_matches(['.', ' ']);
+    merge_flow(app, id, fields!["claim_fails" => tries, "claim_error" => why])?;
+    if tries != CLAIM_FAILS_ALERT {
+        return Ok(());
+    }
+    let (num, task) = (t.i0("pr_num"), rf("task", id));
+    let stage = t.s("pr_phase").map(|p| format!(" PR #{num} reads “{}”, but", label(p))).unwrap_or_default();
+    board::log_event(
+        app,
+        id,
+        board::BOARD,
+        "status",
+        &format!("Couldn't get a worktree slot for PR #{num}'s work after {tries} tries: {why}.{stage} nothing runs on it until a claim works. The board keeps trying."),
+    )?;
+    let text = format!(
+        "{task} couldn't get a worktree slot for PR #{num}'s work after {tries} tries: {why}. Nothing runs on the PR until a claim works; the board keeps trying."
+    );
+    let fields = json!({
+        "title": format!("PR #{num} can't get a worktree slot for its work"),
+        "detail": why,
+        "project": t.v("project"),
+        "actions": [dispatch::AlertAction {
+            label: "Claim its slot".into(),
+            prompt: format!("Run `tb slot claim --task {task}` and fix what stops it, so the board can start PR #{num}'s work in that slot."),
+            command: format!("tb slot claim --task {task}"),
+        }.json()],
+    });
+    dispatch::add_alert_keyed_with(app, &text, Some(id), t.i("goal_id"), &claim_alert_key(id), fields)
+}
+
+fn claim_worked(app: &App, id: i64) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let f = flow(&t);
+    if !f.contains_key("claim_fails") {
+        return Ok(());
+    }
+    merge_flow(app, id, fields!["claim_fails" => null, "claim_error" => null])?;
+    if claim_stuck(&f) {
+        dispatch::clear_alert_key(app, &claim_alert_key(id))?;
+        board::log_event(app, id, board::BOARD, "status", &format!("Got a worktree slot for PR #{}'s work again", t.i0("pr_num")))?;
+    }
+    Ok(())
+}
+
+/// A `slot-claim:T<n>` alert holds while its task's PR work still can't get a slot.
+pub fn claim_alert_resolved(app: &App, a: &Value) -> Result<bool> {
+    let Some(t) = board::find_task(app, a["task_id"].as_i64())? else { return Ok(true) };
+    Ok(t.s("status") != Some("done") || !claim_stuck(&flow(&t)))
 }
 
 /// What a wake that had to wait for its slot does once the claim is made. A follow-up or a note ask
@@ -895,8 +985,7 @@ fn claim_later(app: &App, id: i64, again: Again) {
 
 fn claimed_then(app: &App, id: i64, again: Again) -> Result<()> {
     let t = board::get_task(app, id)?;
-    if let Err(e) = crate::slots::reclaim(app, &t) {
-        app.info(format!("worktrees: {} has no slot for its PR work yet: {}", rf("task", id), e.message));
+    if reclaim_for_pr(app, &t)?.is_err() {
         return Ok(());
     }
     let t = board::get_task(app, id)?;
@@ -3120,6 +3209,51 @@ mod tests {
         assert!(crate::slots::needs_claim(&app, &t).unwrap());
         assert_eq!(follow_wake(&app, &t, "Rebase").unwrap(), None, "no slot free: the wake waits");
         assert!(app.db.q("SELECT id FROM jobs WHERE task_id = ?", p![id]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pr_work_that_keeps_failing_to_get_its_slot_says_so_once_then_clears_when_a_claim_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, id, _) = gave_its_slot_back(dir.path(), 10);
+        let set_base = |base: &str| {
+            let mut ctx = board::task_context(&board::get_task(&app, id).unwrap());
+            ctx.insert("worktree_base".into(), json!(base));
+            board::save_context(&app, id, &ctx, false).unwrap();
+        };
+        set_base("origin/gone");
+        board::update_task(&app, id, fields!["pr_phase" => "comments"]).unwrap();
+        let said = || app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE 'Couldn''t get a worktree slot%'", p![id]).unwrap();
+        let alerted = || dispatch::alerts(&app).into_iter().filter(|a| a["key"] == claim_alert_key(id)).count();
+        for n in 1..=CLAIM_FAILS_ALERT + 2 {
+            assert_eq!(follow_wake(&app, &board::get_task(&app, id).unwrap(), "Rebase").unwrap(), None, "try {n}: no slot");
+            let t = board::get_task(&app, id).unwrap();
+            assert_eq!(flow(&t).i0("claim_fails"), n);
+            assert!(flow(&t).st("claim_error").contains("origin/gone"), "{:?}", flow(&t));
+            let stuck = n >= CLAIM_FAILS_ALERT;
+            assert_eq!((said(), alerted()), if stuck { (1, 1) } else { (0, 0) }, "try {n}: said once, at the third");
+            assert_eq!(wake_stuck(&t), stuck);
+        }
+        let a = dispatch::alerts(&app).into_iter().find(|a| a["key"] == claim_alert_key(id)).unwrap();
+        assert!(!claim_alert_resolved(&app, &a).unwrap(), "it holds while the claims fail");
+        set_base("HEAD");
+        assert!(follow_wake(&app, &board::get_task(&app, id).unwrap(), "Rebase").unwrap().is_some(), "the claim works again");
+        let t = board::get_task(&app, id).unwrap();
+        assert!(!flow(&t).contains_key("claim_fails") && !flow(&t).contains_key("claim_error"));
+        assert_eq!(alerted(), 0);
+        assert!(claim_alert_resolved(&app, &a).unwrap());
+    }
+
+    #[test]
+    fn a_full_pool_is_not_a_failed_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, id, old) = gave_its_slot_back(dir.path(), 1);
+        let ctx = json!({"where": {"worktree": old}}).to_string();
+        board::update_task(&app, id, fields!["context" => ctx]).unwrap();
+        for _ in 0..CLAIM_FAILS_ALERT {
+            assert_eq!(follow_wake(&app, &board::get_task(&app, id).unwrap(), "Rebase").unwrap(), None);
+        }
+        assert!(!flow(&board::get_task(&app, id).unwrap()).contains_key("claim_fails"));
+        assert!(dispatch::alerts(&app).is_empty());
     }
 
     #[test]

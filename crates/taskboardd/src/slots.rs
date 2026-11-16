@@ -189,6 +189,87 @@ fn link(path: &str) -> Option<Link> {
     Some(Link::Worktree { gitdir, there })
 }
 
+/// The folder git keeps a worktree's own state in (its `HEAD`, `rebase-merge`, `MERGE_HEAD`…), read
+/// from its `.git` without running git.
+fn git_dir(path: &str) -> Option<std::path::PathBuf> {
+    match link(path)? {
+        Link::Repo => Some(Path::new(path).join(".git")),
+        Link::Worktree { gitdir, .. } => Some(Path::new(path).join(gitdir)),
+    }
+}
+
+/// A git operation left going in a worktree: a rebase, am, merge, cherry-pick, revert or bisect. git
+/// refuses to switch a worktree while one is, so a slot holding one can't be checked out for a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GitOp {
+    /// What's going on, for people: "a rebase".
+    pub what: &'static str,
+    /// The git command that stops it where it is, leaving HEAD and the files alone.
+    pub quit: &'static [&'static str],
+    /// The git command that undoes it, for an agent told to clear it.
+    pub abort: &'static str,
+}
+
+/// The operation going on in the worktree at `path`, by the files git keeps for it (the ones git's own
+/// switch checks before it refuses).
+pub(crate) fn git_op(path: &str) -> Option<GitOp> {
+    let dir = git_dir(path)?;
+    let has = |name: &str| dir.join(name).exists();
+    if has("rebase-apply/applying") {
+        return Some(GitOp { what: "an am", quit: &["am", "--quit"], abort: "git am --abort" });
+    }
+    let ops: [(&str, GitOp); 6] = [
+        ("rebase-merge", GitOp { what: "a rebase", quit: &["rebase", "--quit"], abort: "git rebase --abort" }),
+        ("rebase-apply", GitOp { what: "a rebase", quit: &["rebase", "--quit"], abort: "git rebase --abort" }),
+        ("MERGE_HEAD", GitOp { what: "a merge", quit: &["merge", "--quit"], abort: "git merge --abort" }),
+        ("CHERRY_PICK_HEAD", GitOp { what: "a cherry-pick", quit: &["cherry-pick", "--quit"], abort: "git cherry-pick --abort" }),
+        ("REVERT_HEAD", GitOp { what: "a revert", quit: &["revert", "--quit"], abort: "git revert --abort" }),
+        ("BISECT_LOG", GitOp { what: "a bisect", quit: &["bisect", "reset", "HEAD"], abort: "git bisect reset" }),
+    ];
+    ops.into_iter().find(|(f, _)| has(f)).map(|(_, op)| op)
+}
+
+/// Stops a git operation left going in a slot, when that loses nothing: no uncommitted changes and
+/// HEAD already pushed. None when the slot is clear of one (or now is); else why it's left as it is.
+fn settle(app: &App, s: &Row, path: &str) -> Result<Option<String>> {
+    let Some(op) = git_op(path) else { return Ok(None) };
+    let n = s.i0("n");
+    let cmd = format!("git {}", op.quit.join(" "));
+    let stuck = if dirty(path) {
+        Some("it has uncommitted changes".to_string())
+    } else if unpushed(path) > 0 {
+        Some("HEAD has commits that aren't pushed".to_string())
+    } else {
+        let r = git(path, op.quit, GIT_SECS);
+        match git_op(path) {
+            None if r.code == 0 => None,
+            _ => Some(format!("{cmd} failed: {}", last_line(&r.err))),
+        }
+    };
+    let Some(why) = stuck else {
+        crate::dispatch::clear_alert_key(app, &stuck_key(path))?;
+        let text = format!("Quit {} left going in worktree slot-{n} ({cmd}): its HEAD was pushed and nothing was uncommitted", op.what);
+        app.info(format!("worktrees: {text}"));
+        if let Some(t) = board::find_task(app, s.i("task_id"))? {
+            board::log_event(app, t.id(), board::BOARD, "midna", &text)?;
+        }
+        return Ok(None);
+    };
+    Ok(Some(format!("{} is in progress there and {why}", op.what)))
+}
+
+fn stuck_key(path: &str) -> String {
+    format!("slot-git-op:{path}")
+}
+
+/// A free slot with a git operation that can't be quit safely never frees up by itself, so it's the
+/// owner's to clear: one alert for the slot.
+fn stuck_alert(app: &App, s: &Row, why: &str) -> Result<()> {
+    let path = s.st("path");
+    let text = format!("Worktree slot-{} is free but {why}, so no task can take it: {path}", s.i0("n"));
+    crate::dispatch::add_alert_keyed(app, &text, None, None, &stuck_key(&path))
+}
+
 /// A slot folder holding nothing.
 fn empty(path: &str) -> bool {
     std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_none())
@@ -425,6 +506,12 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
         }
         let path = s.st("path");
         if !live(&path) && !repair(app, t, &s, repo, start)? {
+            continue;
+        }
+        // Left mid-rebase (or merge…): git won't switch it, so it's quit when that's safe, else passed over.
+        if let Some(why) = settle(app, &s, &path)? {
+            app.info(format!("worktrees: passed over {path} for {}: {why}", rf("task", t.id())));
+            stuck_alert(app, &s, &why)?;
             continue;
         }
         if dirty(&path) {
@@ -674,22 +761,29 @@ pub fn release_refusal(app: &App, t: &Row) -> Result<Option<String>> {
     }
     let me = rf("task", t.id());
     let n = s.i("n").unwrap_or(0);
+    // Finished or abandoned, it's quit on the way back once nothing would be lost; until then it's named.
+    let op = git_op(&path).map(|o| format!(" {} is in progress there too: finish it, or abort it ({}).", capital(o.what), o.abort)).unwrap_or_default();
     if dirty(&path) {
         return Ok(Some(format!(
-            "{me} can't give back its worktree slot-{n} ({path}): it has uncommitted changes. Commit and push them, or discard them, then run this again."
+            "{me} can't give back its worktree slot-{n} ({path}): it has uncommitted changes. Commit and push them, or discard them, then run this again.{op}"
         )));
     }
     let k = unpushed(&path);
     if k > 0 {
         let on = branch_of(&path).map(|b| format!(" on {b}")).unwrap_or_default();
         return Ok(Some(format!(
-            "{me} can't give back its worktree slot-{n} ({path}): {k} commit{}{on} {} pushed. Push {} (git push), then run this again.",
+            "{me} can't give back its worktree slot-{n} ({path}): {k} commit{}{on} {} pushed. Push {} (git push), then run this again.{op}",
             if k == 1 { "" } else { "s" },
             if k == 1 { "isn't" } else { "aren't" },
             if k == 1 { "it" } else { "them" }
         )));
     }
     Ok(None)
+}
+
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 pub(crate) fn branch_of(path: &str) -> Option<String> {
@@ -739,6 +833,10 @@ pub(crate) fn give_back(app: &App, t: &Row) -> Result<bool> {
     let mut branch = None;
     // A dead slot's git commands would switch the shared checkout instead.
     if live(&path) {
+        if let Some(why) = settle(app, &s, &path)? {
+            board::log_event(app, t.id(), board::BOARD, "midna", &format!("Gives back worktree slot-{n} with {why}, so no task takes it until that's cleared"))?;
+            stuck_alert(app, &s, &why)?;
+        }
         branch = branch_of(&path);
         let base = ctx.s("worktree_base").unwrap_or("HEAD");
         // Off its branch either way, so a reclaimed slot elsewhere can check it out.
@@ -799,9 +897,14 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
             (None, Some(id)) if live(&s.st("path")) && dirty(&s.st("path")) => Some(rf("task", id)),
             _ => None,
         };
+        // Free by its holder, but left mid-rebase (or merge…) in a way that can't be quit safely yet.
+        let busy = match &held {
+            None if live(&s.st("path")) => git_op(&s.st("path")).map(|o| o.what),
+            _ => None,
+        };
         out.push(json!({
             "name": format!("slot-{}", s.i0("n")), "n": s.v("n"), "project": s.v("project"), "repo": repo, "path": s.v("path"),
-            "held_by": held.as_ref().map(|t| rf("task", t.id())), "title": held.as_ref().map(|t| t.v("title")), "kept_by": kept,
+            "held_by": held.as_ref().map(|t| rf("task", t.id())), "title": held.as_ref().map(|t| t.v("title")), "kept_by": kept, "busy": busy,
             "used_at": s.v("used_at"), "made_at": s.v("made_at"), "size_kb": size_kb,
             "waiting": waiting.iter().filter(|(r, _)| *r == repo).map(|(_, t)| t.clone()).collect::<Vec<_>>(),
         }));
@@ -1204,5 +1307,81 @@ mod tests {
         let logged: Vec<String> = app.db.q("SELECT text FROM events WHERE task_id = ?", p![t.id()]).unwrap().iter().map(|e| e.st("text")).collect();
         let why = logged.iter().find(|l| l.starts_with("Couldn't give")).unwrap_or_else(|| panic!("{logged:?}"));
         assert!(why.contains("git reset failed") && why.contains("index.lock"), "{why}");
+    }
+
+    /// `held_slot` with a second commit on `feat/a` and a rebase of it stopped on a failing `exec`,
+    /// HEAD still on that commit as the issue saw it.
+    fn mid_rebase(app: &App, dir: &Path) -> (String, String, Row) {
+        let (repo, slot, t) = held_slot(app, dir, "done");
+        std::fs::write(Path::new(&slot).join("app.rs"), "two").unwrap();
+        assert_eq!(git(&slot, &["commit", "-qam", "two"], GIT_SECS).code, 0);
+        assert_ne!(git(&slot, &["rebase", "-x", "false", "HEAD~1"], GIT_SECS).code, 0, "the rebase stops");
+        assert_eq!(git_op(&slot).map(|o| o.what), Some("a rebase"));
+        (repo, slot, t)
+    }
+
+    #[test]
+    fn a_slot_given_back_mid_rebase_with_nothing_to_lose_has_the_rebase_quit() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (_, slot, t) = mid_rebase(&app, dir.path());
+        let tip = git(&slot, &["rev-parse", "HEAD"], GIT_SECS).out;
+        assert!(release_if_clean(&app, &t).unwrap(), "given back");
+        assert_eq!(git_op(&slot), None, "the rebase is quit");
+        assert_eq!(git(&slot, &["rev-parse", "feat/a"], GIT_SECS).out, tip, "its branch is where it was");
+        assert!(crate::dispatch::alerts(&app).is_empty(), "nothing for the owner");
+        assert_eq!(overview(&app, None).unwrap()["slots"][0]["busy"], Value::Null, "listed free");
+    }
+
+    #[test]
+    fn a_free_slot_left_mid_rebase_with_nothing_to_lose_is_quit_and_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (repo, slot, a) = mid_rebase(&app, dir.path());
+        app.db.x("UPDATE worktree_slots SET task_id = NULL", p![]).unwrap();
+        let b = board::get_task(&app, app.db.insert("tasks", crate::fields!["title" => "B", "status" => "queued"]).unwrap()).unwrap();
+        assert_eq!(claim_on(&app, &b, &repo, "HEAD", None).unwrap(), slot, "taken, not passed over");
+        assert_eq!(git_op(&slot), None);
+        let logged: Vec<String> = app.db.q("SELECT text FROM events WHERE task_id = ?", p![b.id()]).unwrap().iter().map(|e| e.st("text")).collect();
+        assert!(logged.iter().any(|l| l.starts_with("Took worktree slot-1")), "{logged:?}");
+        assert!(held(&app, &a).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_slot_left_mid_rebase_with_unpushed_work_is_passed_over_and_never_listed_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (repo, slot, a) = mid_rebase(&app, dir.path());
+        assert_eq!(git(&slot, &["commit", "-q", "--allow-empty", "-m", "only here"], GIT_SECS).code, 0);
+        let why = release_refusal(&app, &a).unwrap().expect("its commit isn't pushed");
+        assert!(why.contains("A rebase is in progress there too") && why.contains("git rebase --abort"), "{why}");
+        // Its task is done with no terminal, so by its holder the slot is free.
+        let b = board::get_task(&app, app.db.insert("tasks", crate::fields!["title" => "B", "status" => "queued"]).unwrap()).unwrap();
+        let got = claim_on(&app, &b, &repo, "HEAD", None).unwrap();
+        assert_eq!(got, slot_path(&repo, 2), "B gets a new slot");
+        assert_eq!(git_op(&slot).map(|o| o.what), Some("a rebase"), "the rebase is left as it is");
+        let alerts = crate::dispatch::alerts(&app);
+        assert!(alerts.iter().any(|a| a["text"].as_str().is_some_and(|t| t.contains("slot-1 is free but a rebase is in progress"))), "{alerts:?}");
+        let listed = overview(&app, None).unwrap();
+        let one = listed["slots"].as_array().unwrap().iter().find(|s| s["name"] == "slot-1").cloned().unwrap();
+        assert_eq!((one["held_by"].clone(), one["busy"].clone()), (Value::Null, json!("a rebase")), "not listed free");
+    }
+
+    #[test]
+    fn each_git_operation_is_found_by_the_file_git_keeps_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        assert_eq!(git(repo, &["init", "-q"], GIT_SECS).code, 0);
+        assert_eq!(git_op(repo), None);
+        let gd = dir.path().join(".git");
+        for (file, what) in [("MERGE_HEAD", "a merge"), ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"), ("BISECT_LOG", "a bisect")] {
+            std::fs::write(gd.join(file), "").unwrap();
+            assert_eq!(git_op(repo).map(|o| o.what), Some(what), "{file}");
+            std::fs::remove_file(gd.join(file)).unwrap();
+        }
+        std::fs::create_dir_all(gd.join("rebase-apply")).unwrap();
+        assert_eq!(git_op(repo).map(|o| o.what), Some("a rebase"));
+        std::fs::write(gd.join("rebase-apply/applying"), "").unwrap();
+        assert_eq!(git_op(repo).map(|o| o.quit), Some(["am", "--quit"].as_slice()), "a mailbox apply is an am");
     }
 }

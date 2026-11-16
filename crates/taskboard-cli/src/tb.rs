@@ -6456,10 +6456,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out("No worktree slots yet.");
             }
             for s in slots {
-                let holder = match (s["held_by"].as_str(), s["kept_by"].as_str()) {
-                    (Some(h), _) => format!("held by {h}"),
-                    (None, Some(k)) => format!("kept by {k} (uncommitted changes)"),
-                    (None, None) => "free".into(),
+                let holder = match (s["held_by"].as_str(), s["kept_by"].as_str(), s["busy"].as_str()) {
+                    (Some(h), _, _) => format!("held by {h}"),
+                    (None, Some(k), _) => format!("kept by {k} (uncommitted changes)"),
+                    (None, None, Some(op)) => format!("not free: {op} in progress"),
+                    (None, None, None) => "free".into(),
                 };
                 let used = s["used_at"].as_str().map(|u| format!(" · last used {}", local_when(u))).unwrap_or_default();
                 let size = s["size_kb"].as_i64().map(|k| format!(" · {}", disk_size(k))).unwrap_or_default();
