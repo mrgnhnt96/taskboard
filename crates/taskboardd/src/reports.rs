@@ -663,7 +663,9 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     }
     r.stalled = stalled(r, &t)?;
     let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
-    let asked = ends_on_question(&reply_end).filter(|_| !r.spooled && t.s("status") == Some("working"));
+    let waited = waits_in_reply(r, &t, &reply_end)?;
+    let caught = waited.is_some();
+    let asked = ends_on_question(&reply_end).filter(|_| !caught && !r.spooled && t.s("status") == Some("working"));
     if asked.is_some() || idle_on(r, &t)? != Some(false) {
         r.unshipped = None;
     }
@@ -672,7 +674,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         .is_none()
         .then(|| crate::buried::buried_question(&whole, &reply_end))
         .flatten()
-        .filter(|_| !r.spooled && t.s("status") == Some("working") && !t.b("lost") && !as_bool(r.body.get("stop_hook_active"), false) && crate::buried::on(app));
+        .filter(|_| !caught && !r.spooled && t.s("status") == Some("working") && !t.b("lost") && !as_bool(r.body.get("stop_hook_active"), false) && crate::buried::on(app));
     if buried.is_some() {
         // Sent back to ask it properly: the board's carry-on or ship nudge waits for the turn's real end.
         r.stalled = false;
@@ -698,10 +700,48 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         }));
     }
     app.wake_runner();
+    if let Some(w) = waited {
+        return Ok(with(ok(Some(&t), None), w));
+    }
     match buried {
         Some(q) => Ok(with(ok(Some(&t), None), json!({"block": crate::buried::reason(app, &q, &board::tb_cmd(app))}))),
         None => Ok(ok(Some(&t), None)),
     }
+}
+
+/// A working task's turn that ends saying it waits on other board tasks it never ran `tb wait-for` on
+/// (`turn_wait`): the first time, the Stop is sent back with the exact line to run; when it ends again
+/// still saying so, the board records the wait itself, as `tb wait-for` would. Either way it isn't left
+/// on the owner. What the Stop answers with (`block`, `waited`), or None when the reply names no wait.
+fn waits_in_reply(r: &mut Report, t: &Row, reply_end: &str) -> Result<Option<Value>> {
+    let app = r.app;
+    if r.spooled || t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != r.sid() || crate::code_review::in_review(t) {
+        return Ok(None);
+    }
+    let Some(w) = crate::turn_wait::waits_on(app, t, reply_end)? else { return Ok(None) };
+    r.stalled = false;
+    r.unshipped = None;
+    let mine = crate::human::task_ref(t);
+    if !as_bool(r.body.get("stop_hook_active"), false) {
+        r.set_session_status("working")?;
+        let them = crate::dispatch::say_refs(&[w.refs.clone(), w.refused.iter().map(|x| x.split(':').next().unwrap_or("").to_string()).collect()].concat());
+        r.log(t.id(), "note", &format!("Its reply says it waits on {them} without recording it; sent back to record the wait"), None)?;
+        return Ok(Some(json!({"block": crate::turn_wait::reason(app, &w, &mine)})));
+    }
+    if w.ids.is_empty() {
+        return Ok(None);
+    }
+    r.log(t.id(), "note", &format!("Its reply still says it waits on {}, so the board recorded the wait", crate::dispatch::say_refs(&w.refs)), None)?;
+    r.body["tasks"] = json!(w.refs.join(" "));
+    r.body["why"] = json!(w.said);
+    r.body["merged"] = json!(w.merged);
+    let out = on_wait_for(r)?;
+    let mut said = json!({"waited": t.id()});
+    if out["moved_on"].as_bool() == Some(true) {
+        // Its terminal has a line: it carries on with the next task in it, as after tb wait-for.
+        said["block"] = out["context"].clone();
+    }
+    Ok(Some(said))
 }
 
 /// The end of a turn on a terminal with no task (and not visiting a PR) that the board opened for
@@ -1535,6 +1575,21 @@ fn on_attention(r: &mut Report) -> Result<Value> {
     let raw = { let m = r.b("message"); if m.is_empty() { r.b("title") } else { m } };
     // Claude's idle notification only says it's waiting; the end of its last reply says on what.
     let said = if kind == "idle_prompt" { transcript::last_reply_at(&app.cfg.claude_projects, Some(&r.b("transcript_path"))) } else { None };
+    if let Some(reply) = said.as_deref().filter(|_| t.s("status") == Some("working") && t.s("session_id") == r.sid()) {
+        // Its reply says it waits on other tasks (its Stop never got to say so): that's a wait, not the owner.
+        if let Some(w) = crate::turn_wait::waits_on(app, &t, reply)?.filter(|w| !w.ids.is_empty()) {
+            r.log(t.id(), "note", &format!("Its reply says it waits on {}, so the board recorded the wait", crate::dispatch::say_refs(&w.refs)), None)?;
+            r.body["tasks"] = json!(w.refs.join(" "));
+            r.body["why"] = json!(w.said);
+            r.body["merged"] = json!(w.merged);
+            let out = on_wait_for(r)?;
+            if let (Some(text), Some(next)) = (out["context"].as_str().filter(|_| out["moved_on"] == true), board::task_for_session(app, r.sid())?) {
+                // The turn is over, so the next task in the terminal's line goes to it as a delivery.
+                deliver::add(app, "line_next", text, next.id(), None, None)?;
+            }
+            return Ok(with(ok(Some(&t), None), json!({"waited": t.id(), "parked": out["parked"]})));
+        }
+    }
     let message = match said.as_deref().and_then(last_paragraph) {
         Some(p) => one_line(&p, 500),
         None => one_line(if raw.is_empty() { default } else { &raw }, 500),
@@ -3686,6 +3741,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     })?;
     if let Some(t) = gives_back {
         give_back_slot(app, t.id());
+    }
+    if let Some(id) = out["waited"].as_i64() {
+        give_back_slot(app, id);
     }
     Ok(out)
 }
