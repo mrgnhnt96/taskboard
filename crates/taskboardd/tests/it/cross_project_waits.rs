@@ -15,11 +15,15 @@ struct Board {
 }
 
 fn new_board() -> Board {
+    board_of(&["webapp", "api"])
+}
+
+fn board_of(names: &[&str]) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::for_tests(dir.path());
     let app = App::for_tests(cfg);
     let mut projects = vec![];
-    for name in ["webapp", "api"] {
+    for name in names {
         let repo = dir.path().join(name);
         std::fs::create_dir_all(&repo).unwrap();
         projects.push(json!({"name": name, "path": repo.to_string_lossy()}));
@@ -69,11 +73,34 @@ fn a_task_cant_wait_for_another_projects_task_until_its_project_allows_it() {
 
     let (status, msg) = b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{api_task}")]})).unwrap_err();
     assert_eq!(status, 409);
-    assert!(msg.contains("tb project set webapp --waits-on api"), "{msg}");
+    assert!(msg.contains(&format!("T{api_task} is in api, and webapp's tasks may only wait for webapp's own")), "{msg}");
+    assert!(msg.contains("\n  tb project set webapp --waits-on api\n"), "{msg}");
+    assert!(msg.contains("is Sam's call") && msg.contains("Don't run that yourself"), "{msg}");
+    assert!(msg.contains("ask Sam with tb question and put that line in the question"), "{msg}");
+    assert!(msg.contains(&format!("record the wait for T{api_task} with tb wait-for.")), "{msg}");
+    assert!(!msg.contains(&format!("wait-for T{api_task}")), "no wait-for line to run until it's allowed: {msg}");
 
     let p = b.post("/projects/webapp", json!({"waits_on": ["api"]})).unwrap();
     assert_eq!(p["waits_on"], json!(["api"]));
     let out = b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{api_task}")], "merged": true})).unwrap();
+    assert_eq!(out["parked"], true, "{out}");
+}
+
+#[test]
+fn the_fix_keeps_the_projects_it_may_already_wait_on() {
+    let b = board_of(&["zonai", "revali", "raindrop"]);
+    b.post("/projects/zonai", json!({"waits_on": ["revali"]})).unwrap();
+    let rain = b.task("raindrop", "Land the commit");
+    let mine = b.task("zonai", "Use the commit");
+    b.on("s1", "zonai", mine);
+
+    let (status, msg) = b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{rain}")]})).unwrap_err();
+    assert_eq!(status, 409);
+    assert!(msg.contains(&format!("T{rain} is in raindrop, and zonai's tasks may only wait for zonai's and revali's")), "{msg}");
+    assert!(msg.contains("tb project set zonai --waits-on revali,raindrop"), "{msg}");
+
+    b.post("/projects/zonai", json!({"waits_on": "revali,raindrop"})).unwrap();
+    let out = b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{rain}")]})).unwrap();
     assert_eq!(out["parked"], true, "{out}");
 }
 

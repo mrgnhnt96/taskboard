@@ -114,7 +114,9 @@ fn another_projects_task_gets_the_refusal_until_the_project_may_wait_on_it() {
     let v = b.new_task(json!({"title": "Add the endpoint", "detail": format!("Blocks T{mine}."), "project": "api"}));
     let line = v["wait_line"].as_str().unwrap_or_else(|| panic!("{v}"));
     assert!(line.contains("tb project set webapp --waits-on api"), "{line}");
-    assert!(!line.contains("tb wait-for"), "{line}");
+    assert!(line.contains("Don't run that yourself") && line.contains("tb question"), "{line}");
+    assert!(line.contains("api, and webapp's tasks may only wait for webapp's own"), "{line}");
+    assert!(!line.contains("--why"), "no wait-for line to run until it's allowed: {line}");
 
     b.post("/projects/webapp", json!({"waits_on": ["api"]})).unwrap();
     let v = b.new_task(json!({"title": "Add the other endpoint", "detail": format!("Blocks T{mine}."), "project": "api"}));

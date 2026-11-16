@@ -71,15 +71,26 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>
 }
 
 /// Why `t` may not wait for `other`: it's in a project `t`'s project isn't allowed to wait on. None when it may.
+/// Names the project that isn't allowed and the owner's `tb project set` line that allows it, keeping the
+/// projects already allowed (`--waits-on` replaces the list), and tells the agent to ask the owner with
+/// that line rather than run it or give up on the wait.
 pub fn cross_project_refusal(app: &App, t: &Row, other: &Row) -> Option<String> {
     let (mine, theirs) = (t.st("project"), other.st("project"));
     if crate::projects::may_wait_on(app, &mine, &theirs) {
         return None;
     }
+    let allowed = crate::projects::waits_on(app, &mine);
+    let may = match allowed.as_slice() {
+        [] => format!("{mine}'s own"),
+        _ => format!("{mine}'s and {}'s", crate::dispatch::say_refs(&allowed)),
+    };
+    let set = [allowed.clone(), vec![theirs.clone()]].concat().join(",");
+    let (tb, owner, me, it) = (board::tb_cmd(app), &app.cfg.owner, rf("task", t.id()), rf("task", other.id()));
     Some(format!(
-        "{} is in {theirs}, not {mine}, so its work can't be brought into this task. \
-         To let {mine}'s tasks wait for {theirs}'s: tb project set {mine} --waits-on {theirs}",
-        rf("task", other.id())
+        "{it} is in {theirs}, and {mine}'s tasks may only wait for {may}, so {me} can't wait for it. \
+         Allowing {mine}'s tasks to wait for {theirs}'s is {owner}'s call:\n  {tb} project set {mine} --waits-on {set}\n\
+         Don't run that yourself. If {me} needs {it} first, ask {owner} with {tb} question and put that line in the \
+         question; once it's set, record the wait for {it} with {tb} wait-for."
     ))
 }
 
@@ -102,7 +113,7 @@ pub fn caller_needs_line(app: &App, via: Option<&str>, targets: &[i64]) -> Resul
             continue;
         }
         match cross_project_refusal(app, &me, &o) {
-            Some(why) => refused.push(format!("{} names {mine}, but {mine} can't wait for it: {why}", crate::human::task_ref(&o))),
+            Some(why) => refused.push(format!("{} names {mine}. {why}", crate::human::task_ref(&o))),
             None => may.push(crate::human::task_ref(&o)),
         }
     }
