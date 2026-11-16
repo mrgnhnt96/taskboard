@@ -2379,12 +2379,26 @@ fn approvals_words(a: &Value) -> String {
     a["need"].as_i64().map(|n| format!(" · {} of {n} approval{}", have.min(n), if n == 1 { "" } else { "s" })).unwrap_or_default()
 }
 
+/// The board watching the PR between visits: since the agent last handed it back, when known.
+fn watching_line(w: &Value) -> Option<String> {
+    if !w.is_object() {
+        return None;
+    }
+    Some(match w["since"].as_str() {
+        Some(at) => format!("Watching since {}: the board brings the agent back when the PR needs it", local_when(at)),
+        None => "Watching: the board brings the agent back when the PR needs it".to_string(),
+    })
+}
+
 fn print_pr_status(t: &str, v: &Value) {
     let pr = &v["pr"];
     let live = &v["live"];
     out(&format!("{t} · PR #{} · {}", pr["num"], pr["url"].as_str().unwrap_or("")));
     if let Some(stage) = pr["stage"]["label"].as_str() {
         out(&format!("Stage: {stage}"));
+    }
+    if let Some(w) = watching_line(&v["watching"]) {
+        out(&w);
     }
     out(&format!("State: {} · checks: {} · review: {}", pr["state"].as_str().unwrap_or("?"), pr["checks"].as_str().unwrap_or("unknown"), review_words(pr)));
     if let Some(e) = live["read_error"].as_str() {
@@ -7670,7 +7684,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Wait { task } => {
                 let t = c.pr_task(task)?;
-                c.call("POST", &format!("/tasks/{t}/pr/wait"), Some(json!({})))?;
+                c.call_progress("POST", &format!("/tasks/{t}/pr/wait"), Some(json!({})))?;
                 out(&format!("The board watches {t}'s PR again and brings this conversation back when it needs you. You can stop here."));
                 Ok(0)
             }
@@ -8579,6 +8593,15 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_status_says_since_when_the_board_watches_the_pr() {
+        let at = "2026-11-16T21:05:00Z";
+        assert_eq!(watching_line(&json!({"since": at})).unwrap(), format!("Watching since {}: the board brings the agent back when the PR needs it", local_when(at)));
+        assert!(local_when(at).ends_with(" PM") || local_when(at).ends_with(" AM"), "{}", local_when(at));
+        assert_eq!(watching_line(&json!({"since": null})).unwrap(), "Watching: the board brings the agent back when the PR needs it");
+        assert_eq!(watching_line(&Value::Null), None, "a visit is on, or the PR isn't watched");
+    }
 
     #[test]
     fn a_repeat_slot_claim_says_the_task_already_holds_it() {

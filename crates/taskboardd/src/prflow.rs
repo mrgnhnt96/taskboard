@@ -2794,7 +2794,7 @@ fn heal(app: &App, t: &Row) -> Result<()> {
 pub fn waited(app: &App, t: &Row) -> Result<Row> {
     let f = flow(t);
     let rec = f.get("rec").cloned().unwrap_or(json!({}));
-    let mut ch = fields!["woke" => null, "stopped" => null, "comments_seen" => rec["comments"].as_i64().unwrap_or(0)];
+    let mut ch = fields!["woke" => null, "stopped" => null, "comments_seen" => rec["comments"].as_i64().unwrap_or(0), "watched_at" => now_iso()];
     if t.s("pr_phase") == Some("comments") {
         ch.push(("answered_changes", rec["changes_at"].clone()));
     }
