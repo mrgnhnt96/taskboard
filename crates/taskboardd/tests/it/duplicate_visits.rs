@@ -277,17 +277,91 @@ fn a_base_whose_head_did_not_change_sends_no_rebase_prompt() {
     assert!(last_prompt(&b).contains("moved from 4147d83907b9 to 5555aaaa5555"), "{}", last_prompt(&b));
 }
 
+/// A head-merge child (on `feat/child`) whose PR goes into the parent's branch `feat/base`, with the
+/// parent's head `old` already recorded. Returns the child and the parent.
+fn head_merge_child(b: &Board, old: &str) -> (i64, i64) {
+    let (id, base) = waits_on_base(b, old);
+    let own = json!({"base": "feat/base", "branch": "feat/child"});
+    b.app
+        .db
+        .x(
+            "UPDATE tasks SET waits_for = NULL, pr_after = ?, stack_merge = 'head', pr_flow = json_set(pr_flow, '$.rec', json(?)) WHERE id = ?",
+            p![base, own.to_string(), id],
+        )
+        .unwrap();
+    (id, base)
+}
+
+fn stray_commit(b: &Board, msg: &str) -> String {
+    let repo = b.dir.path().join("webapp");
+    sh(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "HEAD^{tree}", "-m", msg])
+}
+
+fn diverged_alerts(b: &Board, id: i64) -> Vec<Value> {
+    let key = format!("diverged:T{id}:");
+    taskboardd::dispatch::alerts(&b.app).into_iter().filter(|a| a["key"].as_str().is_some_and(|k| k.starts_with(&key))).collect()
+}
+
+fn log_of(b: &Board, id: i64) -> Vec<String> {
+    b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", p![id]).unwrap().iter().map(|e| e.st("text")).collect()
+}
+
 #[test]
-fn an_old_head_not_on_the_task_s_branch_gets_no_onto_command() {
+fn a_head_merge_child_that_missed_a_parent_move_is_told_to_rebase_from_the_tip_it_is_built_on() {
     let b = board();
-    let (_, stray) = child_repo(&b);
-    let (id, base) = waits_on_base(&b, &stray);
+    let (built_on, _) = child_repo(&b);
+    let (id, base) = head_merge_child(&b, &built_on);
+    move_base(&b, base, "2222aaaa2222bb");
+    assert_eq!(follow(&b), 1, "the first move is told as before");
+    // That visit ends without the child rebasing, so its branch still lacks the parent's new tip.
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", p![]).unwrap();
+    move_base(&b, base, "3333aaaa3333bb");
+    assert_eq!(follow(&b), 1, "it missed the first move, but is still told how to catch up");
+    let old: String = built_on.chars().take(12).collect();
+    let prompt = last_prompt(&b);
+    assert!(prompt.contains(&format!("git rebase --onto origin/feat/base {old} <your branch>")), "{prompt}");
+    assert!(prompt.contains(&format!("built on its older tip {old}, not 2222aaaa2222")), "{prompt}");
+    assert!(!log_of(&b, id).iter().any(|t| t.contains("Didn't ask it to rebase")), "{:?}", log_of(&b, id));
+    assert!(diverged_alerts(&b, id).is_empty());
+}
+
+#[test]
+fn a_child_built_on_none_of_the_parent_s_tips_is_flagged_as_diverged_once() {
+    let b = board();
+    child_repo(&b);
+    let stray = stray_commit(&b, "Stray");
+    let (id, base) = head_merge_child(&b, &stray);
     let visits = b.visits();
-    move_base(&b, base, "5555aaaa5555bb");
-    assert_eq!(follow(&b), 0, "its old head isn't on the branch, so there's nothing of it to replay");
+    move_base(&b, base, "2222aaaa2222bb");
+    assert_eq!(follow(&b), 0, "there's no commit of its parent on its branch to replay from");
     assert_eq!(b.visits(), visits);
-    let log = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id DESC", p![id]).unwrap();
-    assert!(log.iter().any(|e| e.st("text").contains("isn't on this task's branch")), "{log:?}");
+    let alerts = diverged_alerts(&b, id);
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert!(alerts[0]["text"].as_str().unwrap_or("").contains("Rebuild it on origin/feat/base"), "{alerts:?}");
+    taskboardd::dispatch::clear_alerts(&b.app, None, alerts[0]["id"].as_str()).unwrap();
+    let notes = |b: &Board| log_of(b, id).iter().filter(|t| t.contains("Diverged from")).count();
+    assert_eq!(notes(&b), 1);
+    move_base(&b, base, "3333aaaa3333bb");
+    assert_eq!(follow(&b), 0);
+    assert_eq!(notes(&b), 1, "flagged once, not on every move");
+    assert!(diverged_alerts(&b, id).is_empty(), "and not raised again once dismissed");
+}
+
+#[test]
+fn a_diverged_child_that_catches_up_is_told_of_the_next_move_and_its_flag_comes_down() {
+    let b = board();
+    child_repo(&b);
+    let (stray, rebuilt) = (stray_commit(&b, "Stray"), stray_commit(&b, "Rebuilt"));
+    let (id, base) = head_merge_child(&b, &stray);
+    move_base(&b, base, &rebuilt);
+    assert_eq!(follow(&b), 0);
+    assert_eq!(diverged_alerts(&b, id).len(), 1);
+    sh(&b.dir.path().join("webapp"), &["branch", "-f", "feat/child", &rebuilt]);
+    move_base(&b, base, "4444aaaa4444bb");
+    assert_eq!(follow(&b), 1);
+    let old: String = rebuilt.chars().take(12).collect();
+    assert!(last_prompt(&b).contains(&format!("git rebase --onto origin/feat/base {old} <your branch>")), "{}", last_prompt(&b));
+    assert!(diverged_alerts(&b, id).is_empty());
 }
 
 #[test]
