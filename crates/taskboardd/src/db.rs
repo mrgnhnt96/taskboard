@@ -745,6 +745,12 @@ impl Db {
         Ok(self.changed(&sql, params)? > 0)
     }
 
+    /// Waits until no other thread is inside `tx`, so what this thread reads next includes what that
+    /// transaction committed. Work queued from inside a request's transaction calls it before reading.
+    pub fn settle(&self) {
+        drop(self.lock("waiting for a transaction"));
+    }
+
     /// Whether this thread is inside `tx`: what it reads there may yet roll back.
     /// Another thread's transaction isn't this one's, so it never waits for the lock to find out.
     pub fn in_tx(&self) -> bool {
@@ -866,6 +872,30 @@ mod tests {
         writer.join().unwrap();
         assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("after"));
         assert_ne!(db.mark().unwrap(), mark);
+    }
+
+    #[test]
+    fn settle_waits_for_another_threads_transaction_to_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(Db::open(&dir.path().join("board.db")).unwrap());
+        db.set_setting("k", Some("before")).unwrap();
+        let (inside, go_on) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let d = db.clone();
+        let writer = std::thread::spawn(move || {
+            d.tx(|| {
+                d.set_setting("k", Some("after"))?;
+                inside.0.send(()).unwrap();
+                go_on.1.recv().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok(())
+            })
+            .unwrap();
+        });
+        inside.1.recv().unwrap();
+        go_on.0.send(()).unwrap();
+        db.settle();
+        assert_eq!(db.get_setting("k").unwrap().as_deref(), Some("after"), "settle returns once the commit is in");
+        writer.join().unwrap();
     }
 
     #[test]

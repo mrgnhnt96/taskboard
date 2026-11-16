@@ -130,6 +130,14 @@ fn try_queue(app: &App, gid: i64, reason: &str, source: &str) -> Result<()> {
     };
     let source = source.to_string();
     app.queue_slow(Box::new(move |a: &App| {
+        // `tb goal new` and `tb propose` queue this inside their transaction: read once it's committed,
+        // or the new goal and its tasks aren't there yet. One rolled back took its round with it.
+        a.db.settle();
+        if a.db.q1("SELECT id FROM plan_reviews WHERE id = ?", p![round]).ok().flatten().is_none() {
+            a.shared.lock().plan_reviewing.remove(&gid);
+            a.shared.lock().plan_review_again.remove(&gid);
+            return;
+        }
         let answer = run(a, gid, round, &model);
         if let Err(e) = finish(a, gid, round, answer) {
             a.info(format!("plan review: recording {}'s review failed: {}", rf("goal", gid), e.message));
