@@ -13,6 +13,7 @@ pub mod bits;
 pub mod blocks;
 pub mod board;
 pub mod buried;
+pub mod turn_wait;
 pub mod botrun;
 pub mod breaks;
 pub mod bring;

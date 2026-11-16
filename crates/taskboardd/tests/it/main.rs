@@ -121,6 +121,7 @@ mod step_aim;
 mod steps;
 mod stream;
 mod tab_status;
+mod turn_waits;
 mod visit_prompt;
 mod wait_merged;
 mod waves;
