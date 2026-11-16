@@ -80,6 +80,7 @@ mod plan_review;
 mod planning;
 mod pool;
 mod pr_other_repo;
+mod pr_wait_watch;
 mod prbuilds;
 mod prhost;
 mod project_terminals;

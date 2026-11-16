@@ -3683,8 +3683,19 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
         return err(404, format!("{} has no PR linked.", rf("task", id)));
     }
     let f = jloads_obj(t.s("pr_flow"));
+    let watched = crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch;
     Ok(json!({"task": rf("task", id), "pr": board::pr_card(app, &t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
-              "agents_merge": crate::prflow::agents_merge_on(app, t.s("project")), "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
+              "agents_merge": crate::prflow::agents_merge_on(app, t.s("project")), "watched": watched,
+              "watching": watching(app, &t, &f, watched)?}))
+}
+
+/// The board watching a handed-in task's open PR, with no visit on: since when the agent last handed it
+/// back (`tb pr wait`), when that's known. Null while the PR isn't watched, or a visit is on.
+fn watching(app: &App, t: &Row, f: &serde_json::Map<String, Value>, watched: bool) -> Result<Value> {
+    if !watched || t.s("status") != Some("done") || !board::pr_still_open(t) || prflow::waking(app, t)? {
+        return Ok(Value::Null);
+    }
+    Ok(json!({"since": f.v("watched_at")}))
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {
@@ -3707,6 +3718,9 @@ fn pr_wait(app: &App, id: i64) -> Result<Value> {
         if let Some(why) = crate::comments::task_refusal(app, &t, None, "handing the PR back for review")? {
             return err(409, why);
         }
+        if app.cfg.comments.guard {
+            crate::progress::stage(&format!("Checked PR #{} for comments it adds", t.i0("pr_num")));
+        }
     }
     if let Some(why) = crate::slots::release_refusal(app, &t)? {
         return err(409, why);
@@ -3720,6 +3734,7 @@ fn pr_wait(app: &App, id: i64) -> Result<Value> {
         board::log_event(app, id, board::BOARD, "status", &format!("The agent finished its visit to PR #{}; the board watches it again", t.i0("pr_num")))?;
         Ok(())
     })?;
+    crate::progress::stage("Handed the PR back to the board to watch");
     crate::slots::release(app, &board::get_task(app, id)?)?;
     get_pr(app, id)
 }
