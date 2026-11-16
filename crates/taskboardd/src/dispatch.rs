@@ -697,6 +697,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().is_some_and(crate::quiet::is_key) {
         return crate::quiet::alert_resolved(app, a);
     }
+    if a["key"].as_str().is_some_and(prflow::is_claim_alert_key) {
+        return prflow::claim_alert_resolved(app, a);
+    }
     if a["key"].as_str().is_some_and(board::is_miss_key) {
         return board::miss_resolved(app, a);
     }
