@@ -735,6 +735,8 @@ pub fn follow_ups(app: &App) -> Result<i64> {
         let seen = flow.get(FOLLOW).and_then(|v| v.as_object()).cloned().unwrap_or_default();
         let mut changes = Row::new();
         let mut notes = vec![];
+        let mut diverged = vec![];
+        let mut caught_up = vec![];
         let mut held = None;
         for n in deps(&t) {
             let other = board::find_task(app, Some(n))?;
@@ -742,21 +744,35 @@ pub fn follow_ups(app: &App) -> Result<i64> {
                 continue;
             }
             let other = other.unwrap();
-            let now = json!({"head": head_of(&other), "merged": landed(&other).is_some() || (other.st("pr_state").eq_ignore_ascii_case("MERGED") && stack_landed(app, &other)?)});
+            let mut now = json!({"head": head_of(&other), "merged": landed(&other).is_some() || (other.st("pr_state").eq_ignore_ascii_case("MERGED") && stack_landed(app, &other)?)});
             let key = n.to_string();
             let Some(before) = seen.get(&key) else {
                 changes.insert(key, now);
                 continue;
             };
-            if *before == now || (now["head"].is_null() && now["merged"] == false) {
+            if (before["head"] == now["head"] && before["merged"] == now["merged"]) || (now["head"].is_null() && now["merged"] == false) {
                 continue;
             }
             if *held.get_or_insert(stack_base_held(app, &t)?) {
                 continue;
             }
-            if let Some(line) = follow_line(app, &t, &other, before, &now)? {
-                notes.push(line);
+            let tips = earlier_tips(before);
+            match follow_line(app, &t, &other, before, &now, &tips)? {
+                Follow::Tell(line) => {
+                    notes.push(line);
+                    if before["diverged"] == true {
+                        caught_up.push(other.clone());
+                    }
+                }
+                Follow::Diverged => {
+                    if before["diverged"] != true {
+                        diverged.push(other.clone());
+                    }
+                    now["diverged"] = json!(true);
+                }
+                Follow::Quiet => {}
             }
+            now["tips"] = json!(tips);
             changes.insert(key, now);
         }
         if changes.is_empty() {
@@ -788,6 +804,12 @@ pub fn follow_ups(app: &App) -> Result<i64> {
             )?;
             sent += 1;
         }
+        for other in &caught_up {
+            crate::dispatch::clear_alert_key(app, &diverged_key(&t, other))?;
+        }
+        for other in &diverged {
+            flag_diverged(app, &t, other)?;
+        }
         let mut merged = seen.clone();
         for (k, v) in changes {
             merged.insert(k, v);
@@ -803,9 +825,26 @@ fn stack_base_held(app: &App, t: &Row) -> Result<bool> {
     Ok(crate::stack::children(app, t.id())?.iter().any(crate::stack::head))
 }
 
-/// Whether git, in the task's checkout, finds `sha` on the task's branch (locally or at origin). None when
-/// there's no checkout or branch to ask.
-fn on_branch(t: &Row, sha: &str) -> Option<bool> {
+/// How many of a dependency's earlier heads the board keeps, to find the one a task is built on
+/// after it missed a move.
+const KEPT_TIPS: usize = 20;
+
+/// The dependency's heads the board saw before `before`'s, newest first: `before`'s head and the
+/// tips recorded with it.
+fn earlier_tips(before: &Value) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let older = before["tips"].as_array().into_iter().flatten().filter_map(|v| v.as_str());
+    for sha in before["head"].as_str().into_iter().chain(older) {
+        if !sha.is_empty() && !out.iter().any(|s| s == sha) && out.len() < KEPT_TIPS {
+            out.push(sha.to_string());
+        }
+    }
+    out
+}
+
+/// The first of `shas` that git, in the task's checkout, finds on the task's branch (locally or at
+/// origin). None when there's no checkout or branch to ask; Some(None) when none of them is on it.
+fn first_on_branch(t: &Row, shas: &[String]) -> Option<Option<String>> {
     let ctx = board::task_context(t);
     let worktree = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str());
     let dir = [worktree, t.s("repo_path")].into_iter().flatten().find(|d| std::path::Path::new(d).is_dir())?;
@@ -823,44 +862,68 @@ fn on_branch(t: &Row, sha: &str) -> Option<bool> {
     if refs.is_empty() {
         return None;
     }
-    Some(refs.iter().any(|r| run(&["merge-base", "--is-ancestor", sha, r]) == Some(0)))
+    Some(shas.iter().find(|sha| refs.iter().any(|r| run(&["merge-base", "--is-ancestor", sha, r]) == Some(0))).cloned())
 }
 
-/// What to tell the task about a dependency's change, if anything: nothing when its head didn't move
-/// and it didn't newly merge, or when its old head isn't on the task's branch, so there's nothing of it
-/// to replay or drop.
-fn follow_line(app: &App, t: &Row, other: &Row, before: &Value, now: &Value) -> Result<Option<String>> {
+/// What a dependency's change asks of the task.
+enum Follow {
+    /// Nothing to tell it.
+    Quiet,
+    /// A line for its rebase prompt.
+    Tell(String),
+    /// Its branch holds none of the dependency's heads the board saw, so there's no commit to replay from.
+    Diverged,
+}
+
+/// What to tell the task about a dependency's change: nothing when its head didn't move and it didn't
+/// newly merge. The rebase replays from the newest of the dependency's heads the task's branch holds
+/// (`tips`, newest first), so a task that missed a move is still told how to catch up; when its branch
+/// holds none of them, it has diverged from the dependency.
+fn follow_line(app: &App, t: &Row, other: &Row, before: &Value, now: &Value, tips: &[String]) -> Result<Follow> {
     let newly_merged = now["merged"] == true && before["merged"] != true;
     let (was, is) = (before["head"].as_str().unwrap_or(""), now["head"].as_str().unwrap_or(""));
     if !newly_merged && (is.is_empty() || was == is) {
-        return Ok(None);
+        return Ok(Follow::Quiet);
     }
-    if !was.is_empty() && on_branch(t, was) == Some(false) {
-        let what = if newly_merged { "merged" } else { "moved" };
-        board::log_event(
-            app,
-            t.id(),
-            board::BOARD,
-            "note",
-            &format!("Didn't ask it to rebase when {} {what}: its old last commit {} isn't on this task's branch", rf("task", other.id()), short_sha(was)),
-        )?;
-        return Ok(None);
-    }
+    let base = match (!was.is_empty()).then(|| first_on_branch(t, tips)).flatten() {
+        Some(None) => return Ok(Follow::Diverged),
+        Some(Some(found)) => found,
+        None => was.to_string(),
+    };
     let branch = moved_onto(t, other).unwrap_or_else(|| "<its branch>".into());
-    let old = short_sha(was);
+    let old = short_sha(&base);
     let old = if old.is_empty() { "<its old last commit>".to_string() } else { old };
+    let missed = if base != was { format!(" Your branch is built on its older tip {old}, not {}.", short_sha(was)) } else { String::new() };
     let lbl = label(app, other)?;
     if newly_merged {
-        return Ok(Some(format!(
-            "- {lbl} was merged. Drop its commits from your branch and keep only yours: git fetch origin && \
+        return Ok(Follow::Tell(format!(
+            "- {lbl} was merged.{missed} Drop its commits from your branch and keep only yours: git fetch origin && \
              git rebase --onto origin/<your base, usually main> {old} <your branch>."
         )));
     }
     let new = short_sha(is);
-    Ok(Some(format!(
-        "- {lbl}'s branch {branch} moved from {old} to {new}. Replay your commits on the new tip: \
+    Ok(Follow::Tell(format!(
+        "- {lbl}'s branch {branch} moved from {old} to {new}.{missed} Replay your commits on the new tip: \
          git fetch origin && git rebase --onto origin/{branch} {old} <your branch>."
     )))
+}
+
+fn diverged_key(t: &Row, other: &Row) -> String {
+    format!("diverged:{}:{}", rf("task", t.id()), rf("task", other.id()))
+}
+
+/// Tells the owner, once, that the task's branch holds none of the heads the board saw of a task it
+/// builds on, so the board can't say what to rebase from.
+fn flag_diverged(app: &App, t: &Row, other: &Row) -> Result<()> {
+    let (r, o) = (rf("task", t.id()), rf("task", other.id()));
+    let onto = moved_onto(t, other).map(|b| format!("origin/{b}")).unwrap_or_else(|| format!("{o}'s branch"));
+    let detail = format!(
+        "Its branch has none of the versions of {o}'s branch the board has seen, so it can't be told what to rebase from. \
+         Rebuild it on {onto}, keeping only its own commits."
+    );
+    board::log_event(app, t.id(), board::BOARD, "note", &format!("Diverged from {o}: none of its earlier last commits are on this task's branch"))?;
+    let fields = json!({"title": t.st("title"), "detail": detail});
+    crate::dispatch::add_alert_keyed_with(app, &format!("{r}: {}. {detail}", t.st("title")), Some(t.id()), t.i("goal_id"), &diverged_key(t, other), fields)
 }
 
 fn short_sha(sha: &str) -> String {
