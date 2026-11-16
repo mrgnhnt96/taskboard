@@ -41,7 +41,7 @@ Planning a goal? Read `planning.md` first.
 4. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks (a task that also finishes another goal moves there either way); ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
 5. The project defaults to this terminal's; `--project <name>` picks another.
 6. Nothing you add runs until the owner queues or starts it; don't take it unless asked.
-7. Give the owner the link `tb` printed.
+7. Don't paste the goal or task link `tb` prints; refer to the goal or task by its ref (G27, T12).
 
 Titles are short summaries a person reads at a glance (80 characters at most, no test names, paths, commit hashes or error text); all of that goes in `--detail`.
 
