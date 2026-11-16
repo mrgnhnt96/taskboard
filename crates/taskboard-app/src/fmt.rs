@@ -181,6 +181,27 @@ pub fn clock12(hhmm: &str) -> String {
     format!("{h12}:{m:02} {}", if h < 12 { "AM" } else { "PM" })
 }
 
+/// A short 12-hour clock for tight spots: "06:00" → "6a", "19:30" → "7:30p".
+pub fn clock_short(hhmm: &str) -> String {
+    let mut it = hhmm.split(':').map(|p| p.parse::<u32>().unwrap_or(0));
+    let (h, m) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+    let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+    let half = if h < 12 { "a" } else { "p" };
+    if m == 0 { format!("{h12}{half}") } else { format!("{h12}:{m:02}{half}") }
+}
+
+/// [`day_clock`] with the short clock: "6a", "Thu 6a".
+pub fn day_clock_short(iso: &str) -> String {
+    let Some(t) = parse(iso) else { return String::new() };
+    let l = local(t);
+    let clock = clock_short(&l.format("%H:%M").to_string());
+    let (today, d) = (local(now()).date_naive(), l.date_naive());
+    if is_today(t) {
+        return clock;
+    }
+    if d > today && (d - today).num_days() < 7 { format!("{} {clock}", l.format("%a")) } else { format!("{} {clock}", day_word(t)) }
+}
+
 /// "Today", "Yesterday", "Thu" within the last week, else "Oct 27" (with the year in another year);
 /// empty for a time that is today.
 fn day_word(t: DateTime<Utc>) -> String {

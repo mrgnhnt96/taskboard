@@ -277,7 +277,7 @@ pub fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(div().flex_1().min_w_0().flex().child(crate::ui::hours::pill(m, t, cx)))
+            .child(div().flex_1().min_w_0().overflow_hidden().flex().child(crate::ui::hours::pill(m, t, cx)))
             .child(
                 div()
                     .id("open-settings")
@@ -293,8 +293,7 @@ pub fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
                     .hover(move |s| s.text_color(text))
                     .tooltip(kit::tip("Settings (⌘,)"))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
-                    .child("Settings")
-                    .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.faint).child("⌘,")),
+                    .child("Settings"),
             ),
     )
 }
