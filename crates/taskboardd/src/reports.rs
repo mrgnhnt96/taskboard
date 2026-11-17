@@ -274,6 +274,20 @@ impl<'a> Report<'a> {
         self.cwd.as_deref().and_then(repo_of).is_some_and(|(_, top)| top != home)
     }
 
+    /// Points the branch the task works on at the branch its PR goes into when it tracks another, so
+    /// a pull from its upstream doesn't rebase it off its base (`upstream`).
+    fn mend_upstream(&self, t: &Row) -> Result<()> {
+        if self.away(t)? {
+            return Ok(());
+        }
+        let Some(dir) = self.place() else { return Ok(()) };
+        // A branch it can't mend doesn't hold up the hook.
+        if let Some(text) = crate::upstream::mend(self.app, t, &dir).ok().flatten() {
+            self.log(t.id(), "commit", &text, None)?;
+        }
+        Ok(())
+    }
+
     fn update_where(&self, t: &Row, turn: bool) -> Result<Row> {
         let mut ctx = board::task_context(t);
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
@@ -483,6 +497,9 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
         board::set_working(app, &t, &r.name(), Some(&format!("Terminal came back ({})", if src.is_empty() { "restart" } else { &src })))?;
     }
     r.set_session_status(if t.s("status") == Some("working") { "working" } else { "idle" })?;
+    if t.s("session_id") == r.sid() {
+        r.mend_upstream(&t)?;
+    }
     let mut ctx = r.handoff_for(&t)?;
     if let Some(sid) = r.sid().filter(|s| t.s("session_id") == Some(*s)) {
         let waiting = lines::summary(app, sid)?;
@@ -1210,6 +1227,7 @@ fn on_commit(r: &mut Report) -> Result<Value> {
         ctx.insert("where".into(), Value::Object(w));
         board::save_context(app, t.id(), &ctx, false)?;
     }
+    r.mend_upstream(&t)?;
     if cmd.contains("git push") {
         let branch = r.git.s("branch").filter(|b| !b.is_empty()).unwrap_or("the branch").to_string();
         r.log(t.id(), "commit", &format!("Pushed {branch}"), None)?;
