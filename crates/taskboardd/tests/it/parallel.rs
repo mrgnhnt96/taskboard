@@ -1796,6 +1796,27 @@ fn a_restart_rebases_a_head_merge_task_onto_its_parent_s_branch_not_the_default(
 }
 
 #[test]
+fn a_head_merge_branch_tracking_main_is_pointed_at_its_parent_s_branch_so_a_pull_keeps_it_there() {
+    let b = new_board();
+    let (_, two, dir) = head_merge_child(&b, true);
+    let d = Path::new(&dir);
+    // Made the way agents often do: from origin/main, so it tracks main.
+    git(d, &["branch", "-q", "--set-upstream-to=origin/main", "feature/two"]);
+    b.add_session("s2");
+    b.open_for("s2", two);
+    b.report("hook.prompt", "s2", json!({"prompt": b.start_job(two).st("prompt")}));
+    b.report("hook.commit", "s2", json!({"cwd": dir, "command": "git commit -m 'Add two.txt'", "output": "[feature/two abc] Add two.txt"}));
+    assert_eq!(git(d, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]), "origin/feature/one");
+    let log = b.card(two)["log"].to_string();
+    assert!(log.contains("Pointed feature/two's upstream at origin/feature/one"), "{log}");
+    // A session-start hook's pull --rebase now keeps it on its parent's branch, off main.
+    git(d, &["-c", "user.name=t", "-c", "user.email=t@t", "pull", "-q", "--rebase"]);
+    assert_eq!(git(d, &["merge-base", "HEAD", "origin/feature/one"]), git(d, &["rev-parse", "origin/feature/one"]), "still on its parent's branch");
+    assert_eq!(git(d, &["rev-list", "--count", "origin/feature/one..HEAD"]), "1", "only its own commit on top");
+    assert_ne!(git(d, &["merge-base", "HEAD", "origin/main"]), git(d, &["rev-parse", "origin/main"]), "never moved onto main");
+}
+
+#[test]
 fn a_restart_leaves_a_head_merge_task_alone_while_its_parent_s_branch_isn_t_pushed() {
     let b = new_board();
     let (_, two, dir) = head_merge_child(&b, false);
