@@ -752,6 +752,7 @@ pub fn prs(app: &App) -> Result<()> {
     app.db.tx(|| crate::prbuilds::sweep(app))?;
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
     app.db.tx(|| waitsfor::stuck_stacks(app).map(|_| ()))?;
+    app.db.tx(|| crate::order_cycle::sweep(app).map(|_| ()))?;
     app.db.tx(|| crate::declined::sweep(app))?;
     crate::setup::auto_sync(app)?;
     app.db.tx(|| crate::setup::sweep(app))?;

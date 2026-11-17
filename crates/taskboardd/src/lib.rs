@@ -69,6 +69,7 @@ pub mod merged_note;
 pub mod midna;
 pub mod no_pr_words;
 pub mod ops;
+pub mod order_cycle;
 pub mod picker;
 pub mod plan_review;
 pub mod plan_review_again;
