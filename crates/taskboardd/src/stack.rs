@@ -245,6 +245,9 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<i64>> {
         if waitsfor::reaches(app, n, t.id(), &mut vec![])? {
             return err(409, format!("{} already builds on {}, so this would wait forever.", rf("task", n), rf("task", t.id())));
         }
+        if let Some(why) = crate::order_cycle::refusal(app, t, n)? {
+            return err(409, why);
+        }
         if let Some(why) = wave_clash(t, &other) {
             return err(409, why);
         }

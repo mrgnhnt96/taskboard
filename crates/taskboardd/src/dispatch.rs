@@ -703,6 +703,10 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().is_some_and(board::is_miss_key) {
         return board::miss_resolved(app, a);
     }
+    // Up until `order_cycle::sweep` sees its cycle broken.
+    if a["key"].as_str().is_some_and(crate::order_cycle::is_key) {
+        return Ok(false);
+    }
     let at = a["at"].as_str().unwrap_or("");
     let sid = if let Some(tid) = a["task_id"].as_i64() {
         let Some(t) = board::find_task(app, Some(tid))? else { return Ok(true) };

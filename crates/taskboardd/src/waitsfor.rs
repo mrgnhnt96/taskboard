@@ -62,6 +62,9 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>
             if reaches(app, n, t.id(), &mut vec![])? {
                 return err(409, format!("{} already waits for {}, so this would wait forever.", rf("task", n), rf("task", t.id())));
             }
+            if let Some(why) = crate::order_cycle::refusal(app, t, n)? {
+                return err(409, why);
+            }
         }
         if !out.contains(&n) {
             out.push(n);
