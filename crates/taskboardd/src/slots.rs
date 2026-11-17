@@ -792,14 +792,55 @@ pub(crate) fn branch_of(path: &str) -> Option<String> {
 }
 
 /// Commits in a slot that only it has. Without a remote, a branch keeps its commits after the slot
-/// lets go of it; only a detached HEAD's would be lost.
+/// lets go of it; only a detached HEAD's would be lost. A rebase of the branch's pushed commits (a
+/// session-start hook's `git pull --rebase` onto a newer base) loses nothing, so its copies don't count.
 pub(crate) fn unpushed(path: &str) -> i64 {
     let remote = !git(path, &["remote"], GIT_SECS).out.trim().is_empty();
-    if !remote && branch_of(path).is_some() {
-        return 0;
+    if !remote {
+        if branch_of(path).is_some() {
+            return 0;
+        }
+        let r = git(path, &["rev-list", "--count", "HEAD", "--not", "--branches"], GIT_SECS);
+        return r.out.trim().parse().unwrap_or(0);
     }
-    let r = git(path, &["rev-list", "--count", "HEAD", "--not", if remote { "--remotes" } else { "--branches" }], GIT_SECS);
-    r.out.trim().parse().unwrap_or(0)
+    let mine = not_on_a_remote(path);
+    match pushed_copy(path) {
+        Some((_, copy)) if !mine.is_empty() => {
+            let new = git(path, &["rev-list", "--cherry-pick", "--right-only", &format!("{copy}...HEAD")], GIT_SECS);
+            if new.code != 0 {
+                return mine.len() as i64;
+            }
+            let new: std::collections::HashSet<&str> = new.out.split_whitespace().collect();
+            mine.iter().filter(|c| new.contains(c.as_str())).count() as i64
+        }
+        _ => mine.len() as i64,
+    }
+}
+
+/// HEAD's commits that no remote branch has.
+fn not_on_a_remote(path: &str) -> Vec<String> {
+    git(path, &["rev-list", "HEAD", "--not", "--remotes"], GIT_SECS).out.split_whitespace().map(str::to_string).collect()
+}
+
+/// The branch checked out in `path` and its pushed copy (`<remote>/<branch>`), when it has one.
+fn pushed_copy(path: &str) -> Option<(String, String)> {
+    let b = branch_of(path)?;
+    let remotes = git(path, &["remote"], GIT_SECS).out;
+    let copy = remotes
+        .lines()
+        .map(|r| format!("{}/{b}", r.trim()))
+        .find(|c| git(path, &["rev-parse", "--verify", "-q", &format!("refs/remotes/{c}")], GIT_SECS).code == 0)?;
+    Some((b, copy))
+}
+
+/// The branch in `path` and its pushed copy when the branch's only commits no remote has are a
+/// rebase of the pushed ones (`unpushed`), so pointing it back at the pushed copy loses nothing.
+fn rebased_copy(path: &str) -> Option<(String, String, usize)> {
+    let k = not_on_a_remote(path).len();
+    if k == 0 || unpushed(path) > 0 {
+        return None;
+    }
+    pushed_copy(path).map(|(b, c)| (b, c, k))
 }
 
 /// Gives back the slot `t` holds: detached at its base again and free for the next task, its branch
@@ -838,10 +879,21 @@ pub(crate) fn give_back(app: &App, t: &Row) -> Result<bool> {
             stuck_alert(app, &s, &why)?;
         }
         branch = branch_of(&path);
+        let rebased = rebased_copy(&path);
         let base = ctx.s("worktree_base").unwrap_or("HEAD");
         // Off its branch either way, so a reclaimed slot elsewhere can check it out.
         if git(&path, &["switch", "--detach", base], GIT_SECS).code != 0 {
             git(&path, &["switch", "--detach"], GIT_SECS);
+        }
+        // Review fixes carry on from what's pushed, not a hook's rebase of it a push would be refused for.
+        if let Some((b, copy, k)) = rebased {
+            if branch_of(&path).is_none() && git(&path, &["branch", "-f", &b, &copy], GIT_SECS).code == 0 {
+                let text = format!(
+                    "Pointed {b} back at {copy}: its {} only it had were a rebase of the pushed ones, so nothing was lost",
+                    plural(k as i64, "commit")
+                );
+                board::log_event(app, t.id(), board::BOARD, "midna", &text)?;
+            }
         }
     }
     resized(&path);
@@ -1188,6 +1240,62 @@ mod tests {
         let why = visit_end_refusal(&app, &t, &json!({"by_session": "s1"})).unwrap().expect("the agent is told");
         assert!(why.contains("uncommitted changes"), "{why}");
         assert!(visit_end_refusal(&app, &t, &json!({})).unwrap().is_none(), "the owner isn't held to it");
+    }
+
+    #[test]
+    fn a_pr_visit_ends_when_a_hook_only_rebased_its_pushed_branch_and_the_branch_goes_back_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let (origin, repo, other) = (dir.path().join("origin.git"), dir.path().join("repo"), dir.path().join("other"));
+        let s = |p: &Path| p.to_str().unwrap().to_string();
+        let run = |at: &str, args: &[&str]| {
+            let g = git(at, args, 30.0);
+            assert_eq!(g.code, 0, "git {args:?}: {}", g.err);
+            g.out.trim().to_string()
+        };
+        // Each commit adds a file of its own, so no two are the same change.
+        let commit = |at: &str, m: &str| {
+            std::fs::write(Path::new(at).join(m.replace(' ', "-")), m).unwrap();
+            run(at, &["add", "-A"]);
+            run(at, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", m])
+        };
+        let top = s(dir.path());
+        run(&top, &["init", "-q", "--bare", "-b", "main", &s(&origin)]);
+        run(&top, &["clone", "-q", &s(&origin), &s(&repo)]);
+        let repo = s(&repo);
+        run(&repo, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        commit(&repo, "one");
+        run(&repo, &["push", "-q", "origin", "main"]);
+        let slot = slot_path(&repo, 1);
+        run(&repo, &["worktree", "add", "-q", "-b", "feat/a", &slot, "origin/main"]);
+        commit(&slot, "a's work");
+        commit(&slot, "a's fix");
+        run(&slot, &["push", "-q", "-u", "origin", "feat/a"]);
+        let pushed = run(&slot, &["rev-parse", "HEAD"]);
+        // main moves on, and a session-start hook's pull rebases the branch onto it.
+        run(&top, &["clone", "-q", &s(&origin), &s(&other)]);
+        commit(&s(&other), "main moves");
+        run(&s(&other), &["push", "-q", "origin", "main"]);
+        run(&slot, &["-c", "user.name=t", "-c", "user.email=t@t", "pull", "-q", "--rebase", "origin", "main"]);
+        assert_ne!(run(&slot, &["rev-parse", "HEAD"]), pushed, "rebased");
+        assert_eq!(not_on_a_remote(&slot).len(), 2);
+
+        let id = app.db.insert("tasks", crate::fields!["title" => "A", "status" => "done"]).unwrap();
+        app.db.insert("worktree_slots", crate::fields!["repo" => repo.clone(), "n" => 1, "path" => slot.clone(), "task_id" => id]).unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        let agent = json!({"by_session": "s1"});
+        assert_eq!(visit_end_refusal(&app, &t, &agent).unwrap(), None, "a rebase of pushed commits loses nothing");
+
+        // A commit of its own on top still holds the visit.
+        commit(&slot, "not pushed");
+        let why = visit_end_refusal(&app, &t, &agent).unwrap().expect("its own commit isn't pushed");
+        assert!(why.contains("1 commit on feat/a isn't pushed"), "{why}");
+        run(&slot, &["reset", "-q", "--hard", "HEAD~1"]);
+
+        assert!(release(&app, &t).unwrap());
+        assert_eq!(run(&repo, &["rev-parse", "feat/a"]), pushed, "the branch is back on its pushed commits");
+        let logged: Vec<String> = app.db.q("SELECT text FROM events WHERE task_id = ?", p![id]).unwrap().iter().map(|e| e.st("text")).collect();
+        assert!(logged.iter().any(|l| l.contains("Pointed feat/a back at origin/feat/a: its 2 commits only it had were a rebase")), "{logged:?}");
     }
 
     /// Asks until the background measuring gives a size other than `not`.
