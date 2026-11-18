@@ -72,6 +72,7 @@ screen = true
 model = "claude-haiku-5-5"
 budget_usd = "0.30"
 timeout_secs = 75
+no_task = true                       # also screen tb question from a terminal with no task; false: straight to the owner
 # Rule files the screener reads: a file, a folder (its MEMORY.md, then every other .md in it, so a
 # new memory note counts at once) or a glob (`*`, `?`, `[…]`, `**` for any depth of folders).
 rules = []                           # example: ["~/.claude/CLAUDE.md", "~/.claude/projects/-Users-alex-code-web/memory", "~/.claude/projects/*/memory/*.md"]

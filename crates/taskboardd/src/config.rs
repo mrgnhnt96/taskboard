@@ -158,6 +158,8 @@ pub struct Questions {
     /// The model that screens an agent's new human task (`screen` turns it off too): whether only the
     /// owner can do it. Empty: `model`'s.
     pub human_model: String,
+    /// Screen a `tb question` from a terminal with no task too. Off: it goes straight to the owner.
+    pub no_task: bool,
 }
 
 impl Default for Questions {
@@ -165,6 +167,7 @@ impl Default for Questions {
         Questions {
             screen: true,
             human_model: "sonnet".into(),
+            no_task: true,
             model: "claude-haiku-5-5".into(),
             budget_usd: "0.30".into(),
             timeout_secs: 75,

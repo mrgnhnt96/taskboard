@@ -21,6 +21,11 @@ struct Board {
 /// A board whose question screener prints `verdict`, with terminal s1 opened by an agent job for
 /// `purpose` (none: a terminal the owner opened), with `args` and `target`.
 fn board(verdict: Value, purpose: Option<&str>, args: Value, target: Value) -> Board {
+    board_with(verdict, purpose, args, target, |_| {})
+}
+
+/// `board`, with `tweak` applied to its config first.
+fn board_with(verdict: Value, purpose: Option<&str>, args: Value, target: Value, tweak: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     let repo = dir.path().join("webapp");
@@ -31,6 +36,7 @@ fn board(verdict: Value, purpose: Option<&str>, args: Value, target: Value) -> B
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     cfg.claude = script.to_string_lossy().to_string();
     cfg.questions.screen = true;
+    tweak(&mut cfg);
     let app = App::for_tests(cfg);
     app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
     midna::sync(&app, &[json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}})], &[])
@@ -191,5 +197,15 @@ fn tb_question_with_no_task_the_rules_don_t_answer_needs_the_owner() {
     let out = b.report("tb.question", json!({"text": "Split it?"}));
     assert_eq!(out["question"].as_str(), Some("Should the plan split the API work into its own goal?"));
     assert!(out["answer"].is_null());
+    assert_eq!(b.session_status(), "needs");
+}
+
+#[test]
+fn with_no_task_screening_off_tb_question_goes_straight_to_the_owner() {
+    let b = board_with(answered(), None, json!({}), json!({}), |c| c.questions.no_task = false);
+    let out = b.report("tb.question", json!({"text": "Split it?"}));
+    assert!(!b.screened());
+    assert!(out["answer"].is_null());
+    assert_eq!(out["question"].as_str(), Some("Split it?"));
     assert_eq!(b.session_status(), "needs");
 }
