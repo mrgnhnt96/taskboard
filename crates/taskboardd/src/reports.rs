@@ -3677,7 +3677,10 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         if !options.is_empty() {
             asked = format!("{asked}\n\nIts choices:\n{}", options.join("\n"));
         }
-        r.screened = screen::question(app, t.as_ref(), &asked);
+        let unscreened = t.is_none() && !app.cfg.questions.no_task && prflow::visited_by(app, r.sid().unwrap_or(""))?.is_none();
+        if !unscreened {
+            r.screened = screen::question(app, t.as_ref(), &asked);
+        }
     }
     if r.event == "tb.new_task" && !spooled && crate::design::clean_kind(r.body.get("kind")).ok().flatten() == Some(crate::human::KIND) {
         // Most human tasks an agent files are work an agent can do: screen it before it reaches the owner.
