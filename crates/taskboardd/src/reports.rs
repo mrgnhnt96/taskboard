@@ -1973,8 +1973,14 @@ fn on_question(r: &mut Report) -> Result<Value> {
             return answered(r, t, &text, &screened);
         }
     }
+    if t.is_none() && is_answered {
+        // A terminal with no task: the answer goes back to it, with no task to log it on.
+        let (src, ans) = (screened["source"].as_str().unwrap_or("the rules"), screened["answer"].as_str().unwrap_or(""));
+        app.info(format!("question: {} asked “{}”; answered from {src}", r.name(), one_line(&text, 120)));
+        return Ok(with(ok(None, None), json!({"answer": ans, "source": src})));
+    }
     r.set_session_status("needs")?;
-    let Some(t) = t else { return Ok(ok(None, None)) };
+    let Some(t) = t else { return Ok(with(ok(None, None), json!({"question": asked}))) };
     if t.s("status") == Some("done") {
         return err(
             409,
