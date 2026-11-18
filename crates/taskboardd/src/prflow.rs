@@ -125,6 +125,54 @@ pub fn refuse_other_repo(app: &App, t: &Row, pr: &PrLink) -> Result<()> {
     }
 }
 
+/// Why `pr` can't finish the task: it merged at a head the checkout, still on the PR's branch, has
+/// commits on top of (and the base doesn't), so they'd never land. None when the board doesn't watch
+/// the host, the PR isn't merged, or the checkout can't say (not a git repo, another branch, a head it
+/// hasn't fetched).
+pub fn merged_early(app: &App, t: &Row, pr: &PrLink, cwd: &str) -> Option<String> {
+    if !(crate::prhost::watched(Some(&pr.host)) && app.cfg.pr.watch) {
+        return None;
+    }
+    let dir = crate::propen::dir_for(t, cwd)?;
+    let at = git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"], GIT_SECS);
+    if at.code != 0 || at.out.trim().is_empty() || at.out.trim() == "HEAD" {
+        return None;
+    }
+    let host = crate::prhost::host_for(app, &pr.host).ok()?;
+    let refr = crate::prhost::PrRef { host: pr.host.clone(), repo: pr.repo.clone(), num: pr.num, url: pr.url.clone() };
+    let rec = host.read(&refr).map_err(|e| app.info(format!("prs: couldn't read PR #{} to check it holds the branch: {e}", pr.num))).ok()?;
+    if !rec.state.eq_ignore_ascii_case("MERGED") || rec.head.is_empty() || rec.branch != at.out.trim() {
+        return None;
+    }
+    if git(&dir, &["merge-base", "--is-ancestor", &rec.head, "HEAD"], GIT_SECS).code != 0 {
+        return None;
+    }
+    let base = format!("refs/remotes/{}/{}", app.cfg.pr_body.remote, rec.base);
+    let mut range = vec!["rev-list".to_string(), format!("{}..HEAD", rec.head)];
+    if !rec.base.is_empty() && git(&dir, &["rev-parse", "--verify", "-q", &base], GIT_SECS).code == 0 {
+        range.push(format!("^{base}"));
+    }
+    let args: Vec<&str> = range.iter().map(|s| s.as_str()).collect();
+    let left = git(&dir, &args, GIT_SECS);
+    let shas: Vec<&str> = left.out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if left.code != 0 || shas.is_empty() {
+        return None;
+    }
+    let short = |s: &str| s.chars().take(7).collect::<String>();
+    let n = shas.len();
+    let which = shas.iter().rev().take(5).map(|s| short(s)).collect::<Vec<_>>().join(", ");
+    Some(format!(
+        "PR #{} merged at {}, but {} has {n} commit{} after that ({which}{}) that the PR doesn't hold, so linking it would leave them \
+         unshipped. Open a PR for them: rebase the branch onto {}, push it, and run tb submit \"<summary>\" --pr-body <file>.",
+        pr.num,
+        short(&rec.head),
+        rec.branch,
+        if n == 1 { "" } else { "s" },
+        if n > 5 { ", …" } else { "" },
+        if rec.base.is_empty() { "the base".to_string() } else { format!("{}/{}", app.cfg.pr_body.remote, rec.base) },
+    ))
+}
+
 /// Links a PR found in an agent's report to its task (only the first one sticks; never one from
 /// another repo than the task's project).
 pub fn link_pr(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {

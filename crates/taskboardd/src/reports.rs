@@ -2338,6 +2338,11 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     if !no_pr && has_pr && !r.spooled && crate::jira::pr_needs_ticket(app, t)? {
         return err(409, no_ticket_refusal(t));
     }
+    if !no_pr && !r.spooled && !has(t.s("pr_repo")) {
+        if let Some(why) = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).and_then(|pr| prflow::merged_early(app, t, &pr, r.cwd.as_deref().unwrap_or(""))) {
+            return err(409, why);
+        }
+    }
     if !no_pr && !r.spooled && r.b("merged_note").trim().is_empty() && !crate::merged_note::has_note(t) && crate::merged_note::needed(app, t)? {
         return err(409, crate::merged_note::refusal(app, t));
     }

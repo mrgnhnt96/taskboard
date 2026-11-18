@@ -120,6 +120,7 @@ mod state_board;
 mod step_aim;
 mod steps;
 mod stream;
+mod submit_merged_early;
 mod tab_status;
 mod turn_waits;
 mod visit_prompt;
