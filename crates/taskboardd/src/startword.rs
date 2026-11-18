@@ -1809,6 +1809,17 @@ fn bare_prs_as_refs(text: &str) -> String {
         .into_owned()
 }
 
+/// A PR named by its task: "T8's PR", "T8 pull request", "the PR for T8".
+static TASK_PR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?P<a>T\d+)(?:['’]s)?\s+(?:pr|pull\s+request)\b|\b(?:the|its)\s+(?:pr|pull\s+request)\s+(?:for|on|of|from|in)\s+(?:task\s+)?(?P<b>T\d+)\b").unwrap()
+});
+
+/// `text` with each PR named by its task ([`TASK_PR_RE`]) said as the task, so "close T8's PR" reads as
+/// "close T8".
+fn task_prs_as_tasks(text: &str) -> String {
+    TASK_PR_RE.replace_all(text, "$a$b").into_owned()
+}
+
 /// `text` with PR #`num` named as task `id`, and every other PR as `T0`, a task that isn't one.
 fn as_task_refs(text: &str, id: i64, num: i64) -> String {
     PR_REF_RE
@@ -1900,7 +1911,7 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
             Some(goal) => as_set_refs(&p.text, id, goal),
             None => p.text.clone(),
         };
-        let r = read_of(k, &as_task_refs(&bare_prs_as_refs(&text), id, num));
+        let r = read_of(k, &as_task_refs(&bare_prs_as_refs(&task_prs_as_tasks(&text)), id, num));
         let named = p.reply.as_deref().map(prs_in).unwrap_or_default();
         let answers = p.asked.as_deref().map(prs_in).is_some_and(|asked| asked.is_empty() || asked.contains(&num));
         let unnamed = |a: &Ask| match a {
@@ -4337,6 +4348,25 @@ mod tests {
         assert_eq!(merge_word_in(&prompts(&["close PR #194"], None), 95, 194, false), None, "a close is no merge");
         assert_eq!(close_word_in(&prompts(&["close 194 and 17342"], None), 95, 194, false), Some(0), "bare numbers");
         assert_eq!(close_word_in(&prompts(&["close 3 terminals"], None), 95, 3, false), None);
+    }
+
+    #[test]
+    fn the_owners_word_closes_a_pr_named_by_its_task() {
+        for yes in [
+            "close T95's PR",
+            "close T95’s PR",
+            "close T95's pull request",
+            "close the PR for T95",
+            "decline the PR on T95",
+            "close T95 PR",
+            "please close T95's PR, we went another way",
+            "close task T95's PR",
+        ] {
+            assert_eq!(close_word_in(&prompts(&[yes], None), 95, 194, false), Some(0), "{yes}");
+        }
+        for no in ["don't close T95's PR", "should I close T95's PR?", "close T96's PR", "close the PR for T96", "close T95's terminal"] {
+            assert_eq!(close_word_in(&prompts(&[no], None), 95, 194, false), None, "{no}");
+        }
     }
 
     #[test]
