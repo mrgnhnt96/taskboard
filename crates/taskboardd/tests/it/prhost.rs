@@ -915,6 +915,18 @@ fn the_owner_closes_a_pr_and_an_agent_only_on_their_word() {
 }
 
 #[test]
+fn an_agent_closes_a_pr_the_owner_names_by_its_task() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    b.report("hook.prompt", "s1", json!({"prompt": format!("close T{id}'s PR")}));
+    b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s1"})).unwrap();
+    assert!(h.calls().iter().any(|c| c.starts_with("close")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "declined");
+}
+
+#[test]
 fn an_agent_on_a_done_tasks_pr_closes_it_when_the_owner_answers_its_question() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
