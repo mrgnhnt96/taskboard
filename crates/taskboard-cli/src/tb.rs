@@ -6167,7 +6167,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     match v["task"].as_str() {
                         Some(t) => out(&format!("Asked {owner} on {t}; the task now waits for the answer.")),
-                        None => out(NO_TASK),
+                        None => out(&format!("Asked {owner}; wait here for their answer.")),
                     }
                     Ok(0)
                 }

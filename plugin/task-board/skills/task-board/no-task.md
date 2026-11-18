@@ -8,4 +8,6 @@ You're on it at once; from then on follow "When you're on a task". Take it to th
 
 Finding work: `tb search "<words>"` finds tasks, backlog items, goals and notes, and a ref (`tb search H605`) finds that object in any project; `--kind human` keeps only human tasks; `tb tasks` (`--goal G<n>`, `--status`) and `tb backlog list` list them; `tb task show T<n>` and `tb backlog show B<n>` read one. Search before making a task or backlog item that may already be there.
 
+A question for the owner goes through the board, never straight to Midna (`midna attention`, `needs_you_raise`): `tb question "<the question>"` (with `--option "<label>: <what it means>"` for its likely answers), then stop. The board may answer it from the owner's rules and print the answer, so carry on with it; otherwise it raises Needs you on this terminal and the owner answers here. Read `questions.md` first: most calls are yours.
+
 Otherwise don't run `tb` unless the owner asks you to take, report, find or add something. PR work on a done task: `pr.md`.

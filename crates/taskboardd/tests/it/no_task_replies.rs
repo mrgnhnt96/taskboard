@@ -175,3 +175,21 @@ fn an_answer_is_dropped_when_the_terminal_moved_on_first() {
     assert!(b.jobs("message").is_empty());
     assert_eq!(b.jobs(reply_screen::KIND)[0].s("state"), Some("expired"));
 }
+
+#[test]
+fn tb_question_with_no_task_hands_back_the_rules_answer() {
+    let b = board(answered(), None, json!({}), json!({}));
+    let out = b.report("tb.question", json!({"text": "Should I split the API work into its own goal?"}));
+    assert_eq!((out["answer"].as_str(), out["source"].as_str()), (Some("Keep it in one goal."), Some("CLAUDE.md")));
+    assert!(b.screened());
+    assert_ne!(b.session_status(), "needs", "the owner isn't asked");
+}
+
+#[test]
+fn tb_question_with_no_task_the_rules_don_t_answer_needs_the_owner() {
+    let b = board(ask(), None, json!({}), json!({}));
+    let out = b.report("tb.question", json!({"text": "Split it?"}));
+    assert_eq!(out["question"].as_str(), Some("Should the plan split the API work into its own goal?"));
+    assert!(out["answer"].is_null());
+    assert_eq!(b.session_status(), "needs");
+}
