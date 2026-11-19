@@ -1029,7 +1029,7 @@ fn result_row(t: &Theme, h: &Hit, k: usize, on: bool, cx: &mut Context<MainWindo
     });
     pick_row(t, ("search-hit", k), k, on, if h.why.is_some() { WHY_ROW_H } else { ROW_H }, cx)
         .gap(px(10.))
-        .when(!h.r.is_empty(), |d| d.child(div().flex_none().min_w(px(38.)).font_family(t.mono_font.clone()).text_size(px(12.5)).text_color(t.muted).child(h.r.clone())))
+        .when(!h.r.is_empty(), |d| d.child(div().flex_none().min_w(px(38.)).whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(12.5)).text_color(t.muted).child(h.r.clone())))
         .child(
             div()
                 .flex()

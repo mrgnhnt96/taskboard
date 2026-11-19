@@ -689,7 +689,7 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
         .cursor_pointer()
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx)))
         .child(div().flex_none().child(status::chip(t, row.st)))
-        .child(div().flex_none().w(px(36.)).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(r.clone()))
+        .child(div().flex_none().w(px(46.)).whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(r.clone()))
         .child(fr(
             div().flex().child(
                 div()
@@ -780,7 +780,7 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, busy: &dyn Fn(&
             .items_center()
             .gap(px(8.))
             .children(dot)
-            .child(div().flex_none().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
+            .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
             .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
             .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()))
             .when_some(l.resume.clone(), |d, (label, planned)| {
