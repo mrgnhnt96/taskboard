@@ -1427,7 +1427,7 @@ fn finished_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, all: bool, op
             .rounded(px(6.))
             .text_size(px(13.))
             .child(swatch(pc(r.color), 9.))
-            .child(div().w(px(52.)).flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.task.clone()))
+            .child(div().w(px(52.)).flex_none().whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.task.clone()))
             .child(div().flex_1().min_w_0().truncate().child(r.title.clone()))
             .children(r.pr.as_ref().map(|(n, st)| {
                 let (fg, bg) = match st.as_str() {

@@ -480,7 +480,7 @@ fn task_row(t: &Theme, at: &str, c: &Value, indent: bool, open: Option<&str>, cx
         .pr(px(10.))
         .text_size(px(13.))
         .child(div().flex_none().w(px(16.)).font_weight(FontWeight::BOLD).text_color(t.up_fg).child("✓"))
-        .child(div().flex_none().w(px(46.)).text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(t.muted).child(r.clone()))
+        .child(div().flex_none().w(px(46.)).whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(t.muted).child(r.clone()))
         .child(div().flex_1().min_w_0().truncate().child(s(c, "title").to_string()))
         .children(pr_link(t, format!("releases-pr-{at}-{r}"), c))
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o.clone(), cx)));
@@ -561,7 +561,7 @@ fn wait_row(t: &Theme, project: &str, w: &Wait, open: Option<&str>, cx: &mut Con
         .px(px(10.))
         .text_size(px(13.))
         .child(mark(t, w.standing, goal))
-        .child(div().flex_none().w(px(46.)).text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(if goal { t.goal } else { t.muted }).child(r.clone()))
+        .child(div().flex_none().w(px(46.)).whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(if goal { t.goal } else { t.muted }).child(r.clone()))
         .child(div().flex_1().min_w_0().truncate().child(w.title.clone()))
         .child(label)
         .on_click(cx.listener(move |m, _, _, cx| if goal { goal::open(m, &o, false, cx) } else { m.open_task(o.clone(), cx) }));

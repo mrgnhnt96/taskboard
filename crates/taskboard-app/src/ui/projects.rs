@@ -582,6 +582,7 @@ fn task_row(t: &Theme, c: &Value, narrow: bool, cx: &mut Context<MainWindow>) ->
         .id(SharedString::from(format!("projects-task-ref-{r}")))
         .flex_none()
         .w(px(44.))
+        .whitespace_nowrap()
         .text_size(px(12.))
         .font_family(t.mono_font.clone())
         .text_color(t.muted)
