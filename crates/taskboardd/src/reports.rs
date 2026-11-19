@@ -474,6 +474,16 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
         // A new conversation in this terminal starts its count of compactions over.
         app.db.x("UPDATE sessions SET compactions = 0 WHERE id = ? AND compactions > 0", p![r.sid()])?;
     }
+    // Claude restarted in place and resumed: the terminal keeps its task rather than a new one starting.
+    if let Some(sid) = r.sid().filter(|_| r.b("source") == "resume") {
+        if r.task()?.is_none() {
+            if let Some(t) = board::restarting_here(app, sid, r.claude.as_deref())? {
+                if let Err(why) = board::claim(app, &t, sid, r.claude.as_deref(), None, "Terminal came back (resume)", false)? {
+                    app.info(format!("{sid} couldn't take back {}: {why}", rf("task", t.id())));
+                }
+            }
+        }
+    }
     let Some(t) = r.task()? else {
         if crate::jira_desk::is_desk(app, r.sid())? {
             return Ok(ok(None, Some(crate::jira_desk::intro(app))));

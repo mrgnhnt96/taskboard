@@ -1680,7 +1680,7 @@ pub fn mark_lost_with(app: &App, t: &Row, reason: &str, detail: Option<&str>) ->
                     "pickup" => pickup, "pickup_session" => null, "retry_at" => iso(now_ts() + LOST_RESTART_GRACE_SECS),
                     "latest" => format!("{closed} It starts again from its handoff.")],
         )?;
-        log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done; queued to start again from its handoff"))?;
+        log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done{QUEUED_AGAIN}"))?;
         app.info(format!("task {} lost ({why}): queued to start again", rf("task", t.id())));
         return Ok(());
     }
@@ -1698,6 +1698,23 @@ pub fn mark_lost_with(app: &App, t: &Row, reason: &str, detail: Option<&str>) ->
     log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done"))?;
     app.info(format!("task {} lost: {why}", rf("task", t.id())));
     Ok(())
+}
+
+/// How a `Terminal ended` line ends when the task was queued to start again in a new terminal.
+const QUEUED_AGAIN: &str = "; queued to start again from its handoff";
+
+/// The task terminal `sid` was on until its Claude ended and the board queued it to start again,
+/// when that same conversation (`claude`) is back in the terminal before a new one opened for it:
+/// Midna restarts Claude in place (for an update) and resumes the conversation.
+pub fn restarting_here(app: &App, sid: &str, claude: Option<&str>) -> Result<Option<Row>> {
+    let Some(claude) = claude.filter(|c| !c.is_empty()) else { return Ok(None) };
+    let Some(t) = find_task(app, get_session(app, Some(sid))?.and_then(|s| s.i("last_task")))? else { return Ok(None) };
+    if t.s("status") != Some("queued") || has(t.s("session_id")) || has(t.s("start_job")) || t.s("claude_session_id") != Some(claude) {
+        return Ok(None);
+    }
+    let last = app.db.val("SELECT text FROM events WHERE task_id = ? AND kind = 'status' ORDER BY id DESC LIMIT 1", p![t.id()])?;
+    let queued = last.as_str().is_some_and(|l| l.starts_with("Terminal ended (") && l.ends_with(QUEUED_AGAIN));
+    Ok(queued.then_some(t))
 }
 
 pub fn session_gone(app: &App, sid: &str, reason: &str) -> Result<()> {
