@@ -308,6 +308,8 @@ pub fn card(t: &Row) -> Value {
         "phase": phase, "label": label(phase),
         "session": if waking { f.v("session") } else { Value::Null },
         "stopped": if waking { f.v("stopped") } else { Value::Null },
+        // The board ran out of merge tries: the owner's Merge anyway is what's left (#1033).
+        "gave_up": phase == "merge" && f.contains_key("merge_gave_up"),
         "failed_checks": rec.get("failed").cloned().unwrap_or(json!([])),
         "comments": rec.get("comments").cloned().unwrap_or(json!(0)),
         "open_threads": open_threads(&f, &rec).len(),
@@ -590,13 +592,17 @@ fn wake_key(phase: &str, rec: &Value) -> String {
     if phase != "merge" {
         return key;
     }
-    // A change in the reviews or the builds wakes the merge again.
+    // A change in the reviews, the builds or the branch it merges into wakes the merge again.
     let mut builds: Vec<String> = rec["checks"]
         .as_array()
         .map(|a| a.iter().map(|c| format!("{}={}", c["name"].as_str().unwrap_or(""), c["state"].as_str().unwrap_or(""))).collect())
         .unwrap_or_default();
     builds.sort();
-    format!("{key}:{}:{}:{}", rec["review_decision"].as_str().unwrap_or(""), rec["approvals"].as_i64().unwrap_or(0), builds.join(","))
+    let key = format!("{key}:{}:{}:{}", rec["review_decision"].as_str().unwrap_or(""), rec["approvals"].as_i64().unwrap_or(0), builds.join(","));
+    match rec["base"].as_str().filter(|b| !b.is_empty()) {
+        Some(base) => format!("{key}:{base}"),
+        None => key,
+    }
 }
 
 fn since_handled(f: &Row) -> f64 {
@@ -625,6 +631,21 @@ fn reread_by(f: &Row, at: Option<f64>) -> Option<(&'static str, Value)> {
     let at = at.filter(|a| *a > now_ts())?;
     let set = f.s("reread_at").and_then(parse_iso).filter(|r| *r > now_ts());
     set.is_none_or(|r| r > at).then(|| ("reread_at", json!(iso(at))))
+}
+
+/// The task's stacking changed (`tb task set --stack-on|--stack-merge`): a merge visit that ended with the
+/// PR still open, part way through its retries or past them, starts over with fresh tries, and the PR is
+/// read again now rather than at the next poll. What refused it may be what changed (#1033).
+pub fn merge_setup_changed(app: &App, id: i64, who: &str) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let f = flow(&t);
+    let spent = f.contains_key("handled") || f.contains_key("merge_tries") || f.contains_key("merge_gave_up");
+    if t.s("pr_phase") != Some("merge") || t.s("status") != Some("done") || f.contains_key("woke") || !spent {
+        return Ok(());
+    }
+    merge_flow(app, id, fields!["handled" => null, "merge_tries" => null, "merge_gave_up" => null, "merge_refused" => null, "reread_at" => now_iso()])?;
+    board::log_event(app, id, who, "status", &format!("PR #{}: its stack changed, so the board tries to merge it again", t.i0("pr_num")))?;
+    Ok(())
 }
 
 /// `tb pr merge` refused this PR (or its host wouldn't merge it): kept with its head for the alert raised
@@ -2535,11 +2556,14 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         dispatch::add_alert(
             app,
             &format!(
-                "PR #{} for {} is ready to merge but still open after {} tries to merge it: {}.",
+                "PR #{} for {} is ready to merge but still open after {} tries to merge it: {}. The board tries again once \
+                 it's pushed, its checks, reviews or base change, or its stacking is set; or merge it yourself with Merge \
+                 anyway in its PR menu (tb pr merge {} --override).",
                 t.i0("pr_num"),
                 rf("task", t.id()),
                 MERGE_RETRY_WAITS.len(),
-                merge_refusal(&now_flow, rec)
+                merge_refusal(&now_flow, rec),
+                rf("task", t.id()),
             ),
             Some(t.id()),
             t.i("goal_id"),
@@ -3072,6 +3096,13 @@ pub fn mark_declined(app: &App, t: &Row, who: &str, reason: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_base_wakes_the_merge_again() {
+        let rec = |base: &str| json!({"head": "h1", "comments": 0, "review_decision": "APPROVED", "approvals": 1, "checks": [], "base": base});
+        assert_ne!(wake_key("merge", &rec("main")), wake_key("merge", &rec("feature")));
+        assert_eq!(wake_key("comments", &rec("main")), wake_key("comments", &rec("feature")), "only the merge");
+    }
 
     #[test]
     fn a_wake_inside_a_transaction_claims_its_slot_on_the_deferred_worker_first() {

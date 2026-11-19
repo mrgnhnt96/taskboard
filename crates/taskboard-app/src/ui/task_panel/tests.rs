@@ -761,6 +761,10 @@ fn merge_anyway_sits_behind_the_pr_menu_and_hides_when_it_cant_merge() {
         let a = acts(&t, true);
         assert!(!a.iter().any(|a| a == "pr-menu" || a == "pr-merge-now"), "{k}={v}: {a:?}");
     }
+    // Once the board runs out of tries to merge it, Merge anyway is what's left (#1033).
+    let mut t = awaiting_review(false);
+    t["pr"]["stage"] = json!({"phase": "merge", "label": "Merging", "gave_up": true});
+    assert!(acts(&t, true).iter().any(|a| a == "pr-merge-now"), "{:?}", acts(&t, true));
 }
 
 #[gpui_kit::test]

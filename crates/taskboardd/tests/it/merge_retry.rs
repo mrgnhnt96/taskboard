@@ -112,7 +112,25 @@ fn a_merge_left_open_is_retried_then_alerts_once() {
     assert_eq!(wakes(), 4, "three retries, then no more");
     let alerts: Vec<Value> = dispatch::alerts(&b.app).into_iter().filter(|a| a["text"].as_str().unwrap().contains("still open after 3 tries")).collect();
     assert_eq!(alerts.len(), 1);
-    assert!(alerts[0]["text"].as_str().unwrap().ends_with("tb pr merge refused: checks failed: build."), "the alert says why: {}", alerts[0]["text"]);
+    let text = alerts[0]["text"].as_str().unwrap();
+    assert!(text.contains("tb pr merge refused: checks failed: build."), "the alert says why: {text}");
+    assert!(text.contains(&format!("Merge anyway in its PR menu (tb pr merge T{id} --override)")), "and what works: {text}");
     assert!(prflow::wake_stuck(&t()), "the alert holds until it merges");
+    assert_eq!(prflow::card(&t())["gave_up"], true, "the app offers Merge anyway");
+
+    // Fixing the stacking that refused it starts the merge over with fresh tries (#1033).
+    let parent = b.task("Lay the groundwork", json!({}));
+    b.post(&format!("/tasks/T{id}"), json!({"stack_on": format!("T{parent}"), "stack_merge": "head"}));
+    let f: Value = serde_json::from_str(&t().st("pr_flow")).unwrap();
+    for k in ["handled", "merge_tries", "merge_gave_up", "merge_refused"] {
+        assert!(f.get(k).is_none(), "{k} is cleared: {f}");
+    }
+    assert!(parse_iso(f["reread_at"].as_str().unwrap()).is_some(), "the PR is read again now");
+    assert!(!prflow::wake_stuck(&t()) && prflow::card(&t())["gave_up"] == false);
+    dispatch::prune_alerts(&b.app).unwrap();
+    assert!(!dispatch::alerts(&b.app).iter().any(|a| a["text"].as_str().unwrap().contains("still open after 3 tries")), "the give-up alert is over");
+    step();
+    assert_eq!(wakes(), 5, "brought back to merge again");
+    assert_eq!(t().s("pr_phase"), Some("merge"));
     reset_clock();
 }
