@@ -226,7 +226,7 @@ fn rerun_chains(spans: &[&Span]) -> Vec<Value> {
     out
 }
 
-/// The time tasks spent waiting on the owner (status `needs`, other than lost terminals), within the
+/// The time tasks spent waiting on the owner's answer (status `needs`; not human tasks or lost terminals), within the
 /// period. Like the day view, it counts only while the owner could answer: not while the Mac slept, the
 /// owner was away from it, or outside the work hours. The total is the time at least one task waited, so
 /// tasks waiting side by side count once; the reasons and tasks keep each task's own wait.
@@ -244,7 +244,7 @@ pub(crate) fn owner_wait(app: &App, start: f64, end: f64) -> Result<Value> {
     let mut spans: Vec<(f64, f64)> = Vec::new();
     let away = days::away(app, start, end);
     for (i, r) in rows.iter().enumerate() {
-        if r.s("status") != Some("needs") || r.s("needs_reason") == Some("lost") {
+        if r.s("status") != Some("needs") || !days::waits_on_owner(r.s("needs_reason")) {
             continue;
         }
         let Some(from) = r.s("at").and_then(parse_iso) else { continue };

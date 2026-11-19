@@ -28,6 +28,7 @@ mod compact_resume;
 mod critical_approve;
 mod critical_hold;
 mod cross_project_waits;
+mod day_waits;
 mod days;
 mod design_tasks;
 mod device_fields;

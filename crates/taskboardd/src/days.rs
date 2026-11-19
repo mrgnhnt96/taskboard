@@ -67,10 +67,18 @@ fn mins(secs: f64) -> f64 {
 
 // ------------------------------------------------------------------ working out a day
 
+/// Whether a task in `needs` with this reason is waiting on the owner's answer. A human task is the
+/// owner's own work, not an agent held up, and a lost terminal waits on nobody; neither counts.
+pub(crate) fn waits_on_owner(reason: Option<&str>) -> bool {
+    !matches!(reason, Some("lost") | Some(crate::human::NEEDS))
+}
+
 /// A stretch of one task in one status, clipped to the day.
 #[derive(Clone, Debug)]
 struct Seg {
     task: i64,
+    /// When the stretch really began, before clipping to the day.
+    start: f64,
     from: f64,
     to: f64,
     /// `working` or `needs`.
@@ -207,7 +215,7 @@ fn segments(app: &App, from: f64, to: f64, now: f64) -> Result<Vec<Seg>> {
                 } else {
                     (stop.min(now) - start, Vec::new())
                 };
-                out.push(Seg { task, from: a, to: b, status, end, whole, open, pieces });
+                out.push(Seg { task, start, from: a, to: b, status, end, whole, open, pieces });
             }
         }
     }
@@ -312,6 +320,7 @@ fn work_out(app: &App, date: NaiveDate, now: f64) -> Result<(BTreeMap<String, Va
         prs: i64,
         commits: i64,
         waits: Vec<Value>,
+        wait_spans: Vec<(f64, f64)>,
         running: Vec<i64>,
         hourly: Vec<i64>,
         tasks: BTreeMap<i64, (f64, f64, String)>,
@@ -336,9 +345,15 @@ fn work_out(app: &App, date: NaiveDate, now: f64) -> Result<(BTreeMap<String, Va
             }
             entry.2 = s.end.clone();
         } else {
-            entry.1 += s.pieces.iter().filter(|x| !x.2).map(|x| x.1 - x.0).sum::<f64>();
             entry.2 = "needs".into();
-            if s.from >= from {
+            // Only the day's own counted stretch adds up; the wait's full length shows once, on the
+            // day it began (a wait carried over from yesterday starts the day clipped, not new).
+            if waits_on_owner(Some(&s.end)) {
+                let here: Vec<(f64, f64)> = s.pieces.iter().filter(|x| !x.2).map(|x| (x.0, x.1)).collect();
+                entry.1 += here.iter().map(|x| x.1 - x.0).sum::<f64>();
+                p.wait_spans.extend(here);
+            }
+            if s.start >= from && waits_on_owner(Some(&s.end)) {
                 p.waits.push(json!({"task": s.task, "ref": rf("task", s.task), "at": iso(s.from), "min": mins(s.whole), "open": s.open, "reason": s.end}));
             }
         }
@@ -393,11 +408,20 @@ fn work_out(app: &App, date: NaiveDate, now: f64) -> Result<(BTreeMap<String, Va
         out.insert(
             name,
             json!({"agent_min": mins(p.agent), "human_min": p.human, "est_agent_min": p.est_agent, "done": p.done, "prs": p.prs,
-                   "commits": p.commits, "waits": p.waits, "running": p.running, "hourly": p.hourly, "tasks": tasks_json, "bars": p.bars,
+                   "commits": p.commits, "waits": p.waits, "wait_spans": spans_json(&clock::merge(p.wait_spans)), "running": p.running, "hourly": p.hourly, "tasks": tasks_json, "bars": p.bars,
                    "finished": p.finished}),
         );
     }
     Ok((out, mks))
+}
+
+/// Wait stretches as `[[from, to], ...]` in epoch seconds, kept so projects can be merged.
+fn spans_json(v: &[(f64, f64)]) -> Value {
+    json!(v.iter().map(|&(a, b)| json!([a, b])).collect::<Vec<_>>())
+}
+
+fn spans_of(v: &Value) -> Vec<(f64, f64)> {
+    v["wait_spans"].as_array().into_iter().flatten().filter_map(|x| Some((x[0].as_f64()?, x[1].as_f64()?))).collect()
 }
 
 /// A day's rows by project: worked out now for today, read back (or worked out once and kept) for
@@ -421,7 +445,10 @@ fn day(app: &App, date: NaiveDate, cache: &mut HashMap<NaiveDate, BTreeMap<Strin
 fn stored(app: &App, date: NaiveDate) -> Result<BTreeMap<String, Value>> {
     let key = date_str(date);
     let rows = app.db.q("SELECT project, data FROM day_stats WHERE date = ?", p![key])?;
-    if !rows.is_empty() {
+    // Rows kept before `wait_spans` added up waits wrongly (each day re-added open waits whole, and
+    // tasks side by side stacked): work those days out again.
+    let stale = rows.iter().any(|r| r.s("project") != Some(EMPTY_ROW) && !r.s("data").unwrap_or("").contains("\"wait_spans\""));
+    if !rows.is_empty() && !stale {
         return Ok(rows
             .iter()
             .filter(|r| r.s("project") != Some(EMPTY_ROW))
@@ -430,6 +457,7 @@ fn stored(app: &App, date: NaiveDate) -> Result<BTreeMap<String, Value>> {
     }
     let (v, _) = work_out(app, date, now_ts())?;
     app.db.tx(|| {
+        app.db.x("DELETE FROM day_stats WHERE date = ?", p![key])?;
         if v.is_empty() {
             app.db.x("INSERT OR REPLACE INTO day_stats(date, project, data, at) VALUES(?, ?, '{}', ?)", p![key, EMPTY_ROW, now_iso()])?;
         }
@@ -456,6 +484,7 @@ struct Sum {
     prs: f64,
     commits: f64,
     wait: f64,
+    wait_spans: Vec<(f64, f64)>,
     questions: f64,
     running: Vec<i64>,
     hourly: Vec<i64>,
@@ -474,10 +503,8 @@ fn sum(rows: &BTreeMap<String, Value>, hide: &HashSet<String>) -> Sum {
         s.done += f(v, "done");
         s.prs += f(v, "prs");
         s.commits += f(v, "commits");
-        for w in v["waits"].as_array().into_iter().flatten() {
-            s.wait += f(w, "min");
-            s.questions += 1.0;
-        }
+        s.wait_spans.extend(spans_of(v));
+        s.questions += v["waits"].as_array().map_or(0, |w| w.len()) as f64;
         for (k, n) in v["running"].as_array().into_iter().flatten().enumerate().take(SLOTS) {
             s.running[k] += n.as_i64().unwrap_or(0);
         }
@@ -486,6 +513,8 @@ fn sum(rows: &BTreeMap<String, Value>, hide: &HashSet<String>) -> Sum {
         }
         s.by_project.insert(proj.clone(), json!(f(v, "agent_min")));
     }
+    // Waiting on you is the time at least one task waited: tasks waiting side by side count once.
+    s.wait = clock::merge(std::mem::take(&mut s.wait_spans)).iter().map(|&(a, b)| (b - a) / 60.0).sum::<f64>() + 0.0;
     s
 }
 
