@@ -512,6 +512,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             reports::handle(app, body.clone(), false)
         }
         ("GET", ["home"]) => crate::home::page(app, q(query, "project", "all")),
+        ("POST", ["home", "talk"]) => crate::needs_talk::start(app, body),
         ("GET", ["reviews"]) => crate::review::list(app),
         ("GET", ["reviews", "now"]) => {
             let (start, end) = crate::review::period(app, query.get("since").map(String::as_str), query.get("week").map(String::as_str))?;
