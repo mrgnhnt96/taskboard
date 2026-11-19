@@ -306,6 +306,9 @@ pub fn talk(app: &App, id: i64) -> Result<Value> {
     if !midna::up(app) {
         return err(409, "Midna isn't running, so the board can't open a terminal.");
     }
+    if let Some(open) = midna::open_talk(app, "human_talk", &json!({"task": id}))? {
+        return Ok(open);
+    }
     let cwd = match dig::checkout(app, &t.st("project"))? {
         Some(p) => p,
         None => dirs::home_dir().unwrap_or_default(),
@@ -325,6 +328,9 @@ pub fn talk_alert(app: &App, id: &str) -> Result<Value> {
     };
     if !midna::up(app) {
         return err(409, "Midna isn't running, so the board can't open a terminal.");
+    }
+    if let Some(open) = midna::open_talk(app, "alert_talk", &json!({"alert": id}))? {
+        return Ok(open);
     }
     let project = alert_project(app, &a)?;
     let cwd = match project.as_deref().map(|p| dig::checkout(app, p)).transpose()?.flatten() {
