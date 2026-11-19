@@ -67,6 +67,7 @@ pub mod mdcopy;
 pub mod merges;
 pub mod merged_note;
 pub mod midna;
+pub mod needs_talk;
 pub mod no_pr_words;
 pub mod ops;
 pub mod order_cycle;

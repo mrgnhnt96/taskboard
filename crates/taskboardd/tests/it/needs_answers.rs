@@ -449,6 +449,36 @@ fn an_alert_can_be_talked_over_in_a_terminal() {
 }
 
 #[test]
+fn the_needs_you_list_can_be_talked_over_in_a_terminal() {
+    let b = new_board();
+    let g = b.goal("Release", json!({"project": "webapp"}));
+    dispatch::add_alert(&b.app, "Release 11.05.26 was dropped", None, Some(g), None, None).unwrap();
+    let t = b.task("Form", json!({"project": "api"}));
+    b.set(t, vec![("status", json!("needs")), ("needs_reason", json!("question")), ("question", json!("Which form?"))]);
+
+    b.app.shared.lock().midna_seen_at = None;
+    assert_eq!(b.post("home/talk", json!({})).unwrap_err().0, 409);
+    b.app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
+
+    let args = |out: Value| -> (String, Value) {
+        let job: i64 = out["job"].as_str().unwrap()[1..].parse().unwrap();
+        let j = b.app.db.q1("SELECT purpose, args FROM jobs WHERE id = ?", p![job]).unwrap().unwrap();
+        (j.st("purpose"), serde_json::from_str(&j.st("args")).unwrap())
+    };
+    let (purpose, all) = args(b.post("home/talk", json!({})).unwrap());
+    assert_eq!(purpose, "needs_talk");
+    let c = all["context"].as_str().unwrap();
+    assert!(c.contains("Release 11.05.26 was dropped") && c.contains(&format!("T{t}: Form — Which form?")), "{c}");
+    assert_eq!(all["cwd"], json!(dirs::home_dir().unwrap()), "every project's list talks in the home folder");
+
+    let (_, api) = args(b.post("home/talk", json!({"project": "api"})).unwrap());
+    assert_eq!(api["cwd"], json!(dirs::home_dir().unwrap()), "api has no checkout here");
+    let c = api["context"].as_str().unwrap();
+    assert!(c.contains("Which form?") && !c.contains("Release 11.05.26 was dropped"), "only the project's: {c}");
+    assert_eq!(dispatch::alerts(&b.app).len(), 1, "talking it over settles nothing");
+}
+
+#[test]
 fn a_wave_that_stops_holds_the_next_once_nothing_in_it_is_left_to_start() {
     let b = new_board();
     let g = b.goal("Login", json!({}));

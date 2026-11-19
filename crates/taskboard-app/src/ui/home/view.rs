@@ -201,6 +201,16 @@ fn head_line(t: &Theme, v: &View, known: bool, cx: &mut Context<MainWindow>) -> 
         .when(known, |d| d.child(div().text_size(px(13.)).text_color(t.muted).child(v.sub.clone())))
         .child(div().flex_1())
         .when(v.names.len() > 1, |d| d.child(tabs))
+        .when(known, |d| d.child(talk_button(t, &v.project, cx)))
+}
+
+/// Talk it over: a Claude terminal in Midna with what the page shows in its context.
+fn talk_button(t: &Theme, project: &str, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let project = project.to_string();
+    kit::btn_small(t, "home-talk", "Talk it over").on_click(cx.listener(move |m, _: &ClickEvent, _, cx| {
+        let body = if project == "all" { json!({}) } else { json!({"project": project}) };
+        m.post("home/talk", body, cx, |m, _, cx| sent(m, "Opening a terminal in Midna to talk it over".to_string(), cx));
+    }))
 }
 
 fn stats_line(t: &Theme, v: &View) -> Div {
