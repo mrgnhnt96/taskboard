@@ -612,6 +612,8 @@ pub fn tile_vm(c: &Value) -> Tile {
                     "fix" => ("Checks failed", "down", with(label)),
                     "rebase" => ("Conflicts", "down", with(label)),
                     "comments" => ("Comments", "goal", num.clone()),
+                    // The board ran out of tries to merge it: the owner's Merge anyway is what's left.
+                    "merge" if stage.is_some_and(|st| b(st, "gave_up")) => ("Needs you", "needs", format!("{num} · couldn't merge")),
                     "merge" => ("Ready to merge", "up", num.clone()),
                     // Approved, held until the PR it stacks on merges: "PR #59 · after T212".
                     "waits" => match opt_s(&p["bar"]["waits_on_base"], "ref") {
@@ -934,6 +936,10 @@ mod tests {
         assert_eq!(tile_vm(&pr("checks")).line, "PR #119 · Watching checks");
         assert_eq!(tile_vm(&pr("merge")).status, "Ready to merge");
         assert_eq!(tile_vm(&pr("fix")).tone, "down");
+        let mut gave_up = pr("merge");
+        gave_up["pr"]["stage"]["gave_up"] = json!(true);
+        let t = tile_vm(&gave_up);
+        assert_eq!((t.status.as_str(), t.tone, t.line.as_str()), ("Needs you", "needs", "PR #119 · couldn't merge"), "the board ran out of merge tries");
     }
 
     #[test]

@@ -2515,10 +2515,13 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
         body.extend(c.note(&grp));
     }
     // The owner's override, behind ⋯: merges past whatever holds it once they confirm. Not while it
-    // waits on its stack, conflicts with its base or is already merging.
+    // waits on its stack, conflicts with its base or is already merging, unless the board ran out of
+    // tries to merge it.
     let phase = obj(p, "stage").map(|st| s(st, "phase")).unwrap_or("");
+    let gave_up = phase == "merge" && obj(p, "stage").is_some_and(|st| b(st, "gave_up"));
     let conflicted = p["mergeable"] == "CONFLICTING" || p["mergeable"] == false;
-    if pr_open(p) && !matches!(merge.st, StepSt::Done | StepSt::Fail) && !matches!(phase, "stack" | "rebase" | "merge") && !conflicted {
+    let merging = matches!(phase, "stack" | "rebase" | "merge") && !gave_up;
+    if pr_open(p) && !matches!(merge.st, StepSt::Done | StepSt::Fail) && !merging && !conflicted {
         let r = rf(t, "T");
         let grp = format!("merge:{r}");
         let mut row = vec![c.btn("", Act::new("pr-menu", "", &r, ""), Look::Icon(Icon::More), false, Some("More PR actions"))];

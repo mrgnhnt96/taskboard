@@ -1434,6 +1434,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         // Stacking (`--stack-on`) and the PR plan (`--pr yes|no`) log their own change.
         let mut planned = false;
+        let mut restacked = false;
         if has_key("stack_on") {
             let mut moved = t.clone();
             if let Some(w) = wave_changed {
@@ -1442,7 +1443,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             if let Some(g) = new_goal_id {
                 moved.insert("goal_id".into(), json!(g));
             }
-            planned |= crate::stack::set(app, &moved, &body["stack_on"], &who)?;
+            restacked |= crate::stack::set(app, &moved, &body["stack_on"], &who)?;
         }
         if has_key("same_pr") {
             let mut moved = board::get_task(app, id)?;
@@ -1455,7 +1456,19 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             planned |= crate::samepr::set(app, &moved, &body["same_pr"], &who)?;
         }
         if has_key("stack_merge") {
-            planned |= crate::stack::set_merge(app, &board::get_task(app, id)?, &body["stack_merge"], &who)?;
+            restacked |= crate::stack::set_merge(app, &board::get_task(app, id)?, &body["stack_merge"], &who)?;
+        }
+        // Fixed stacking is a new reason to try a merge that ran out of tries on the old one (#1033): this
+        // task's, and its old and new parent's, whose merge holds for its head-merge children.
+        if restacked {
+            let now = crate::stack::parent_id(&board::get_task(app, id)?);
+            let mut ids = vec![id];
+            ids.extend(crate::stack::parent_id(&t).into_iter().chain(now).filter(|p| *p != id));
+            ids.dedup();
+            for n in ids {
+                prflow::merge_setup_changed(app, n, &who)?;
+            }
+            planned = true;
         }
         if has_key("kind") {
             planned |= crate::design::set(app, &board::get_task(app, id)?, &body["kind"], &who)?;
