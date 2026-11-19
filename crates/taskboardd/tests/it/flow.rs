@@ -201,6 +201,36 @@ fn a_closed_terminal_requeues_the_task_then_waits_for_the_owner() {
 }
 
 #[test]
+fn claude_restarted_in_place_keeps_its_task_instead_of_a_new_terminal() {
+    let b = new_board();
+    let id = new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+    assert_eq!(b.task(id).s("status"), Some("queued"));
+
+    b.report("hook.session_start", "s1", json!({"source": "resume"}));
+    let t = b.task(id);
+    assert_eq!((t.s("status"), t.s("session_id"), t.s("retry_at")), (Some("working"), Some("s1"), None), "Midna resumed it in the same terminal");
+    let last = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND kind = 'status' ORDER BY id DESC LIMIT 1", p![id]).unwrap();
+    assert!(last[0].st("text").starts_with("Terminal came back (resume) in "), "{}", last[0].st("text"));
+}
+
+#[test]
+fn another_conversation_in_the_ended_terminal_leaves_the_restart_queued() {
+    let b = new_board();
+    let id = new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+
+    b.report("hook.session_start", "s1", json!({"source": "resume", "claude_session": "c-other"}));
+    b.report("hook.session_start", "s1", json!({"source": "startup"}));
+    let t = b.task(id);
+    assert_eq!((t.s("status"), t.s("session_id")), (Some("queued"), None), "only its own conversation, resumed, takes it back");
+}
+
+#[test]
 fn a_terminal_lost_for_no_named_reason_says_what_midna_saw() {
     let fake = tempfile::tempdir().unwrap();
     let exe = fake.path().join("midna");
