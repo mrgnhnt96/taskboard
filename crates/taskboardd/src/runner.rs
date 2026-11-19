@@ -762,6 +762,7 @@ pub fn prs(app: &App) -> Result<()> {
     crate::stack_drop::sweep(app)?;
     crate::slot_ageing::sweep(app)?;
     crate::slot_tidy::sweep(app)?;
+    crate::slots::sweep_stuck(app)?;
     worktrees::clean_up(app).map(|_| ())
 }
 
