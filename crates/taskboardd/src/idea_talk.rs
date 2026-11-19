@@ -35,13 +35,18 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
     if !midna::up(app) {
         return err(409, "Midna isn't running, so the board can't open a terminal.");
     }
+    // A talk on one of its questions is its own terminal: its context says where that answer goes.
+    let target = json!({"idea": i.id(), "question": Some(asked.trim()).filter(|q| !q.is_empty())});
+    if let Some(open) = midna::open_talk(app, "idea_talk", &target)? {
+        return Ok(open);
+    }
     let project = i.st("project");
     let Some(cwd) = dig::checkout(app, &project)? else {
         return err(409, format!("{me}'s project {project} has no checkout on this Mac to talk it over in."));
     };
     let args = json!({"cwd": cwd, "title": short(&format!("Talk: {}", i.st("title")), 40), "prompt": "", "draft": draft,
                       "context": context(app, &i, about.as_ref())?, "focus": true, "queue": false});
-    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "idea_talk", Some(json!({"idea": i.id()}))))?;
+    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "idea_talk", Some(target)))?;
     Ok(json!({"ok": true, "job": rf("job", j)}))
 }
 

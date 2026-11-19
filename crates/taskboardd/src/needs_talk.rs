@@ -18,6 +18,10 @@ pub fn start(app: &App, body: &Value) -> Result<Value> {
     if !midna::up(app) {
         return err(409, "Midna isn't running, so the board can't open a terminal.");
     }
+    let target = json!({"project": project});
+    if let Some(open) = midna::open_talk(app, "needs_talk", &target)? {
+        return Ok(open);
+    }
     let cwd = match project.as_deref().map(|p| dig::checkout(app, p)).transpose()?.flatten() {
         Some(p) => p,
         None => dirs::home_dir().unwrap_or_default(),
@@ -29,7 +33,7 @@ pub fn start(app: &App, body: &Value) -> Result<Value> {
     };
     let args = json!({"cwd": cwd, "title": short(&title, 40), "prompt": "", "draft": "What needs me, and what should I do first?",
                       "context": context(&app.cfg.owner, &page, project.as_deref()), "focus": true, "queue": false});
-    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "needs_talk", Some(json!({"project": project}))))?;
+    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "needs_talk", Some(target)))?;
     Ok(json!({"ok": true, "job": rf("job", j)}))
 }
 

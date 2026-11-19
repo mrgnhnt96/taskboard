@@ -79,6 +79,29 @@ pub fn up(app: &App) -> bool {
     age_secs(seen.as_deref()).map(|a| a <= app.cfg.intervals.midna_up).unwrap_or(false)
 }
 
+/// Talk it over clicked again for the same thing (`purpose` and every field of `target`): the
+/// terminal the last click opened, brought to the front while Midna still has it open, or that
+/// click's job while it's still opening. None when there's no such terminal, so a new one opens.
+pub fn open_talk(app: &App, purpose: &str, target: &Value) -> Result<Option<Value>> {
+    let same = |j: &Row| {
+        let t = board::job_target(j);
+        target.as_object().is_some_and(|want| want.iter().all(|(k, v)| t.get(k).unwrap_or(&Value::Null) == v))
+    };
+    let jobs = app.db.q("SELECT * FROM jobs WHERE kind = 'agent' AND purpose = ? ORDER BY id DESC LIMIT 50", p![purpose])?;
+    let Some(j) = jobs.iter().find(|j| same(j)) else { return Ok(None) };
+    if matches!(j.s("state"), Some("pending" | "running")) {
+        return Ok(Some(json!({"ok": true, "job": rf("job", j.id())})));
+    }
+    let Some(sid) = board::job_target(j).get("session").and_then(Value::as_str).map(str::to_string) else { return Ok(None) };
+    // A closed terminal isn't Midna's any more; an exited one is on its way out.
+    match call_timeout(app, "session.get", json!({"id": sid}), 5.0) {
+        Ok(s) if s["status"]["exit_code"].is_null() && s["status"]["state"] != "exited" => {}
+        _ => return Ok(None),
+    }
+    let f = app.db.tx(|| board::create_job(app, "focus", json!({"session": sid}), None, "", None))?;
+    Ok(Some(json!({"ok": true, "job": rf("job", f), "session": sid, "reused": true})))
+}
+
 pub fn status(app: &App) -> Value {
     json!({"up": up(app), "seen_at": app.shared.lock().midna_seen_at})
 }

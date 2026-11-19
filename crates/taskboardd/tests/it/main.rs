@@ -123,6 +123,7 @@ mod steps;
 mod stream;
 mod submit_merged_early;
 mod tab_status;
+mod talk_again;
 mod turn_waits;
 mod visit_prompt;
 mod wait_merged;

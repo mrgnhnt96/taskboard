@@ -209,7 +209,7 @@ fn talk_button(t: &Theme, project: &str, cx: &mut Context<MainWindow>) -> Statef
     let project = project.to_string();
     kit::btn_small(t, "home-talk", "Talk it over").on_click(cx.listener(move |m, _: &ClickEvent, _, cx| {
         let body = if project == "all" { json!({}) } else { json!({"project": project}) };
-        m.post("home/talk", body, cx, |m, _, cx| sent(m, "Opening a terminal in Midna to talk it over".to_string(), cx));
+        m.post("home/talk", body, cx, |m, v, cx| sent(m, talk_note(&v), cx));
     }))
 }
 
@@ -924,7 +924,12 @@ fn settle_issue(m: &mut MainWindow, path: String, body: Value, said: &'static st
 }
 
 fn talk(m: &mut MainWindow, path: String, cx: &mut Context<MainWindow>) {
-    m.post(path, json!({}), cx, |m, _, cx| sent(m, "Opening a terminal in Midna to talk it over".to_string(), cx));
+    m.post(path, json!({}), cx, |m, v, cx| sent(m, talk_note(&v), cx));
+}
+
+/// What a Talk it over click did: opened a terminal, or brought back the one still open from last time.
+fn talk_note(v: &Value) -> String {
+    if v["reused"] == true { "Showing the terminal you were talking it over in" } else { "Opening a terminal in Midna to talk it over" }.to_string()
 }
 
 fn run_do(m: &mut MainWindow, key: &str, act: &Do, window: &mut Window, cx: &mut Context<MainWindow>) {
