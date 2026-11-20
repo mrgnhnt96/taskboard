@@ -89,6 +89,7 @@ mod project_terminals;
 mod prplan;
 mod qa;
 mod quality;
+mod rebase_ask;
 mod rebase_visit;
 mod recap;
 mod recap_page;

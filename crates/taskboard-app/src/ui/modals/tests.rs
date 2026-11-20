@@ -277,15 +277,51 @@ fn merge_names_the_holds_it_skips() {
 fn a_refused_merge_says_who_refused_and_what_next() {
     assert_eq!(super::refuser(&json!({"host": "github"})), "GitHub");
     assert_eq!(super::refuser(&json!({})), "The board");
-    assert_eq!(super::after_refusal("The branch is 3 commits behind main."), Some("Rebase it from its terminal, then merge again."));
-    assert_eq!(super::after_refusal("Merge conflict in app.rs"), Some("Rebase it from its terminal, then merge again."));
-    assert_eq!(super::after_refusal("Not allowed"), None);
+    assert_eq!(
+        super::refused_lines("GitHub", "The branch is 3 commits behind main."),
+        ("GitHub says the branch is behind main.".to_string(), "The agent can rebase it on main and merge again.".to_string())
+    );
+    assert_eq!(
+        super::refused_lines("GitHub", "PR #944 can't merge: it conflicts with its base branch develop. Rebase onto it."),
+        ("GitHub says the branch conflicts with develop.".to_string(), "The agent can rebase it on develop and merge again.".to_string())
+    );
+    assert_eq!(super::refused_lines("GitHub", "Head branch is out of date.").0, "GitHub says the branch is behind its base.");
+    assert_eq!(super::refused_lines("The board", "Not allowed."), ("The board refused the merge.".to_string(), "Not allowed.".to_string()));
+    assert_eq!(super::refusal("Not allowed."), None, "no rebase button for a refusal a rebase doesn't fix");
+}
+
+#[gpui_kit::test]
+fn ask_the_agent_to_rebase_sends_it_and_closes(cx: &mut TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    let pr = taskboardd::fields!["pr_repo" => "acme/webapp", "pr_num" => 944, "pr_url" => "https://github.com/acme/webapp/pull/944", "pr_state" => "OPEN"];
+    taskboardd::board::update_task(rec.board().app(), 2, pr).unwrap();
+    let why = "The branch is 3 commits behind main.";
+    w.update(cx, |m, _, cx| {
+        m.modal = Some(Modal::Finish(Finish {
+            r: "T2".into(),
+            ask: Ask::Merge,
+            note: None,
+            busy: false,
+            refused: Some(Refused { why: why.into(), at: "3:16 PM".into(), asking: false }),
+        }));
+        super::ask_rebase(m, cx);
+        assert!(matches!(&m.modal, Some(Modal::Finish(f)) if f.refused.as_ref().is_some_and(|r| r.asking)), "the button says it's asking");
+        super::ask_rebase(m, cx);
+    })
+    .unwrap();
+    parity::settle(cx);
+    assert_eq!(rec.posts(), [("tasks/T2/pr/rebase".to_string(), json!({"why": why}))], "sent once");
+    w.update(cx, |m, _, _| {
+        assert!(m.modal.is_none(), "the dialog closes");
+        assert_eq!(m.toasts.first().map(|t| t.text.as_str()), Some("Asked T2's agent to rebase"));
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
 fn the_merge_dialog_holds_its_answer_until_closed(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
-    let refused = Refused { why: "The branch is 3 commits behind main.".into(), at: "3:16 PM".into() };
+    let refused = Refused { why: "The branch is 3 commits behind main.".into(), at: "3:16 PM".into(), asking: false };
     w.update(cx, |m, _, _| {
         m.modal = Some(Modal::Finish(Finish { r: "T2".into(), ask: Ask::Merge, note: None, busy: true, refused: None }));
     })
