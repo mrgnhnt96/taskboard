@@ -242,6 +242,31 @@ fn a_failed_release_hands_its_work_and_name_back_for_the_next_cut() {
     let names: Vec<(String, bool)> = get(&app, "/releases", "webapp")["releases"].as_array().unwrap().iter()
         .map(|r| (r["name"].as_str().unwrap().to_string(), r["failed_at"].is_string())).collect();
     assert_eq!(names, vec![("v1.1".into(), false), ("v1.1".into(), true), ("v1.0".into(), false)]);
+
+    // The failed release still lists what it held, and where each task went out since.
+    let shown = get(&app, "/releases/R2", "webapp");
+    assert_eq!(shown["groups"], json!([]), "its work left it");
+    let held = &shown["held"][0]["tasks"][0];
+    assert_eq!(held["ref"], format!("T{b}"));
+    assert_eq!(held["release"], json!({"ref": "R3", "name": "v1.1"}));
+    assert_eq!(get(&app, "/releases/R3", "webapp").get("held"), None, "only a failed release has held work");
+}
+
+#[test]
+fn a_release_that_failed_before_it_kept_its_tasks_finds_them_in_the_log() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    let a = task(&app, "webapp", "Login form", None);
+    done(&app, a, None);
+    call(&app, "POST", "/releases", json!({"name": "v1.0", "project": "webapp"}));
+    call(&app, "POST", "/releases/R1/fail", json!({}));
+    app.db.update("releases", &json!(1), vec![("held", Value::Null)]).unwrap();
+
+    let held = &get(&app, "/releases/R1", "webapp")["held"][0]["tasks"];
+    assert_eq!(held.as_array().unwrap().len(), 1, "{held}");
+    assert_eq!(held[0]["ref"], format!("T{a}"));
+    assert_eq!(held[0]["release"], Value::Null, "it waits in Unreleased");
+    assert_eq!(held[0]["status"], "done");
 }
 
 fn state_project(app: &App, name: &str) -> Value {

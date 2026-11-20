@@ -3,7 +3,8 @@
 //! of the done work waits in Unreleased for the next cut. Releases are a per-project setting, off
 //! unless the project (`tb project set --releases on`) or config.toml's `[releases] on` turns them on.
 //! A release whose build or publish failed is marked failed (`tb release fail R3`): its tasks go back
-//! in Unreleased and its name is free, so the next cut can take the same name.
+//! in Unreleased and its name is free, so the next cut can take the same name. It keeps the list of
+//! tasks it held (`held`), so the app can say what was in it and where each went since.
 
 use std::collections::HashMap;
 
@@ -26,6 +27,7 @@ pub const ADDED: &[(&str, &str, &str)] = &[
     ("releases", "failed_at", "TEXT"),
     ("releases", "failed_by", "TEXT"),
     ("releases", "failed_reason", "TEXT"),
+    ("releases", "held", "TEXT"),
 ];
 
 pub const INDEXES: &str = "CREATE INDEX IF NOT EXISTS tasks_release ON tasks(release_id);";
@@ -210,8 +212,44 @@ fn task_brief(t: &Row) -> Value {
     })
 }
 
+/// The tasks a failed release held, in the order they finished: those it kept (`held`), or for one that
+/// failed before it kept them, those its "Back in Unreleased" log line names.
+fn held_rows(app: &App, rel: &Row) -> Result<Vec<Row>> {
+    let ids: Vec<i64> = match rel.s("held") {
+        Some(h) => jloads_arr(Some(h)).iter().filter_map(Value::as_i64).collect(),
+        None => app
+            .db
+            .q("SELECT DISTINCT task_id FROM events WHERE kind = 'release' AND text LIKE ?", p![format!("Back in Unreleased: release % ({}) failed", rf("release", rel.id()))])?
+            .iter()
+            .filter_map(|r| r.i("task_id"))
+            .collect(),
+    };
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let marks = vec!["?"; ids.len()].join(", ");
+    let args: Vec<Value> = ids.iter().map(|i| json!(i)).collect();
+    app.db.q(&format!("SELECT * FROM tasks WHERE id IN ({marks}) ORDER BY finished_at, id"), args)
+}
+
+/// A held task's brief and where it is now: `release`, the release it went out in (`ref`, `name`),
+/// or null while it waits in Unreleased (`status` says whether it's still done).
+fn held_brief(app: &App, t: &Row) -> Result<Value> {
+    let mut v = task_brief(t);
+    v["status"] = json!(t.v("status"));
+    v["release"] = match t.i("release_id") {
+        Some(id) => json!({"ref": rf("release", id), "name": get(app, &rf("release", id))?.v("name")}),
+        None => Value::Null,
+    };
+    Ok(v)
+}
+
 /// The tasks grouped by goal, goals in the order their first task finished, tasks with no goal last.
 fn groups(app: &App, tasks: &[Row]) -> Result<Vec<Value>> {
+    group_by_goal(app, tasks, |t| Ok(task_brief(t)))
+}
+
+fn group_by_goal(app: &App, tasks: &[Row], brief: impl Fn(&Row) -> Result<Value>) -> Result<Vec<Value>> {
     let mut order: Vec<Option<i64>> = vec![];
     let mut by: HashMap<Option<i64>, Vec<Value>> = HashMap::new();
     for t in tasks {
@@ -219,7 +257,7 @@ fn groups(app: &App, tasks: &[Row]) -> Result<Vec<Value>> {
         if !by.contains_key(&g) {
             order.push(g);
         }
-        by.entry(g).or_default().push(task_brief(t));
+        by.entry(g).or_default().push(brief(t)?);
     }
     order.sort_by_key(|g| g.is_none());
     order
@@ -298,7 +336,8 @@ fn date(at: Option<&str>) -> String {
     at.and_then(|s| s.get(..10)).unwrap_or("").to_string()
 }
 
-/// One release, or Unreleased, with its tasks grouped by goal and the changelog.
+/// One release, or Unreleased, with its tasks grouped by goal and the changelog. A failed release adds
+/// `held`: the tasks it held, grouped the same way, each with where it is now.
 fn show(app: &App, r: &str, query: &crate::api::Query) -> Result<Value> {
     if r.eq_ignore_ascii_case("unreleased") {
         let project = query_project(app, query)?;
@@ -317,6 +356,9 @@ fn show(app: &App, r: &str, query: &crate::api::Query) -> Result<Value> {
     let mut v = dict(app, &rel)?;
     v["markdown"] = json!(markdown(&title, rel.s("notes"), &gs));
     v["groups"] = json!(gs);
+    if rel.s("failed_at").is_some() {
+        v["held"] = json!(group_by_goal(app, &held_rows(app, &rel)?, |t| held_brief(app, t))?);
+    }
     Ok(v)
 }
 
@@ -453,11 +495,13 @@ fn fail(app: &App, r: &str, body: &Value) -> Result<Value> {
     let who = board::caller(app, body, board::OWNER);
     let now = now_iso();
     let name = rel.st("name");
-    for t in app.db.q("SELECT * FROM tasks WHERE release_id = ?", p![rel.id()])? {
+    let tasks = app.db.q("SELECT * FROM tasks WHERE release_id = ? ORDER BY id", p![rel.id()])?;
+    for t in &tasks {
         board::update_task(app, t.id(), fields!["release_id" => Value::Null])?;
         board::log_event(app, t.id(), &who, "release", &format!("Back in Unreleased: release {name} ({r}) failed"))?;
     }
-    app.db.update("releases", &json!(rel.id()), fields!["failed_at" => now, "failed_by" => who, "failed_reason" => reason, "updated_at" => now])?;
+    let held = jdumps(&json!(tasks.iter().map(|t| t.id()).collect::<Vec<_>>()));
+    app.db.update("releases", &json!(rel.id()), fields!["failed_at" => now, "failed_by" => who, "failed_reason" => reason, "held" => held, "updated_at" => now])?;
     dict(app, &get(app, &r)?)
 }
 
