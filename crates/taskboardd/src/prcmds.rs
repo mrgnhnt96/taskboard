@@ -930,6 +930,38 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
 }
 
+/// Ask the agent to rebase, in the app's merge dialog once the host refused the merge: tells the task's
+/// terminal when it's open, or brings its PR conversation back to rebase onto the base and push.
+pub fn ask_rebase(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let pr = pr_of(&t)?;
+    if !board::pr_still_open(&t) {
+        return err(409, format!("PR #{} isn't open, so there's nothing to rebase.", pr.num));
+    }
+    let tb = board::tb_cmd(app);
+    let r = rf("task", id);
+    let rec = prflow::flow(&t).get("rec").cloned().unwrap_or(json!({}));
+    let base = rec["base"].as_str().filter(|b| !b.is_empty()).unwrap_or("its base branch");
+    let why = one_line(&body_str(body, "why"), 300);
+    let refused = if why.is_empty() { String::new() } else { format!(" ({why})") };
+    let text = format!(
+        "[task-board:{r}] {owner} asked you to rebase PR #{num}: {site} wouldn't merge it{refused}. Rebase onto {base} ({tb} pr status {r} lists the \
+         commands), resolve any conflicts, and run the tests covering the files you changed (not the whole suite).{keep}",
+        owner = app.cfg.owner,
+        num = pr.num,
+        site = prhost::limit::label(&pr.host),
+        keep = prflow::KEEP_BASE,
+    );
+    if board::live_session(app, &t)?.is_some() || prflow::live_job(app, &t)?.is_some() {
+        app.db.tx(|| crate::deliver::add(app, "rebase", &format!("{text} Then push with git push --force-with-lease."), id, None, None))?;
+    } else if prflow::follow_wake(app, &t, &text)?.is_none() {
+        return err(409, format!("Couldn't reach {r}'s agent: its PR is already being worked on, or there's no free worktree. Try again in a minute."));
+    }
+    let who = who_of(app, body);
+    app.db.tx(|| board::log_event(app, id, &who, "handoff", &format!("Asked the agent to rebase PR #{} onto {base}", pr.num)))?;
+    Ok(json!({"task": r, "asked": true}))
+}
+
 /// Records on task `id` that the owner merged PR #`num` past `gates`, what held it then: in its log and
 /// in its PR's flow (`owner_override`).
 fn note_override(app: &App, id: i64, who: &str, num: i64, gates: &[String], word: Option<&str>) -> Result<()> {

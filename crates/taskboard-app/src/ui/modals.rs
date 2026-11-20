@@ -48,6 +48,8 @@ pub struct Refused {
     pub why: String,
     /// When it was refused, "3:16 PM".
     pub at: String,
+    /// Ask the agent to rebase is on its way to the board.
+    pub asking: bool,
 }
 
 impl Modal {
@@ -265,45 +267,131 @@ fn refuser(pr: &serde_json::Value) -> &'static str {
     }
 }
 
-/// The step after a refused merge, when the reason names one.
-fn after_refusal(why: &str) -> Option<&'static str> {
-    let w = why.to_lowercase();
-    (w.contains("behind") || w.contains("conflict") || w.contains("out of date") || w.contains("not up to date")).then_some("Rebase it from its terminal, then merge again.")
+/// What the host's refusal comes to: the branch is behind its base, or conflicts with it. Either way the
+/// task's agent can rebase it; any other refusal is shown as it was said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    Behind,
+    Conflicts,
 }
 
-/// A merge the host refused: what it said and when, and what to do next. Close is the only button.
-fn refused_view(t: &Theme, pr_word: &str, pr: Option<&serde_json::Value>, r: &Refused, cx: &mut Context<MainWindow>) -> AnyElement {
+fn refusal(why: &str) -> Option<Refusal> {
+    let w = why.to_lowercase();
+    if w.contains("conflict") {
+        Some(Refusal::Conflicts)
+    } else if w.contains("behind") || w.contains("out of date") || w.contains("not up to date") {
+        Some(Refusal::Behind)
+    } else {
+        None
+    }
+}
+
+/// The base branch a refusal names ("… behind main.", "… with its base branch main."), else "its base".
+fn base_named(why: &str) -> String {
+    let lower = why.to_lowercase();
+    ["base branch ", "behind "]
+        .iter()
+        .filter_map(|k| lower.find(k).map(|i| &why[i + k.len()..]))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(|w| w.trim_end_matches(['.', ',', ':', ';', ')']))
+        .find(|w| !w.is_empty() && !matches!(w.to_lowercase().as_str(), "its" | "the" | "a" | "by") && !w.starts_with(|c: char| c.is_ascii_digit()))
+        .map_or_else(|| "its base".to_string(), str::to_string)
+}
+
+/// The refusal's red line and the muted line under it.
+fn refused_lines(by: &str, why: &str) -> (String, String) {
+    let base = base_named(why);
+    match refusal(why) {
+        Some(Refusal::Behind) => (format!("{by} says the branch is behind {base}."), format!("The agent can rebase it on {base} and merge again.")),
+        Some(Refusal::Conflicts) => (format!("{by} says the branch conflicts with {base}."), format!("The agent can rebase it on {base} and merge again.")),
+        None => (format!("{by} refused the merge."), why.to_string()),
+    }
+}
+
+/// A merge the host refused: what it said, then Focus in Midna, Close, and Ask the agent to rebase
+/// when a rebase is what it needs.
+fn refused_view(t: &Theme, task: &str, pr_word: &str, pr: Option<&serde_json::Value>, r: &Refused, cx: &mut Context<MainWindow>) -> AnyElement {
     let by = pr.map_or("The board", refuser);
-    let next = after_refusal(&r.why);
+    let (said, next) = refused_lines(by, &r.why);
+    let task_ref = task.to_string();
+    let focus = kit::btn(t, "finish-focus", "Focus in Midna")
+        .on_click(cx.listener(move |m, _, _, cx| m.focus_in_midna(format!("tasks/{task_ref}/focus"), Some(task_ref.clone()), cx)));
+    let close_btn = kit::btn(t, "finish-close", "Close").on_click(cx.listener(|m, _, window, cx| close(m, window, cx)));
+    let rebase = refusal(&r.why).map(|_| match r.asking {
+        true => kit::btn_primary(t, "finish-rebase", "Asking the agent…").opacity(0.6),
+        false => kit::btn_primary(t, "finish-rebase", "Ask the agent to rebase").on_click(cx.listener(|m, _, _, cx| ask_rebase(m, cx))),
+    });
+    let bang = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(14.))
+        .rounded_full()
+        .border_1()
+        .border_color(t.down)
+        .text_size(px(9.5))
+        .font_weight(FontWeight::BOLD)
+        .text_color(t.down)
+        .child("!");
     kit::modal_box(t, 440.)
-        .child(head(t, format!("{pr_word} didn't merge"), cx))
         .child(
             div()
                 .flex()
                 .flex_none()
                 .flex_col()
-                .gap(px(10.))
-                .px(px(20.))
-                .pb(px(20.))
-                .line_height(relative(1.4))
+                .gap(px(8.))
+                .px(px(24.))
+                .pt(px(22.))
+                .pb(px(22.))
+                .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).child(format!("Couldn't merge {pr_word}")))
                 .child(
                     div()
                         .id("finish-refused")
                         .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .p(px(12.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(t.down_line)
-                        .bg(t.down_soft)
+                        .items_center()
+                        .gap(px(8.))
                         .text_size(px(13.))
-                        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.down).child(format!("{by} refused the merge at {}", r.at)))
-                        .child(div().child(r.why.clone())),
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .line_height(relative(1.4))
+                        .text_color(t.down)
+                        .child(bang)
+                        .child(said),
                 )
-                .children(next.map(|n| div().id("finish-next").child(n))),
+                .child(div().id("finish-next").line_height(relative(1.4)).text_size(px(13.)).text_color(t.text_2).child(next))
+                .child(div().flex().flex_none().items_center().gap(px(8.)).pt(px(14.)).child(focus).child(div().flex_1()).child(close_btn).children(rebase)),
         )
         .into_any_element()
+}
+
+/// Ask the agent to rebase: sends the task's agent the rebase (`POST tasks/<id>/pr/rebase`), then
+/// closes the dialog with a toast; a refusal stays on screen as a toast.
+fn ask_rebase(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let Some(Modal::Finish(f)) = &mut m.modal else { return };
+    let Some(refused) = f.refused.as_mut().filter(|r| !r.asking) else { return };
+    refused.asking = true;
+    let (r, why) = (f.r.clone(), refused.why.clone());
+    let (ok_r, fail_r) = (r.clone(), r.clone());
+    m.post_or(
+        format!("tasks/{r}/pr/rebase"),
+        serde_json::json!({"why": why}),
+        cx,
+        move |m, _, cx| {
+            if matches!(&m.modal, Some(Modal::Finish(f)) if f.r == ok_r) {
+                m.modal = None;
+            }
+            m.toast(format!("Asked {ok_r}'s agent to rebase"), false, cx);
+        },
+        move |m, e, cx| {
+            if let Some(Modal::Finish(f)) = m.modal.as_mut().filter(|x| matches!(x, Modal::Finish(f) if f.r == fail_r)) {
+                if let Some(r) = f.refused.as_mut() {
+                    r.asking = false;
+                }
+            }
+            m.toast(crate::ui::status::plain_error(&e.message), true, cx);
+        },
+    );
+    cx.notify();
 }
 
 fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -312,8 +400,8 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
     let pr_facts = shown.map(|v| &v["pr"]).filter(|p| p.is_object());
     let num = pr_facts.and_then(|p| p["num"].as_i64());
     if let Some(r) = &f.refused {
-        let word = num.map(|n| format!("#{n}")).unwrap_or_else(|| "The PR".into());
-        return refused_view(t, &word, pr_facts, r, cx);
+        let word = num.map(|n| format!("PR #{n}")).unwrap_or_else(|| "the PR".into());
+        return refused_view(t, &f.r, &word, pr_facts, r, cx);
     }
     let title = match f.ask {
         Ask::Cancel => format!("Cancel {}?", f.r),
@@ -424,7 +512,7 @@ pub fn confirm_finish(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
                 // A merge the host refused keeps its answer in the dialog.
                 Err((true, why)) if ask == Ask::Merge => {
                     f.busy = false;
-                    f.refused = Some(Refused { why: crate::ui::status::plain_error(&why), at: chrono::Local::now().format("%-I:%M %p").to_string() });
+                    f.refused = Some(Refused { why: crate::ui::status::plain_error(&why), at: chrono::Local::now().format("%-I:%M %p").to_string(), asking: false });
                 }
                 Err((_, note)) => {
                     f.busy = false;
