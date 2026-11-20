@@ -393,35 +393,6 @@ fn drop_field(m: &mut MainWindow, key: &str) {
     m.task_panel.fields.remove(key);
 }
 
-/// `saveMeta(el, r, msg)`.
-fn save_meta(m: &mut MainWindow, r: &str, msg: &'static str, cx: &mut Context<MainWindow>) {
-    let rows: Vec<Value> = ui(|u| u.meta_edit.get(r).cloned().unwrap_or_default())
-        .into_iter()
-        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-        .filter(|(k, v)| !k.is_empty() || !v.is_empty())
-        .map(|(k, v)| json!([k, v]))
-        .collect();
-    let a = Act::new("meta", "", r, format!("meta:{r}"));
-    let r2 = r.to_string();
-    run(
-        m,
-        &a,
-        format!("tasks/{r}/meta"),
-        json!({ "meta": rows }),
-        move |m, _| {
-            // Keep the edit while one of its fields still has focus (the reader is still typing).
-            let prefix = format!("meta:{r2}:");
-            let editing = m.task_panel.focused.as_ref().is_some_and(|f| m.task_panel.fields.iter().any(|(k, i)| k.starts_with(&prefix) && i.focus == *f));
-            if !editing {
-                ui(|u| u.meta_edit.remove(&r2));
-                m.task_panel.fields.retain(|k, _| !k.starts_with(&format!("meta:{r2}:")));
-            }
-            msg.to_string()
-        },
-        cx,
-    );
-}
-
 /// Run one control, exactly as the web board's `ACTIONS[act]` did.
 pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
     let id = a.id.clone();
@@ -555,7 +526,6 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             cx.notify();
         }
         // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
-        "bit-made" => run(m, a, format!("bits/{}/made", a.arg), json!({}), |_, _| String::new(), cx),
         // The ⋯ menus: the terminal's, the need box's and the PR's. One open at a time.
         "term-menu" | "box-menu" | "pr-menu" => {
             let which = a.act;
@@ -620,25 +590,6 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         "resume" => {
             ui(|u| u.box_menu = false);
             run(m, a, tp("/resume"), json!({"mode": a.arg}), |m, _| sent(m), cx)
-        }
-        "meta-del" => {
-            let Some(task) = m.data.task.clone() else { return };
-            let i: usize = a.arg.parse().unwrap_or(usize::MAX);
-            let original = fmt::arr(&task, "meta").len();
-            ui(|u| {
-                let mut rows = view::meta_rows(&task, u);
-                if i < rows.len() {
-                    rows.remove(i);
-                }
-                u.meta_edit.insert(id.clone(), rows);
-            });
-            m.task_panel.fields.retain(|k, _| !k.starts_with(&format!("meta:{id}:")));
-            if i >= original {
-                ui(|u| u.notes.remove(&format!("meta:{id}")));
-                cx.notify();
-                return;
-            }
-            save_meta(m, &id, "Removed", cx);
         }
         "open-project" => crate::ui::projects::open_for(m, &a.arg, cx),
         "att-drop" => {
@@ -875,19 +826,6 @@ fn sync_fields(m: &mut MainWindow, n: &Node, window: &mut Window, cx: &mut Conte
                 on_input(m, &k, text);
             });
             m.task_panel.subs.push(sub);
-            if key.starts_with("meta:") {
-                // `change` on leaving the field saves the Details (`saveMeta`).
-                let k = key.clone();
-                let sub = cx.on_blur(&input.focus, window, move |m, _, cx| {
-                    if let Some(r) = k.split(':').nth(1) {
-                        let r = r.to_string();
-                        if ui(|u| u.meta_edit.contains_key(&r)) {
-                            save_meta(m, &r, "Saved", cx);
-                        }
-                    }
-                });
-                m.task_panel.subs.push(sub);
-            }
             m.task_panel.fields.insert(key.clone(), input);
         }
         Node::El { .. } => {
@@ -899,28 +837,9 @@ fn sync_fields(m: &mut MainWindow, n: &Node, window: &mut Window, cx: &mut Conte
     }
 }
 
-/// The web's `input` listener: `data-k` → drafts; `data-meta="r:i:j"` → the Details edit.
-fn on_input(m: &mut MainWindow, key: &str, text: String) {
-    if let Some(rest) = key.strip_prefix("meta:") {
-        let mut it = rest.split(':');
-        let (Some(r), Some(i), Some(j)) = (it.next(), it.next().and_then(|x| x.parse::<usize>().ok()), it.next()) else { return };
-        let Some(task) = m.data.task.clone() else { return };
-        ui(|u| {
-            if !u.meta_edit.contains_key(r) {
-                let rows = view::meta_rows(&task, u);
-                u.meta_edit.insert(r.to_string(), rows);
-            }
-            if let Some(row) = u.meta_edit.get_mut(r).and_then(|rows| rows.get_mut(i)) {
-                if j == "0" {
-                    row.0 = text;
-                } else {
-                    row.1 = text;
-                }
-            }
-        });
-    } else {
-        ui(|u| u.drafts.insert(key.to_string(), text));
-    }
+/// The web's `input` listener: `data-k` → drafts.
+fn on_input(_m: &mut MainWindow, key: &str, text: String) {
+    ui(|u| u.drafts.insert(key.to_string(), text));
 }
 
 // ------------------------------------------------------------------ render
@@ -1227,8 +1146,6 @@ impl Draw<'_> {
         let Some(input) = m.task_panel.fields.get(key) else { return div().into_any_element() };
         let k = key.to_string();
         let focused = input.focus.is_focused(self.window);
-        let meta = self.parent() == Some(K::MetaRow);
-        let name = meta && key.ends_with(":0");
         input
             .render(t, self.id("field"), self.window)
             // `.input`: 14px, 10px 12px, 9px corners.
@@ -1239,10 +1156,6 @@ impl Draw<'_> {
             .when(multi, |d| d.min_h(px(64.)).items_start())
             .when(mono, |d| d.font_family(t.mono_font.clone()))
             .when(boxed == Some(BoxTone::Ask) && !focused, |d| d.border_color(warn_input(t)))
-            // `.meta-row .input`: 36px, 13px, 7px corners, the light border; the name in semibold.
-            .when(meta, |d| d.min_h(px(36.)).py(px(0.)).px(px(10.)).text_size(px(13.)).rounded(px(7.)).when(!focused, |d| d.border_color(t.border)))
-            .when(name, |d| d.w(px(140.)).flex_none().font_weight(FontWeight::SEMIBOLD))
-            .when(meta && !name, |d| d.flex_1().min_w_0())
             .on_key_down(cx.listener(move |m, ev: &KeyDownEvent, _, cx| on_key(m, &k, ev, cx)))
             .into_any_element()
     }
@@ -1397,8 +1310,6 @@ impl Draw<'_> {
             K::KvRow => div().flex().gap(px(12.)),
             // `.det`: a finished step's detail, under its head.
             K::Det => div().flex().flex_col().mt(px(8.)).px(px(12.)).py(px(4.)).rounded(px(9.)).bg(t.col).border_1().border_color(t.border).text_size(px(13.)),
-            // `.meta-row`: 140px name, value, 32px remove.
-            K::MetaRow => div().flex().items_center().gap(px(8.)),
             // `.note-body p`: lines joined by line breaks.
             K::MdP => div().flex().flex_col().min_w_0(),
             // Linked, MdP
@@ -2223,20 +2134,13 @@ fn pr_label(t: &Theme, s: &str) -> Div {
 
 fn on_key(m: &mut MainWindow, key: &str, ev: &KeyDownEvent, cx: &mut Context<MainWindow>) {
     let ks = &ev.keystroke;
-    // ⌘↩ in an answer sends it (the web's keydown handler); ↩ in a Details field commits it.
+    // ⌘↩ in an answer sends it (the web's keydown handler).
     if ks.key == "enter" && (ks.modifiers.platform || ks.modifiers.control) {
         if let Some(r) = key.strip_prefix("answer:") {
             let a = build(m).and_then(|tree| view::find_act(&tree, "answer", Some("")).cloned()).unwrap_or_else(|| Act::new("answer", "", r, format!("ask:{r}")));
             act(m, &a, cx);
             cx.stop_propagation();
         }
-    } else if ks.key == "enter" && key.starts_with("meta:") {
-        if let Some(r) = key.split(':').nth(1).map(str::to_string) {
-            if ui(|u| u.meta_edit.contains_key(&r)) {
-                save_meta(m, &r, "Saved", cx);
-            }
-        }
-        cx.stop_propagation();
     }
 }
 
