@@ -223,6 +223,10 @@ fn credentials(app: &App) -> Option<(String, String)> {
             return Some(c.clone());
         }
     }
+    if let Some(c) = crate::accounts::board_credentials(app, crate::accounts::Provider::Jira) {
+        app.shared.lock().jira_creds = Some(c.clone());
+        return Some(c);
+    }
     let j = &app.cfg.jira;
     let mut email = j.email.clone();
     let mut token = j.token.clone();
@@ -830,7 +834,7 @@ pub fn run_pending(app: &App) -> Result<()> {
         return run_through_claude(app, &jobs);
     }
     let Some(creds) = credentials(app) else {
-        return fail_all(app, &jobs, "there's no Jira API token (config.toml, TASKBOARD_JIRA_TOKEN or the Keychain), or set [jira] via = \"claude\"");
+        return fail_all(app, &jobs, "there's no Jira API token: connect Jira in Settings ▸ Accounts (or set it in config.toml, TASKBOARD_JIRA_TOKEN or the Keychain), or set [jira] via = \"claude\"");
     };
     let conn = Conn::Rest(creds);
     for j in jobs {

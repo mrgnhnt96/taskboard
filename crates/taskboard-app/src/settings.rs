@@ -6,8 +6,8 @@
 //! (`POST projects/<name>`), then each slot with the task holding it, its size and last use, and
 //! the tasks waiting for one.
 //!
-//! Accounts: GitHub, Bitbucket, Azure DevOps and Slack, so the board and its agents can
-//! check PRs, comment, push, read failed builds and assign reviewers. The daemon owns them (`taskboardd::accounts`): each
+//! Accounts: GitHub, Bitbucket, Azure DevOps, Slack and Jira, so the board and its agents can
+//! check PRs, comment, push, read failed builds, assign reviewers and work Jira tickets. The daemon owns them (`taskboardd::accounts`): each
 //! is Taskboard's own token, checked with the service and kept in the Keychain, never the Mac's `gh`
 //! or git sign-in. GitHub's comes from a browser code, a pasted token or a copy of gh's. Tokens go to
 //! the daemon once and never come back to the window. An account missing scopes Taskboard needs shows
@@ -108,13 +108,14 @@ impl Sec {
 }
 
 /// Each account's row: id and a short mark.
-const CARDS: [(&str, &str); 4] = [("github", "GH"), ("bitbucket", "BB"), ("azure", "AZ"), ("slack", "SL")];
+const CARDS: [(&str, &str); 5] = [("github", "GH"), ("bitbucket", "BB"), ("azure", "AZ"), ("slack", "SL"), ("jira", "JI")];
 
 /// What stops while an account's sign-in is refused.
 fn refused_means(id: &str) -> &'static str {
     match id {
         "github" | "bitbucket" => "agents can't push",
         "azure" => "no failed pipeline steps on PR checks",
+        "jira" => "tickets and QA comments wait",
         _ => "no Slack messages",
     }
 }
@@ -125,6 +126,7 @@ fn forget_means(id: &str) -> &'static str {
         "github" => "Agents can't push to github.com or read PR checks until you sign in again.",
         "bitbucket" => "Agents can't push to bitbucket.org or read pull requests until you connect it again.",
         "azure" => "PR checks stop showing failed pipeline steps until you connect it again.",
+        "jira" => "The board stops using this token for tickets and QA comments until you connect it again.",
         _ => "The board and its agents can't post to Slack until you connect it again.",
     }
 }
@@ -143,8 +145,10 @@ fn account_line(id: &str, a: &Value) -> (String, bool) {
         return (format!("{label} refused the sign-in{when} · {}", refused_means(id)), true);
     }
     let org = a["detail"].as_str().and_then(|d| d.split("dev.azure.com/").nth(1)).map(|o| o.trim_end_matches('/').to_string());
-    let who = match (id, org) {
-        ("azure", Some(org)) => format!("Signed in to {org}"),
+    let site = [&a["detail"], &a["site"]].into_iter().filter_map(|s| s.as_str()).find(|s| !s.is_empty());
+    let who = match (id, org, site) {
+        ("azure", Some(org), _) => format!("Signed in to {org}"),
+        ("jira", _, Some(site)) => format!("{site} · QA comments {}", if a["qa"] == true { "on" } else { "off" }),
         _ => match a["user"].as_str().filter(|u| !u.is_empty()) {
             Some(u) => format!("Signed in as {u}"),
             None => "Signed in".into(),
@@ -159,6 +163,7 @@ fn agent_cli(id: &str) -> &'static str {
         "github" => "tb pr status   # anything else: gh, or tb api github repos/OWNER/REPO/…",
         "bitbucket" => "tb pr status   # anything else: tb api bitbucket repositories/WORKSPACE/REPO/…",
         "azure" => "tb pr status   # anything else: tb api azure PROJECT/_apis/build/builds/ID?api-version=7.1",
+        "jira" => "tb api jira issue/KEY-123   # the REST API under https://SITE/rest/api/3/",
         _ => "tb api slack chat.postMessage -d '{\"channel\":\"#dev\",\"text\":\"PR is ready\"}'",
     }
 }
@@ -191,6 +196,8 @@ pub struct SettingsWindow {
     az_form: bool,
     /// Slack's token form is open.
     slack_form: bool,
+    /// Jira's email and token form is open.
+    jira_form: bool,
     /// The account whose Disconnect is asking first.
     confirm: Option<&'static str>,
     gh_token: Input,
@@ -199,6 +206,8 @@ pub struct SettingsWindow {
     az_org: Input,
     az_token: Input,
     slack_token: Input,
+    jira_email: Input,
+    jira_token: Input,
     /// The sign-in code already copied (so a poll doesn't copy it again).
     opened_code: Option<String>,
     /// GitHub's device page was opened for this code.
@@ -265,6 +274,7 @@ impl SettingsWindow {
             bb_form: false,
             az_form: false,
             slack_form: false,
+            jira_form: false,
             confirm: None,
             gh_token: Input::secret(cx, "ghp_… or github_pat_…"),
             bb_email: Input::new(cx, "you@company.com", false),
@@ -272,6 +282,8 @@ impl SettingsWindow {
             az_org: Input::new(cx, "your-org or dev.azure.com/your-org", false),
             az_token: Input::secret(cx, "Personal access token"),
             slack_token: Input::secret(cx, "xoxp-… or xoxb-…"),
+            jira_email: Input::new(cx, "you@company.com", false),
+            jira_token: Input::secret(cx, "ATATT…"),
             opened_code: None,
             browser_opened: false,
             history: None,
@@ -761,6 +773,7 @@ impl SettingsWindow {
             "github" => json!({"token": self.gh_token.text(cx)}),
             "bitbucket" => json!({"email": self.bb_email.text(cx), "token": self.bb_token.text(cx)}),
             "azure" => json!({"organization": self.az_org.text(cx), "token": self.az_token.text(cx)}),
+            "jira" => json!({"email": self.jira_email.text(cx), "token": self.jira_token.text(cx)}),
             _ => json!({"token": self.slack_token.text(cx)}),
         };
         self.post(id, format!("accounts/{id}"), body, cx, move |s, cx| {
@@ -768,6 +781,7 @@ impl SettingsWindow {
                 "github" => &s.gh_token,
                 "bitbucket" => &s.bb_token,
                 "azure" => &s.az_token,
+                "jira" => &s.jira_token,
                 _ => &s.slack_token,
             };
             field.clear(cx);
@@ -775,8 +789,10 @@ impl SettingsWindow {
             s.bb_form = false;
             s.az_form = false;
             s.slack_form = false;
+            s.jira_form = false;
             let a = s.account(id);
-            s.notes.insert(id, (format!("Connected as {}.", a["detail"].as_str().or(a["user"].as_str()).unwrap_or("you")), false));
+            let who = if id == "jira" { a["user"].as_str() } else { a["detail"].as_str().or(a["user"].as_str()) };
+            s.notes.insert(id, (format!("Connected as {}.", who.unwrap_or("you")), false));
         });
     }
 
@@ -1004,6 +1020,7 @@ impl SettingsWindow {
                 "github" => self.github_rows(t, &a, window, cx),
                 "bitbucket" => self.bitbucket_rows(t, &a, window, cx),
                 "azure" => self.azure_rows(t, &a, window, cx),
+                "jira" => self.jira_rows(t, &a, window, cx),
                 _ => self.slack_rows(t, &a, window, cx),
             };
             for r in rows {
@@ -1093,6 +1110,7 @@ impl SettingsWindow {
             "github" => self.gh_form,
             "bitbucket" => self.bb_form,
             "azure" => self.az_form,
+            "jira" => self.jira_form,
             _ => self.slack_form,
         }
     }
@@ -1112,6 +1130,10 @@ impl SettingsWindow {
                 self.az_form = true;
                 &self.az_org.focus
             }
+            "jira" => {
+                self.jira_form = true;
+                &self.jira_email.focus
+            }
             _ => {
                 self.slack_form = true;
                 &self.slack_token.focus
@@ -1126,6 +1148,7 @@ impl SettingsWindow {
             "github" => self.gh_form = false,
             "bitbucket" => self.bb_form = false,
             "azure" => self.az_form = false,
+            "jira" => self.jira_form = false,
             _ => self.slack_form = false,
         }
         cx.notify();
@@ -1254,6 +1277,28 @@ impl SettingsWindow {
             rows.push(link_row(t, "az-create", "How to make a personal access token", taskboardd::accounts::AZURE_TOKEN_URL, cx));
         }
         rows.extend(error_row(t, "azure", a));
+        rows
+    }
+
+    /// Jira's form: the Atlassian email and API token for the site in `[jira] site`, which the board
+    /// needs before it can check a token.
+    fn jira_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows = vec![];
+        if let Some(note) = a["note"].as_str().filter(|_| a["connected"] == true) {
+            rows.push(off_row(t, "jira", a, note));
+        }
+        if self.jira_form {
+            if a["site"].as_str().unwrap_or("").is_empty() {
+                rows.push(line(t, "jira-site-row", false, false, "Site", "Set [jira] site in config.toml (acme.atlassian.net), then connect.", None).into_any_element());
+            } else {
+                let email = self.jira_email.render(t, "jira-email", window).flex_1().min_w(px(140.)).max_w(px(260.)).on_key_down(self.field_keys("jira", &self.jira_email, cx));
+                let about = format!("The email you sign in to {} with.", a["site"].as_str().unwrap_or("Jira"));
+                rows.push(line(t, "jira-email-row", false, false, "Atlassian email", &about, None).child(field_box().child(email)).into_any_element());
+                rows.push(self.token_row(t, "jira", "API token", "An Atlassian API token made by the same account.", &self.jira_token, window, cx, false));
+                rows.push(link_row(t, "jira-create", "Create an API token", taskboardd::accounts::BITBUCKET_TOKEN_URL, cx));
+            }
+        }
+        rows.extend(error_row(t, "jira", a));
         rows
     }
 
@@ -2296,7 +2341,7 @@ mod tests {
         let (w, rec) = window(cx);
         w.update(cx, |s, _, cx| {
             assert!(s.loaded);
-            assert_eq!(s.accounts.len(), 4);
+            assert_eq!(s.accounts.len(), 5);
             s.bb_email.set_text("sam@acme.com", cx);
             s.bb_token.set_text("ATATT-x", cx);
             s.connect("bitbucket", cx);
@@ -2319,6 +2364,45 @@ mod tests {
             assert_eq!(s.slack_token.text(cx), "bad", "a refused token stays to fix");
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn jira_connects_with_an_email_and_token_and_says_where_the_site_is_set(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, window, cx| {
+            assert!(super::CARDS.contains(&("jira", "JI")));
+            assert_eq!(super::account_line("jira", &s.account("jira")), ("Not connected".into(), false));
+            s.view = super::Sec::Accounts;
+            s.open_form("jira", window, cx);
+            assert!(s.jira_form);
+            s.jira_email.set_text("sam@acme.com", cx);
+            s.jira_token.set_text("ATATT-x", cx);
+            s.connect("jira", cx);
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.last("accounts/jira"), Some(json!({"email": "sam@acme.com", "token": "ATATT-x"})));
+        w.update(cx, |s, _, cx| {
+            assert_eq!(s.account("jira")["connected"], false, "the sample board has no [jira] site");
+            assert!(s.notes.get("jira").is_some_and(|(m, bad)| *bad && m.contains("[jira] site")), "{:?}", s.notes.get("jira"));
+            assert_eq!(s.jira_token.text(cx), "ATATT-x", "a refused token stays to fix");
+        })
+        .unwrap();
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_connected_jira_line_shows_its_site_and_qa_comments() {
+        let a = json!({"connected": true, "label": "Jira", "user": "sam@acme.com", "detail": "acme.atlassian.net", "site": "acme.atlassian.net", "qa": true, "checked_at": "2026-11-19T15:05:00"});
+        let (line, refused) = super::account_line("jira", &a);
+        assert!(!refused);
+        assert!(line.starts_with("acme.atlassian.net · QA comments on · checked "), "{line}");
+        assert!(line.ends_with(", works"), "{line}");
+        let off = json!({"connected": true, "label": "Jira", "user": "sam@acme.com", "detail": "acme.atlassian.net", "qa": false});
+        assert_eq!(super::account_line("jira", &off).0, "acme.atlassian.net · QA comments off");
+        let refused = json!({"connected": true, "label": "Jira", "error": "Jira didn't accept that email and token.", "checked_at": "2026-11-19T14:51:00"});
+        let (line, bad) = super::account_line("jira", &refused);
+        assert!(bad && line.starts_with("Jira refused the sign-in at ") && line.ends_with(" · tickets and QA comments wait"), "{line}");
     }
 
     #[gpui_kit::test]
