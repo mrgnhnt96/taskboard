@@ -56,7 +56,7 @@ fn the_built_in_rules_say_when_to_stack_and_how_to_merge_it() {
 #[test]
 fn the_built_in_rules_plan_stacks_for_ci_cost() {
     for bit in ["every PR to main runs the full checks", "Small, related tasks share one stack", "with --stack-merge head", "Fan out, don't chain",
-                "it's still its own task, sharing a related task's PR or stack", "Push once per review round", "only when it conflicts or right before it merges", "tb planning names it"] {
+                "it's its own task sharing a related task's PR or stack", "Push once per review round", "only when it conflicts or right before it merges", "tb planning names it"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
     }
 }
@@ -64,7 +64,8 @@ fn the_built_in_rules_plan_stacks_for_ci_cost() {
 #[test]
 fn the_built_in_rules_weigh_the_cost_of_each_extra_pr() {
     for bit in ["Each cut has a cost", "only when each side is worth its own review", "being able to name the seam isn't enough",
-                "Size has two limits", "one person can read the whole diff", "shares that neighbour's PR", "One problem, one task, always", "never problems into tasks",
+                "Size has two limits", "one person can read the whole diff", "shares that neighbour's PR", "One task per screen or area", "a checklist of the backlog items it fixes", "--issue B<n>", "A whole feature, or a problem in another area, is its own task",
+                "Don't chain small tasks through a shared PR", "no line of tasks waiting on each other past 5",
                 "limited to files the task already touches stays in the task, as its own commit", "A sweep across many files is its own task",
                 "A guard nothing else protects", "is its own task, however small", "The upper limit is for the whole stack"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
@@ -103,7 +104,7 @@ fn the_plan_check_warns_when_many_of_a_goals_prs_look_tiny() {
     let line = tiny(&w).unwrap_or_else(|| panic!("a third: one file in the folder a sibling's files are in: {w:?}"));
     assert_eq!(line, format!(
         "{} each look like a tiny PR (a one-line detail, or one file beside a sibling's), and every PR takes a human review and an agent review round: \
-         have each share the PR of the neighbour it only makes sense next to (tb task set T<n> --same-pr T<m>), as a task of its own, unless it's a guard nothing else protects.",
+         fold the ones on the same screen or area into one task with a checklist of the backlog items it fixes, or have one share the PR of the neighbour it only makes sense next to (tb task set T<n> --same-pr T<m>), unless it's a guard nothing else protects.",
         made.join(", ")
     ));
     assert!(!line.contains(&big[0]), "the long two-file task isn't one of them: {line}");

@@ -1599,6 +1599,16 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
     if body.get("landed").is_some() || body.get("pr_link").is_some() {
         app.wake_runner();
     }
+    // A change to what the task waits for or needs can slow its goal down: say so as the plan check does.
+    if ["same_pr", "stack_on", "waits_for", "wave", "devices"].iter().any(|k| body.get(*k).is_some()) {
+        if let Some(g) = board::get_task(app, id)?.i("goal_id").map(|g| board::get_goal(app, g)).transpose()? {
+            for w in crate::pace::plan_warnings(app, &g, None)?.into_iter().chain(crate::devices::plan_warnings(app, &g)?) {
+                if !warnings.contains(&w) {
+                    warnings.push(w);
+                }
+            }
+        }
+    }
     let mut d = task_detail(app, id)?;
     if !warnings.is_empty() {
         d["warnings"] = json!(warnings);
