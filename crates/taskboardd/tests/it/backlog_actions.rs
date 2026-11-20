@@ -128,6 +128,75 @@ fn several_issues_change_together_or_not_at_all() {
 }
 
 #[test]
+fn closing_issues_can_be_undone_while_nothing_else_changed_them() {
+    let b = new_board();
+    let (x, y) = (b.issue("One"), b.issue("Two"));
+    for action in ["defer", "drop"] {
+        let r = b.post("backlog/bulk", json!({"action": action, "ids": [format!("B{x}"), format!("B{y}")]}));
+        assert_eq!((b.state(x), b.state(y)), (action.to_string(), action.to_string()));
+        b.post(r["undo"].as_str().expect("an undo path"), json!({}));
+        assert_eq!((b.state(x), b.state(y)), ("open".to_string(), "open".to_string()));
+    }
+    // One reopened by hand since: nothing is undone.
+    let r = b.post("backlog/bulk", json!({"action": "defer", "ids": [format!("B{x}"), format!("B{y}")]}));
+    b.post(&format!("backlog/B{y}/reopen"), json!({}));
+    let (code, msg) = b.post_err(r["undo"].as_str().unwrap(), json!({}));
+    assert_eq!((code, msg), (409, format!("B{y} changed since, so nothing was undone.")));
+    assert_eq!(b.state(x), "defer");
+    // Setting a priority can't be undone from the toast.
+    assert!(b.post("backlog/bulk", json!({"action": "priority", "priority": "p1", "ids": [format!("B{x}")]})).get("undo").is_none());
+    assert_eq!(b.post_err("backlog/undo/9999", json!({})).0, 410);
+}
+
+#[test]
+fn closed_issues_list_by_how_they_closed_newest_first_a_page_at_a_time() {
+    let b = new_board();
+    let (x, y, z, w) = (b.issue("One"), b.issue("Two"), b.issue("Three"), b.issue("Four"));
+    b.post("backlog/bulk", json!({"action": "defer", "ids": [format!("B{x}")]}));
+    b.post("backlog/bulk", json!({"action": "defer", "ids": [format!("B{y}")]}));
+    b.post(&format!("backlog/B{z}/drop"), json!({}));
+    b.app.db.update("issues", &json!(x), taskboardd::fields!["updated_at" => "2026-01-01T00:00:00Z"]).unwrap();
+    // Closed as fixed isn't listed either way.
+    b.app.db.update("issues", &json!(w), taskboardd::fields!["state" => "drop", "closed_as" => "fixed"]).unwrap();
+    let ids = |v: &Value| v["issues"].as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect::<Vec<_>>();
+    let d = b.get("backlog/closed?state=defer&limit=1");
+    assert_eq!((ids(&d), d["total"].as_u64(), &d["counts"]), (vec![y], Some(2), &json!({"defer": 2, "wont_do": 1})));
+    assert!(d["issues"][0]["closed_at"].is_string());
+    let older = b.get(&format!("backlog/closed?state=defer&limit=1&before={}", d["next"].as_str().unwrap()));
+    assert_eq!((ids(&older), &older["next"]), (vec![x], &Value::Null));
+    assert_eq!(ids(&b.get("backlog/closed?state=wont_do")), vec![z]);
+    assert_eq!(ids(&b.get(&format!("backlog/closed?state=defer&ids=B{x}"))), vec![x]);
+    b.post(&format!("backlog/B{y}/reopen"), json!({}));
+    assert_eq!(ids(&b.get("backlog/closed?state=defer")), vec![x]);
+}
+
+#[test]
+fn move_to_goal_can_be_undone_until_its_task_starts() {
+    let b = new_board();
+    let from = b.post("goals", json!({"name": "First", "project": "webapp"}))["id"].as_i64().unwrap();
+    let to = b.post("goals", json!({"name": "Second", "project": "webapp"}))["id"].as_i64().unwrap();
+    let (x, y) = (b.issue("One"), b.issue("Two"));
+    b.post("backlog/bulk", json!({"action": "move", "ids": [format!("B{x}")], "goal_id": format!("G{from}")}));
+    let before = b.task_count();
+    let r = b.post("backlog/bulk", json!({"action": "goal", "ids": [format!("B{x}"), format!("B{y}")], "goal_id": format!("G{to}")}));
+    assert_eq!(b.task_count(), before + 2);
+    b.post(r["undo"].as_str().expect("an undo path"), json!({}));
+    assert_eq!(b.task_count(), before, "the tasks it made are gone");
+    for (i, goal) in [(x, Some(from)), (y, None)] {
+        let it = board::get_issue(&b.app, i).unwrap();
+        assert_eq!((it.st("state").as_str(), it.i("goal_id"), it.i("task_id")), ("open", goal, None), "B{i}");
+    }
+
+    // Once a task it made has started, nothing is undone.
+    let r = b.post("backlog/bulk", json!({"action": "goal", "ids": [format!("B{x}")], "goal_id": format!("G{to}")}));
+    let t = r["tasks"][0]["id"].as_i64().unwrap();
+    b.app.db.update("tasks", &json!(t), taskboardd::fields!["status" => "working", "session_id" => "s1"]).unwrap();
+    let (code, _) = b.post_err(r["undo"].as_str().unwrap(), json!({}));
+    assert_eq!(code, 409);
+    assert_eq!(b.state(x), "task");
+}
+
+#[test]
 fn history_credits_the_terminal_that_ran_it() {
     let b = new_board();
     let i = b.issue("Flaky test");

@@ -480,6 +480,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["backlog", "plan", "add"]) => triage::plan_add(app, body),
         ("POST", ["backlog", "goal"]) => triage::create_goal(app, body),
         ("GET", ["backlog", "tidy"]) => Ok(crate::tidy::state(app)),
+        ("GET", ["backlog", "closed"]) => closed_issues(app, query),
         ("POST", ["backlog", "tidy"]) => crate::tidy::set(app, body),
         ("GET", ["backlog", id]) => issue_detail(app, iid(id)?),
         ("GET", ["backlog", id, "history"]) => get_issue_history(app, iid(id)?, query),
@@ -492,8 +493,22 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             Ok(v)
         }
         ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?, body)),
-        ("POST", ["backlog", id, "drop"]) => app.db.tx(|| drop_issue(app, iid(id)?, body)),
-        ("POST", ["backlog", id, "without-goal"]) => app.db.tx(|| finish_goal_without(app, iid(id)?, body)),
+        ("POST", ["backlog", "undo", n]) => crate::undo::route(app, n, body),
+        ("POST", ["backlog", id, "drop"]) => {
+            let i = iid(id)?;
+            let mut v = app.db.tx(|| drop_issue(app, i, body))?;
+            v["undo"] = json!(crate::undo::keep(app, crate::undo::closed(&[i], "drop")));
+            Ok(v)
+        }
+        ("POST", ["backlog", id, "without-goal"]) => {
+            let i = iid(id)?;
+            let (mut v, rec) = app.db.tx(|| {
+                let rec = crate::undo::without(&board::get_issue(app, i)?);
+                Ok((finish_goal_without(app, i, body)?, rec))
+            })?;
+            v["undo"] = json!(crate::undo::keep(app, rec));
+            Ok(v)
+        }
         ("POST", ["backlog", id, "reopen"]) => app.db.tx(|| reopen_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "move"]) => app.db.tx(|| move_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "note"]) => {
@@ -3241,6 +3256,46 @@ fn search(app: &App, query: &Query) -> Result<Value> {
     Ok(json!({"project": project, "hits": crate::relevance::search(app, &f, ref_project)?}))
 }
 
+/// The app's Deferred and won't do list: the issues closed one way (`state` is `defer` or `wont_do`; fixed
+/// ones aren't listed), last closed first, a page at a time, with how many each way.
+fn closed_issues(app: &App, query: &Query) -> Result<Value> {
+    let want = q(query, "state", "defer");
+    if want != "defer" && want != "wont_do" {
+        return err(400, "Say defer or wont_do.");
+    }
+    let project = q(query, "project", "all");
+    let page = Paging::of(query);
+    let ids: Option<Vec<i64>> = query.get("ids").map(|s| s.split(',').filter_map(|x| parse_ref_str(x.trim(), "issue").ok().flatten()).collect());
+    let way = |b: &Row| match (b.s("state"), b.s("closed_as")) {
+        (Some("defer"), _) => Some("defer"),
+        (Some("drop"), Some("fixed")) => None,
+        (Some("drop"), _) => Some("wont_do"),
+        _ => None,
+    };
+    let rows = app.db.q("SELECT * FROM issues WHERE state IN ('defer', 'drop')", p![])?;
+    let rows: Vec<&Row> = rows.iter().filter(|b| project_match(b.s("project"), project)).collect();
+    let counts = json!({"defer": rows.iter().filter(|b| way(b) == Some("defer")).count(), "wont_do": rows.iter().filter(|b| way(b) == Some("wont_do")).count()});
+    let at = |b: &Row| (b.st("updated_at"), b.id());
+    let mut matched: Vec<&Row> = rows.into_iter().filter(|b| way(b) == Some(want)).filter(|b| ids.as_ref().is_none_or(|ids| ids.contains(&b.id()))).collect();
+    matched.sort_by_key(|b| std::cmp::Reverse(at(b)));
+    let total = matched.len();
+    if let Some(c) = page.before.as_deref().and_then(|b| parse_ref_str(b, "issue").ok().flatten()) {
+        if let Some(c) = app.db.q1("SELECT * FROM issues WHERE id = ?", p![c])? {
+            let c = at(&c);
+            matched.retain(|b| at(b) < c);
+        }
+    }
+    let more = page.cut(&mut matched);
+    let next = matched.last().filter(|_| more).map(|b| b.id().to_string());
+    let mut out = vec![];
+    for b in matched {
+        let mut d = board::issue_card(app, b)?;
+        d["closed_at"] = b.v("updated_at");
+        out.push(d);
+    }
+    Ok(json!({"issues": out, "total": total, "next": next, "counts": counts}))
+}
+
 fn list_backlog(app: &App, query: &Query) -> Result<Value> {
     let (project, goal, kind, state, sort) =
         (q(query, "project", "all"), q(query, "goal", "all"), q(query, "kind", "all"), q(query, "state", "open"), q(query, "sort", "new"));
@@ -3529,13 +3584,17 @@ fn finish_goal_without(app: &App, id: i64, body: &Value) -> Result<Value> {
     issue_detail(app, id)
 }
 
-fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
+pub(crate) fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     let b = board::get_issue(app, id)?;
     if b.s("state") == Some("open") {
         return err(409, format!("{} is already open.", rf("issue", id)));
     }
     app.db.update("issues", &json!(id), fields!["state" => "open", "closed_as" => null, "fixed_by" => null, "fixed_pr" => null, "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, &issue_actor(body), "note", "Opened again", None)?;
+    // A miss on its goal's done-when holds the goal open again, so its alert comes back too.
+    if let Some(g) = b.i("goal_id").filter(|_| b.b("misses_goal")) {
+        blocks::miss_alert(app, id, g, &b.st("title"))?;
+    }
     issue_detail(app, id)
 }
 
@@ -3648,9 +3707,10 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
             ids.push(id);
         }
     }
-    app.db.tx(|| {
+    let (mut out, undo) = app.db.tx(|| {
         let mut count = 0;
         let mut tasks = vec![];
+        let mut moved = vec![];
         for id in &ids {
             let b = board::get_issue(app, *id)?;
             if ["task", "ticket", "drop", "defer", "goal"].contains(&action.as_str()) && b.s("state") != Some("open") {
@@ -3692,6 +3752,7 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
                     if let (Some(w), Some(tid)) = (wave, made["task"]["id"].as_i64()) {
                         app.db.update("tasks", &json!(tid), fields!["wave" => w])?;
                     }
+                    moved.push(crate::undo::moved(&b, made["task"]["id"].as_i64().unwrap_or(0)));
                     tasks.push(made["task"].clone());
                 }
                 _ => {
@@ -3700,8 +3761,18 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
             }
             count += 1;
         }
-        Ok(json!({"ok": true, "action": action, "count": count, "tasks": tasks}))
-    })
+        // Closing and Move to goal can be taken back from the app's toast.
+        let undo = match action.as_str() {
+            "drop" | "defer" => Some(crate::undo::closed(&ids, &action)),
+            "goal" => Some(json!({"kind": "goal", "goal_id": opt_goal(body, "goal_id")?, "items": moved})),
+            _ => None,
+        };
+        Ok((json!({"ok": true, "action": action, "count": count, "tasks": tasks}), undo))
+    })?;
+    if let Some(rec) = undo {
+        out["undo"] = json!(crate::undo::keep(app, rec));
+    }
+    Ok(out)
 }
 
 fn set_hours(app: &App, body: &Value) -> Result<Value> {

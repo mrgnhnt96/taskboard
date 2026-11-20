@@ -137,6 +137,7 @@ pub mod stream;
 pub mod steps;
 pub mod transcript;
 pub mod triage;
+pub mod undo;
 pub mod upstream;
 pub mod usage;
 pub mod usage_daily;

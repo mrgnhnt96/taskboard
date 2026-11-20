@@ -1,5 +1,6 @@
 //! The pages, panels and dialogs of the main window. See `app.rs` for how they fit together.
 pub mod backlog;
+pub mod backlog_closed;
 pub mod board;
 pub mod days;
 pub mod goal;

@@ -535,6 +535,11 @@ fn open_acts(cx: &Ctx, b: &Value, r: &str) -> Vec<Act> {
     v
 }
 
+/// Deferred or closed as won't do (not as fixed): it can be opened again.
+pub fn reopens(b: &Value) -> bool {
+    s(b, "state") == "defer" || (s(b, "state") == "drop" && s(b, "closed_as") != "fixed")
+}
+
 /// The whole panel, history and all, as the parity tests read it.
 #[cfg(test)]
 pub fn panel_view(cx: &Ctx, b: &Value) -> PanelView {
@@ -553,7 +558,13 @@ fn panel_head(cx: &Ctx, b: &Value) -> PanelView {
         project: s(b, "project").to_string(),
         state_line,
         open_task: issue_task(b),
-        acts: if open && !miss { open_acts(cx, b, &r) } else { vec![] },
+        acts: if open && !miss {
+            open_acts(cx, b, &r)
+        } else if reopens(b) {
+            vec![cx.act("reopen", "Reopen", "", &r)]
+        } else {
+            vec![]
+        },
         miss: miss.then(|| miss_view(cx, b, &r)),
         note: cx.note(&format!("issue:{r}")),
         detail: detail_head(b),
@@ -751,13 +762,13 @@ pub fn select_for_goal(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>
 
 pub fn defer(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
-    run(m, format!("defer::{r}"), format!("issue:{r}"), "backlog/bulk".into(), json!({"ids": [r], "action": "defer"}), cx, |_, _, _| Some("Deferred: not for now".into()));
+    run(m, format!("defer::{r}"), format!("issue:{r}"), "backlog/bulk".into(), json!({"ids": [r], "action": "defer"}), cx, |m, v, cx| undoable(m, v, "Deferred: not for now", cx));
 }
 
 /// Finish the goal without this miss: it stays in the backlog as ordinary work.
 pub fn finish_without(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
-    run(m, format!("without::{r}"), format!("issue:{r}"), format!("backlog/{r}/without-goal"), json!({}), cx, |_, _, _| Some("The goal no longer waits for it. It stays in the backlog".into()));
+    run(m, format!("without::{r}"), format!("issue:{r}"), format!("backlog/{r}/without-goal"), json!({}), cx, |m, v, cx| undoable(m, v, "The goal no longer waits for it. It stays in the backlog", cx));
 }
 
 pub fn ticket(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
@@ -767,7 +778,25 @@ pub fn ticket(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
 
 pub fn drop_issue(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
-    run(m, format!("drop::{r}"), format!("issue:{r}"), format!("backlog/{r}/drop"), json!({}), cx, |_, _, _| Some("Closed as won’t do".into()));
+    run(m, format!("drop::{r}"), format!("issue:{r}"), format!("backlog/{r}/drop"), json!({}), cx, |m, v, cx| undoable(m, v, "Closed as won’t do", cx));
+}
+
+/// A deferred or won't-do issue, open again.
+pub fn reopen(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
+    keep_issue(m, r);
+    run(m, format!("reopen::{r}"), format!("issue:{r}"), format!("backlog/{r}/reopen"), json!({}), cx, |_, _, _| Some("Opened again".into()));
+}
+
+/// What an act the board can take back says: in a toast with Undo when the board answered with the way
+/// back, else in the panel.
+fn undoable(m: &mut MainWindow, v: &Value, said: &str, cx: &mut Context<MainWindow>) -> Option<String> {
+    match v["undo"].as_str() {
+        Some(undo) => {
+            m.toast_undo(said, undo, cx);
+            None
+        }
+        None => Some(said.into()),
+    }
 }
 
 /// "Open T4’s log": the Board, with that task's Log tab.
@@ -1177,6 +1206,7 @@ fn act_el(t: &Theme, r: &str, a: &Act, style: &str, small: bool, id: &str, cx: &
             "ticket" => ticket(m, &rr, cx),
             "defer" => defer(m, &rr, cx),
             "without" => finish_without(m, &rr, cx),
+            "reopen" => reopen(m, &rr, cx),
             _ => drop_issue(m, &rr, cx),
         }
     }))
@@ -1513,7 +1543,7 @@ pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Ctx, defer, drop_issue, filter_items, finish_without, panel_head, select_for_goal, issue_from, issue_how, issue_state, issue_task, kind_label, panel_view, picker_items, picker_label, promote, search, snap_rows, ticket};
+    use super::{Ctx, defer, drop_issue, filter_items, finish_without, panel_head, select_for_goal, issue_from, issue_how, issue_state, issue_task, kind_label, panel_view, picker_items, picker_label, promote, reopen, search, snap_rows, ticket};
     use crate::app::Panel;
     use crate::backend::Backend;
     use crate::fmt::{self, arr, s};
@@ -1640,7 +1670,25 @@ mod tests {
         w.update(cx, |m, _, cx| drop_issue(m, &r, cx)).unwrap();
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/drop")), Some(json!({})));
-        w.update(cx, |m, _, _| assert_eq!(m.issue_panel.notes.get(&format!("issue:{r}")).map(|n| n.0.clone()), Some("Closed as won’t do".into()))).unwrap();
+        // Won't do can be taken back, so it says so in a toast with Undo rather than in the panel.
+        w.update(cx, |m, _, _| {
+            let t = m.toasts.last().expect("a toast");
+            assert_eq!(t.text, "Closed as won’t do");
+            assert!(t.undo.as_deref().is_some_and(|u| u.starts_with("backlog/undo/")), "{:?}", t.undo);
+            assert!(m.issue_panel.notes.get(&format!("issue:{r}")).is_none());
+        })
+        .unwrap();
+        // Closed as won't do, it offers only Reopen.
+        let closed = rec.board().get(&format!("backlog/{r}"), &[]).unwrap();
+        w.update(cx, |m, _, cx| {
+            let acts: Vec<_> = panel_head(&Ctx::of(m), &closed).acts.iter().map(|a| a.act).collect();
+            assert_eq!(acts, ["reopen"]);
+            reopen(m, &r, cx);
+        })
+        .unwrap();
+        parity::settle(cx);
+        assert_eq!(rec.last(&format!("backlog/{r}/reopen")), Some(json!({})));
+        assert_eq!(rec.board().get(&format!("backlog/{r}"), &[]).unwrap()["state"], "open");
     }
 
     #[gpui_kit::test]

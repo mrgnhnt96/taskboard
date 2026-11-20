@@ -6700,9 +6700,10 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
+        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Reopen How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
         "acts": [
-          "close-panel"
+          "close-panel",
+          "reopen"
         ]
       }
     },
@@ -6782,9 +6783,10 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
+        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Reopen How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
         "acts": [
-          "close-panel"
+          "close-panel",
+          "reopen"
         ]
       }
     },
@@ -7481,9 +7483,10 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
+        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Reopen Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
         "acts": [
-          "close-panel"
+          "close-panel",
+          "reopen"
         ]
       }
     }
