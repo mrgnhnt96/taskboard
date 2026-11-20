@@ -487,6 +487,9 @@ enum Cmd {
         /// The kept reviews
         #[arg(long, conflicts_with_all = ["target", "since", "week", "save"])]
         list: bool,
+        /// File a kept review's suggested fixes as backlog issues again (after filing them failed)
+        #[arg(long, requires = "target", conflicts_with_all = ["since", "week", "save", "list"])]
+        file_again: bool,
     },
     /// Tasks, one line each: this terminal's project's (with --goal, every project's)
     Tasks {
@@ -3528,6 +3531,38 @@ fn review_cmd(c: &Ctx, target: Option<String>, since: Option<String>, week: Opti
     Ok(0)
 }
 
+/// `tb review <n> --file-again`: file kept review n's suggested fixes as backlog issues again.
+fn review_file_again(c: &Ctx, target: &str) -> Result<i32, String> {
+    if target.is_empty() || !target.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("--file-again takes a kept review's number: tb review 12 --file-again (tb review --list shows them).".into());
+    }
+    let v = c.call("POST", &format!("/reviews/{target}/fixes"), Some(json!({})))?;
+    out(&file_again_line(target, &v));
+    Ok(0)
+}
+
+/// What filing again did: still going, filed, or why it failed.
+fn file_again_line(target: &str, v: &Value) -> String {
+    let f = &v["fixes"];
+    let refs = |k: &str| f[k].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect::<Vec<_>>();
+    match f["state"].as_str().unwrap_or("") {
+        "running" => format!("Filing review {target}'s fixes as backlog issues; the review page shows them when they're in."),
+        "failed" => format!("Couldn't file review {target}'s fixes: {}.", f["error"].as_str().unwrap_or("no reason given").trim_end_matches('.')),
+        _ => {
+            let (filed, linked) = (refs("filed"), refs("linked"));
+            if filed.is_empty() && linked.is_empty() {
+                format!("Review {target} has no fixes to file.")
+            } else {
+                let mut s = format!("Review {target}'s fixes are in the backlog: {}", if filed.is_empty() { "none filed".to_string() } else { filed.join(", ") });
+                if !linked.is_empty() {
+                    s += &format!("; linked {}", linked.join(", "));
+                }
+                s + "."
+            }
+        }
+    }
+}
+
 /// Seconds as "2.5 h", "14 min" or "40 s".
 fn took(secs: f64) -> String {
     let secs = secs.abs();
@@ -6414,7 +6449,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             _ => planning_lessons_cmd(c, project, accept),
         },
         Cmd::Quality { project, all, goals } => quality_cmd(c, project, all, goals),
-        Cmd::Review { target, since, week, save, list } => review_cmd(c, target, since, week, save, list),
+        Cmd::Review { target, since, week, save, list, file_again } => {
+            if file_again {
+                return review_file_again(c, target.as_deref().unwrap_or(""));
+            }
+            review_cmd(c, target, since, week, save, list)
+        }
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
         Cmd::Search { query, project, all, kind, open } => search_cmd(c, &query, project, all, kind, open),
         Cmd::Lesson { action } => lesson_cmd(c, action),
@@ -9781,6 +9821,9 @@ mod tests {
             _ => panic!("not a submit"),
         }
         assert!(issue_refs(&["T3".to_string()]).is_err(), "--fixes takes backlog issues only");
+        assert!(Cli::try_parse_from(["tb", "review", "12", "--file-again"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "review", "--file-again"]).is_err(), "--file-again needs the review");
+        assert!(Cli::try_parse_from(["tb", "review", "12", "--file-again", "--save"]).is_err());
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "fixed", "--commit", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "gone"]).is_err());
         assert!(Cli::try_parse_from(["tb", "step", "again", "Review"]).is_ok());
@@ -9789,6 +9832,15 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--worktree", "/tmp/wt"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--commit", "abc"]).is_ok(), "a commit on a branch");
         assert!(Cli::try_parse_from(["tb", "pr", "body-check", "-"]).is_ok());
+    }
+
+    #[test]
+    fn file_again_says_what_it_did() {
+        let v = |f: Value| json!({"fixes": f});
+        assert_eq!(file_again_line("4", &v(json!({"state": "running"}))), "Filing review 4's fixes as backlog issues; the review page shows them when they're in.");
+        assert_eq!(file_again_line("4", &v(json!({"state": "failed", "error": "Claude timed out."}))), "Couldn't file review 4's fixes: Claude timed out.");
+        assert_eq!(file_again_line("4", &v(json!({"state": "done", "filed": ["B12", "B13"], "linked": ["B9"]}))), "Review 4's fixes are in the backlog: B12, B13; linked B9.");
+        assert_eq!(file_again_line("4", &v(json!({"state": "done", "filed": [], "linked": []}))), "Review 4 has no fixes to file.");
     }
 
     #[test]

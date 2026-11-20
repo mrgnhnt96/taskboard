@@ -4,7 +4,8 @@
 //! as an untriaged backlog issue tagged with the review (`issues.review_id`); a fix already open in the
 //! backlog is linked instead of written twice. It changes no code and starts nothing: the owner plans
 //! a goal from them on the Backlog page. Runs once after each kept review, before the owner is told,
-//! and again with `POST /reviews/<id>/fixes`.
+//! and again with `POST /reviews/<id>/fixes` (File again on the review page, `tb review <id>
+//! --file-again`) when filing them failed.
 
 use serde_json::{json, Value};
 
@@ -28,34 +29,72 @@ pub fn after_save(app: &App, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// `POST /reviews/<id>/fixes`: run it now (again, if it ran before).
+/// `POST /reviews/<id>/fixes` (the review page's File again, `tb review <id> --file-again`): run it
+/// now, again if it ran before. Safe to repeat: a run already going is left to finish, a run a board
+/// restart cut short is started over, and what this review filed before is never filed twice.
 pub fn start(app: &App, id: i64) -> Result<Value> {
     review::get(app, id)?;
     if !triage::ai_on(app) {
         return err(409, "Claude isn't available to the board (backlog AI is off or claude isn't installed), so there are no fixes to suggest.");
     }
-    if status(app, id)?["state"] != "running" {
-        queue(app, id, false);
+    // Checked and claimed in one transaction, so two clicks at once queue one run.
+    let claimed = app.db.tx(|| {
+        let st = status(app, id)?;
+        if st["state"] == "running" {
+            return Ok(None);
+        }
+        // A first run cut short before the owner was told still tells them when it ends.
+        let announce = st["announce"] == true;
+        save_status(app, id, &running(&st, announce));
+        Ok(Some(announce))
+    })?;
+    if let Some(announce) = claimed {
+        enqueue(app, id, announce);
     }
     review::get(app, id)
 }
 
-/// Whether the fixes ran for review `id`, and what they filed.
+/// Whether the fixes ran for review `id`, and what they filed. A run this board process didn't start
+/// was cut short by a restart: it reads as failed, so File again can start it over.
 pub fn status(app: &App, id: i64) -> Result<Value> {
     let r = app.db.q1("SELECT fixes FROM reviews WHERE id = ?", p![id])?;
-    Ok(r.and_then(|r| r.s("fixes").and_then(|s| serde_json::from_str(s).ok())).unwrap_or_else(|| json!({"state": "none"})))
+    let mut v = r.and_then(|r| r.s("fixes").and_then(|s| serde_json::from_str::<Value>(s).ok())).unwrap_or_else(|| json!({"state": "none"}));
+    if v["state"] == "running" && v["run"] != this_run() {
+        v["state"] = json!("failed");
+        v["error"] = json!("the board restarted before they were filed");
+    }
+    Ok(v)
+}
+
+/// This board process, as a running status records it: a status from any other one is stale.
+fn this_run() -> &'static str {
+    static RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| format!("{}-{}", std::process::id(), now_iso()))
 }
 
 fn save_status(app: &App, id: i64, v: &Value) {
     let _ = app.db.x("UPDATE reviews SET fixes = ? WHERE id = ?", p![jdumps(v), id]);
 }
 
+/// The running status, keeping what an earlier run filed so the page and Needs you still show it.
+fn running(prev: &Value, announce: bool) -> Value {
+    json!({"state": "running", "at": now_iso(), "run": this_run(), "announce": announce,
+           "filed": str_list(prev.get("filed")), "linked": str_list(prev.get("linked"))})
+}
+
 fn queue(app: &App, id: i64, then_announce: bool) {
-    save_status(app, id, &json!({"state": "running", "at": now_iso()}));
+    let prev = status(app, id).unwrap_or_else(|_| json!({}));
+    save_status(app, id, &running(&prev, then_announce));
+    enqueue(app, id, then_announce);
+}
+
+fn enqueue(app: &App, id: i64, then_announce: bool) {
     app.queue_ai(Box::new(move |a: &App| {
+        let prev = status(a, id).unwrap_or_else(|_| json!({}));
         let v = run(a, id).unwrap_or_else(|e| {
             a.info(format!("review fixes: review {id} failed: {e}"));
-            json!({"state": "failed", "at": now_iso(), "error": e})
+            // What an earlier run filed stays this review's.
+            json!({"state": "failed", "at": now_iso(), "error": e, "filed": str_list(prev.get("filed")), "linked": str_list(prev.get("linked"))})
         });
         save_status(a, id, &v);
         if then_announce {
@@ -153,12 +192,15 @@ fn detail(change: &str, evidence: &str, minutes: i64) -> String {
 }
 
 /// Writes Claude's answer into the backlog: new fixes as open issues tagged with review `id`, ones the
-/// backlog already has as a note on that issue. A rerun links what the last run filed rather than
-/// filing it again.
+/// backlog already has as a note on that issue. A rerun never files a fix twice: one this review
+/// filed before, open or closed since, counts as filed again, and what earlier runs filed or linked
+/// stays the review's even when this answer leaves it out.
 pub fn apply(app: &App, id: i64, answer: &Value) -> Result<Value> {
     let r = review::get(app, id)?;
     let review_ref = format!("review {id}");
     let open = open_issues(app)?;
+    let own = app.db.q("SELECT * FROM issues WHERE review_id = ? ORDER BY id", p![id])?;
+    let earlier = status(app, id)?;
     let names = project_names(app)?;
     let period = format!("{} to {}", r["period_start"].as_str().unwrap_or("").get(..10).unwrap_or(""), r["period_end"].as_str().unwrap_or("").get(..10).unwrap_or(""));
     let (mut filed, mut linked, mut skipped): (Vec<String>, Vec<String>, usize) = (vec![], vec![], 0);
@@ -172,16 +214,18 @@ pub fn apply(app: &App, id: i64, answer: &Value) -> Result<Value> {
             continue;
         }
         let target = match item["action"].as_str() {
-            Some("link") => item["issue"].as_i64().and_then(|n| open.iter().find(|b| b.id() == n)),
-            _ => open.iter().find(|b| ops::titles_match(&b.st("title"), &title)),
+            Some("link") => item["issue"].as_i64().and_then(|n| open.iter().chain(&own).find(|b| b.id() == n)),
+            _ => open.iter().chain(&own).find(|b| ops::titles_match(&b.st("title"), &title)),
         };
         if let Some(b) = target {
             let r = rf("issue", b.id());
             if !filed.contains(&r) && !linked.contains(&r) {
-                if b.i("review_id") != Some(id) {
+                if b.i("review_id") == Some(id) {
+                    filed.push(r);
+                } else {
                     board::add_issue_event(app, b.id(), "Review", "note", &format!("Suggested again by {review_ref}: {}", one_line(&detail(change, evidence, minutes), 600)), None)?;
+                    linked.push(r);
                 }
-                linked.push(r);
             } else {
                 skipped += 1;
             }
@@ -202,6 +246,13 @@ pub fn apply(app: &App, id: i64, answer: &Value) -> Result<Value> {
         )?;
         board::add_issue_event(app, bid, "Review", "note", &format!("Suggested by {review_ref}"), None)?;
         filed.push(rf("issue", bid));
+    }
+    for (key, list) in [("filed", &mut filed), ("linked", &mut linked)] {
+        for r in str_list(earlier.get(key)) {
+            if !list.contains(&r) {
+                list.push(r);
+            }
+        }
     }
     Ok(json!({"filed": filed, "linked": linked, "skipped": skipped}))
 }
