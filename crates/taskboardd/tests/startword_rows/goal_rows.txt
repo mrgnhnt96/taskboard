@@ -427,3 +427,35 @@ S ## agent:Three fixes: the footer, the header and the toggle. || say:go ahead a
 S ## say:make a goal for dark mode || goal new || say:go ahead and start
 R ## agent:Three fixes: the footer, the header and the toggle. || say:go ahead and start tomorrow || goal new
 R ## goal new || agent:Made G. Want me to write the PR description? || say:go ahead and start
+# Missed in the week of 2026-11-12: the owner's words, which should start
+S ## say:I want an agent to be able to mark tasks as done for me. Create whatever tasks you need for this || goal new || agent:Each task fixes one problem, so they're separate. To run them, say "start G". || say:Start in G
+S ## say:Okay, those tasks sound good. You can create them and start them || goal new
+S ## agent:These are separate problems, so they'd be one task each. Want me to make them a goal and start it? || say:Create a goal and fix 1-3 || goal new
+S ## say:Create a goal and start fixing these || goal new
+S ## agent:Should I do the two fixes and the agent-start feature as separate board tasks and PRs, or together? || say:You can have all these as different tasks, put it in a goal if you want, or add it to the original goal. Start it || task new
+S ## say:I want you to research how we should structure our marketing page. Seeing the replay screen would be nice, if you think so. Then I want you to come up with a beautiful design using the ultrahand skill.\nPlan a goal for this and start it || goal new
+S ## agent:I haven't changed anything yet. Should I do all three? Item 2 would go on the board as a goal before any code. || say:The new amount is the one to use, the other one can be dropped || say:And yes, you can do all three of those tasks || goal new
+S ## goal new || agent:I left B983 out. Only you can run it, so say if you want it on the board as a task for you. || say:put that in a goal and start it || task new
+S ## say:When you're done, set H2211 as done, and start G
+S ## goal new || say:Also, I don't want to manually assign money, when it comes in, I want to have the nightly run move the money. || say:The new design looked good, so you can start building that out
+S ## say:Yeah, plan this goal with taskboard and start it || goal new
+S ## goal new || say:Wouldn't it be easier for us as humans to just have you build shortcuts and manage them for us? || say:Create a goal for this and start it, I want the wallpaper built inside this goal as well || task new
+S ## say:Create a goal for this and start it, I want the wallpaper built inside this goal as well || goal new
+S ## goal new || say:Cool, looks good. lets go ahead and start building this out. When we are building this out, I need the agents to verify that they have the functionality of the UI and the layout just like how we have set it up in this design cycle.
+S ## say:Yeah, create a goal for this and start it || goal new
+# Held that week, rightly (and guards for the phrasings above): keep held
+R ## say:Why haven't they started? Can you start the next goal and have the following goals depend on them? Unles we can run these in parallel? || say:Also, lets fix the backlog items now
+R ## say:Okay, we should be working on this, plan the goal with taskboard || goal new
+R ## say:Alright, we have a lot of usage left in our weekly resets tomorrow. So what can we do right now until tomorrow morning to get picked ready for clients? || goal new
+R ## say:Alright, and do we have a trigger every day to do lead generation for us? Once we have leads, then I want to see the results and then we can work from there || goal new
+R ## agent:Should I put this on the board? || say:Yeah, let's do it || say:Make sure that this can be turned off too || goal new
+R ## say:Create a goal to get all of this stuff ready. Also, we're going to update the email address || goal new
+R ## say:Do all the research that you need. Create a goal if you need to split up the tasks || goal new
+R ## say:Okay, we can start getting clients? || goal new
+R ## say:Create a goal and fix 1-3 tomorrow || goal new
+R ## say:Create a goal to fix 1-3 || goal new
+R ## say:When I'm back, start G
+R ## say:When you're done, start G tomorrow
+R ## goal new || say:put that in a goal and start it tomorrow || task new
+R ## goal new || say:put that in a goal, don't start it || task new
+R ## say:Create a goal and start fixing these after the release || goal new

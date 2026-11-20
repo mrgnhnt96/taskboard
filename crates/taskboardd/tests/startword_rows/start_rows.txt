@@ -836,3 +836,36 @@ T8=S ## agent:T8 is up next. Want me to get started on it? || yes
 T8=S ## agent:Should I start T8? Also, do you want me to update the changelog after? || yes
 T8=S ## agent:Should I start T8? Also, should I close the stale PR? || yes
 T8=S ## agent:Should I start T8? Also, should I delete the old branch? || yes to both
+# Missed in the week of 2026-11-12: the owner's words, which should start
+M1=S ## Create a task and fix the esa read to be able to run that on our own || +
+M1=S ## Open a tab in zonai and instruct it to cut a new rlease || +
+T8=S T9=S ## agent:Both pieces of follow-up work are now on the board as T8 and T9. || start all three of those tasks
+T8=S T9=S ## agent:Both are on the board as T8 and T9. || start both of those tasks
+M1=S ## We can release it now, if there is a task for that, start it. If there isn't one, create it and start it || +
+M1=S ## Create a task in taskboard for these upgrades in revali, and start it || +
+M1=S ## We should have a way to be able to run the ESA job by hand. If not, create a task and start it || +
+M1=S ## Create a new task for that issue and start it, wait until that task's PR is merged and then you can cut the release || +
+T8=S ## [Image #2]Start T8\nAnnotations (coordinates are percentages from the image's top-left):\n1. [x=6, y=17] This success page is very boring. Can you make it look better, please? Create a task and start it
+M1=S ## [Image #2]Start T8\nAnnotations (coordinates are percentages from the image's top-left):\n1. [x=6, y=17] This success page is very boring. Can you make it look better, please? Create a task and start it || +
+T8=S ## [Image #2]Start T8\nAnnotations (coordinates are percentages from the image's top-left):\n1. [x=6, y=17] This success page is very boring. Can you make it look better, please? Create a task and start it || Is there another task that follows after that backlog item to make sure that we go and continue the setup for full gmail access? || I would double check that the site is using GitHub pages because we've been using Cloudflare recently
+T8=S ## Start T8, And we already did the opener, that's why we were working so much on the emails today\nAnd no, we're not going to spend a week on real conversations. We are just going to do the email that we had already set up\nGet PR29 merged
+T8=S T9=R ## Yes, we should charge right away. So start T8 and if T9 is a bug, then fix it
+T8=S ## When you're done, set H2211 as done, and start T8
+# Held that week, rightly (and guards for the phrasings above): keep held
+T8=R ## Can you just make sure that things are still running? If tabs closed when they shouldn't have, reopen them and instruct then to keep running
+M1=R ## We need to redeploy with the latest dart version || +
+M1=R ## Yep, you can clone, raindrop. We should have our own version within this project as a get sub module, but you can do whatever you need || +
+T8=R ## T8 should publish Revali, construct Revali, Revali, client, gen, and Revali, swagger, it should use the cut the release feature from taskboard
+M1=R ## Nope, we are going to make the change now, not later || +
+M1=R ## agent:How should dahunts run a server job? 1. Admin sign-in. 2. Zonai change. 3. Both. I'd pick 3. || Yeah, let's do both || +
+T8=R ## Can you watch the deployment and get it working?
+M1=R ## You can create a new task and have it go to main for us or you can check out main unless there is another tab that is using this branch || +
+M1=R ## Created an account\nCreate a task to start the audiobookshelf || +
+M1=R ## If CI is green, create a task and start it || +
+M1=R ## If there isn't one, create it and start it tomorrow || +
+M1=R ## Create a task to fix the esa read || +
+M1=R ## Create a task and fix it tomorrow || +
+M1=R ## Create a task, don't fix it yet || +
+T8=R ## When I'm done, start T8
+T8=R ## When you're done, start T8 tomorrow
+T8=R ## When T7 is done, start T8
