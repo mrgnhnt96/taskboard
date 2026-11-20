@@ -1,10 +1,12 @@
 //! The time review: where a period's agent time went, built from the stored spans (`spans.rs`) and the
 //! tasks' status changes (`task_states`). It runs on `[review]`'s schedule, keeps every review it makes,
-//! and tells the owner with a notification and a Needs you item that stays until the review is opened.
+//! and tells the owner with a notification and a Needs you item. The item stays until its fixes are dealt
+//! with (each planned into a goal, deferred, dropped or done), or, for a review that filed none, until
+//! it's opened (`holds_owner`).
 
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::{Datelike, Duration, Local, NaiveDateTime, NaiveTime, TimeZone};
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -52,6 +54,9 @@ pub fn run(app: std::sync::Arc<App>) {
     while !app.stopping() {
         if let Err(e) = tick(&app, hours::now_local()) {
             app.info(format!("review: {}", e.message));
+        }
+        if let Err(e) = app.db.tx(|| settle(&app)) {
+            app.info(format!("review: settling Needs you: {}", e.message));
         }
         app.sleep(TICK_SECS);
     }
@@ -487,11 +492,15 @@ fn fix_count(data: &Value, fixes: &Value) -> usize {
     data["suggestions"].as_array().map_or(0, Vec::len)
 }
 
+/// "12.5 h on builds".
+fn builds_text(r: &Value) -> String {
+    format!("{} h on builds", round1(category_secs(r, "build") / 3600.0))
+}
+
 /// "Weekly review: 12.5 h on builds, 3 fixes suggested".
 pub fn headline(r: &Value, fixes: &Value) -> String {
-    let builds = round1(category_secs(r, "build") / 3600.0);
     let n = fix_count(r, fixes);
-    format!("Weekly review: {builds} h on builds, {n} {} suggested", if n == 1 { "fix" } else { "fixes" })
+    format!("Weekly review: {}, {n} {} suggested", builds_text(r), if n == 1 { "fix" } else { "fixes" })
 }
 
 fn key(id: i64) -> String {
@@ -502,7 +511,8 @@ fn notification_id(id: i64) -> String {
     format!("taskboard-review-{id}")
 }
 
-/// Tells the owner review `id` is ready: a notification that opens it, and a Needs you item that stays until it's opened.
+/// Tells the owner review `id` is ready: a notification that opens it, and a Needs you item that stays
+/// while the review holds the owner (`holds_owner`).
 pub fn announce(app: &App, id: i64) -> Result<()> {
     let r = get(app, id)?;
     let text = headline(&r["data"], &r["fixes"]);
@@ -550,13 +560,99 @@ pub fn get(app: &App, id: i64) -> Result<Value> {
     Ok(v)
 }
 
-/// The owner opened review `id`: its Needs you item and notification go.
+/// The owner opened review `id`: its notification goes, and its Needs you item too unless fixes it
+/// filed still wait to be dealt with.
 pub fn seen(app: &App, id: i64) -> Result<Value> {
     get(app, id)?;
     app.db.x("UPDATE reviews SET seen_at = COALESCE(seen_at, ?) WHERE id = ?", p![now_iso(), id])?;
-    dispatch::clear_alert_key(app, &key(id))?;
     dispatch::withdraw_id(app, &notification_id(id));
+    settle_one(app, id)?;
     get(app, id)
+}
+
+/// How many fixes review `id` filed or linked, and how many of those are dealt with: no longer
+/// untriaged in the Backlog (open and in no goal). An issue that's gone counts as dealt with.
+pub fn fixes_dealt(app: &App, id: i64) -> Result<(usize, usize)> {
+    let st = crate::review_fixes::status(app, id)?;
+    let ids: Vec<i64> = ["filed", "linked"].iter().flat_map(|k| str_list(st.get(*k))).filter_map(|r| r.trim_start_matches('B').parse().ok()).collect();
+    let mut dealt = 0;
+    for n in &ids {
+        if app.db.count("SELECT COUNT(*) FROM issues WHERE id = ? AND state = 'open' AND goal_id IS NULL", p![n])? == 0 {
+            dealt += 1;
+        }
+    }
+    Ok((ids.len(), dealt))
+}
+
+/// Whether review `id` still holds the owner in Needs you: its fixes are still being written, or some
+/// it filed aren't dealt with yet, or it filed none and hasn't been opened.
+pub fn holds_owner(app: &App, id: i64) -> Result<bool> {
+    let Some(r) = app.db.q1("SELECT seen_at FROM reviews WHERE id = ?", p![id])? else { return Ok(false) };
+    if crate::review_fixes::status(app, id)?["state"] == "running" {
+        return Ok(true);
+    }
+    Ok(match fixes_dealt(app, id)? {
+        (0, _) => r.s("seen_at").is_none(),
+        (n, dealt) => dealt < n,
+    })
+}
+
+fn settle_one(app: &App, id: i64) -> Result<()> {
+    if !holds_owner(app, id)? {
+        dispatch::clear_alert_key(app, &key(id))?;
+        dispatch::withdraw_id(app, &notification_id(id));
+    }
+    Ok(())
+}
+
+/// Takes down the Needs you items of the reviews that no longer hold the owner (`holds_owner`).
+pub fn settle(app: &App) -> Result<()> {
+    for a in dispatch::alerts(app) {
+        if let Some(id) = a["review_id"].as_i64() {
+            settle_one(app, id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Review `id`'s Needs you row once it has fixes: a title that counts them, and when it was opened and
+/// how many are dealt with under it (its build hours until there's either). Its `fixes` and `opened`
+/// say what the row's button opens.
+pub fn needs_row(app: &App, id: i64, a: &mut Value) -> Result<()> {
+    let Some(r) = app.db.q1("SELECT created_at, period_end, seen_at, data FROM reviews WHERE id = ?", p![id])? else { return Ok(()) };
+    let (n, dealt) = fixes_dealt(app, id)?;
+    if n == 0 {
+        return Ok(());
+    }
+    let today = local_now().date_naive();
+    let day = |s: Option<&str>| s.and_then(parse_iso).map(|t| local_dt(t).date_naive());
+    a["title"] = json!(row_title(n, day(r.s("created_at")), day(r.s("period_end")), today));
+    let detail = row_detail(day(r.s("seen_at")), dealt, today);
+    a["detail"] = json!(if detail.is_empty() { builds_text(&serde_json::from_str(&r.st("data")).unwrap_or(Value::Null)) } else { detail });
+    a["fixes"] = json!(n);
+    a["opened"] = json!(r.s("seen_at").is_some());
+    Ok(())
+}
+
+/// "3 fixes from this week's review", or "from the Nov 7 review" once it's a week old.
+fn row_title(n: usize, made: Option<NaiveDate>, end: Option<NaiveDate>, today: NaiveDate) -> String {
+    let fixes = if n == 1 { "1 fix".to_string() } else { format!("{n} fixes") };
+    match (made, end) {
+        (Some(m), Some(e)) if (today - m).num_days() >= 7 => format!("{fixes} from the {} review", e.format("%b %-d")),
+        _ => format!("{fixes} from this week’s review"),
+    }
+}
+
+/// "Opened Monday · 2 dealt with": each part only when there is one.
+fn row_detail(opened: Option<NaiveDate>, dealt: usize, today: NaiveDate) -> String {
+    let opened = opened.map(|d| match (today - d).num_days() {
+        0 => "Opened today".to_string(),
+        1 => "Opened yesterday".to_string(),
+        2..=6 => format!("Opened {}", d.format("%A")),
+        _ => format!("Opened {}", d.format("%b %-d")),
+    });
+    let dealt = (dealt > 0).then(|| format!("{dealt} dealt with"));
+    [opened, dealt].into_iter().flatten().collect::<Vec<_>>().join(" · ")
 }
 
 /// One task's spans in order (`tb review T12`), with its time by category.
@@ -613,6 +709,20 @@ mod tests {
         assert_eq!(quantile(&v, 0.5), 6.0);
         assert_eq!(quantile(&v, 0.9), 9.0);
         assert_eq!(quantile(&[], 0.5), 0.0);
+    }
+
+    #[test]
+    fn the_needs_you_row_counts_fixes_and_says_when_it_was_opened() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let today = d("2026-11-19");
+        assert_eq!(row_title(3, Some(d("2026-11-13")), Some(d("2026-11-13")), today), "3 fixes from this week’s review");
+        assert_eq!(row_title(1, Some(d("2026-11-06")), Some(d("2026-11-06")), today), "1 fix from the Nov 6 review", "a week on, it names its week");
+        assert_eq!(row_detail(Some(d("2026-11-16")), 2, today), "Opened Monday · 2 dealt with");
+        assert_eq!(row_detail(Some(d("2026-11-19")), 0, today), "Opened today");
+        assert_eq!(row_detail(Some(d("2026-11-18")), 1, today), "Opened yesterday · 1 dealt with");
+        assert_eq!(row_detail(Some(d("2026-11-02")), 0, today), "Opened Nov 2");
+        assert_eq!(row_detail(None, 1, today), "1 dealt with");
+        assert_eq!(row_detail(None, 0, today), "");
     }
 
     #[test]

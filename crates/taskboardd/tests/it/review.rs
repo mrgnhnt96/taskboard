@@ -1,5 +1,5 @@
 //! The weekly time review: the report built from spans and task states, its schedule, and the Needs you
-//! item that stays until the review is opened.
+//! item that stays until its fixes are dealt with, or until the review is opened when it filed none.
 
 use chrono::{Local, NaiveDate, TimeZone};
 use serde_json::{json, Value};
@@ -128,7 +128,7 @@ fn owner_wait_counts_work_hours_once_however_many_tasks_wait() {
 }
 
 #[test]
-fn a_kept_review_stays_in_needs_you_until_it_is_opened() {
+fn a_review_with_no_fixes_stays_in_needs_you_until_it_is_opened() {
     let (app, _dir) = board();
     week_of_spans(&app, now_ts() - 86400.0);
 
@@ -148,10 +148,60 @@ fn a_kept_review_stays_in_needs_you_until_it_is_opened() {
 
     let seen = post(&app, &format!("reviews/{id}/seen"), json!({})).unwrap();
     assert!(seen["seen_at"].is_string());
-    assert!(dispatch::alerts(&app).iter().all(|x| x["key"] != format!("review:{id}")), "opening it clears Needs you");
+    assert!(dispatch::alerts(&app).iter().all(|x| x["key"] != format!("review:{id}")), "with no fixes, opening it clears Needs you");
     assert_eq!(get(&app, "reviews")["reviews"][0]["id"], id);
     assert_eq!(get(&app, &format!("reviews/{id}"))["data"]["seconds"], 810.0);
     assert_eq!(post(&app, "reviews/999/seen", json!({})).unwrap_err().0, 404);
+}
+
+/// Review `id` with two fixes filed in the Backlog, announced in Needs you; the fixes' issue ids.
+fn review_with_two_fixes(app: &App) -> (i64, Vec<i64>) {
+    let id = review::save(app, now_ts() - 7.0 * 86400.0, now_ts(), true).unwrap();
+    let issue = |title: &str| {
+        app.db.insert("issues", taskboardd::fields!["project" => "webapp", "kind" => "gap", "title" => title, "source" => "review", "review_id" => id,
+                                                    "state" => "open", "created_at" => iso(now_ts()), "updated_at" => iso(now_ts())]).unwrap()
+    };
+    let ids = vec![issue("Share one build cache"), issue("Split cargo test by crate")];
+    let fixes = json!({"state": "done", "filed": ids.iter().map(|b| format!("B{b}")).collect::<Vec<_>>(), "linked": []});
+    app.db.x("UPDATE reviews SET fixes = ? WHERE id = ?", taskboardd::p![fixes.to_string(), id]).unwrap();
+    review::announce(app, id).unwrap();
+    (id, ids)
+}
+
+fn review_row(app: &App, id: i64) -> Option<Value> {
+    get(app, "home")["needs"].as_array().unwrap().iter().find(|a| a["review_id"] == id).cloned()
+}
+
+#[test]
+fn a_review_with_fixes_stays_in_needs_you_until_they_are_dealt_with() {
+    let (app, _dir) = board();
+    let (id, fixes) = review_with_two_fixes(&app);
+    let row = review_row(&app, id).expect("the review is in Needs you");
+    assert_eq!((row["title"].as_str(), row["detail"].as_str(), row["opened"].as_bool()), (Some("2 fixes from this week’s review"), Some("0 h on builds"), Some(false)));
+
+    post(&app, &format!("reviews/{id}/seen"), json!({})).unwrap();
+    let row = review_row(&app, id).expect("opening it doesn't clear it while its fixes wait");
+    assert_eq!((row["detail"].as_str(), row["opened"].as_bool(), row["fixes"].as_i64()), (Some("Opened today"), Some(true), Some(2)));
+
+    app.db.x("UPDATE issues SET state = 'drop' WHERE id = ?", taskboardd::p![fixes[0]]).unwrap();
+    assert_eq!(review_row(&app, id).expect("one fix still waits")["detail"], "Opened today · 1 dealt with");
+
+    let goal = app.db.insert("goals", taskboardd::fields!["name" => "Faster builds", "project" => "webapp"]).unwrap();
+    app.db.x("UPDATE issues SET goal_id = ? WHERE id = ?", taskboardd::p![goal, fixes[1]]).unwrap();
+    assert!(review_row(&app, id).is_none(), "every fix dealt with: Needs you drops it at once");
+    review::settle(&app).unwrap();
+    assert!(dispatch::alerts(&app).iter().all(|x| x["key"] != format!("review:{id}")), "and the board's next settle takes it down");
+}
+
+#[test]
+fn a_review_whose_fixes_are_dealt_with_leaves_even_unopened() {
+    let (app, _dir) = board();
+    let (id, fixes) = review_with_two_fixes(&app);
+    app.db.x("UPDATE issues SET state = 'drop' WHERE review_id = ?", taskboardd::p![id]).unwrap();
+    assert_eq!(fixes.len(), 2);
+    review::settle(&app).unwrap();
+    assert!(dispatch::alerts(&app).iter().all(|x| x["key"] != format!("review:{id}")));
+    assert!(get(&app, &format!("reviews/{id}"))["seen_at"].is_null(), "it's still unread on the Review page");
 }
 
 #[test]
