@@ -1824,13 +1824,19 @@ fn done_blocker_reason<'a>(t: &Value, blocker: &'a Value) -> Option<&'a str> {
 }
 
 /// The note for testers the board posts on the ticket at merge (`[jira] merged_note`), or that it's waiting for one.
-/// It grows, so it stacks like Attached: the label on top, the note full width under it.
+/// It grows, so it stacks like Attached: the label on top, the note full width under it. A merge that went
+/// without one offers Write the note, which has the board bring the conversation back to write it.
 fn merged_note_row(c: &Ctx, t: &Value) -> Option<Node> {
     let n = obj(t, "merged_note")?;
     let mut body = vec![txt("Note for testers", St::LrowKey)];
     if b(n, "waiting") {
         let state = if opt_s(n, "text").is_some() { "Posting it, then moving the ticket" } else { "Merged without one; the ticket waits" };
         body.push(el(K::Line, vec![pill("Waiting", Tone::Needs), txt(state, St::Small)]));
+        if opt_s(n, "text").is_none() {
+            let grp = "merged-note";
+            body.push(el(K::Line, vec![c.btn("Write the note", Act::new("write-note", "", s(t, "ref"), grp), Look::Plain, false, None)]));
+            body.extend(c.note(grp));
+        }
     }
     if let Some(text) = opt_s(n, "text") {
         let (preview, more) = note_preview(text);

@@ -709,6 +709,15 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             ui(|u| u.att_menu = None);
             run(m, a, format!("attachments/{id}/remove"), json!({}), |_, _| "Removed".into(), cx);
         }
+        // A merge that went without a note for testers: the board brings the conversation back to write it.
+        "write-note" => run(
+            m,
+            a,
+            tp("/merged-note/ask"),
+            json!({}),
+            |_, v| if v["asked"] == true { "Asked. Its conversation comes back to write it.".into() } else { "Asked. It comes back to write it once it can.".into() },
+            cx,
+        ),
         // Show all: the whole note for testers in a dialog.
         "note-all" => {
             let text = m.data.task.as_ref().and_then(|t| t["merged_note"]["text"].as_str()).unwrap_or_default().to_string();

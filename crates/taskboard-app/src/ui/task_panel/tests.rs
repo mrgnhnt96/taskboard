@@ -1279,8 +1279,12 @@ fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
     let text = panel_text(t(json!({"text": "What changed: the login page", "waiting": false})), json!({}));
     assert!(text.contains("Note for testers") && text.contains("What changed: the login page") && !text.contains("Waiting"), "{text}");
     let text = panel_text(t(json!({"text": null, "waiting": true})), json!({}));
-    assert!(text.contains("Note for testers Waiting Merged without one; the ticket waits"), "{text}");
+    assert!(text.contains("Note for testers Waiting Merged without one; the ticket waits Write the note"), "{text}");
     assert!(!panel_text(t(Value::Null), json!({})).contains("Note for testers"));
+    // Write the note only while the ticket waits for one that isn't written.
+    let has_write = |note: Value| view::acts(&tree(&json!({"task": t(note), "state": {}}))).iter().any(|a| a == "write-note");
+    assert!(has_write(json!({"text": null, "waiting": true})));
+    assert!(!has_write(json!({"text": "What changed", "waiting": true})) && !has_write(json!({"text": "What changed", "waiting": false})));
 }
 
 #[::core::prelude::v1::test]

@@ -276,6 +276,36 @@ fn a_note_ask_that_cant_wake_yet_is_sent_once_it_can() {
 }
 
 #[test]
+fn write_the_note_brings_the_conversation_back_again() {
+    let b = board_with(|_| {});
+    let t = b.ticketed();
+    let asks = || b.app.db.count("SELECT COUNT(*) FROM jobs WHERE purpose = 'pr' AND json_extract(args, '$.title') LIKE 'Note for testers%'", p![]).unwrap();
+    let ask = || api::dispatch(&b.app, "POST", &format!("/tasks/T{t}/merged-note/ask"), &Query::new(), &json!({})).map_err(|e| (e.status, e.message));
+
+    let (code, why) = ask().unwrap_err();
+    assert!(code == 409 && why.contains("isn't waiting"), "before the merge: {why}");
+
+    b.merge(t);
+    assert_eq!(asks(), 1);
+    let (code, why) = ask().unwrap_err();
+    assert!(code == 409 && why.contains("back on its PR already"), "while the ask is out: {why}");
+
+    // The conversation came back and ended without writing it: the sweep won't ask again, the button does.
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", vec![]).unwrap();
+    b.run_jira();
+    assert_eq!(asks(), 1);
+    assert_eq!(ask().unwrap()["asked"], true);
+    assert_eq!(asks(), 2);
+    assert!(b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = 'Asked for the note for testers'", p![t]).unwrap() == 1);
+
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr'", vec![]).unwrap();
+    b.post(&format!("/tasks/T{t}"), json!({"merged_note": "Nothing to test: a refactor."}));
+    let (code, why) = ask().unwrap_err();
+    assert!(code == 409 && why.contains("already"), "once it's written: {why}");
+    assert_eq!(asks(), 2);
+}
+
+#[test]
 fn tb_jira_shows_the_note_guide() {
     let b = board_with(|_| {});
     let guide = b.dir.path().join("note.md");
