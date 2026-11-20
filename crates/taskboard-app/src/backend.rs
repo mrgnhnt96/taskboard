@@ -206,6 +206,13 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_RELEASES").is_ok() {
             seed_releases(&board);
         }
+        // Dev: `TASKBOARD_FAKE_PLAN=B2,B3` plans the Backlog's new goal for those issues (waves by rule).
+        if let Ok(ids) = std::env::var("TASKBOARD_FAKE_PLAN") {
+            let ids: Vec<&str> = ids.split(',').map(str::trim).filter(|r| !r.is_empty()).collect();
+            if let Err(e) = api::dispatch(&board, "POST", "backlog/plan", &Query::new(), &json!({"ids": ids})) {
+                eprintln!("taskboard-app: planning the fake backlog failed: {}", e.message);
+            }
+        }
         if std::env::var("TASKBOARD_FAKE_PLAN_REVIEW").is_ok() {
             seed_plan_review(&board);
         }

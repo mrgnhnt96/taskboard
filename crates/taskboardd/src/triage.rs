@@ -646,6 +646,25 @@ fn merge(mut a: Value, b: Value) -> Value {
     a
 }
 
+/// `POST /backlog/plan/add {ids}`: issues picked after the plan join its last wave, waiting on
+/// nothing, so the goal can be made without planning again. Issues already in the plan stay put.
+pub fn plan_add(app: &App, body: &Value) -> Result<Value> {
+    let rows = picked(app, body)?;
+    let mut sh = app.shared.lock();
+    let Some(plan) = sh.plan.as_mut().filter(|p| p["state"] == "ready" && p["waves"].as_array().is_some_and(|w| !w.is_empty())) else {
+        return err(409, "There's no plan to add to yet. Plan the waves first.");
+    };
+    let have: Vec<String> = plan["waves"].as_array().into_iter().flatten().flat_map(|w| w["items"].as_array().cloned().unwrap_or_default()).filter_map(|i| i["ref"].as_str().map(str::to_string)).collect();
+    let new: Vec<String> = rows.iter().map(|b| rf("issue", b.id())).filter(|r| !have.contains(r)).collect();
+    if let Some(items) = plan["waves"].as_array_mut().and_then(|w| w.last_mut()).and_then(|w| w["items"].as_array_mut()) {
+        items.extend(new.iter().map(|r| json!({"ref": r, "after": []})));
+    }
+    let mut ids: Vec<Value> = plan["ids"].as_array().cloned().unwrap_or_default();
+    ids.extend(new.iter().filter(|r| !ids.contains(&json!(r))).map(|r| json!(r)).collect::<Vec<_>>());
+    plan["ids"] = json!(ids);
+    Ok(plan.clone())
+}
+
 /// `GET /backlog/plan`: the latest plan (`state`: none, planning or ready).
 pub fn plan_get(app: &App) -> Value {
     app.shared.lock().plan.clone().unwrap_or_else(|| json!({"state": "none"}))
