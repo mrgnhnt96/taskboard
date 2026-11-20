@@ -918,17 +918,18 @@ fn what_view(t: &Value) -> Node {
     }
 }
 
-/// `answerBtns(r)`.
+/// `answerBtns(r)`: off until something's typed in the answer box.
 fn answer_btns(c: &Ctx, r: &str) -> Vec<Node> {
     let at = hours_open_at(c.state);
     let grp = format!("ask:{r}");
-    let mut out = vec![c.btn("Send answer", Act::new("answer", "", r, &grp), Look::Primary, false, None)];
+    let empty = c.draft(&format!("answer:{r}")).trim().is_empty();
+    let mut out = vec![c.btn("Send answer", Act::new("answer", "", r, &grp), Look::Primary, empty, None)];
     if !at.is_empty() {
         out.push(c.btn(
             &format!("Send at {at}"),
             Act::new("answer", "morning", r, &grp),
             Look::Plain,
-            false,
+            empty,
             Some("Hold the answer until work hours start; the task doesn’t start before then"),
         ));
     }
@@ -1691,6 +1692,12 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
             return Some(el(K::Banner(BoxTone::Ask), bx));
         }
         let mut row = step_btns(c, t, &r, &grp);
+        // A plain question takes a typed answer beside its choices, sent like any answer. Not Claude's
+        // picker or a step to do: the answer is typed into the terminal, which those would misread.
+        if row.is_empty() && s(t, "needs_reason") == "question" && !b(&t["ask"], "picker") {
+            bx.push(answer_field(c, &r));
+            row.extend(answer_btns(c, &r));
+        }
         // Its terminal when it has one; a question with none reopens one that asks it again; otherwise a new one, picking up from its handoff.
         let (label, go) = if session_live(t) {
             ("Focus in Midna", Act::new("focus", "", &r, &grp))

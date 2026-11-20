@@ -240,13 +240,18 @@ fn write_an_answer_opens_its_terminal_or_a_new_one() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
     // No terminal but a question: focus reopens one that asks it again, keeping the question.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"}));
-    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+    assert!(a.contains("\"focus\"") && !a.contains("\"resume"), "{a}");
+    // Or type the answer: Send answer stays off until something's typed.
+    assert!(a.contains("\"answer!\"") && !a.contains("\"answer\""), "{a}");
     // No terminal and nothing asked: a new one picks up from its handoff.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention"}));
     assert!(a.contains("\"resume:fresh\"") && !a.contains("\"focus\""), "{a}");
     // With its terminal open, the terminal is the action.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
-    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && a.contains("\"answer!\""), "{a}");
+    // Waiting in its terminal without a question: nothing to type an answer to.
+    let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention", "session": {"status": "idle"}}));
+    assert!(!a.contains("\"answer"), "{a}");
     // A human task has no terminal to answer in: its box holds Done and Talk it over instead.
     let a = acts(json!({"ref": "H5", "id": 5, "kind": "human", "status": "needs", "needs_reason": "human", "question": "Your task: Sign it. Follow its steps, then press Done.", "detail": "1. Sign it."}));
     assert!(a.contains("\"did\"") && a.contains("\"talk\"") && !a.contains("\"focus\"") && !a.contains("\"resume"), "{a}");
@@ -376,6 +381,36 @@ fn ask_picker(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>, r
     rec.board().post("report", ask).unwrap();
     w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
     open(cx, w, "T2");
+}
+
+#[gpui_kit::test]
+fn a_typed_answer_sends_beside_the_choices(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    let ask = json!({"event": "tb.question", "session": "fake-s2", "claude_session": "c-s2", "cwd": "",
+                     "text": "Which staging account should the smoke test sign in with?", "options": ["qa@example.com", "demo@example.com"]});
+    rec.board().post("report", ask).unwrap();
+    w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+    open(cx, &w, "T3");
+    let acts = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| view::acts(&build(m).unwrap())).unwrap();
+    let a = acts(cx);
+    assert!(a.contains(&"answer-opt:qa@example.com".to_string()) && a.contains(&"answer!".to_string()), "the choices, and Send answer off while the box is empty: {a:?}");
+    typed(cx, &w, "answer:T3", "  ");
+    assert!(acts(cx).contains(&"answer!".to_string()), "spaces alone don't count");
+    typed(cx, &w, "answer:T3", " Use staging-2 instead ");
+    let fields = w.update(cx, |m, _, _| view::values(&build(m).unwrap())).unwrap();
+    assert!(fields.contains(&" Use staging-2 instead ".to_string()), "the box holds what's typed: {fields:?}");
+    assert!(acts(cx).contains(&"answer".to_string()), "{:?}", acts(cx));
+    press(cx, &w, "answer", Some(""));
+    assert_eq!(rec.last("tasks/T3/answer"), Some(json!({"text": "Use staging-2 instead", "when": "now"})));
+    assert!(ui(|u| !u.drafts.contains_key("answer:T3")), "the sent answer leaves the box");
+}
+
+#[gpui_kit::test]
+fn a_picker_has_no_answer_box(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    ask_picker(cx, &w, &rec, json!([{"question": "Pick a fruit", "header": "Fruit", "multiSelect": false, "options": [{"label": "Apple", "description": ""}, {"label": "Pear", "description": ""}]}]));
+    let a = w.update(cx, |m, _, _| view::acts(&build(m).unwrap())).unwrap();
+    assert!(!a.iter().any(|x| x.starts_with("answer")), "typing would land in the picker: {a:?}");
 }
 
 #[gpui_kit::test]

@@ -872,7 +872,12 @@ fn sync_fields(m: &mut MainWindow, n: &Node, window: &mut Window, cx: &mut Conte
             let k = key.clone();
             let sub = cx.subscribe(&input.field, move |m, field, _: &crate::ui::text_input::FieldChanged, cx| {
                 let text = field.read(cx).text().to_string();
+                // Send answer is off while the box is empty: redraw when that flips.
+                let flips = k.starts_with("answer:") && ui(|u| u.drafts.get(&k).is_none_or(|d| d.trim().is_empty())) != text.trim().is_empty();
                 on_input(m, &k, text);
+                if flips {
+                    cx.notify();
+                }
             });
             m.task_panel.subs.push(sub);
             if key.starts_with("meta:") {
