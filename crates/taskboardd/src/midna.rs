@@ -673,14 +673,20 @@ fn listed_id(s: &Value) -> Option<String> {
 }
 
 /// Marks gone the terminals only hooks ever told the board about, once Midna doesn't list them and
-/// they've been quiet for `hook_gone_after_idle`. Such a row may be a real Claude outside Midna, so
-/// being missing from the list isn't enough; a hook from one that's still alive brings it back.
+/// either Midna said it closed them (`closed_by`, from its `session.closed` event) or they've been
+/// quiet for `hook_gone_after_idle`. Without a close, such a row may be a real Claude outside Midna,
+/// so being missing from the list isn't enough; a hook from one that's still alive brings it back.
 /// Any listing counts, also one with no agent in it, which the sync loop skips.
 fn retire_stale_hook_terminals(app: &App, sessions: &[Value], gone: &mut Vec<String>) -> Result<()> {
     let listed: Vec<String> = sessions.iter().filter_map(listed_id).collect();
     for s in app.db.q("SELECT * FROM sessions WHERE status != 'gone' AND source = 'hook'", p![])? {
         let sid = s.st("id");
         if listed.contains(&sid) || gone.contains(&sid) {
+            continue;
+        }
+        if has(s.s("closed_by")) {
+            board::session_gone(app, &sid, "closed in Midna")?;
+            gone.push(sid);
             continue;
         }
         let quiet = [s.s("last_activity"), s.s("seen_at")].into_iter().filter_map(wall_age_secs).reduce(f64::min);
