@@ -31,6 +31,10 @@ pub enum Ask {
     Cancel,
     /// Merge the task's PR past whatever holds it (`tb pr merge --override`).
     Merge,
+    /// Close the task's terminal (a failed task's, or one still running a command).
+    Close,
+    /// Close it although a command is still running (`force`).
+    CloseForce,
 }
 
 pub struct Finish {
@@ -229,6 +233,9 @@ fn already(t: &serde_json::Value, ask: Ask) -> Option<String> {
             None
         };
     }
+    if matches!(ask, Ask::Close | Ask::CloseForce) {
+        return None;
+    }
     if t["failed"] == true {
         Some(format!("{r} already failed."))
     } else if t["status"] == "done" {
@@ -407,9 +414,13 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
         Ask::Cancel => format!("Cancel {}?", f.r),
         Ask::Done => format!("Mark {} done?", f.r),
         Ask::Merge => format!("Merge {} without waiting?", num.map(|n| format!("#{n}")).unwrap_or_else(|| "its PR".into())),
+        Ask::Close | Ask::CloseForce => format!("Close the terminal for {}?", f.r),
     };
     // What the yes skips or changes, not the task's name again.
-    let does = what_it_does(f.ask);
+    let mut does = what_it_does(f.ask).to_string();
+    if matches!(f.ask, Ask::Close | Ask::CloseForce) && shown.is_some_and(|t| t["failed"] == true) {
+        does.push_str(" The task stays failed.");
+    }
     let go = match (f.ask, f.busy) {
         (Ask::Cancel, false) => kit::btn_danger(t, "finish-go", "Cancel task"),
         (Ask::Cancel, true) => kit::btn_danger(t, "finish-go", "Cancelling…").opacity(0.6),
@@ -417,6 +428,8 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
         (Ask::Done, true) => kit::btn_primary(t, "finish-go", "Marking done…").opacity(0.6),
         (Ask::Merge, false) => kit::btn_danger(t, "finish-go", "Merge now"),
         (Ask::Merge, true) => kit::btn_danger(t, "finish-go", "Merging…").opacity(0.6),
+        (Ask::Close | Ask::CloseForce, false) => kit::btn_danger(t, "finish-go", "Close terminal"),
+        (Ask::Close | Ask::CloseForce, true) => kit::btn_danger(t, "finish-go", "Closing…").opacity(0.6),
     };
 
     let merge = f.ask == Ask::Merge;
@@ -434,7 +447,8 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
         }
         d.child(div().text_color(t.muted).child("You can't undo a merge from the app."))
     });
-    let cancel = (merge && go.is_some() && !f.busy).then(|| kit::btn(t, "finish-cancel", "Cancel").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))));
+    let keep = matches!(f.ask, Ask::Close | Ask::CloseForce);
+    let cancel = ((merge || keep) && go.is_some() && !f.busy).then(|| kit::btn(t, "finish-cancel", if keep { "Keep it open" } else { "Cancel" }).on_click(cx.listener(|m, _, window, cx| close(m, window, cx))));
     kit::modal_box(t, 440.)
         .child(head(t, title, cx))
         .child(
@@ -459,6 +473,8 @@ pub fn what_it_does(ask: Ask) -> &'static str {
         Ask::Cancel => "Marks it failed as cancelled by you, without waiting for its agent.",
         Ask::Done => "Marks it done now, without waiting for its agent to hand it in.",
         Ask::Merge => "Merges past its checks and reviews; a conflict with its base still stops it.",
+        Ask::Close => "Closes the terminal it ran in.",
+        Ask::CloseForce => "Stops the command that is still running.",
     }
 }
 
@@ -485,6 +501,7 @@ pub fn confirm_finish(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
                     Ask::Cancel => (format!("tasks/{task}/fail"), serde_json::json!({"reason": "Cancelled by you"})),
                     Ask::Done => (format!("tasks/{task}/done"), serde_json::json!({})),
                     Ask::Merge => (format!("tasks/{task}/pr/merge"), serde_json::json!({"override": true})),
+                    Ask::Close | Ask::CloseForce => (format!("tasks/{task}/close-terminal"), serde_json::json!({"force": ask == Ask::CloseForce})),
                 };
                 backend.post(&path, body).map_err(|e| (true, e.message))
             })
@@ -494,6 +511,7 @@ pub fn confirm_finish(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
                 Ask::Cancel => format!("Cancelled {r}"),
                 Ask::Done => format!("Marked {r} done"),
                 Ask::Merge => format!("Merged {r}'s PR"),
+                Ask::Close | Ask::CloseForce => format!("Closing {r}’s terminal"),
             };
             // Closed while it was busy: the answer still shows, as a toast.
             let Some(Modal::Finish(f)) = m.modal.as_mut().filter(|x| matches!(x, Modal::Finish(f) if f.r == r)) else {

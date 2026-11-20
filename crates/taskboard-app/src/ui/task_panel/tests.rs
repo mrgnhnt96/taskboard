@@ -504,8 +504,13 @@ fn manage_box_actions(cx: &mut gpui_kit::TestAppContext) {
     assert!(w.update(cx, |m, _, _| view::find_act(&build(m).unwrap(), "detach", None).is_none()).unwrap(), "hidden while the menu is shut");
     press(cx, &w, "term-menu", None);
     press(cx, &w, "close-term", Some("force"));
-    assert_eq!(rec.last("tasks/T2/close-terminal"), Some(json!({"force": true})));
+    // A forced close only asks; the confirm sends it.
+    assert_eq!(rec.last("tasks/T2/close-terminal"), None);
     assert!(!ui(|u| u.term_menu), "picking an item closes the menu");
+    w.update(cx, |m, _, _| assert!(matches!(&m.modal, Some(crate::ui::modals::Modal::Finish(f)) if f.r == "T2" && f.ask == crate::ui::modals::Ask::CloseForce))).unwrap();
+    w.update(cx, |m, _, cx| crate::ui::modals::confirm_finish(m, cx)).unwrap();
+    settle(cx);
+    assert_eq!(rec.last("tasks/T2/close-terminal"), Some(json!({"force": true})));
     press(cx, &w, "term-menu", None);
     press(cx, &w, "detach", None);
     assert_eq!(rec.last("tasks/T2/detach"), Some(json!({})));
@@ -1800,4 +1805,19 @@ fn an_empty_done_asks_once_when_a_step_wants_a_note(cx: &mut gpui_kit::TestAppCo
     w.update(cx, |m, _, cx| act(m, &a, cx)).unwrap();
     settle(cx);
     assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/did")).count(), 1, "the second sends");
+}
+
+/// Close terminal on a failed task asks first; keeping it open sends nothing.
+#[gpui_kit::test]
+fn closing_a_failed_tasks_terminal_asks_first(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    rec.board().app().db.x("UPDATE tasks SET status = 'done', failed = 1, finished_at = ? WHERE id = 2", taskboardd::p![taskboardd::util::now_iso()]).unwrap();
+    open(cx, &w, "T2");
+    press(cx, &w, "term-menu", None);
+    press(cx, &w, "close-term", None);
+    assert_eq!(rec.last("tasks/T2/close-terminal"), None, "asks first");
+    w.update(cx, |m, _, _| assert!(matches!(&m.modal, Some(crate::ui::modals::Modal::Finish(f)) if f.r == "T2" && f.ask == crate::ui::modals::Ask::Close))).unwrap();
+    w.update(cx, |m, _, cx| crate::ui::modals::confirm_finish(m, cx)).unwrap();
+    settle(cx);
+    assert_eq!(rec.last("tasks/T2/close-terminal"), Some(json!({"force": false})), "the confirm sends it");
 }

@@ -555,6 +555,14 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         "close-term" => {
             ui(|u| u.term_menu = false);
+            // A failed task's terminal, or a command still running: ask first.
+            let failed = m.data.task.as_ref().is_some_and(|t| t["failed"] == true);
+            if failed || a.arg == "force" {
+                let ask = if a.arg == "force" { crate::ui::modals::Ask::CloseForce } else { crate::ui::modals::Ask::Close };
+                m.modal = Some(crate::ui::modals::Modal::finish(a.id.clone(), ask));
+                cx.notify();
+                return;
+            }
             run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx)
         }
         "focus" => run(m, a, tp("/focus"), json!({}), |m, _| sent(m), cx),

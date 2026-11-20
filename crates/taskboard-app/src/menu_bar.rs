@@ -301,7 +301,10 @@ pub fn on_actions(m: &MainWindow, d: Stateful<Div>, cx: &mut Context<MainWindow>
         })
         .when_some(tc.stop, |d, force| {
             let r = tr.clone();
-            d.on_action(cx.listener(move |m, _: &StopTask, _, cx| {
+            d.on_action(cx.listener(move |m, _: &StopTask, w, cx| {
+                if force {
+                    return m.set_modal(Some(ui::modals::Modal::finish(r.clone(), ui::modals::Ask::CloseForce)), w, cx);
+                }
                 let r2 = r.clone();
                 m.post(format!("tasks/{r}/close-terminal"), json!({"force": force}), cx, move |m, _, cx| m.toast(format!("Closing {r2}’s terminal"), false, cx));
             }))
