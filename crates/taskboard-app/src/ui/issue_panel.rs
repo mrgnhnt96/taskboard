@@ -711,8 +711,7 @@ pub fn promote(m: &mut MainWindow, r: &str, place: &'static str, cx: &mut Contex
         let t = res.get("task").filter(|t| t.is_object()).or_else(|| (s(res, "ref").starts_with('T')).then_some(res));
         let tr = t.map(|t| fmt::ref_of(t, "T")).or_else(|| res.get("task_id").and_then(Value::as_i64).map(|n| format!("T{n}"))).unwrap_or_default();
         if let (Some(g), false) = (miss, tr.is_empty()) {
-            let queued = t.is_some_and(|t| s(t, "status") == "queued");
-            let text = format!("Made {issue} into {tr}{}. {g} stays open until it’s done", if queued { " and queued it" } else { "" });
+            let text = made_text(&issue, &tr, &g, t.map(|t| s(t, "status")).unwrap_or_default());
             m.close_panel(cx);
             crate::ui::backlog::toast_open(m, text, tr, cx);
             return None;
@@ -723,6 +722,24 @@ pub fn promote(m: &mut MainWindow, r: &str, place: &'static str, cx: &mut Contex
         }
         (m.page == Page::Board).then(|| "Made into a task".to_string())
     });
+}
+
+/// The toast after a miss became a task: planned work waits for its goal to start; queued work runs.
+pub fn made_text(issue: &str, task: &str, g: &str, status: &str) -> String {
+    match status {
+        "planned" => format!("Made {issue} into {task} as planned work in {g}. It starts when you start {g}"),
+        "queued" => format!("Made {issue} into {task} and queued it. {g} stays open until it’s done"),
+        _ => format!("Made {issue} into {task}. {g} stays open until it’s done"),
+    }
+}
+
+/// What Make it a task made, from the board's answer: the toast's text and the task Open it opens.
+pub fn made_toast(issue: &str, res: &Value) -> Option<(String, String)> {
+    let t = res.get("task").filter(|t| t.is_object())?;
+    let tr = fmt::ref_of(t, "T");
+    let g = res.get("issue").and_then(|b| b.get("goal")).filter(|g| g.is_object()).map(|g| fmt::ref_of(g, "G")).filter(|x| !x.is_empty());
+    let g = g.or_else(|| t.get("goal_id").and_then(Value::as_i64).map(|n| format!("G{n}")))?;
+    (!tr.is_empty()).then(|| (made_text(issue, &tr, &g, s(t, "status")), tr))
 }
 
 /// Select for goal: the issue joins the Backlog page's new goal, which opens.
@@ -1694,7 +1711,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn making_a_miss_a_task_says_the_goal_waits_and_offers_open_it(cx: &mut gpui_kit::TestAppContext) {
+    fn making_a_miss_a_task_joins_the_plan_of_a_goal_that_isnt_running(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = parity::window(cx);
         let g = rec.board().post("goals", json!({"name": "Ship it", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
         let r = add_issue(&rec, json!({"title": "Offline sign-in fails", "kind": "bug", "project": "webapp", "goal_id": g, "misses_goal": true}));
@@ -1705,7 +1722,7 @@ mod tests {
         w.update(cx, |m, _, _| {
             let toast = m.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
             assert!(toast.starts_with(&format!("Made {r} into T")), "{toast}");
-            assert!(toast.ends_with(&format!("G{g} stays open until it’s done")), "{toast}");
+            assert!(toast.ends_with(&format!(" as planned work in G{g}. It starts when you start G{g}")), "the goal isn't running, so the task joins its plan: {toast}");
             assert!(m.backlog.open_toast.as_ref().is_some_and(|(_, t)| t.starts_with('T')), "the toast offers Open it");
             assert!(m.panel.is_none(), "the panel closes");
         })

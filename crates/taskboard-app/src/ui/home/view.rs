@@ -931,6 +931,17 @@ fn settle_issue(m: &mut MainWindow, path: String, body: Value, said: &'static st
     });
 }
 
+/// A miss made a task from its row: the toast says whether it joined the goal's plan or was queued, with Open it.
+fn make_task(m: &mut MainWindow, b: String, cx: &mut Context<MainWindow>) {
+    m.post(format!("backlog/{b}/promote"), json!({"where": "board"}), cx, move |m, v, cx| {
+        crate::ui::backlog::stale(m);
+        match crate::ui::issue_panel::made_toast(&b, &v) {
+            Some((text, task)) => crate::ui::backlog::toast_open(m, text, task, cx),
+            None => sent(m, "Made into a task".into(), cx),
+        }
+    });
+}
+
 fn talk(m: &mut MainWindow, path: String, cx: &mut Context<MainWindow>) {
     m.post(path, json!({}), cx, |m, v, cx| sent(m, talk_note(&v), cx));
 }
@@ -961,7 +972,7 @@ fn run_do(m: &mut MainWindow, key: &str, act: &Do, window: &mut Window, cx: &mut
         Do::DontWait(r) => m.post(format!("tasks/{r}/owner-answer"), json!({"answer": "dont_wait"}), cx, move |m, _, cx| sent_undo(m, groups::dont_wait_sent(&r), cx)),
         Do::TalkTask(r) => talk(m, format!("tasks/{r}/talk"), cx),
         Do::TalkAlert(id) => talk(m, format!("alerts/{id}/talk"), cx),
-        Do::MakeTask(b) => settle_issue(m, format!("backlog/{b}/promote"), json!({"where": "board"}), "Made into a task", cx),
+        Do::MakeTask(b) => make_task(m, b, cx),
         Do::WontDo(b) => settle_issue(m, format!("backlog/{b}/drop"), json!({}), "Closed as won’t do", cx),
         Do::Ticket(b) => settle_issue(m, format!("backlog/{b}/ticket"), json!({}), "Asked Jira for a ticket", cx),
         Do::FinishWithout(b) => settle_issue(m, format!("backlog/{b}/without-goal"), json!({}), "The goal finishes without it", cx),
@@ -1038,6 +1049,25 @@ mod tests {
         .unwrap();
         settle(cx);
         assert_eq!(rec.posts(), vec![], "nothing is sent while the board is down");
+    }
+
+    #[gpui_kit::test]
+    fn make_it_a_task_on_a_goal_that_isnt_running_says_it_joined_the_plan(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend;
+        let (w, rec) = window(cx);
+        let g = rec.board().post("goals", json!({"name": "Ship it", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+        let v = rec.board().post("backlog", json!({"title": "Offline sign-in fails", "kind": "bug", "project": "webapp", "goal_id": g, "misses_goal": true})).unwrap();
+        let b = crate::fmt::ref_of(v.get("issue").unwrap_or(&v), "B");
+        w.update(cx, |m, window, cx| run_do(m, &format!("issue:{b}"), &Do::MakeTask(b.clone()), window, cx)).unwrap();
+        settle(cx);
+        assert_eq!(rec.last(&format!("backlog/{b}/promote")), Some(json!({"where": "board"})));
+        w.update(cx, |m, _, _| {
+            let toast = m.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
+            assert!(toast.starts_with(&format!("Made {b} into T")), "{toast}");
+            assert!(toast.ends_with(&format!(" as planned work in G{g}. It starts when you start G{g}")), "{toast}");
+            assert!(m.backlog.open_toast.as_ref().is_some_and(|(_, t)| t.starts_with('T')), "the toast offers Open it");
+        })
+        .unwrap();
     }
 
     #[test]

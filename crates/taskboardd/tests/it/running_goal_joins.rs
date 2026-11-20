@@ -130,6 +130,25 @@ fn a_backlog_issue_made_a_task_in_a_running_goal_is_queued() {
 }
 
 #[test]
+fn make_it_a_task_on_a_goal_that_isnt_running_joins_its_plan() {
+    let b = new_board();
+    let (idle, _) = b.goal("Later", false);
+    let (run, _) = b.goal("Login", true);
+    let issue = |title: &str, g: i64| b.post("/backlog", json!({"title": title, "goal_id": format!("G{g}"), "kind": "bug", "misses_goal": true}))["id"].as_i64().unwrap();
+
+    let i = issue("Crash on save", idle);
+    let r = b.post(&format!("backlog/B{i}/promote"), json!({"where": "board"}));
+    assert_eq!(r["why"], format!("planned: G{idle} isn't running"));
+    let t = r["task"]["id"].as_i64().unwrap();
+    assert_eq!(b.status(t), "planned");
+    assert_eq!(b.task(t).i("goal_id"), Some(idle));
+
+    let r = b.post(&format!("backlog/B{}/promote", issue("Slow list", run)), json!({"where": "board"}));
+    assert_eq!(r["why"], format!("queued: G{run} is running"));
+    assert_eq!(b.status(r["task"]["id"].as_i64().unwrap()), "queued");
+}
+
+#[test]
 fn moving_a_task_into_a_running_goal_queues_it() {
     let b = new_board();
     let (g, _) = b.goal("Login", true);
