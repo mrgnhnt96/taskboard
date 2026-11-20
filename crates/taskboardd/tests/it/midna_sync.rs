@@ -8,7 +8,7 @@ use serde_json::json;
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{iso, now_ts, RowExt};
-use taskboardd::{board, midna, projects, reports};
+use taskboardd::{board, dispatch, midna, projects, reports};
 
 /// A `midna` that answers by method: `events` for `events.list` (a shell snippet), one Claude
 /// terminal for `session.list`, and `{}` for anything else.
@@ -180,6 +180,39 @@ fn a_stale_hook_terminal_midna_lists_stays() {
         assert!(gone.is_empty(), "{what}");
         assert_eq!(status_of(&app, "h1"), "idle", "{what}");
     }
+}
+
+/// A done task's hook-only terminal, still `working` a minute ago, that Midna then said Morgan closed.
+fn closed_task_terminal(app: &App) -> i64 {
+    hook_terminal(app, "h1", 0.0);
+    app.db.x("UPDATE sessions SET status = 'working' WHERE id = 'h1'", taskboardd::p![]).unwrap();
+    let id = app.db.insert("tasks", taskboardd::fields!["title" => "Fix", "project" => "w", "status" => "done", "session_id" => "h1"]).unwrap();
+    board::terminal_closed(app, "h1", "human").unwrap();
+    id
+}
+
+#[test]
+fn a_hook_terminal_midna_closed_goes_and_frees_its_place_in_the_cap() {
+    let (app, _d) = board_with("echo '[]'");
+    let id = closed_task_terminal(&app);
+    assert_eq!(dispatch::running_task_terminals(&app).unwrap(), 1, "a close alone doesn't end it");
+
+    let (gone, _) = midna::sync(&app, &[], &[]).unwrap();
+
+    assert_eq!(gone, ["h1"]);
+    assert_eq!(status_of(&app, "h1"), "gone");
+    assert_eq!(dispatch::running_task_terminals(&app).unwrap(), 0);
+    assert_eq!(board::get_task(&app, id).unwrap().s("status"), Some("done"), "a done task stays done");
+}
+
+#[test]
+fn a_closed_hook_terminal_midna_still_lists_stays() {
+    let (app, _d) = board_with("echo '[]'");
+    closed_task_terminal(&app);
+    let listed = json!({"id": "h1", "name": "Term h1", "agent": "", "cwd": "/tmp", "status": {"state": "idle"}});
+    let (gone, _) = midna::sync(&app, &[listed], &[]).unwrap();
+    assert!(gone.is_empty());
+    assert_eq!(status_of(&app, "h1"), "working");
 }
 
 #[test]
