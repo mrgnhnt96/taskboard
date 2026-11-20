@@ -257,6 +257,41 @@ pub fn goal_needs(app: &App, goal_id: i64) -> Result<Vec<Need>> {
     Ok(read_needs(app, &rf("goal", goal_id))?.unwrap_or_default())
 }
 
+/// Plan-check warnings on a goal whose open tasks ask for one device by its name (two or more of them,
+/// on their own or through the goal): they queue behind that one device however many like it the pool
+/// has, so the plan asks for one of its tags instead. A word some device carries as a tag is a tag.
+pub fn plan_warnings(app: &App, g: &Row) -> Result<Vec<String>> {
+    let devices = pool(app)?;
+    let by_name = |word: &str| devices.iter().find(|d| d.s("name") == Some(word)).filter(|_| !devices.iter().any(|d| tags_of(d).iter().any(|t| t == word)));
+    let mut named: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for t in board::goal_tasks(app, g.id())? {
+        if t.s("status") == Some("done") || crate::human::is(&t) {
+            continue;
+        }
+        for need in needs(app, &t)? {
+            if by_name(&need.tag).is_some() {
+                named.entry(need.tag).or_default().push(rf("task", t.id()));
+            }
+        }
+    }
+    Ok(named
+        .into_iter()
+        .filter(|(_, refs)| refs.len() >= 2)
+        .map(|(name, refs)| {
+            let tags = by_name(&name).map(tags_of).unwrap_or_default();
+            let ask = match tags.as_slice() {
+                [] => format!("a tag (tb device set {name} --tag <tag> on the owner's word, then --device <tag>)"),
+                [one] => format!("its tag (tb task set {} --device {one})", refs[0]),
+                many => format!("one of its tags ({}; tb task set {} --device {})", many.join(", "), refs[0], many[many.len() - 1]),
+            };
+            format!(
+                "{} all need the device {name} by name, so they run one at a time behind it however many like it the pool has: ask for {ask}, unless only {name} will do.",
+                refs.join(", ")
+            )
+        })
+        .collect())
+}
+
 /// A project's device_needs owner: `project:picto`.
 fn project_owner(name: &str) -> String {
     format!("project:{name}")

@@ -79,6 +79,7 @@ mod owner_review;
 mod owner_start;
 mod parallel;
 mod plan_review;
+mod pace;
 mod planning;
 mod pool;
 mod pr_other_repo;

@@ -84,6 +84,7 @@ pub mod prhost;
 pub mod prpace;
 pub mod proc;
 pub mod progress;
+pub mod pace;
 pub mod palette;
 pub mod projects;
 pub mod propen;

@@ -3001,6 +3001,7 @@ fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
 fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<String>) -> Result<Vec<String>> {
     let log = if status == "planned" { format!("Planned by {}", r.name()) } else { format!("Added by {} and queued: {} is running", r.name(), rf("goal", g.id())) };
     let mut created: Vec<String> = vec![];
+    let waves_before = crate::pace::waves_left(r.app, g)?;
     for item in items.as_array().cloned().unwrap_or_default() {
         let (item, files, model, effort, project, lane, pr) = match &item {
             Value::String(s) => {
@@ -3059,7 +3060,8 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     }
     if !created.is_empty() {
         let g = board::get_goal(r.app, g.id())?;
-        let plan = [crate::worklane::plan_warnings(r.app, &g)?, crate::stack::plan_warnings(r.app, &g)?, crate::planning::tiny_prs_warnings(r.app, &g)?, crate::planning::release_warnings(r.app, &g)?];
+        let plan = [crate::worklane::plan_warnings(r.app, &g)?, crate::stack::plan_warnings(r.app, &g)?, crate::planning::tiny_prs_warnings(r.app, &g)?, crate::planning::release_warnings(r.app, &g)?,
+                    crate::pace::plan_warnings(r.app, &g, Some(waves_before))?, crate::devices::plan_warnings(r.app, &g)?];
         for w in plan.into_iter().flatten() {
             if !warnings.contains(&w) {
                 warnings.push(w);
