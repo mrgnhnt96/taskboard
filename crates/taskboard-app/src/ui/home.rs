@@ -681,13 +681,26 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
     }
 }
 
-/// Dismiss on a Needs you item: `POST /alerts/:id/dismiss`, gone from the list at once.
+/// Dismiss on a Needs you item: `POST /alerts/:id/dismiss`, gone from the list at once, with a
+/// toast whose Undo (`POST /alerts/:id/restore`) brings it back.
 pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
+    let mut title = None;
     if let Some(needs) = m.data.home.as_mut().and_then(|h| std::rc::Rc::make_mut(h).get_mut("needs")).and_then(Value::as_array_mut) {
+        title = needs.iter().find(|a| s(a, "id") == id).map(|a| ask_vm(a).title);
         needs.retain(|a| s(a, "id") != id);
     }
-    crate::app::dismiss_alert(m, id, cx);
+    let (text, undo) = dismissed_toast(id, title.as_deref());
+    m.post(format!("alerts/{id}/dismiss"), json!({}), cx, move |m, _, cx| m.toast_undo(text, undo, cx));
     cx.notify();
+}
+
+/// The toast after Dismiss: (text, its Undo's path).
+fn dismissed_toast(id: &str, title: Option<&str>) -> (String, String) {
+    let text = match title.filter(|t| !t.is_empty()) {
+        Some(t) => format!("Dismissed: {t}"),
+        None => "Dismissed".to_string(),
+    };
+    (text, format!("alerts/{id}/restore"))
 }
 
 fn sent_note(state: &Value) -> &'static str {
@@ -1276,6 +1289,37 @@ mod tests {
         crate::parity::settle(cx);
         draw(cx);
         assert!(!Rc::ptr_eq(&first.asks, &built().asks), "a new answer builds the asks again");
+    }
+
+    #[gpui_kit::test]
+    fn dismiss_shows_a_toast_whose_undo_brings_the_row_back(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        crate::parity::settle(cx);
+        rec.clear();
+        w.update(cx, |m, _, cx| {
+            if let Some(h) = m.data.home.as_mut().map(Rc::make_mut) {
+                h["needs"] = json!([{"id": "a7", "at": "2026-11-19T10:00:00Z", "text": "api 2.4.0 wasn’t released"}]);
+            }
+            dismiss(m, "a7", cx);
+            assert!(asks_vm(m.data.home.as_deref().unwrap()).is_empty(), "gone from the list at once");
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(rec.last("alerts/a7/dismiss"), Some(json!({})));
+        w.update(cx, |m, _, cx| {
+            let t = m.toasts.iter().find(|t| t.undo.is_some()).expect("a toast with Undo");
+            assert_eq!(t.text, "Dismissed: api 2.4.0 wasn’t released");
+            assert!(m.undo_toast(None, cx));
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(rec.last("alerts/a7/restore"), Some(json!({})));
+    }
+
+    #[test]
+    fn the_dismissed_toast_names_what_went() {
+        assert_eq!(dismissed_toast("task:T6", Some("Which icon?")), ("Dismissed: Which icon?".into(), "alerts/task:T6/restore".into()));
+        assert_eq!(dismissed_toast("a1", None).0, "Dismissed");
     }
 
     #[gpui_kit::test]

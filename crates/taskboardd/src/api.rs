@@ -706,7 +706,15 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
                 };
                 return err(409, why);
             }
-            app.db.tx(|| alerts::clear_alerts(app, None, Some(id)))?;
+            app.db.tx(|| alerts::dismiss_alert(app, id))?;
+            Ok(json!({"alerts": alerts::listing(app)}))
+        }
+        ("POST", ["alerts", id, "restore"]) if crate::home::not_an_alert(id) => {
+            crate::home::bring_back(app, id)?;
+            Ok(json!({"alerts": alerts::listing(app)}))
+        }
+        ("POST", ["alerts", id, "restore"]) => {
+            app.db.tx(|| alerts::restore_alert(app, id))?;
             Ok(json!({"alerts": alerts::listing(app)}))
         }
         ("POST", ["alerts", id, "talk"]) => crate::human::talk_alert(app, id),

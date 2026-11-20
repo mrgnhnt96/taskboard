@@ -502,6 +502,17 @@ pub fn put_away(app: &App, id: &str, later: Option<Later>) -> Result<Value> {
     Ok(entry)
 }
 
+/// Undo on a Dismiss of a `task:T<n>` with no alert up: it's back in Needs you. A snooze stays.
+pub fn bring_back(app: &App, id: &str) -> Result<()> {
+    let key = id.strip_prefix(TASK_ID).and_then(number).map(|n| rf("task", n));
+    let mut away = put_away_list(app);
+    let Some(key) = key.filter(|k| away.get(k).is_some_and(|p| p.get("asking").is_some())) else {
+        return err(404, "That item wasn't dismissed.");
+    };
+    away.remove(&key);
+    save_put_away(app, away)
+}
+
 /// Drops the put-away entries waiting for a goal that's over.
 pub fn bring_back_after_goals(app: &App) -> Result<()> {
     let mut away = put_away_list(app);
