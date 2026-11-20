@@ -960,9 +960,13 @@ fn post_said(m: &mut MainWindow, path: String, said: &'static str, cx: &mut Cont
 
 /// A backlog item settled from its row: the Backlog page refetches.
 fn settle_issue(m: &mut MainWindow, path: String, body: Value, said: &'static str, cx: &mut Context<MainWindow>) {
-    m.post(path, body, cx, move |m, _, cx| {
+    m.post(path, body, cx, move |m, v, cx| {
         crate::ui::backlog::stale(m);
-        sent(m, said.to_string(), cx);
+        // Won't do and Finish without it can be taken back from the toast.
+        match v["undo"].as_str() {
+            Some(undo) => m.toast_undo(said, undo, cx),
+            None => sent(m, said.to_string(), cx),
+        }
     });
 }
 

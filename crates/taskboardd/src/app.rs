@@ -16,6 +16,9 @@ pub type Deferred = Box<dyn FnOnce(&App) + Send>;
 
 #[derive(Default)]
 pub struct Shared {
+    /// Backlog acts the app's toast can still take back, oldest first, and the last number given (`undo.rs`).
+    pub undo: Vec<(i64, Instant, Value)>,
+    pub undo_next: i64,
     pub midna_seen_at: Option<String>,
     pub midna_down: bool,
     pub midna_opened: Option<Instant>,

@@ -374,6 +374,38 @@ fn finish_the_goal_without_it_moves_the_miss_to_the_backlog_and_the_goal_finishe
 }
 
 #[test]
+fn finishing_without_a_miss_or_closing_it_can_be_undone_and_the_goal_waits_again() {
+    let b = new_board();
+    b.session("s1");
+    let g = b.goal("Login", json!({}));
+    let t = b.task("Form", json!({"goal_id": g}));
+    b.from_app(&format!("goals/G{g}/run"), json!({}));
+    b.set(t, vec![("status", json!("working")), ("session_id", json!("s1"))]);
+    let found = b.report("tb.found", "s1", json!({"title": "Sign-in fails on Android", "kind": "gap", "misses_goal": true}));
+    let issue = found["issue"].as_str().unwrap().to_string();
+    let key = format!("miss:{}", id_of(&issue));
+    let alert_up = |b: &Board| b.home()["needs"].as_array().unwrap().iter().any(|i| i["key"] == key);
+    b.set(t, vec![("status", json!("done"))]);
+
+    let v = b.post(&format!("backlog/{issue}/without-goal"), json!({})).unwrap();
+    let undo = v["undo"].as_str().expect("an undo path").to_string();
+    assert!(board::goal_finished(&b.app, g).unwrap());
+    let back = b.post(&undo, json!({})).unwrap();
+    assert_eq!((&back["issue"]["misses_goal"], &back["issue"]["state"]), (&json!(true), &json!("open")), "{back}");
+    assert!(!board::goal_finished(&b.app, g).unwrap(), "the goal waits for the miss again");
+    assert!(alert_up(&b), "its alert is back");
+    assert_eq!(b.post(&undo, json!({})).unwrap_err().0, 410, "an undo is used once");
+
+    // Won't do on the miss, undone: open again, holding the goal, alert back.
+    let v = b.post(&format!("backlog/{issue}/drop"), json!({})).unwrap();
+    assert!(board::goal_finished(&b.app, g).unwrap());
+    assert!(!alert_up(&b));
+    b.post(v["undo"].as_str().unwrap(), json!({})).unwrap();
+    assert!(!board::goal_finished(&b.app, g).unwrap());
+    assert!(alert_up(&b));
+}
+
+#[test]
 fn a_goal_says_when_its_set_aside() {
     let b = new_board();
     let g = b.goal("Login", json!({}));

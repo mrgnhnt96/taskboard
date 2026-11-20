@@ -127,6 +127,8 @@ pub struct State {
     generation: u64,
     busy: bool,
     pub just_made: Option<(String, String)>,
+    /// The Deferred and won't do sub-page.
+    pub closed: crate::ui::backlog_closed::State,
 }
 
 impl Default for State {
@@ -156,6 +158,7 @@ impl Default for State {
             generation: 0,
             busy: false,
             just_made: None,
+            closed: Default::default(),
         }
     }
 }
@@ -410,6 +413,7 @@ fn goal_doing(g: &Value) -> String {
 /// Fetch the list again on the next render (after a change made elsewhere, e.g. the issue panel).
 pub fn stale(m: &mut MainWindow) {
     m.backlog.synced = None;
+    crate::ui::backlog_closed::stale(m);
 }
 
 pub fn enter(m: &mut MainWindow) {
@@ -609,7 +613,12 @@ fn bulk(m: &mut MainWindow, action: &str, extra: Value, cx: &mut Context<MainWin
             if !keep {
                 m.backlog.picked.retain(|r| !ids.contains(r));
             }
-            m.toast(bulk_note(&what, &ids, &prio, &v), false, cx);
+            let note = bulk_note(&what, &ids, &prio, &v);
+            // Defer, Won't do and Move to goal can be taken back from the toast; a priority can't.
+            match v["undo"].as_str() {
+                Some(undo) => m.toast_undo(note, undo, cx),
+                None => m.toast(note, false, cx),
+            }
             resync(m, cx);
         },
         |m, e, cx| {
@@ -911,6 +920,9 @@ fn state_box(t: &Theme, text: String, retry: bool, cx: &mut Context<MainWindow>)
 }
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    if m.backlog.closed.open {
+        return crate::ui::backlog_closed::render(m, cx);
+    }
     let t = cx.global::<Theme>().clone();
     if m.backlog.focus.is_none() {
         m.backlog.focus = Some(cx.focus_handle());
@@ -967,7 +979,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             }
         }))
     });
-    let header = div().flex().flex_wrap().items_center().gap(px(16.)).child(title).child(div().flex_1()).children(project_btn).child(lenses);
+    let header = div().flex().flex_wrap().items_center().gap(px(16.)).child(title).child(div().flex_1()).children(project_btn).child(crate::ui::backlog_closed::link(&t, cx)).child(lenses);
 
     // ---- kinds or the selection bar, and the filter
     let left: AnyElement = if sel.is_empty() {
@@ -1681,8 +1693,19 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         assert_eq!(rec.last("backlog/bulk"), Some(json!({"ids": [later], "action": "defer"})));
-        let toast = w.update(cx, |m, _, _| m.toasts.last().map(|t| t.text.clone())).unwrap();
-        assert_eq!(toast.as_deref(), Some(format!("Deferred {later}").as_str()));
+        let (toast, undo) = w.update(cx, |m, _, _| m.toasts.last().map(|t| (t.text.clone(), t.undo.clone()))).unwrap().unwrap();
+        assert_eq!(toast, format!("Deferred {later}"));
+        // The toast's Undo opens it again.
+        rec.board().post(&undo.expect("Defer can be undone from the toast"), json!({})).unwrap();
+        assert_eq!(rec.board().get(&format!("backlog/{later}"), &[]).unwrap()["state"], "open");
+        // A priority can't be.
+        w.update(cx, |m, _, cx| {
+            toggle(m, std::slice::from_ref(&later), true, cx);
+            bulk(m, "priority", json!({"priority": "p1"}), cx);
+        })
+        .unwrap();
+        parity::settle(cx);
+        w.update(cx, |m, _, _| assert_eq!(m.toasts.last().map(|t| (t.text.clone(), t.undo.is_none())), Some((format!("Set {later} to P1"), true)))).unwrap();
     }
 
     #[gpui_kit::test]

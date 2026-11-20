@@ -850,7 +850,8 @@ impl MainWindow {
             return false;
         };
         self.dismiss_toast(at, cx);
-        self.post(path, serde_json::json!({}), cx, |_, _, _| {});
+        // What was taken back shows on the backlog's next look, not its next timed one.
+        self.post(path, serde_json::json!({}), cx, |m, _, _| ui::backlog::stale(m));
         true
     }
 
