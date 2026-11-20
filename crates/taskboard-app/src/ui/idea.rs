@@ -7,8 +7,8 @@
 //! shows the dig's progress and links to the goal once planned. Closing offers Undo, which reopens
 //! it. Talk it over (`POST /ideas/:id/talk`, in the header and on each question) opens a Claude
 //! terminal in the project's checkout to talk it over in; what's settled there comes back as notes.
-//! A report's open question is answered by tapping one of its choices (`POST /ideas/:id/answer`),
-//! kept as a note the next dig and the planner read. Nothing else here edits the idea: `tb idea`
+//! A report's open question is answered by tapping one of its choices, or by typing in its box
+//! when it has none (`POST /ideas/:id/answer`), kept as a note the next dig and the planner read. Nothing else here edits the idea: `tb idea`
 //! does.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, s};
@@ -16,6 +16,7 @@ use crate::theme::Theme;
 use crate::ui::ideas::{state_pill, verdict_pill};
 use crate::ui::releases::cut_at;
 use crate::ui::select::sel;
+use crate::ui::text_input::FieldChanged;
 use crate::ui::{goal, kit, md};
 use chrono::{DateTime, Utc};
 use gpui_kit::prelude::*;
@@ -40,6 +41,10 @@ pub struct State {
     changing: HashSet<String>,
     /// The idea whose Plan is asking to be confirmed, while it is.
     confirm: Option<String>,
+    /// The answer boxes of questions with no choices, by `I3::<round id>::<question>`. What's typed
+    /// stays, across pages too, until the board takes it.
+    fields: HashMap<String, kit::Input>,
+    subs: Vec<Subscription>,
 }
 
 /// The newest round starts open, the older ones collapsed.
@@ -613,6 +618,7 @@ pub(crate) fn answer(m: &mut MainWindow, r: &str, round: &str, question: &str, c
         move |m, v, _| {
             m.idea.busy.remove(&key);
             m.idea.changing.remove(&q);
+            m.idea.fields.remove(&q);
             if m.data.idea.as_ref().and_then(|i| i["ref"].as_str()) == Some(r.as_str()) && v["ref"] == r.as_str() {
                 m.data.idea = Some(v);
             }
@@ -623,6 +629,48 @@ pub(crate) fn answer(m: &mut MainWindow, r: &str, round: &str, question: &str, c
         },
     );
     cx.notify();
+}
+
+/// Send what's typed in a question's answer box; an empty box sends nothing.
+pub(crate) fn answer_typed(m: &mut MainWindow, r: &str, round: &str, question: &str, cx: &mut Context<MainWindow>) {
+    let q = format!("{r}::{round}::{question}");
+    let text = m.idea.fields.get(&q).map(|i| i.text(cx)).unwrap_or_default();
+    if !text.trim().is_empty() {
+        answer(m, r, round, question, text.trim(), cx);
+    }
+}
+
+/// The answer box of the question `q` (`I3::<round id>::<question>`), made with `text` the first
+/// time. Answer is off while the box is empty, so the page redraws when that flips.
+fn field<'a>(m: &'a mut MainWindow, q: &str, text: &str, cx: &mut Context<MainWindow>) -> &'a kit::Input {
+    if !m.idea.fields.contains_key(q) {
+        let input = kit::Input::with_text(cx, "Your answer", false, text);
+        let mut empty = text.trim().is_empty();
+        let sub = cx.subscribe(&input.field, move |_, f, _: &FieldChanged, cx| {
+            if f.read(cx).text().trim().is_empty() != empty {
+                empty = !empty;
+                cx.notify();
+            }
+        });
+        m.idea.subs.push(sub);
+        m.idea.fields.insert(q.to_string(), input);
+    }
+    &m.idea.fields[q]
+}
+
+/// Make the answer boxes the page will draw: one on each unanswered question with no choices
+/// (or one being changed, holding its answer), while the round can still be answered.
+fn sync_fields(m: &mut MainWindow, r: &str, views: &[RoundView], cx: &mut Context<MainWindow>) {
+    for rv in views.iter().filter(|rv| rv.answerable) {
+        for b in &rv.blocks {
+            let Block::Question { id, choices, answer, .. } = b else { continue };
+            let q = format!("{r}::{}::{id}", rv.id);
+            if id.is_empty() || !choices.is_empty() || (answer.is_some() && !m.idea.changing.contains(&q)) {
+                continue;
+            }
+            field(m, &q, answer.as_deref().unwrap_or(""), cx);
+        }
+    }
 }
 
 // ================================================================== render
@@ -1028,9 +1076,10 @@ fn points_el(m: &MainWindow, t: &Theme, key: &str, title: &str, items: &[Point],
 type Ask<'a> = (&'a String, &'a String, &'a Vec<String>, &'a Option<String>);
 
 /// "To decide": each question with its choices as chips, and Talk it over on each while `talk` is
-/// the idea. Where `ask` names the idea and round, a tap answers it; an answered one shows its
-/// answer with Change, which brings the chips back.
-fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Option<(&str, &str)>, qs: &[Ask], cx: &mut Context<MainWindow>) -> Div {
+/// the idea. Where `ask` names the idea and round, a tap answers it, or what's typed in its box
+/// when it has no choices; an answered one shows its answer with Change, which brings the chips
+/// (or the box, holding the answer) back.
+fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Option<(&str, &str)>, qs: &[Ask], window: &Window, cx: &mut Context<MainWindow>) -> Div {
     let cards = qs.iter().enumerate().map(|(n, &(id, text, choices, picked))| {
         let talk_el = talk.map(|r| {
             let busy = m.idea.busy.contains(&format!("talk::{r}::{text}"));
@@ -1044,20 +1093,55 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
         let q = tap.map(|(r, round)| format!("{r}::{round}::{id}")).unwrap_or_default();
         let busy = tap.is_some() && m.idea.busy.contains(&format!("answer::{q}"));
         let answered = picked.as_ref().filter(|_| !m.idea.changing.contains(&q));
-        let body = match answered {
-            Some(a) => {
+        let typed = tap.filter(|_| choices.is_empty() && answered.is_none()).and_then(|(r, round)| Some((r, round, m.idea.fields.get(&q)?)));
+        let mut talk_el = talk_el;
+        let body = match (answered, typed) {
+            (_, Some((r, round, input))) => {
+                let (r, round, id) = (r.to_string(), round.to_string(), id.clone());
+                let send = {
+                    let (r, round, id) = (r.clone(), round.clone(), id.clone());
+                    move |m: &mut MainWindow, cx: &mut Context<MainWindow>| answer_typed(m, &r, &round, &id, cx)
+                };
+                let send2 = send.clone();
+                let field = input
+                    .render(t, SharedString::from(format!("idea-answer-{q}")), window)
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(px(400.))
+                    .on_key_down(cx.listener(move |m, ev: &KeyDownEvent, window, cx| {
+                        let Some(input) = m.idea.fields.get(&format!("{r}::{round}::{id}")) else { return };
+                        match input.on_key(ev, cx) {
+                            kit::KeyOutcome::Submit => send(m, cx),
+                            // Esc leaves the box and keeps what's typed.
+                            kit::KeyOutcome::Cancel => {
+                                window.focus(&m.focus, cx);
+                                cx.stop_propagation();
+                            }
+                            kit::KeyOutcome::Ignored => {}
+                        }
+                    }));
+                let empty = input.text(cx).trim().is_empty();
+                let go = kit::btn_small(t, SharedString::from(format!("idea-answer-go-{q}")), if busy { "Sending…" } else { "Answer" });
+                let go = if busy || empty { kit::disabled(go) } else { go.on_click(cx.listener(move |m, _, _, cx| send2(m, cx))) };
+                div().flex().items_center().gap(px(10.)).child(field).child(go).children(talk_el.take())
+            }
+            (Some(a), _) => {
                 let (fg, bg) = kit::tone(t, "up");
                 let pill = div().flex().items_center().gap(px(6.)).min_h(px(32.)).px(px(12.)).rounded(px(16.)).bg(bg).text_color(fg).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("✓").child(a.clone());
                 let change = tap.map(|_| {
-                    let q = q.clone();
-                    kit::link(t, SharedString::from(format!("idea-change-{q}")), "Change").text_size(px(12.5)).on_click(cx.listener(move |m, _, _, cx| {
+                    let (q, a, typed) = (q.clone(), a.clone(), choices.is_empty());
+                    kit::link(t, SharedString::from(format!("idea-change-{q}")), "Change").text_size(px(12.5)).on_click(cx.listener(move |m, _, window, cx| {
                         m.idea.changing.insert(q.clone());
+                        if typed {
+                            let focus = field(m, &q, &a, cx).focus.clone();
+                            window.focus(&focus, cx);
+                        }
                         cx.notify();
                     }))
                 });
                 div().flex().flex_wrap().items_center().gap(px(10.)).child(pill).children(change)
             }
-            None => div().flex().flex_wrap().gap(px(6.)).children(choices.iter().map(|c| {
+            (None, None) => div().flex().flex_wrap().gap(px(6.)).children(choices.iter().map(|c| {
                 let (border, accent) = (t.border_2, t.accent);
                 let chip = div()
                     .id(SharedString::from(format!("idea-choice-{q}::{c}")))
@@ -1094,7 +1178,7 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
             .border_color(t.border)
             .bg(t.panel_2)
             .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(text.clone()))
-            .when(answered.is_some() || !choices.is_empty(), |d| d.child(body))
+            .when(answered.is_some() || !choices.is_empty() || typed.is_some(), |d| d.child(body))
             .children(talk_el.map(|b| div().flex().child(b)))
     });
     div().flex().flex_col().gap(px(8.)).child(label(t, "To decide")).children(cards)
@@ -1135,7 +1219,7 @@ fn related_el(t: &Theme, key: &str, refs: &[String], cx: &mut Context<MainWindow
 /// A round's blocks in order: points lists side by side in twos, questions under one heading (with
 /// Talk it over while `talk` is the idea). `ask` is the idea and round its questions answer to,
 /// when they can be.
-fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Option<(&str, &str)>, blocks: &[Block], cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
+fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Option<(&str, &str)>, blocks: &[Block], window: &Window, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let mut out = vec![];
     let mut k = 0;
     while k < blocks.len() {
@@ -1162,7 +1246,7 @@ fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Opti
                     k += 1;
                 }
                 k -= 1;
-                out.push(questions_el(m, t, &bkey, talk, ask, &qs, cx).into_any_element());
+                out.push(questions_el(m, t, &bkey, talk, ask, &qs, window, cx).into_any_element());
             }
             Block::Compare { lean, options } => out.push(compare_el(t, lean, options).into_any_element()),
             Block::Related(refs) => out.push(related_el(t, &bkey, refs, cx).into_any_element()),
@@ -1173,7 +1257,7 @@ fn blocks_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: Opti
 }
 
 /// A round: its header line always, its report while open. `talk`: whether its questions offer Talk it over.
-fn round_card(m: &MainWindow, t: &Theme, idea: &str, talk: bool, n: usize, rv: &RoundView, cx: &mut Context<MainWindow>) -> Div {
+fn round_card(m: &MainWindow, t: &Theme, idea: &str, talk: bool, n: usize, rv: &RoundView, window: &Window, cx: &mut Context<MainWindow>) -> Div {
     let key = format!("{idea}::{}", rv.id);
     let open = round_open(m, &key, n);
     let k2 = key.clone();
@@ -1213,13 +1297,13 @@ fn round_card(m: &MainWindow, t: &Theme, idea: &str, talk: bool, n: usize, rv: &
                 .pb(px(18.))
                 .pl(px(40.))
                 .children(rv.error.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e)))
-                .children(blocks_el(m, t, &key, talk.then_some(idea), rv.answerable.then_some((idea, rv.id.as_str())), &rv.blocks, cx)),
+                .children(blocks_el(m, t, &key, talk.then_some(idea), rv.answerable.then_some((idea, rv.id.as_str())), &rv.blocks, window, cx)),
         );
     }
     card
 }
 
-pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let want = match &m.page {
         Page::Idea(r) => r.clone(),
@@ -1249,9 +1333,10 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     let menu = close_menu(m, &t, &i, cx);
     let r = fmt::ref_of(&i, "I");
     let talk = talk_button(&i).is_some();
+    sync_fields(m, &r, &views, cx);
     let mut reports = section(&t, "Reports");
     for (n, rv) in views.iter().enumerate() {
-        reports = reports.child(round_card(m, &t, &r, talk, n, rv, cx));
+        reports = reports.child(round_card(m, &t, &r, talk, n, rv, window, cx));
     }
     // The title and the choices stay in view; the detail and the reports scroll under them.
     let top = div()
@@ -1579,6 +1664,76 @@ mod tests {
             assert!(m.idea.changing.contains("I5::7::store"), "its choices stay up to pick again");
             assert_eq!(m.toasts.len(), 1);
             assert!(m.toasts[0].err);
+        })
+        .unwrap();
+    }
+
+    /// A question with no choices gets a box: what's typed is sent trimmed, once at a time, and
+    /// kept while the board refuses it; the box goes once the board takes it, and Change brings
+    /// it back holding the answer.
+    #[gpui_kit::test]
+    fn a_typed_answer_is_sent_and_kept_until_the_board_takes_it(cx: &mut gpui_kit::TestAppContext) {
+        use crate::parity::{settle, window};
+        let (w, rec) = window(cx);
+        let db = &rec.board().app().db;
+        let now = Utc::now().to_rfc3339();
+        let id = db.insert("ideas", taskboardd::fields!["project" => "webapp", "title" => "Offline", "detail" => "", "state" => "reported", "source" => "you", "created_at" => now.as_str(), "updated_at" => now.as_str()]).unwrap();
+        let rep = json!({"verdict": "fits", "blocks": [
+            {"type": "question", "id": "conflict", "text": "Ask or keep both?", "choices": []},
+            {"type": "question", "id": "store", "text": "Which store?", "choices": ["SQLite", "Files"]},
+        ]});
+        let round = db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => rep.to_string(), "started_at" => now.as_str(), "finished_at" => now.as_str(), "source" => "you"]).unwrap();
+        let (r, round) = (format!("I{id}"), round.to_string());
+        let q = format!("{r}::{round}::conflict");
+        let boxes = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| m.idea.fields.keys().cloned().collect::<Vec<_>>()).unwrap();
+        w.update(cx, |m, _, cx| open(m, &r, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, cx| {
+            let views = rounds(m.data.idea.as_ref().unwrap(), fmt::now());
+            sync_fields(m, &r, &views, cx);
+        })
+        .unwrap();
+        assert_eq!(boxes(cx), [q.clone()], "only the question without choices gets a box");
+
+        w.update(cx, |m, _, cx| answer_typed(m, &r, &round, "conflict", cx)).unwrap();
+        settle(cx);
+        assert!(rec.last(&format!("ideas/{r}/answer")).is_none(), "an empty box sends nothing");
+
+        // The board refuses an answer to a question its report doesn't have.
+        let gone = format!("{r}::{round}::gone");
+        w.update(cx, |m, _, cx| {
+            field(m, &gone, "  Keep both  ", cx);
+            answer_typed(m, &r, &round, "gone", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m, _, cx| {
+            assert_eq!(m.idea.fields[&gone].text(cx), "  Keep both  ", "a refusal keeps what's typed");
+            assert!(m.idea.busy.is_empty());
+            assert!(m.toasts[0].err);
+            m.idea.fields.remove(&gone);
+        })
+        .unwrap();
+
+        w.update(cx, |m, _, cx| {
+            m.idea.fields[&q].set_text("  Keep both  ", cx);
+            answer_typed(m, &r, &round, "conflict", cx);
+            answer_typed(m, &r, &round, "conflict", cx);
+            answer_typed(m, &r, &round, "conflict", cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.posts().iter().filter(|(p, _)| *p == format!("ideas/{r}/answer")).count(), 2, "once at a time");
+        assert_eq!(rec.last(&format!("ideas/{r}/answer")), Some(json!({"round": round.parse::<i64>().unwrap(), "question": "conflict", "answer": "Keep both"})));
+        let answered = w.update(cx, |m, _, _| m.data.idea.as_ref().map(|i| i["rounds"][0]["answers"].clone())).unwrap();
+        assert_eq!(answered, Some(json!({"conflict": "Keep both"})));
+        assert!(boxes(cx).is_empty(), "the answer shows in place of the box");
+
+        w.update(cx, |m, _, cx| {
+            m.idea.changing.insert(q.clone());
+            let views = rounds(m.data.idea.as_ref().unwrap(), fmt::now());
+            sync_fields(m, &r, &views, cx);
+            assert_eq!(m.idea.fields[&q].text(cx), "Keep both", "Change brings the box back holding the answer");
         })
         .unwrap();
     }

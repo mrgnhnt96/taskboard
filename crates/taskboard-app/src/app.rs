@@ -1916,7 +1916,7 @@ impl Render for MainWindow {
             Page::Releases | Page::ReleasesOf(_) if self.releases_off() => releases_off_view(&t),
             Page::Releases | Page::ReleasesOf(_) => ui::releases::render(self, window, cx),
             Page::Ideas => ui::ideas::render(self, window, cx),
-            Page::Idea(_) => ui::idea::render(self, cx),
+            Page::Idea(_) => ui::idea::render(self, window, cx),
         };
         let (task_panel, panel) = match self.panel.clone() {
             Some(Panel::Task { .. }) => (Some(ui::task_panel::render(self, window, cx)), None),
