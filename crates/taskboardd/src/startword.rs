@@ -147,8 +147,8 @@ static LEAVE_RE: Lazy<Regex> = Lazy::new(|| {
 static REPORTED_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:says?|said|saying|reads?|wrote|writes|prints?|printed|shows?|showed|outputs?)\s*["“‘']?\s*$"#).unwrap()
 });
-/// The start words.
-const VERB: &str = r"(?:start|strat|satrt|queue|begin|launch|kick\s+off|get\s+going)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on)?";
+/// The start words. "Start building it" and "start fixing these" ask for it as well.
+const VERB: &str = r"(?:start|strat|satrt|queue|begin|launch|kick\s+off|get\s+going)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on|\s+(?:building|fixing|implementing|tackling))?";
 /// The start words that ask only with a task named ("run T8", "resume T8", "continue T8", "pick up T8",
 /// "go ahead with T8", "do T8", "spin up T8", "work on T8", "go T8", but not "run it" or "do it").
 const NAMED_VERB: &str = r"(?:run|resume|continue(?:\s+(?:with|on))?|pick\s+up|do|go\s+ahead\s+with|go\s+for|fire\s+off|fire\s+up|spin\s+up|work\s+on|go)";
@@ -163,11 +163,11 @@ const QUEUE_TO: &str = r"(?:in(?:to)?|on(?:to)?|to)\s+(?:the\s+)?queue";
 const NAMED_GOAL: &str = r"(?:the\s+)?(?:goal\s+)?[Gg]\d+(?:\s*,?\s*(?:and\s+|&\s*)?(?:goal\s+)?[Gg]\d+)*";
 /// The goal an ask doesn't name: "the goal", "this goal", "the whole goal", "all the tasks", "all of
 /// them", or "it" ([`Ask::It`]), which is the goal only where [`GoalPrompt::it`] says so.
-const UNNAMED_GOAL: &str = r"(?:(?:all|each)\s+of\s+(?:them|these|those|its\s+tasks)|them\s+all|(?:the|this|that|my|your|our|its)\s+(?:whole\s+|new\s+)?goal|all\s+(?:of\s+)?(?:the\s+|its\s+|these\s+|those\s+|your\s+|my\s+)?tasks|every\s+task|everything(?:\s+in\s+(?:the|this|that|my|your|our)\s+goal)?|both(?:\s+of\s+(?:them|these|those))?|it|this|that|them)";
+const UNNAMED_GOAL: &str = r"(?:(?:all|each)\s+of\s+(?:them|these|those|its\s+tasks)|them\s+all|(?:the|this|that|my|your|our|its)\s+(?:whole\s+|new\s+)?goal|all\s+(?:of\s+)?(?:the\s+|its\s+|these\s+|those\s+|your\s+|my\s+)?tasks|every\s+task|everything(?:\s+in\s+(?:the|this|that|my|your|our)\s+goal)?|both(?:\s+of\s+(?:them|these|those))?|it|this|that|them|these|those)";
 /// An unnamed goal ask that says only "it" ("run it", "kick it off").
-static IT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:it|this|that|them)$").unwrap());
+static IT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:it|this|that|them|these|those)$").unwrap());
 /// The start words for a goal, which also runs and ships ("ship it").
-const GOAL_VERB: &str = r"(?:start|queue|begin|launch|kick\s+off|run|ship|get\s+going|go\s+ahead\s+with)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on)?";
+const GOAL_VERB: &str = r"(?:start|queue|begin|launch|kick\s+off|run|ship|get\s+going|go\s+ahead\s+with)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on|\s+(?:building|fixing|implementing|tackling))?";
 
 /// What a start is read on: tasks (`tb start T4`) or goals (`tb start G2`).
 pub struct Kind {
@@ -179,9 +179,16 @@ pub struct Kind {
     pub(crate) goal: bool,
 }
 
+/// Tasks an ask with "do" doesn't name, said as tasks ("do all three of those tasks", "do both of the
+/// tasks"): "do it" alone asks for nothing.
+const DO_TASKS: &str = concat!(
+    r"(?:all\s+(?:(?:two|three|four|five|six)\s+)?of\s+(?:the|these|those|my|your)\s+(?:new\s+)?tasks|",
+    r"(?:all\s+)?(?:the|these|those)\s+(?:two|three|four|five|six)\s+(?:new\s+)?tasks|both\s+(?:of\s+)?(?:the|these|those)\s+(?:new\s+)?tasks)"
+);
+
 fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &str, goal: bool) -> Kind {
     let mut on = format!(
-        r"(?:\b{verb}\s+(?:{LISTED}(?P<named>{named})|(?P<unnamed>{unnamed}))|\bkick\s+(?:(?P<named2>{named})|(?P<unnamed2>{unnamed}))\s+off|\bget\s+(?:(?P<named6>{named})|(?P<unnamed6>{unnamed}))\s+going|\b(?:spin|fire)\s+(?:(?P<named7>{named})|(?P<unnamed7>{unnamed}))\s+up"
+        r"(?:\b{verb}\s+(?:{LISTED}(?P<named>{named})|(?P<unnamed>{unnamed}))|\bkick\s+(?:(?P<named2>{named})|(?P<unnamed2>{unnamed}))\s+off|\bget\s+(?:(?P<named6>{named})|(?P<unnamed6>{unnamed}))\s+going|\b(?:spin|fire)\s+(?:(?P<named7>{named})|(?P<unnamed7>{unnamed}))\s+up|\bstart\s+in\s+(?P<named8>{named})|\bdo\s+(?P<unnamed8>{DO_TASKS})"
     );
     if let Some(v) = named_verb {
         on.push_str(&format!(r"|\b{v}\s+{LISTED}(?P<named3>{named})|(?P<named5>\b{named}){NAMED_GO}"));
@@ -307,8 +314,9 @@ static NOT_A_TIME_RE: Lazy<Regex> = Lazy::new(|| {
         r"\bduring\s+(?:the\s+|my\s+|your\s+|our\s+|this\s+)?[a-z-]+\s+(?:is|[’']s)\s+(?:fine|ok(?:ay)?|good)\b|",
         // "When you're ready" is now: the agent is.
         // Only with nothing after it but the clause's end: "when you can confirm T9 passes" is a condition.
-        r"\bwhen(?:ever)?\s+(?:you\s+(?:get\s+a\s+(?:chance|sec(?:ond)?|moment|minute)|can|have\s+(?:a\s+)?(?:sec(?:ond)?|moment|minute|chance))|you[’']?re\s+(?:ready|free)|you\s+are\s+(?:ready|free))",
-        r"(?:\s+(?:please|pls|thanks|thank\s+you|thx|ty))*\s*(?:$|[.!?,;:()\[\]—–]|\s-)"
+        // "When you're done" is the agent's own work: start it next.
+        r"\bwhen(?:ever)?\s+(?:you\s+(?:get\s+a\s+(?:chance|sec(?:ond)?|moment|minute)|can|have\s+(?:a\s+)?(?:sec(?:ond)?|moment|minute|chance))|you[’']?re\s+(?:ready|free|done|finished|through)|you\s+are\s+(?:ready|free|done|finished|through))",
+        r"(?:\s+(?:with\s+(?:that|this|it)|here))?(?:\s+(?:please|pls|thanks|thank\s+you|thx|ty))*\s*(?:$|[.!?,;:()\[\]—–]|\s-)"
     )))
     .unwrap()
 });
@@ -366,6 +374,27 @@ static ENDS_NO_RE: Lazy<Regex> = Lazy::new(|| {
 static STARTS_NO_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^[\s,]*(?:(?:oh|ah|um+|uh+|hm+|lol|lmao|ha(?:ha)+h?|hah|heh|oops|whoops|ugh+|actually|wait|ok(?:ay)?|well|so|and|but)\b[\s,]*)*(?P<no>(?:no+|nope|nah|naw|nay|negative)(?:[\s,]+(?:no+|nope|nah))*)\s*(?:[,!]|$)").unwrap()
 });
+/// A wait on the work just started ("start it, wait until that task's PR is merged and then cut the
+/// release"): the next step, not a take-back.
+static WAIT_ON_IT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^wait\s+(?:until|till|for)\s+(?:it[’']s|its|it|(?:that|this|the\s+new)\s+(?:task|one)(?:[’']s)?)\s").unwrap()
+});
+/// A bare no that says why ("no, we're not going to spend a week on that"): a no on that, not on a start.
+static NO_ON_ELSE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)^\s*,?\s*(?:we|i)(?:[’'](?:re|m|ll)|\s+(?:are|am|will))?\s+(?:not|never|won[’']?t|don[’']?t)\s+(?:going\s+to\s+|gonna\s+|need\s+to\s+)?",
+        r"(?P<v>[a-z]+)"
+    ))
+    .unwrap()
+});
+/// Words that, after "no, we're not going to", say no on the work itself.
+static WORK_WORD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:start|run|queue|begin|launch|kick|do|go|work|continue|resume|pick|ship|fix|build|make|create)$").unwrap());
+
+/// Whether `rest`, after a bare no, says what the no is on, and it's no start ([`NO_ON_ELSE_RE`]).
+fn no_on_else(rest: &str) -> bool {
+    NO_ON_ELSE_RE.captures(rest).is_some_and(|c| !WORK_WORD_RE.is_match(&c["v"]))
+}
 /// Words that stop things, which take back what came before only in a sentence that names no task
 /// ("stop", but not "start T8 and stop the dev server").
 static STOP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:stop|pause|halt|abort)\b").unwrap());
@@ -379,7 +408,9 @@ static HOLD_RE: Lazy<Regex> = Lazy::new(|| {
 static MAKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
         r"(?i)\b(?:make|create|add|file|open|write|set\s+up|log|draft|a\s+new)\b[^.!?;\n]*\b(?:task|ticket|card|one)s?\b|",
-        r"\b(?:put|add|get)\b[^.!?;\n]*\b(?:on|onto|to)\s+the\s+board\b|\btrack\b[^.!?;\n]*\bas\s+(?:a\s+)?(?:new\s+)?(?:task|ticket)s?\b"
+        r"\b(?:put|add|get)\b[^.!?;\n]*\b(?:on|onto|to)\s+the\s+board\b|\btrack\b[^.!?;\n]*\bas\s+(?:a\s+)?(?:new\s+)?(?:task|ticket)s?\b|",
+        // "Those tasks sound good. Create them and start them."
+        r"\b(?:make|create)\s+(?:them|these|those|both)\s+and\s+(?:then\s+)?(?:start|queue|kick|run)\b"
     ))
     .unwrap()
 });
@@ -400,6 +431,14 @@ static HANDS_OVER_RE: Lazy<Regex> = Lazy::new(|| {
 });
 /// A line that reads as pasted (a log line, a quote, a prompt, a diff, a list).
 static PASTED_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\s|[>$#|\[{<+*\-•]|\d{1,4}[:\-/.)\]])").unwrap());
+/// An image the owner attached ("[Image #2]"), which says nothing.
+static IMAGE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[Image\s*#\d+\][ \t]*").unwrap());
+/// The heading of the owner's notes on an image ("Annotations (coordinates are percentages from the
+/// image's top-left):", "Image 1 (pasted image):"), and where each note starts ("1. [x=6, y=17]"): the
+/// notes are the owner's own words, not a paste.
+static IMAGE_NOTES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)Annotations\s+\(coordinates\s+are\s+percentages\s+from[^)\n]*\):[ \t]*|\bImage\s+\d+\s+\(pasted\s+image\):[ \t]*|[ \t]*\b\d{1,3}\.[ \t]*\[x=[\d.\-]+,\s*y=[\d.\-]+\][ \t]*").unwrap()
+});
 
 /// One ask for a start in a prompt: for the tasks it names, for a task it doesn't name ("queue it"), for
 /// tasks it doesn't name ("queue them"), or for the first of the tasks made ("queue the first one").
@@ -634,6 +673,8 @@ fn plain(text: &str) -> String {
 /// lines that read as pasted all come out. Read [`plain`].
 pub fn owners_text(text: &str) -> String {
     let text = plain(&text.replace("\r\n", "\n"));
+    let text = IMAGE_RE.replace_all(&text, "");
+    let text = IMAGE_NOTES_RE.replace_all(&text, "\n");
     // The middle of a long prompt, cut on its way in: no words, but a paste goes on through it.
     let text = text.replace(CUT_MARK, "…");
     let text = CODE_RE.replace_all(&text, "\n");
@@ -739,10 +780,10 @@ fn of_a_tasks(s: &str, m: &Mention) -> bool {
 fn mention_of(k: &Kind, c: &regex::Captures<'_>) -> Option<Mention> {
     let (verb, end) = (c.get(0)?.start(), c.get(0)?.end());
     let soft = c.name("named3").or(c.name("named5"));
-    if let Some(n) = c.name("named").or(c.name("named2")).or(c.name("named4")).or(c.name("named6")).or(c.name("named7")).or(soft) {
+    if let Some(n) = c.name("named").or(c.name("named2")).or(c.name("named4")).or(c.name("named6")).or(c.name("named7")).or(c.name("named8")).or(soft) {
         return Some(Mention { verb, span: (n.start(), n.end()), end, ask: Ask::Named(ids_in(k, n.as_str())), soft: soft.is_some() });
     }
-    let u = c.name("unnamed").or(c.name("unnamed2")).or(c.name("unnamed4")).or(c.name("unnamed6")).or(c.name("unnamed7"))?;
+    let u = c.name("unnamed").or(c.name("unnamed2")).or(c.name("unnamed4")).or(c.name("unnamed6")).or(c.name("unnamed7")).or(c.name("unnamed8"))?;
     let ask = if k.goal {
         if IT_RE.is_match(u.as_str()) {
             Ask::It
@@ -836,7 +877,9 @@ fn halt_in(k: &Kind, s: &str) -> Option<usize> {
     let spans: Vec<(usize, usize)> = k.mention.captures_iter(s).filter_map(|c| mention_of(k, &c)).map(|m| m.span).collect();
     let refs: Vec<usize> = k.ids.find_iter(s).map(|m| m.start()).chain(spans.iter().map(|s| s.0)).collect();
     let last = |at: usize| !refs.iter().any(|r| *r >= at);
-    let step = |m: &regex::Match| m.as_str().to_lowercase().starts_with(['w', 'h']) && STEP_BEFORE_RE.is_match(&s[..m.start()]);
+    let step = |m: &regex::Match| {
+        m.as_str().to_lowercase().starts_with(['w', 'h']) && (STEP_BEFORE_RE.is_match(&s[..m.start()]) || WAIT_ON_IT_RE.is_match(&s[m.start()..]))
+    };
     // A take-back in a clause about another task holds only that one ("start T8. T9 can wait").
     let cl = clauses(s);
     let elsewhere = |at: usize| {
@@ -855,7 +898,7 @@ fn halt_in(k: &Kind, s: &str) -> Option<usize> {
     let mut at: Vec<usize> = HALT_RE.find_iter(s).filter(|m| halts(m) && !step(m)).map(|m| m.start()).collect();
     at.extend(ENDS_NO_RE.find(s).filter(|m| last(m.end()) && !elsewhere(m.start())).map(|m| m.start()));
     if let Some(no) = STARTS_NO_RE.captures(s).and_then(|c| c.name("no")) {
-        if last(no.end()) {
+        if last(no.end()) && !no_on_else(&s[no.end()..]) {
             at.push(no.start());
         }
     }
@@ -867,6 +910,41 @@ fn halt_in(k: &Kind, s: &str) -> Option<usize> {
         }
     }
     at.into_iter().min()
+}
+
+/// "Make a task and fix it", "create a goal and build it": the work on what's made, which is its start.
+static MAKE_AND_WORK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?P<make>(?:make|create|add|open|plan|set\s+up)\s+(?:(?:a|an|the|new)\s+)*(?:task|ticket|goal)s?(?:\s+for\s+(?:it|this|that|these|those|them))?)\s+and\s+(?:then\s+)?(?:fix|build|implement|tackle|handle|do|work\s+on)\b").unwrap()
+});
+/// "Open a tab in zonai and tell it to cut a release": a task there, started.
+static OPEN_TAB_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\bopen\s+(?:up\s+)?(?:a\s+)?(?:new\s+)?(?:tab|terminal|session|agent)(?:\s+(?:in|on|for)\s+[\w.-]+)?\s+and\s+(?:instruct|tell|have|ask|get)\s+it\s+to\b").unwrap()
+});
+/// A condition on the task not being there yet, before making it ("If there isn't one, create it",
+/// "If not, create a task"): the agent makes it only then, so its start isn't put off.
+static MISSING_THEN_MAKE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)\bif\s+(?:not|there\s+(?:is|[’']s)\s+(?:no(?:\s+task)?|none)|there\s+isn[’']?t\s+(?:one|a\s+task|any)|it\s+(?:doesn[’']?t|does\s+not)\s+exist)",
+        r"(?:\s+(?:yet|already|for\s+(?:it|that|this)))*\s*,?\s*(?:then\s+)?(?P<make>make|create|add|open)\s+(?:it|one|a\s+(?:new\s+)?task)\b"
+    ))
+    .unwrap()
+});
+/// The other side of [`MISSING_THEN_MAKE_RE`]: "if there is a task for that, start it".
+static THERE_IF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\bif\s+there\s+(?:is|[’']s)\s+(?:already\s+)?(?:a\s+task|one)(?:\s+(?:already|for\s+(?:it|that|this)))*\s*,").unwrap()
+});
+
+/// `own` with the asks that make a task and work on it said as a start: "create a task and fix it" as
+/// "create a task and start it it", "open a tab in X and tell it to" as "make a task and start it to", and
+/// "if there isn't one, create it" as "create a task" (with "if there is a task for that" dropped too).
+fn make_and_start(own: &str) -> String {
+    let own = MAKE_AND_WORK_RE.replace_all(own, "$make and start it");
+    let own = OPEN_TAB_RE.replace_all(&own, "make a task and start it to");
+    if !MISSING_THEN_MAKE_RE.is_match(&own) {
+        return own.into_owned();
+    }
+    let own = MISSING_THEN_MAKE_RE.replace_all(&own, "$make a task");
+    THERE_IF_RE.replace_all(&own, "").into_owned()
 }
 
 /// What `text` says about starting tasks.
@@ -887,6 +965,7 @@ pub fn read_of(k: &Kind, text: &str) -> Reading {
         let v = c["v"].to_lowercase();
         format!("could you {}", if v == "queu" { "queue" } else { &v })
     });
+    let own = make_and_start(&own);
     let mut r = Reading::default();
     // (where it's said, what's said), sorted at the end so the steps run in the prompt's order.
     let mut steps: Vec<(usize, Step)> = vec![];
@@ -1078,6 +1157,9 @@ pub struct Prompt {
     pub text: String,
     /// The tasks the conversation made in reply to this prompt (after it, before the next one), in order.
     pub made: Vec<i64>,
+    /// The goals the conversation put the tasks it made in reply to this prompt in, without making them
+    /// ("put that in a goal and start it", answered by adding a task to the conversation's goal).
+    pub filled: Vec<i64>,
     /// The conversation made a goal in reply to it (`tb goal new`): "start it" there means the goal, not
     /// its tasks or a task made beside it.
     pub made_goal: bool,
@@ -2491,11 +2573,14 @@ fn prompt_topic(owners: &str) -> Option<Topic> {
 static MAKE_GOAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
         r"(?i)\b(?:make|create|add|set\s+up|draft|write\s+up|put\s+together|plan\s+out|a\s+new)\b[^.!?;\n]*\bgoals?\b(?:[^-]|$)|",
+        r"\bplan\s+(?:a|an|this|the)\s+(?:new\s+)?goal\b|",
         r"\b(?:plan|make|turn|put)\b[^.!?;\n]*\b(?:as|into)\s+(?:a|one|the)\s+(?:new\s+|single\s+)?goal\b|",
         r"\b(?:put|write|explain|describe|capture|lay\s+out|spell\s+out|sum\s+up|wrap)\b[^.!?;\n]*\bin(?:to)?\s+(?:a|one)\s+(?:new\s+|single\s+)?goal\b"
     ))
     .unwrap()
 });
+/// An ask to build out what was just designed or planned ("start building this out").
+static BUILD_OUT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:start|begin)\s+building\s+(?:it|this|that)\s+out\b").unwrap());
 /// Words in the agent's question that make "yes" no answer to one thing ("run it, or tweak the plan?").
 static OR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:or|either|instead|rather)\b").unwrap());
 /// A task or goal named.
@@ -3037,8 +3122,9 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
             k if k == MADE => {
                 if let (Some(p), Ok(task)) = (said.last_mut(), r.st("data").parse::<i64>()) {
                     let goal = app.db.q("SELECT goal_id FROM tasks WHERE id = ?", p![task])?.first().and_then(|t| t.i("goal_id"));
-                    if goal.is_none() {
-                        p.0.made.push(task);
+                    match goal {
+                        None => p.0.made.push(task),
+                        Some(g) => p.0.filled.push(g),
                     }
                     continue;
                 }
@@ -3109,9 +3195,17 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
                 // about something else ("Ready to merge?") is what "ship it" answers.
                 let spoke = before.as_deref().and_then(|b| antecedent(&CODE_RE.replace_all(b, "\n"), true));
                 let reply_other = matches!(spoke, Some(Antecedent::Topic(Topic::Other))) || before.as_deref().is_some_and(asks_other);
+                // "Start building this out": the conversation's own goal, or the one it just put the work in.
+                let build_out = BUILD_OUT_RE.is_match(&own) && (only || newest || (made_here.is_empty() && p.filled.last() == Some(&id)));
                 let only = (only || newest) && (spoke.is_some() || prompt != Some(Topic::Other));
+                // The prompt asked for a goal (or for tasks: "create them and start them") and the
+                // conversation made this one in reply, or asked for a goal and the conversation put the work
+                // in this one.
                 let asked_for = |p: &Prompt, made: &[i64]| {
-                    !p.boards() && !p.clipped && made.last() == Some(&id) && p.made.is_empty() && MAKE_GOAL_RE.is_match(&owners_text(&p.text))
+                    let own = owners_text(&p.text);
+                    let made_it = made.last() == Some(&id) && (MAKE_GOAL_RE.is_match(&own) || read(&p.text).makes);
+                    let filled = made.is_empty() && p.filled.last() == Some(&id) && MAKE_GOAL_RE.is_match(&own);
+                    !p.boards() && !p.clipped && p.made.is_empty() && (made_it || filled)
                 };
                 // Only the word to go ("do it") answers whatever the agent just asked or offered: the run
                 // only when it asked about that (`asked`), or asked nothing.
@@ -3133,7 +3227,7 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
                 let spoke_else = matches!(&spoke, Some(Antecedent::Refs(r)) if r.iter().any(|x| *x != (true, id) && !(x.0 && after.contains(&x.1))));
                 let made_just = said.get(1).is_some_and(|(_, m, _)| m.last() == Some(&id));
                 let just = (tried || (made_just && !spoke_else)) && prompt_topic(&own) != Some(Topic::Other) && (go || !GOAL_GO_RE.is_match(own.trim()));
-                it = asked || names || asked_for(p, made_here) || (!reply_other && !mixed && ((bare && (earlier || only)) || just));
+                it = asked || names || asked_for(p, made_here) || (!reply_other && !mixed && ((bare && (earlier || only)) || just || build_out));
             }
             GoalPrompt { prompt: p.clone(), ours, it, asked }
         })
@@ -3176,6 +3270,54 @@ fn reply_end(row: &Row) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owners_ways_of_saying_start_read_as_asks() {
+        // Working on what's made, opening a tab for it, making it only if it isn't there.
+        for (text, ask) in [
+            ("Create a task and fix the esa read to be able to run that on our own", Ask::Unnamed),
+            ("Open a tab in zonai and instruct it to cut a new rlease", Ask::Unnamed),
+            ("If not, create a task and start it", Ask::Unnamed),
+            ("Create a goal and start fixing these", Ask::Them),
+            ("Create a new task for that issue and start it, wait until that task's PR is merged and then you can cut the release", Ask::Unnamed),
+            ("And yes, you can do all three of those tasks", Ask::Them),
+        ] {
+            let r = read(text);
+            assert_eq!(r.asks, vec![ask], "{text}");
+        }
+        let r = read("We can release it now, if there is a task for that, start it. If there isn't one, create it and start it");
+        assert!(r.makes && r.held.is_empty() && !r.asks.is_empty(), "{r:?}");
+        assert!(read("Open a tab in zonai and instruct it to cut a new rlease").makes);
+        // The notes on an image are the owner's words.
+        let notes = "[Image #2]Start T8\nAnnotations (coordinates are percentages from the image's top-left):\n1. [x=6, y=17] This success page is very boring. Can you make it look better, please? Create a task and start it";
+        assert_eq!(read(notes).asks, vec![Ask::Named(vec![8]), Ask::Unnamed]);
+        // A "no" on something else, and the agent's own work before the start.
+        assert_eq!(asks("Start T8, we already did the opener\nAnd no, we're not going to spend a week on that\nGet PR29 merged"), vec![Ask::Named(vec![8])]);
+        assert_eq!(asks("When you're done, set H2211 as done, and start T8"), vec![Ask::Named(vec![8])]);
+        assert_eq!(read_of(&GOALS, "Start in G163").asks, vec![Ask::Named(vec![163])]);
+        assert_eq!(read_of(&GOALS, "The new design looked good, so you can start building that out").asks, vec![Ask::It]);
+    }
+
+    #[test]
+    fn the_new_ways_of_saying_start_still_hold_back() {
+        for held in [
+            "If CI is green, create a task and start it",
+            "If there isn't one, create it and start it tomorrow",
+            "Create a task and fix it tomorrow",
+            "When I'm done, start T8",
+            "When you're done, start T8 tomorrow",
+            "When T7 is done, start T8",
+            "Create a goal and start fixing these after the release",
+            "No, we're not going to start T8",
+            "Start T8. No, we're not going to do that",
+            "start T8, wait until T7 merges",
+        ] {
+            assert!(read(held).asks.is_empty() && read_of(&GOALS, held).asks.is_empty(), "{held}: {:?}", read(held));
+        }
+        for nothing in ["Create a task to fix the esa read", "Create a task, don't fix it yet", "reopen them and instruct them to keep running"] {
+            assert!(read(nothing).asks.is_empty(), "{nothing}");
+        }
+    }
 
     #[test]
     fn a_start_is_asked_for_unless_it_says_not_to() {
