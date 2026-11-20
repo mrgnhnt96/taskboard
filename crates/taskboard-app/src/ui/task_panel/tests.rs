@@ -1641,6 +1641,13 @@ fn a_human_task_says_the_reason_once_in_its_box() {
     assert_eq!(text.matches("until its PR merges").count(), 1, "{text}");
 }
 
+/// The note box on a human task's open box is named: it is what the agents waiting on it read.
+#[::core::prelude::v1::test]
+fn a_human_tasks_note_box_is_labelled_for_the_agents() {
+    let text = panel_text(blocked(json!({"kind": "human", "detail": "Do it"}), json!([])), json!({}));
+    assert_eq!(text.matches("Note for the agents").count(), 1, "{text}");
+}
+
 #[::core::prelude::v1::test]
 fn a_scheduled_tasks_start_time_is_not_taken_for_the_reason() {
     let at = (chrono::Local::now() + chrono::Duration::days(2)).format("%Y-%m-%dT%H:%M:%S").to_string();

@@ -1066,6 +1066,7 @@ fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             bx.push(el(K::Row, links.iter().map(|u| c.btn(&link_label(u), Act::new("open-url", u, &r, &grp), Look::Plain, false, Some(u))).collect()));
         }
         let k = format!("did:{r}");
+        bx.push(txt("Note for the agents", St::LrowKey));
         bx.push(Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false });
         // Waiting on another task: Done stays off until that one's done.
         let blockers: Vec<String> = arr(t, "blocked_by").iter().map(|x| or_empty(&x["ref"])).filter(|x| !x.is_empty()).collect();
