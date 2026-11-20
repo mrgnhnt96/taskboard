@@ -176,6 +176,32 @@ fn diggable(i: &Row) -> Result<()> {
     }
 }
 
+/// The id prefix of an idea on Needs you: `idea:I3`.
+pub const NEEDS_ID: &str = "idea:";
+
+/// The ideas a dig left waiting on the owner, for Needs you, newest report first: the newest
+/// report's questions still open, or a report that says it fits and asks nothing (ready to plan).
+/// Nothing while it's dug into again or planned. Each item has its idea's `ref`, `title`,
+/// `project`, `verdict` and open `questions`, and `at`, when its report came in.
+pub fn needs_you(app: &App) -> Result<Vec<Value>> {
+    let rows = app.db.q(
+        "SELECT i.*, (SELECT MAX(finished_at) FROM idea_rounds WHERE idea_id = i.id AND report IS NOT NULL) AS reported_at \
+         FROM ideas i WHERE i.state = 'reported' ORDER BY reported_at DESC, i.id DESC",
+        p![],
+    )?;
+    let mut out = vec![];
+    for i in &rows {
+        let d = ideas::dict(app, i)?;
+        let questions = d["questions"].as_i64().unwrap_or(0);
+        if d["planning"] == true || (questions == 0 && d["verdict"] != "fits") {
+            continue;
+        }
+        out.push(json!({"id": format!("{NEEDS_ID}{}", d["ref"].as_str().unwrap_or("")), "ref": d["ref"], "title": d["title"],
+                        "project": d["project"], "verdict": d["verdict"], "questions": questions, "at": i.v("reported_at")}));
+    }
+    Ok(out)
+}
+
 /// The error a round stopped from the app keeps.
 pub const STOPPED: &str = "Stopped before Claude answered.";
 

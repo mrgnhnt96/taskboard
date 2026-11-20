@@ -1,5 +1,6 @@
 //! What Needs you shows, worked out from its items: the four groups, one row per goal in each, what
-//! each row finishes with, what its Later and More menus offer, and the Later line.
+//! each row finishes with, what its Later and More menus offer, the ideas waiting on the owner,
+//! and the Later line.
 use super::{Act, Ask, Sev};
 use crate::fmt::{self, arr, b, opt_s, s};
 use chrono::{Datelike, Days, Months, NaiveDate};
@@ -538,6 +539,35 @@ pub fn later_vm(home: &Value, project: &str) -> Option<LaterLine> {
     Some(LaterLine { text, items: shown.iter().map(|i| later_item(i)).collect(), waiting })
 }
 
+/// An idea a dig left waiting on the owner: its open questions, or a report that says it fits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdeaRow {
+    /// "I3"
+    pub r: String,
+    pub title: String,
+    /// The verdict's pill: (label, tone).
+    pub pill: Option<(&'static str, &'static str)>,
+    /// "1 question · 5:52 PM", "Ready to plan · Oct 7"
+    pub note: String,
+}
+
+/// The ideas group's rows, for the project shown.
+pub fn ideas_vm(home: &Value, project: &str) -> Vec<IdeaRow> {
+    arr(home, "ideas")
+        .iter()
+        .filter(|i| in_project(i, project))
+        .map(|i| {
+            let wait = match fmt::i(i, "questions") {
+                0 => "Ready to plan".to_string(),
+                n => fmt::plural(n, "question", "questions"),
+            };
+            let at = fmt::hhmm(s(i, "at"));
+            let note = if at.is_empty() { wait } else { format!("{wait} · {at}") };
+            IdeaRow { r: s(i, "ref").to_string(), title: s(i, "title").to_string(), pill: crate::ui::ideas::verdict_pill(&i["verdict"]), note }
+        })
+        .collect()
+}
+
 /// The header's line, which says so when no agent waits.
 pub fn waiting_line(n: usize) -> String {
     match n {
@@ -755,5 +785,24 @@ mod tests {
         assert_eq!(later_note(&json!({"snoozed_goal": 3})), "Back when G3 finishes");
         assert_eq!(later_note(&json!({"snoozed_until": "2099-11-20T15:00:00Z"})), "Back Nov 20");
         assert_eq!(later_note(&json!({"snoozed_back": "x"})), "Back when you are");
+    }
+
+    #[test]
+    fn ideas_waiting_on_the_owner_say_what_they_wait_for() {
+        let home = json!({"ideas": [
+            {"id": "idea:I3", "ref": "I3", "title": "Search across projects", "project": "web", "verdict": "fits", "questions": 1, "at": "2025-10-07T12:00:00Z"},
+            {"id": "idea:I5", "ref": "I5", "title": "Offline mode", "project": "api", "verdict": "fits", "questions": 0, "at": "2025-10-07T12:00:00Z"},
+            {"id": "idea:I6", "ref": "I6", "title": "Dark sync", "project": "web", "verdict": "doesnt_fit", "questions": 2, "at": null}]});
+        let rows = ideas_vm(&home, "all");
+        let seen: Vec<_> = rows.iter().map(|r| (r.r.as_str(), r.pill, r.note.as_str())).collect();
+        assert_eq!(seen, [
+            ("I3", Some(("Fits", "up")), "1 question · Oct 7"),
+            ("I5", Some(("Fits", "up")), "Ready to plan · Oct 7"),
+            ("I6", Some(("Doesn’t fit", "muted")), "2 questions"),
+        ]);
+        assert_eq!(rows[0].title, "Search across projects");
+        let web: Vec<_> = ideas_vm(&home, "web").into_iter().map(|r| r.r).collect();
+        assert_eq!(web, ["I3", "I6"], "only the project shown");
+        assert!(ideas_vm(&json!({}), "all").is_empty(), "an older board sends none");
     }
 }
