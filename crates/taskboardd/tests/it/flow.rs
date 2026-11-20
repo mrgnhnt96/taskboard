@@ -783,6 +783,35 @@ fn the_triage_list_pages_newest_first() {
 }
 
 #[test]
+fn issues_picked_after_the_plan_join_its_last_wave() {
+    let b = new_board();
+    let first = issue(&b, "First", "bug");
+    let second = issue(&b, "Second", "gap");
+    let later = issue(&b, "Picked later", "clean");
+    // Nothing to add to before there's a plan.
+    let (code, _) = b.post_err("backlog/plan/add", json!({"ids": [later]}));
+    assert_eq!(code, 409);
+
+    b.post("backlog/bulk", json!({"ids": [first], "action": "priority", "priority": "p1"}));
+    let plan = b.post("backlog/plan", json!({"ids": [first, second]}));
+    let waves = plan["waves"].as_array().unwrap().len();
+    let added = b.post("backlog/plan/add", json!({"ids": [later, first]}));
+    assert_eq!(added["id"], plan["id"], "the same plan, not a new one");
+    let last = added["waves"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(added["waves"].as_array().unwrap().len(), waves, "no new wave");
+    assert_eq!(last["items"].as_array().unwrap().last().unwrap(), &json!({"ref": later, "after": []}));
+    let all: Vec<&Value> = added["waves"].as_array().unwrap().iter().flat_map(|w| w["items"].as_array().unwrap()).collect();
+    assert_eq!(all.iter().filter(|i| i["ref"] == first.as_str()).count(), 1, "already planned issues stay put");
+    assert!(added["ids"].as_array().unwrap().contains(&json!(later)));
+    assert_eq!(b.get("backlog/plan"), added);
+
+    let g = b.post("backlog/goal", json!({"name": "All three", "waves": added["waves"]}));
+    let gid = g["goal"]["id"].as_i64().or(g["id"].as_i64()).unwrap();
+    let tasks = b.app.db.q("SELECT * FROM tasks WHERE goal_id = ? ORDER BY id", p![gid]).unwrap();
+    assert_eq!(tasks.last().unwrap().i("wave"), Some(waves as i64), "the later issue's task is in the last wave");
+}
+
+#[test]
 fn a_backlog_goal_holds_one_project() {
     let b = new_board();
     let a = issue(&b, "A", "bug");

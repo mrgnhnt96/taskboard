@@ -477,6 +477,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["backlog", "triage"]) => triage::list(app, query),
         ("GET", ["backlog", "plan"]) => Ok(triage::plan_get(app)),
         ("POST", ["backlog", "plan"]) => triage::plan_start(app, body),
+        ("POST", ["backlog", "plan", "add"]) => triage::plan_add(app, body),
         ("POST", ["backlog", "goal"]) => triage::create_goal(app, body),
         ("GET", ["backlog", "tidy"]) => Ok(crate::tidy::state(app)),
         ("POST", ["backlog", "tidy"]) => crate::tidy::set(app, body),

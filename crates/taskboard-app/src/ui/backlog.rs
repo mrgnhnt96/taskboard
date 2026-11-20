@@ -652,6 +652,18 @@ fn plan_waves(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     });
 }
 
+/// Issues picked after the plan join its last wave (`POST /backlog/plan/add`), so the goal can be
+/// made without planning again.
+fn add_to_last_wave(m: &mut MainWindow, ids: Vec<String>, cx: &mut Context<MainWindow>) {
+    if ids.is_empty() || m.backlog.busy {
+        return;
+    }
+    m.post("backlog/plan/add", json!({"ids": ids}), cx, |m, v, cx| {
+        m.backlog.plan = Some(v);
+        cx.notify();
+    });
+}
+
 fn create(m: &mut MainWindow, d: &DraftView, cx: &mut Context<MainWindow>) {
     if !d.can_create() || m.backlog.busy {
         return;
@@ -1439,8 +1451,15 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, cx: &mut Context<MainW
         }
         let label = if d.never_planned { "Plan waves with Claude" } else { "Re-plan with Claude" };
         let b = if d.never_planned { kit::filled(t, "plan-plan", label, t.goal, t.on_status) } else { kit::btn(t, "plan-plan", label).text_color(t.goal).border_color(t.goal_line) };
-        let b = b.mt(px(4.)).h(px(34.));
-        box_ = box_.child(if d.mixed { kit::disabled(b).tooltip(kit::tip("Pick issues from one project to plan a goal")) } else { b.on_click(cx.listener(|m, _, _, cx| plan_waves(m, cx))) });
+        let b = b.h(px(34.));
+        let b = if d.mixed { kit::disabled(b).tooltip(kit::tip("Pick issues from one project to plan a goal")) } else { b.on_click(cx.listener(|m, _, _, cx| plan_waves(m, cx))) };
+        // Beside Re-plan: the issues picked after the plan join its last wave as they are.
+        let add = (!d.never_planned).then(|| {
+            let refs: Vec<String> = d.unplanned.iter().map(|i| i.r.clone()).collect();
+            let a = kit::btn(t, "plan-add-last", "Add to last wave").h(px(34.)).tooltip(kit::tip(format!("Put {} in {}, waiting on nothing", names(&refs), d.waves.last().map(|w| w.name.as_str()).unwrap_or("the last wave"))));
+            if d.mixed || m.backlog.busy { kit::disabled(a) } else { a.on_click(cx.listener(move |m, _, _, cx| add_to_last_wave(m, refs.clone(), cx))) }
+        });
+        box_ = box_.child(div().mt(px(4.)).flex().flex_wrap().justify_end().gap(px(8.)).children(add).child(b));
         col = col.child(box_);
     }
     let label = if d.can_create() {
