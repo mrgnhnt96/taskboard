@@ -43,7 +43,7 @@ mod updater;
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, OpenSystemSettings, OpenUsageSettings, ExportForDebugging]);
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, OpenSystemSettings, OpenUsageSettings, OpenHoursSettings, ExportForDebugging]);
 
 /// Writes the same redacted zip as `tb export` into Downloads and shows it in Finder, off the UI thread.
 fn export_for_debugging() {
@@ -105,6 +105,12 @@ fn main() {
         cx.on_action(move |_: &OpenUsageSettings, cx| {
             if let Some(h) = settings::open(b.clone(), cx) {
                 let _ = h.update(cx, |s, _, cx| s.show_usage(cx));
+            }
+        });
+        let b = backend.clone();
+        cx.on_action(move |_: &OpenHoursSettings, cx| {
+            if let Some(h) = settings::open(b.clone(), cx) {
+                let _ = h.update(cx, |s, _, cx| s.show_hours(cx));
             }
         });
         cx.on_action(|_: &ExportForDebugging, _| export_for_debugging());

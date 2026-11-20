@@ -243,7 +243,6 @@ pub struct MainWindow {
     pub home: ui::home::State,
     pub task_panel: ui::task_panel::State,
     pub issue_panel: ui::issue_panel::State,
-    pub hours: ui::hours::State,
     pub days: ui::days::State,
     pub review: ui::review::State,
     pub recap: ui::recap::State,
@@ -332,7 +331,6 @@ impl MainWindow {
             home: Default::default(),
             task_panel: Default::default(),
             issue_panel: Default::default(),
-            hours: Default::default(),
             days: Default::default(),
             review: Default::default(),
             recap: Default::default(),
@@ -1926,7 +1924,6 @@ impl Render for MainWindow {
             None => (None, None),
         };
         let modal = self.modal.is_some().then(|| ui::modals::render(self, window, cx));
-        let hours_menu = ui::hours::render_menu(self, window, cx);
 
         let root = div()
             .id("main")
@@ -1972,7 +1969,6 @@ impl Render for MainWindow {
             )
             .children(panel)
             .children(modal)
-            .children(hours_menu)
             .children(ui::health::render_menu(self, cx))
             .children(ui::status::toasts(self, &t, cx))
             .when(self.menu.is_some(), |d| {

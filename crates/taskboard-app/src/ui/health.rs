@@ -278,7 +278,7 @@ pub fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(div().flex_1().min_w_0().overflow_hidden().flex().child(crate::ui::hours::pill(m, t, cx)))
+            .child(div().flex_1().min_w_0().overflow_hidden().flex().child(crate::ui::hours::readout(m, t)))
             .child(
                 div()
                     .id("open-settings")

@@ -1,9 +1,11 @@
-//! Work hours: the status-bar pill (`hoursPill`: "9a–5p", "Off until Thu 6a")
-//! and its menu (`hoursMenuHtml`: the on/off check, From / to, the days, "Today until"). Every
-//! change is saved at once (`saveHours`: `POST /hours`, `today_until` only when it changed).
+//! Work hours: the sidebar footer's readout (`hoursPill`: "9a–5p", "Off until Thu 6a"), which
+//! opens Settings › Work hours, and that page (the on/off switch, From / to, the days, "Today
+//! until"). Every change is saved at once (`saveHours`: `POST /hours`, `today_until` only when it
+//! changed).
 //! The times are typed as digits only, the colon put in for you ("730" shows "7:30"), with an
 //! am/pm chip beside each. A "Today until" earlier than now is tomorrow's.
 use crate::app::{MainWindow, Pill};
+use crate::settings::{SettingsWindow, controls, line, row};
 use crate::fmt::{self, arr, b, s};
 use crate::theme::Theme;
 use crate::ui::kit;
@@ -13,13 +15,12 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 
 pub const DAYS: [(&str, &str); 7] = [("sun", "S"), ("mon", "M"), ("tue", "T"), ("wed", "W"), ("thu", "T"), ("fri", "F"), ("sat", "S")];
-const MENU: &str = "hours";
-/// The menu's time fields, by index.
+/// The page's time fields, by index.
 const START: usize = 0;
 const END: usize = 1;
 const TODAY: usize = 2;
 
-/// The menu's edits (a copy of `work_hours` taken when it opened: `openHoursMenu`).
+/// The page's edits (a copy of `work_hours`: `openHoursMenu`).
 #[derive(Default)]
 pub struct State {
     pub on: bool,
@@ -28,12 +29,14 @@ pub struct State {
     pub days: Vec<String>,
     /// "" = the usual end.
     pub today: String,
+    /// Why the last save was refused, and what it sent (Try again sends it again).
     pub err: Option<String>,
+    pub retry: Option<Value>,
     /// The half each time field's chip shows (true = pm): From, to, Today until.
     pub pm: [bool; 3],
     /// Whether that half was picked (typed or flipped) rather than worked out.
     pub picked: [bool; 3],
-    /// The time fields, made when the menu first draws.
+    /// The time fields, made when the page first draws.
     pub fields: Option<Fields>,
     /// The day the week starts on (`work_hours.week_days[0]`, config.toml's `first_weekday`).
     pub first_day: String,
@@ -242,83 +245,73 @@ fn now_minutes() -> u32 {
     chrono::Timelike::hour(&l) * 60 + chrono::Timelike::minute(&l)
 }
 
-pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
-    let Some(h) = m.state().get("work_hours").filter(|v| v.is_object()).cloned() else {
+/// The sidebar footer's work hours, read-only: "9a–5p", "Off until Thu 6a". It opens Settings ›
+/// Work hours, where they're changed.
+pub fn readout(m: &MainWindow, t: &Theme) -> AnyElement {
+    let Some(h) = m.state().get("work_hours").filter(|v| v.is_object()) else {
         return div().into_any_element();
     };
-    let p = pill_view(&h);
+    let p = pill_view(h);
     let closed = p.cls == "hours closed";
-    let (fg, bg, dot) = if closed { (t.warn_fg, t.warn_soft, t.warn) } else { (t.muted, t.seg, t.up) };
-    let open = m.menu_open(MENU).is_some();
+    let (fg, dot) = if closed { (t.warn_fg, t.warn) } else { (t.text_2, t.up) };
+    let text = t.text;
     div()
-        .id("hours-pill")
+        .id("hours-readout")
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .py(px(3.))
-        .px(px(10.))
-        .line_height(px(18.75))
-        .rounded_full()
-        .border_1()
-        .border_color(if open { fg } else { gpui_kit::transparent_black() })
-        .hover(move |d| d.border_color(fg))
-        .cursor_pointer()
+        .gap(px(7.))
+        .h(px(25.))
+        .px(px(4.))
         .text_size(px(12.5))
         .whitespace_nowrap()
         .text_color(fg)
-        .bg(bg)
+        .cursor_pointer()
+        .when(!closed, |d| d.hover(move |s| s.text_color(text)))
         .child(kit::dot(dot, 8.))
         .child(p.label)
-        .child(div().ml(px(-1.)).opacity(0.65).child(kit::icon(kit::Icon::Chev, 14., fg)))
-        .child(kit::anchor(MENU))
         .tooltip(kit::tip(p.title))
-        .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
-            if m.menu_open(MENU).is_none() {
-                m.hours = State::from_hours(&h);
-            }
-            let p = e.position();
-            m.toggle_menu(MENU, point(p.x - px(12.), p.y - px(14.)), cx);
-        }))
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenHoursSettings), cx))
         .into_any_element()
 }
 
-/// `saveHours`.
-pub fn save(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let body = m.hours.body(&extra_end(&m.state()["work_hours"]));
-    m.post_or(
-        "hours",
-        body,
-        cx,
-        |m, v, cx| {
-            if let Some(st) = m.data.state.as_mut().map(std::rc::Rc::make_mut) {
-                st["work_hours"] = v;
-            }
-            m.hours.err = None;
-            cx.notify();
-        },
-        |m, e, cx| {
-            m.hours.err = Some(e.message);
-            cx.notify();
-        },
-    );
+/// Saves the edits (`saveHours`).
+pub fn save(s: &mut SettingsWindow, cx: &mut Context<SettingsWindow>) {
+    let body = s.hours.body(&s.work_hours.as_ref().map(extra_end).unwrap_or_default());
+    s.post_hours(body, cx);
 }
 
-/// The menu's time fields, filled with the values. They keep only digits and put the colon in
-/// (a pasted "7:30pm" moves the chip to pm first); leaving a field saves it.
-fn make_fields(st: &State, window: &mut Window, cx: &mut Context<MainWindow>) -> Fields {
+/// Takes the board's hours into the page (after a load, a save, or a refused save putting the
+/// saved hours back), unless a time is being typed. A refusal's line and Try again stay.
+fn sync(s: &mut SettingsWindow, window: &Window, cx: &mut Context<SettingsWindow>) {
+    let typing = s.hours.fields.as_ref().is_some_and(|f| f.inputs.iter().any(|input| input.focus.is_focused(window)));
+    let Some(h) = s.work_hours.clone().filter(|_| s.hours_fresh && !typing) else { return };
+    s.hours_fresh = false;
+    let mut next = State::from_hours(&h);
+    next.fields = s.hours.fields.take();
+    next.err = s.hours.err.take();
+    next.retry = s.hours.retry.take();
+    s.hours = next;
+    for i in [START, END, TODAY] {
+        show_value(s, i, cx);
+    }
+}
+
+/// The time fields, filled with the values. They keep only digits and put the colon in (a pasted
+/// "7:30pm" moves the chip to pm first); leaving a field saves it.
+fn make_fields(st: &State, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Fields {
     let inputs = [START, END, TODAY].map(|i| kit::Input::with_text(cx, if i == TODAY { "Usual end" } else { "" }, false, &shown(st.value(i)).0));
     let mut subs = Vec::new();
     for (i, input) in inputs.iter().enumerate() {
-        subs.push(cx.subscribe(&input.field, move |m: &mut MainWindow, field, _: &FieldChanged, cx| {
+        subs.push(cx.subscribe(&input.field, move |s: &mut SettingsWindow, field, _: &FieldChanged, cx| {
             let text = field.read(cx).text().to_string();
             if let Some(pm) = typed_half(&text) {
-                m.hours.pm[i] = pm;
-                m.hours.picked[i] = true;
-            } else if i == TODAY && !m.hours.picked[i]
+                s.hours.pm[i] = pm;
+                s.hours.picked[i] = true;
+            } else if i == TODAY && !s.hours.picked[i]
                 && let Some(pm) = next_half(&text, now_minutes())
             {
-                m.hours.pm[i] = pm;
+                s.hours.pm[i] = pm;
             }
             let shown = digits_shown(&text);
             if shown != text {
@@ -326,67 +319,57 @@ fn make_fields(st: &State, window: &mut Window, cx: &mut Context<MainWindow>) ->
             }
             cx.notify();
         }));
-        subs.push(cx.on_blur(&input.focus, window, move |m, _, cx| commit(m, i, cx)));
+        subs.push(cx.on_blur(&input.focus, window, move |s, _, cx| commit(s, i, cx)));
     }
     Fields { inputs, _subs: subs }
 }
 
-/// The menu closed: keep what was being typed, then drop the fields.
-fn close_fields(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
-    let Some(f) = m.hours.fields.as_ref() else { return };
-    if let Some(i) = f.inputs.iter().position(|input| input.focus.is_focused(window)) {
-        commit(m, i, cx);
-        window.focus(&m.focus, cx);
-    }
-    m.hours.fields = None;
-}
-
 /// Show field `i`'s value again (its chip too), dropping what was typed.
-fn show_value(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
-    m.hours.picked[i] = false;
-    let (text, pm) = shown(m.hours.value(i));
+fn show_value(s: &mut SettingsWindow, i: usize, cx: &mut Context<SettingsWindow>) {
+    s.hours.picked[i] = false;
+    let (text, pm) = shown(s.hours.value(i));
     if let Some(pm) = pm {
-        m.hours.pm[i] = pm;
+        s.hours.pm[i] = pm;
     }
-    if let Some(f) = m.hours.fields.as_ref() {
+    if let Some(f) = s.hours.fields.as_ref() {
         f.inputs[i].set_text(&text, cx);
     }
 }
 
 /// Take what's typed in field `i`: a time saves (when it changed), an empty "Today until" is the
 /// usual end, anything else puts the value back.
-fn commit(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
-    let Some(f) = m.hours.fields.as_ref() else { return };
+fn commit(s: &mut SettingsWindow, i: usize, cx: &mut Context<SettingsWindow>) {
+    let Some(f) = s.hours.fields.as_ref() else { return };
     let text = f.inputs[i].text(cx);
-    if i == TODAY && !m.hours.picked[i]
+    if i == TODAY && !s.hours.picked[i]
         && let Some(pm) = next_half(&text, now_minutes())
     {
-        m.hours.pm[i] = pm;
+        s.hours.pm[i] = pm;
     }
-    let next = if i == TODAY && text.trim().is_empty() { Some(String::new()) } else { parse_time(&text, m.hours.pm[i]) };
-    let changed = next.filter(|v| v != m.hours.value(i)).map(|v| *m.hours.value_mut(i) = v).is_some();
-    show_value(m, i, cx);
+    let next = if i == TODAY && text.trim().is_empty() { Some(String::new()) } else { parse_time(&text, s.hours.pm[i]) };
+    let changed = next.filter(|v| v != s.hours.value(i)).map(|v| *s.hours.value_mut(i) = v).is_some();
+    show_value(s, i, cx);
     if changed {
-        save(m, cx);
+        save(s, cx);
     }
     cx.notify();
 }
 
 /// The chip: flip field `i` between am and pm, keeping the time typed.
-fn flip(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
-    m.hours.pm[i] = !m.hours.pm[i];
-    m.hours.picked[i] = true;
-    let Some(f) = m.hours.fields.as_ref() else { return };
+fn flip(s: &mut SettingsWindow, i: usize, cx: &mut Context<SettingsWindow>) {
+    s.hours.pm[i] = !s.hours.pm[i];
+    s.hours.picked[i] = true;
+    let Some(f) = s.hours.fields.as_ref() else { return };
     let digits = split_half(&f.inputs[i].text(cx)).0;
     f.inputs[i].set_text(&digits, cx);
-    commit(m, i, cx);
+    commit(s, i, cx);
 }
 
 /// A typed time: the text, the grey rest of the time while typing, and the am/pm chip ("Today
 /// until" shows no chip while it's the usual end). ↩ takes it, esc puts the value back.
-fn time_field(m: &MainWindow, t: &Theme, i: usize, window: &Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let (on, pm) = (m.hours.on, m.hours.pm[i]);
-    let input = &m.hours.fields.as_ref().expect("made before the menu draws").inputs[i];
+fn time_field(s: &SettingsWindow, t: &Theme, i: usize, window: &Window, cx: &mut Context<SettingsWindow>) -> Stateful<Div> {
+    let (on, pm) = (s.hours.on, s.hours.pm[i]);
+    let input = &s.hours.fields.as_ref().expect("made before the page draws").inputs[i];
     let focused = input.focus.is_focused(window);
     let text = input.text(cx);
     let rest = if focused { ghost(&text, pm) } else { None };
@@ -396,7 +379,7 @@ fn time_field(m: &MainWindow, t: &Theme, i: usize, window: &Window, cx: &mut Con
             .flex_none()
             .flex()
             .items_center()
-            .h(px(28.))
+            .h(px(26.))
             .px(px(7.))
             .rounded(px(6.))
             .bg(if focused { t.accent_line } else { t.seg })
@@ -405,9 +388,9 @@ fn time_field(m: &MainWindow, t: &Theme, i: usize, window: &Window, cx: &mut Con
             .font_weight(FontWeight::SEMIBOLD)
             .child(if pm { "pm" } else { "am" })
             .when(on, |d| {
-                d.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
+                d.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
                     cx.stop_propagation();
-                    flip(m, i, cx);
+                    flip(s, i, cx);
                 }))
             })
     });
@@ -432,34 +415,34 @@ fn time_field(m: &MainWindow, t: &Theme, i: usize, window: &Window, cx: &mut Con
         .id(("hours-time", i))
         .relative()
         .flex()
-        .flex_1()
-        .min_w_0()
+        .flex_none()
+        .w(px(116.))
         .items_center()
         .gap(px(4.))
-        .h(px(40.))
+        .h(px(34.))
         .pl(px(10.))
         .pr(px(4.))
-        .rounded(px(9.))
+        .rounded(px(8.))
         .border_1()
         .border_color(if focused { t.accent } else { t.border_2 })
         .bg(t.card)
-        .text_size(px(14.))
-        .line_height(px(20.))
+        .text_size(px(13.))
+        .line_height(px(18.))
         .text_color(t.text)
         .child(typed)
         .children(chip)
         .when(!on, |d| d.opacity(0.5).child(div().id(("hours-time-off", i)).absolute().inset_0().occlude()))
         .when(on, |d| d.cursor_text().on_click(move |_, window, cx| window.focus(&focus, cx)))
-        .on_key_down(cx.listener(move |m, ev: &KeyDownEvent, window, cx| {
-            let Some(f) = m.hours.fields.as_ref() else { return };
+        .on_key_down(cx.listener(move |s, ev: &KeyDownEvent, window, cx| {
+            let Some(f) = s.hours.fields.as_ref() else { return };
             match f.inputs[i].on_key(ev, cx) {
                 kit::KeyOutcome::Submit => {
-                    commit(m, i, cx);
-                    window.focus(&m.focus, cx);
+                    commit(s, i, cx);
+                    window.focus(&s.focus, cx);
                 }
                 kit::KeyOutcome::Cancel => {
-                    show_value(m, i, cx);
-                    window.focus(&m.focus, cx);
+                    show_value(s, i, cx);
+                    window.focus(&s.focus, cx);
                     cx.stop_propagation();
                 }
                 kit::KeyOutcome::Ignored => {}
@@ -481,66 +464,16 @@ pub fn keep_awake_view(k: &Value) -> Option<KeepAwake> {
     Some(KeepAwake { held: b(k, "held"), line, schedule })
 }
 
-fn keep_awake(t: &Theme, k: KeepAwake) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(2.))
-        .pt(px(10.))
-        .px(px(4.))
-        .border_t_1()
-        .border_color(t.border)
-        .text_size(px(12.5))
-        .child(div().flex().items_start().gap(px(6.)).child(div().flex_none().pt(px(5.)).child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.))).child(div().flex_1().min_w_0().child(k.line)))
-        .children(k.schedule.map(|s| div().pl(px(14.)).text_color(t.muted).child(s)))
-}
-
-pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    let Some(at) = m.menu_open(MENU) else {
-        close_fields(m, window, cx);
-        return None;
-    };
-    let t = cx.global::<Theme>().clone();
-    let st = &m.hours;
-    let on = st.on;
-    // `.hours-row`: 8px gaps, 13px, 0 4px.
-    let row = || div().flex().items_center().gap(px(8.)).px(px(4.)).text_size(px(13.));
-    let check = div()
-        .id("hours-on")
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .px(px(4.))
-        .text_size(px(13.))
-        .cursor_pointer()
-        .child(
-            div()
-                .size(px(16.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(if on { t.accent_btn } else { t.control_line })
-                .bg(if on { t.accent_btn } else { t.card })
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(t.on_accent)
-                .text_size(px(11.))
-                .child(if on { "✓" } else { "" }),
-        )
-        .child("Only start agents during work hours")
-        .on_click(cx.listener(|m, _, _, cx| {
-            m.hours.on = !m.hours.on;
-            save(m, cx);
-            cx.notify();
-        }));
-    // `.seg.sm`: 3px padding, radius 9; buttons 30px, radius 7, 13px semibold.
-    let mut days = div().flex().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
-    for (d, l) in week_order(&st.first_day) {
-        let sel = st.days.iter().any(|x| x == d);
+/// The day buttons: each switches a day on or off.
+fn days(s: &SettingsWindow, t: &Theme, cx: &mut Context<SettingsWindow>) -> Div {
+    let on = s.hours.on;
+    let mut days = div().flex().flex_none().w(px(252.)).gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
+    for (d, l) in week_order(&s.hours.first_day) {
+        let sel = s.hours.days.iter().any(|x| x == d);
         let mut item = div()
             .id(SharedString::from(format!("hours-day-{d}")))
             .flex_1()
-            .h(px(30.))
+            .h(px(28.))
             .flex()
             .items_center()
             .justify_center()
@@ -548,47 +481,89 @@ pub fn render_menu(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
             .text_size(px(13.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(if sel { t.text } else { t.muted })
-            .when(sel, |x| x.bg(t.card).shadow(crate::ui::kit::shadow_seg(&t)))
+            .when(sel, |x| x.bg(t.card).shadow(kit::shadow_seg(t)))
             .when(!on, |x| x.opacity(0.5))
             .tooltip(kit::tip(fmt::cap(d)))
             .child(l);
         if on {
-            item = item.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
-                m.hours.toggle_day(d);
-                save(m, cx);
+            item = item.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
+                s.hours.toggle_day(d);
+                save(s, cx);
                 cx.notify();
             }));
         }
         days = days.child(item);
     }
-    let err = st.err.clone();
-    // the end of the time being typed, else the one kept
-    let typing = m.hours.fields.as_ref().map(|f| f.inputs[TODAY].text(cx)).and_then(|text| parse_time(&text, m.hours.pm[TODAY]));
-    let today_end = typing.or_else(|| Some(m.hours.today.clone()).filter(|v| !v.is_empty())).and_then(|v| end_line(&v, now_minutes()));
-    if m.hours.fields.is_none() {
-        m.hours.fields = Some(make_fields(&m.hours, window, cx));
+    days
+}
+
+/// Settings › Work hours: the switch with the board's line, the hours, the days, "Today until" with
+/// when it ends, and Midna's keep-awake. Every change saves at once; a refused one puts the saved
+/// hours back, says why and offers Try again.
+pub fn page(s: &mut SettingsWindow, t: &Theme, window: &mut Window, cx: &mut Context<SettingsWindow>) -> AnyElement {
+    let list = div().id("hours-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+    sync(s, window, cx);
+    let Some(h) = s.work_hours.clone() else {
+        return list.child(kit::empty(t, "Asking the board…")).into_any_element();
+    };
+    if s.hours.fields.is_none() {
+        s.hours.fields = Some(make_fields(&s.hours, window, cx));
     }
-    let menu = kit::menu_box(&t, 280.)
-        .id("hours-menu")
-        .shadow(crate::ui::kit::shadow_modal(&t))
-        .p(px(10.))
-        .gap(px(10.))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(check)
+    let on = s.hours.on;
+    let switch = kit::seg(t, "hours-on", &["Off", "On"], on as usize, |i, item| {
+        item.on_click(cx.listener(move |s, _, _, cx| {
+            if s.hours.on != (i == 1) {
+                s.hours.on = i == 1;
+                save(s, cx);
+                cx.notify();
+            }
+        }))
+    });
+    // the end of the time being typed, else the one kept
+    let typing = s.hours.fields.as_ref().map(|f| f.inputs[TODAY].text(cx)).and_then(|text| parse_time(&text, s.hours.pm[TODAY]));
+    let today_end = typing.or_else(|| Some(s.hours.today.clone()).filter(|v| !v.is_empty())).and_then(|v| end_line(&v, now_minutes())).unwrap_or_default();
+    let words = |w: &'static str| div().flex_none().text_color(t.muted).child(w);
+    let mut card = kit::card(t)
+        .overflow_hidden()
+        .child(line(t, "hours-on-row", true, false, "Only start agents during work hours", fmt::s(&h, "line"), None).child(controls().child(switch)))
         .child(
-            row()
-                .child("From")
-                .child(time_field(m, &t, START, window, cx))
-                .child("to")
-                .child(time_field(m, &t, END, window, cx)),
+            line(t, "hours-span", false, false, "Hours", "", None)
+                .child(controls().child(words("From")).child(time_field(s, t, START, window, cx)).child(words("to")).child(time_field(s, t, END, window, cx))),
         )
-        .child(days)
-        .child(row().child(div().whitespace_nowrap().child("Today until")).child(time_field(m, &t, TODAY, window, cx)))
-        .children(today_end.map(|e| div().px(px(4.)).mt(px(-4.)).text_size(px(12.)).text_color(t.muted).child(e)))
-        .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)))
-        .children(m.state().get("keep_awake").and_then(keep_awake_view).map(|k| keep_awake(&t, k)));
-    // Beside the pill: above it when it sits low in the window.
-    Some(kit::menu_under(MENU, kit::Align::Left, at, menu))
+        .child(line(t, "hours-days", false, false, "Days", "", None).child(controls().child(days(s, t, cx))))
+        .child(line(t, "hours-today", false, false, "Today until", &today_end, None).child(controls().child(time_field(s, t, TODAY, window, cx))));
+    if let Some(e) = s.hours.err.clone() {
+        let retry = kit::btn_small(t, "hours-retry", "Try again").on_click(cx.listener(|s, _, _, cx| {
+            if let Some(body) = s.hours.retry.clone() {
+                s.post_hours(body, cx);
+            }
+        }));
+        card = card.child(
+            row(t, "hours-err", false)
+                .bg(t.down_soft)
+                .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.down).child(format!("Not saved: {e}")))
+                .when(s.hours.retry.is_some(), |d| d.child(controls().child(retry))),
+        );
+    }
+    let mut list = list.child(card);
+    if let Some(k) = s.keep_awake.as_ref().and_then(keep_awake_view) {
+        list = list.child(
+            kit::card(t).overflow_hidden().child(
+                row(t, "keep-awake", true)
+                    .child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(150.))
+                            .flex()
+                            .flex_col()
+                            .child(k.line)
+                            .children(k.schedule.map(|s| div().text_size(px(11.5)).line_height(px(15.)).text_color(t.muted).child(s))),
+                    ),
+            ),
+        );
+    }
+    list.into_any_element()
 }
 
 #[cfg(test)]
@@ -770,15 +745,30 @@ mod tests {
         assert!(super::keep_awake_view(&json!(null)).is_none());
     }
 
+    /// Settings, opened on Work hours as the sidebar's readout opens it, once the board's hours landed.
+    fn hours_page(cx: &mut gpui_kit::TestAppContext) -> (gpui_kit::WindowHandle<crate::settings::SettingsWindow>, std::sync::Arc<crate::parity::Recording>) {
+        let rec = crate::parity::Recording::new();
+        cx.update(|cx| cx.set_global(crate::theme::Theme::new(crate::theme::ThemeMode::Light, "Helvetica Neue".into(), "Menlo".into())));
+        let be: std::sync::Arc<dyn crate::backend::Backend> = rec.clone();
+        let w = cx.update(|cx| crate::settings::open(be, cx)).expect("opens");
+        w.update(cx, |s, _, cx| s.show_hours(cx)).unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |s, window, cx| {
+            assert!(s.work_hours.is_some(), "the page reads the board's hours");
+            super::sync(s, window, cx);
+            s.hours.fields = Some(super::make_fields(&s.hours, window, cx));
+        })
+        .unwrap();
+        (w, rec)
+    }
+
     #[gpui_kit::test]
     fn changing_a_day_posts_hours(cx: &mut gpui_kit::TestAppContext) {
-        let (w, rec) = crate::parity::window(cx);
-        w.update(cx, |m, _, cx| {
-            let h = m.state()["work_hours"].clone();
-            m.hours = State::from_hours(&h);
-            m.hours.on = true;
-            m.hours.toggle_day("sat");
-            save(m, cx);
+        let (w, rec) = hours_page(cx);
+        w.update(cx, |s, _, cx| {
+            s.hours.on = true;
+            s.hours.toggle_day("sat");
+            save(s, cx);
         })
         .unwrap();
         crate::parity::settle(cx);
@@ -786,22 +776,17 @@ mod tests {
         assert_eq!(body["on"], json!(true));
         assert!(body["days"].as_array().unwrap().contains(&json!("sat")));
         assert!(body.get("today_until").is_none(), "today_until only when it changed");
+        w.update(cx, |s, _, _| assert_eq!(s.work_hours.as_ref().unwrap()["on"], json!(true), "the answer is the board's hours now")).unwrap();
     }
 
     #[gpui_kit::test]
     fn typing_a_time_posts_hours(cx: &mut gpui_kit::TestAppContext) {
-        let (w, rec) = crate::parity::window(cx);
+        let (w, rec) = hours_page(cx);
+        w.update(cx, |s, _, _| s.hours.on = true).unwrap();
         let typed = |field: usize, text: &'static str, cx: &mut gpui_kit::TestAppContext| {
-            w.update(cx, |m, window, cx| {
-                if m.hours.fields.is_none() {
-                    let h = m.state()["work_hours"].clone();
-                    m.hours = State::from_hours(&h);
-                    m.hours.on = true;
-                    m.hours.fields = Some(super::make_fields(&m.hours, window, cx));
-                    m.toggle_menu(super::MENU, gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)), cx);
-                }
-                m.hours.fields.as_ref().unwrap().inputs[field].set_text(text, cx);
-                super::commit(m, field, cx);
+            w.update(cx, |s, _, cx| {
+                s.hours.fields.as_ref().unwrap().inputs[field].set_text(text, cx);
+                super::commit(s, field, cx);
             })
             .unwrap();
             crate::parity::settle(cx);
@@ -811,10 +796,36 @@ mod tests {
         typed(super::START, "8:30", cx);
         assert_eq!(rec.last("hours").unwrap()["start"], json!("08:30"), "the chip's am");
         typed(super::END, "nonsense", cx);
-        w.update(cx, |m, _, cx| {
-            let text = m.hours.fields.as_ref().unwrap().inputs[super::END].text(cx);
-            assert_eq!(text, super::shown(&m.hours.end).0, "a bad time puts the value back");
+        w.update(cx, |s, _, cx| {
+            let text = s.hours.fields.as_ref().unwrap().inputs[super::END].text(cx);
+            assert_eq!(text, super::shown(&s.hours.end).0, "a bad time puts the value back");
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_refused_change_puts_the_saved_hours_back_with_try_again(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = hours_page(cx);
+        let saved = w.update(cx, |s, _, _| (s.hours.start.clone(), s.hours.end.clone())).unwrap();
+        w.update(cx, |s, _, cx| {
+            s.hours.on = true;
+            s.hours.end = s.hours.start.clone();
+            save(s, cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |s, window, cx| {
+            super::sync(s, window, cx);
+            assert_eq!((s.hours.start.clone(), s.hours.end.clone()), saved, "the saved hours come back");
+            assert_eq!(s.hours.err.as_deref(), Some("The start and end times are the same. Turn work hours off instead."));
+            let text = s.hours.fields.as_ref().unwrap().inputs[super::END].text(cx);
+            assert_eq!(text, super::shown(&saved.1).0, "the field shows the saved end again");
+            let retry = s.hours.retry.clone().expect("Try again keeps what was sent");
+            assert_eq!(retry["end"], retry["start"]);
+            s.post_hours(retry, cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(rec.posts().iter().filter(|(p, _)| p == "hours").count(), 2, "Try again sends it again");
     }
 }
