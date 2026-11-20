@@ -2,8 +2,9 @@
 //! selected section's rows, grouped in cards; a row is its name, what it does and its control.
 //! "Agent commands" adds under the rows the exact command an agent would run (copyable).
 //!
-//! Worktrees shows each project's slot pool (`GET /slots`), read-only: its settings, each slot with
-//! the task holding it, its size and last use, and the tasks waiting for one.
+//! Worktrees shows each project's slot pool (`GET /slots`): its settings, changed in place
+//! (`POST projects/<name>`), then each slot with the task holding it, its size and last use, and
+//! the tasks waiting for one.
 //!
 //! Accounts: GitHub, Bitbucket, Azure DevOps and Slack, so the board and its agents can
 //! check PRs, comment, push, read failed builds and assign reviewers. The daemon owns them (`taskboardd::accounts`): each
@@ -83,7 +84,7 @@ impl Sec {
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
             Sec::Questions => "Questions agents ask you in their replies, and whether the board sends back one asked above the reply's last paragraph to ask it properly.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
-            Sec::Worktrees => "Each project's reusable worktree slots, kept warm between tasks. tb project set sizes a project's pool.",
+            Sec::Worktrees => "Each project's reusable worktree slots, kept warm between tasks.",
             Sec::System => "Updates, and the versions of the app and the board.",
         }
     }
@@ -220,6 +221,13 @@ pub struct SettingsWindow {
     reviewers: Option<Value>,
     /// `GET /slots`: every project's slots and pool settings.
     slots: Option<Value>,
+    /// A pool setting being saved, and the line under a project's settings: (project, text, failed).
+    pool_busy: bool,
+    pool_note: Option<(String, String, bool)>,
+    /// The open slot-count menu (project, key), and the one a click outside just shut, so the
+    /// click that shut it doesn't open it again from its own button.
+    pool_menu: Option<(String, &'static str)>,
+    pool_menu_shut: Option<(String, &'static str, Instant)>,
     /// `GET /info`: the daemon's version, uptime and pid.
     info: Option<Value>,
     /// The daemon is restarting, and the line under the System card.
@@ -271,6 +279,10 @@ impl SettingsWindow {
             questions_note: None,
             reviewers: None,
             slots: None,
+            pool_busy: false,
+            pool_note: None,
+            pool_menu: None,
+            pool_menu_shut: None,
             info: None,
             sys_busy: false,
             sys_note: None,
@@ -370,6 +382,35 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.slots = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `POST projects/<name>` with one pool setting; the answer's `worktrees` is the pool's new settings.
+    fn post_pool(&mut self, project: String, key: &'static str, n: i64, cx: &mut Context<Self>) {
+        self.pool_menu = None;
+        if self.pool_busy {
+            return;
+        }
+        self.pool_busy = true;
+        self.pool_note = None;
+        cx.notify();
+        let value = if n == 0 && key.starts_with("idle_") { json!("never") } else { json!(n) };
+        let (backend, path) = (self.backend.clone(), format!("projects/{project}"));
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.post(&path, json!({ key: value })) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.pool_busy = false;
+                match r {
+                    Ok(v) => {
+                        if let Some(slots) = s.slots.as_mut().filter(|_| v["worktrees"].is_object()) {
+                            slots["pools"][&project] = v["worktrees"].clone();
+                        }
+                    }
+                    Err(e) => s.pool_note = Some((project, e.message, true)),
                 }
                 cx.notify();
             });
@@ -742,7 +783,7 @@ impl Render for SettingsWindow {
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
             Sec::Questions => self.questions_page(&t, cx).into_any_element(),
             Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
-            Sec::Worktrees => self.worktrees_page(&t).into_any_element(),
+            Sec::Worktrees => self.worktrees_page(&t, cx).into_any_element(),
             Sec::System => self.system_page(&t, cx).into_any_element(),
         };
         div()
@@ -1744,7 +1785,7 @@ impl SettingsWindow {
 }
 
 impl SettingsWindow {
-    fn worktrees_page(&self, t: &Theme) -> impl IntoElement {
+    fn worktrees_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div().id("worktree-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         let Some(v) = self.slots.as_ref() else {
             return list.child(kit::empty(t, "Asking the board…"));
@@ -1753,22 +1794,126 @@ impl SettingsWindow {
         if pools.is_empty() {
             return list.child(kit::empty(t, "No worktree slots"));
         }
+        let several = pools.len() > 1;
         for p in pools {
-            let mut card = kit::card(t).overflow_hidden().child(line(t, &format!("pool-{}", p.project), true, false, "Pool", &p.settings, None));
-            for r in &p.slots {
+            let section = |what: &str| div().px(px(4.)).child(kit::h3(t, if several { format!("{} · {what}", p.project) } else { what.to_string() }));
+            if let Some(c) = p.pool {
+                list = list.child(div().flex().flex_col().gap(px(8.)).child(section("Settings")).child(self.pool_card(t, &p.project, c, cx)));
+            }
+            let mut card = kit::card(t).overflow_hidden();
+            for (i, r) in p.slots.iter().enumerate() {
                 let pill = match &r.held_by {
                     Some(task) => kit::tone_pill(t, "working", task.clone()).id(SharedString::from(format!("slot-tip-{}", r.key))).when_some(r.tip.clone(), |d, tip| d.tooltip(kit::tip(tip))).into_any_element(),
                     None => kit::tone_pill(t, "neutral", "Free").into_any_element(),
                 };
-                card = card.child(line(t, &format!("slot-{}", r.key), false, false, &r.name, &r.note, None).child(controls().child(pill)));
+                card = card.child(line(t, &format!("slot-{}", r.key), i == 0, false, &r.name, &r.note, None).child(controls().child(pill)));
             }
             if !p.waiting.is_empty() {
                 card = card.child(line(t, &format!("waiting-{}", p.project), false, true, &format!("{} waiting", p.waiting.len()), &p.waiting.join(", "), None));
             }
-            let heading = div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(format!("{} · {}", p.project, p.count));
-            list = list.child(div().flex().flex_col().gap(px(8.)).child(heading).child(card));
+            list = list.child(div().flex().flex_col().gap(px(8.)).child(section("Slots")).child(card));
         }
         list
+    }
+
+    /// A project's pool settings: how many slots, and when an idle one is cleared and removed.
+    fn pool_card(&self, t: &Theme, project: &str, c: PoolLimits, cx: &mut Context<Self>) -> Div {
+        let count = line(t, &format!("pool-count-{project}"), true, false, &format!("Slots for {project}"), "Taskboard keeps at least the first and makes up to the second.", None).child(
+            controls()
+                .child(self.pool_select(t, project, "min_slots", c.min, &min_choices(c), cx))
+                .child(div().text_color(t.muted).child("to"))
+                .child(self.pool_select(t, project, "max_slots", c.max, &max_choices(c), cx)),
+        );
+        let mut card = kit::card(t)
+            .overflow_hidden()
+            .child(count)
+            .child(self.pool_days(t, project, "idle_trim_days", "Clear build output after", &[1, 3, 7, 0], c, cx))
+            .child(self.pool_days(t, project, "idle_remove_days", "Remove an idle slot after", &[1, 7, 30, 0], c, cx));
+        if let Some((_, text, bad)) = self.pool_note.as_ref().filter(|(p, ..)| p == project) {
+            card = card.child(row(t, &format!("pool-note-{project}"), false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
+        }
+        card
+    }
+
+    /// A day timer's row: its choices as a segmented control; the ones the board would refuse are
+    /// dimmed with why.
+    fn pool_days(&self, t: &Theme, project: &str, key: &'static str, label: &str, base: &[i64], c: PoolLimits, cx: &mut Context<Self>) -> Stateful<Div> {
+        let cur = if key == "idle_trim_days" { c.trim } else { c.remove };
+        let choices = day_choices(base, cur);
+        let labels: Vec<String> = choices.iter().map(|n| day_label(*n)).collect();
+        let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let on = choices.iter().position(|n| *n == cur).unwrap_or(usize::MAX);
+        let busy = self.pool_busy;
+        let control = kit::seg(t, &format!("pool-{key}-{project}"), &refs, on, |i, item| {
+            let n = choices[i];
+            if let Some(why) = refused(key, n, c) {
+                return kit::disabled(item).tooltip(kit::tip(why));
+            }
+            if busy || i == on {
+                return item;
+            }
+            let project = project.to_string();
+            item.on_click(cx.listener(move |s, _, _, cx| s.post_pool(project.clone(), key, n, cx)))
+        });
+        line(t, &format!("pool-{key}-row-{project}"), false, false, label, "", None).child(controls().child(control))
+    }
+
+    /// A slot count's dropdown: the number and a chevron; its menu lists `choices`.
+    fn pool_select(&self, t: &Theme, project: &str, key: &'static str, cur: i64, choices: &[i64], cx: &mut Context<Self>) -> Stateful<Div> {
+        let anchor = format!("pool-menu-{key}-{project}");
+        let open = self.pool_menu.as_ref().is_some_and(|(p, k)| p == project && *k == key);
+        let (line_c, hover) = (if open { t.text } else { t.border_2 }, t.text);
+        let mut b = div()
+            .id(SharedString::from(format!("pool-{key}-{project}")))
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .gap(px(8.))
+            .w(px(128.))
+            .h(px(32.))
+            .pl(px(12.))
+            .pr(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(line_c)
+            .bg(t.card)
+            .text_color(t.text)
+            .child(cur.to_string())
+            .child(kit::icon(kit::Icon::Chev, 14., t.muted))
+            .child(kit::anchor(anchor.clone()));
+        if self.pool_busy {
+            return kit::disabled(b);
+        }
+        let p = project.to_string();
+        b = b.cursor_pointer().hover(move |d| d.border_color(hover)).on_click(cx.listener(move |s, _, _, cx| {
+            let just_shut = s.pool_menu_shut.as_ref().is_some_and(|(sp, sk, at)| *sp == p && *sk == key && at.elapsed() < Duration::from_millis(300));
+            s.pool_menu = if open || just_shut { None } else { Some((p.clone(), key)) };
+            cx.notify();
+        }));
+        if !open {
+            return b;
+        }
+        let mut menu = kit::menu_box(t, 128.).id(SharedString::from(format!("pool-menu-{key}-{project}"))).max_h(px(280.)).overflow_y_scroll().occlude();
+        for n in choices.iter().copied() {
+            let p = project.to_string();
+            menu = menu.child(kit::menu_item(t, SharedString::from(format!("pool-{key}-{project}-{n}")), n.to_string(), n == cur).on_click(cx.listener(move |s, _, _, cx| {
+                if n == cur {
+                    s.pool_menu = None;
+                    cx.notify();
+                } else {
+                    s.post_pool(p.clone(), key, n, cx);
+                }
+            })));
+        }
+        let p = project.to_string();
+        let menu = menu.on_mouse_down_out(cx.listener(move |s, _, _, cx| {
+            s.pool_menu = None;
+            s.pool_menu_shut = Some((p.clone(), key, Instant::now()));
+            cx.notify();
+        }));
+        b.child(kit::menu_under(&anchor, kit::Align::Left, point(px(0.), px(0.)), menu))
     }
 }
 
@@ -1776,13 +1921,21 @@ impl SettingsWindow {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PoolVm {
     pub project: String,
-    /// "6 slots".
-    pub count: String,
-    /// "Keeps 2 to 10 slots. Build output is cleared after 2 idle days, the slot removed after 7."
-    pub settings: String,
+    /// Its settings; None when the board didn't send them.
+    pub pool: Option<PoolLimits>,
     pub slots: Vec<SlotVm>,
     /// The tasks waiting for a slot of this project.
     pub waiting: Vec<String>,
+}
+
+/// A pool's settings: slots kept and made, and the idle days before a slot's build output is
+/// cleared and before it's removed (0: never).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PoolLimits {
+    pub min: i64,
+    pub max: i64,
+    pub trim: i64,
+    pub remove: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1805,7 +1958,7 @@ pub(crate) fn pools_vm(v: &Value) -> Vec<PoolVm> {
         let i = match out.iter().position(|p| p.project == project) {
             Some(i) => i,
             None => {
-                out.push(PoolVm { project: project.clone(), count: String::new(), settings: pool_settings(&v["pools"][&project]), slots: vec![], waiting: vec![] });
+                out.push(PoolVm { project: project.clone(), pool: pool_limits(&v["pools"][&project]), slots: vec![], waiting: vec![] });
                 out.len() - 1
             }
         };
@@ -1827,18 +1980,53 @@ pub(crate) fn pools_vm(v: &Value) -> Vec<PoolVm> {
             }
         }
     }
-    for p in &mut out {
-        p.count = crate::fmt::plural(p.slots.len() as i64, "slot", "slots");
+    out
+}
+
+fn pool_limits(c: &Value) -> Option<PoolLimits> {
+    let n = |k: &str| c[k].as_i64();
+    Some(PoolLimits { min: n("min_slots")?, max: n("max_slots")?, trim: n("idle_trim_days")?, remove: n("idle_remove_days")? })
+}
+
+/// The slots a pool may keep: none up to what it makes (the board refuses more), at most 12 shown.
+fn min_choices(c: PoolLimits) -> Vec<i64> {
+    let mut out: Vec<i64> = (0..=c.max.min(12)).collect();
+    if !out.contains(&c.min) {
+        out.push(c.min);
     }
     out
 }
 
-/// "Keeps 2 to 10 slots. Build output is cleared after 2 idle days, the slot removed after 7."
-fn pool_settings(c: &Value) -> String {
-    let (Some(min), Some(max), Some(trim), Some(remove)) = (c["min_slots"].as_i64(), c["max_slots"].as_i64(), c["idle_trim_days"].as_i64(), c["idle_remove_days"].as_i64()) else {
-        return String::new();
-    };
-    format!("Keeps {min} to {max} slots. Build output is cleared after {}, the slot removed after {remove}.", crate::fmt::plural(trim, "idle day", "idle days"))
+/// The slots a pool may make: from what it keeps (at least 1) up to 12, or more when it's set higher.
+fn max_choices(c: PoolLimits) -> Vec<i64> {
+    let lo = c.min.max(1);
+    (lo..=c.max.max(12).max(lo)).collect()
+}
+
+/// An idle timer's choices: the usual ones, with a value set elsewhere (`tb project set`) in its
+/// place among them; 0 (never) last.
+fn day_choices(base: &[i64], cur: i64) -> Vec<i64> {
+    let mut days: Vec<i64> = base.iter().copied().filter(|n| *n > 0).collect();
+    if cur > 0 && !days.contains(&cur) {
+        days.push(cur);
+        days.sort();
+    }
+    days.push(0);
+    days
+}
+
+/// "1 day", "3 days", "Never".
+fn day_label(n: i64) -> String {
+    if n == 0 { "Never".into() } else { crate::fmt::plural(n, "day", "days") }
+}
+
+/// Why the board would refuse this timer: build output is cleared before a slot is removed.
+fn refused(key: &str, n: i64, c: PoolLimits) -> Option<String> {
+    match key {
+        "idle_trim_days" if n > 0 && c.remove > 0 && n > c.remove => Some(format!("An idle slot is removed after {}, before this.", day_label(c.remove))),
+        "idle_remove_days" if n > 0 && c.trim > 0 && n < c.trim => Some(format!("Build output is cleared after {} first.", day_label(c.trim))),
+        _ => None,
+    }
 }
 
 /// "512 KB", "840 MB", "2.3 GB".
@@ -1987,6 +2175,41 @@ mod tests {
         let posts: Vec<_> = rec.posts().into_iter().filter(|(p, _)| p.starts_with("usage/")).collect();
         assert_eq!(posts.len(), 5);
         assert_eq!(posts[3], ("usage/override".to_string(), json!({"off": false})));
+    }
+
+    #[gpui_kit::test]
+    fn a_pool_setting_saves_in_place_and_a_refusal_says_why(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        let pool = json!({"min_slots": 2, "max_slots": 10, "idle_trim_days": 2, "idle_remove_days": 7, "low_disk_gb": 50});
+        w.update(cx, |s, window, cx| {
+            s.slots = Some(json!({"slots": [{"name": "slot-1", "project": "webapp", "path": "/webapp/slot-1"}], "pools": {"webapp": pool}}));
+            s.view = super::Sec::Worktrees;
+            s.pool_menu = Some(("webapp".into(), "max_slots"));
+            cx.notify();
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, cx| s.post_pool("webapp".into(), "idle_remove_days", 0, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |s, _, cx| {
+            assert_eq!(s.pool_menu, None, "choosing closes the menu");
+            assert_eq!(s.slots.as_ref().unwrap()["pools"]["webapp"]["idle_remove_days"], 0, "the answer's settings show");
+            s.post_pool("webapp".into(), "min_slots", 40, cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, window, cx| {
+            assert_eq!(s.slots.as_ref().unwrap()["pools"]["webapp"]["min_slots"], 2, "refused and kept");
+            assert!(s.pool_note.as_ref().is_some_and(|(p, m, bad)| p == "webapp" && *bad && m.contains("can't be more than max_slots")), "{:?}", s.pool_note);
+            cx.notify();
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
+        let posts: Vec<_> = rec.posts().into_iter().filter(|(p, _)| p == "projects/webapp").collect();
+        assert_eq!(posts[0].1, json!({"idle_remove_days": "never"}));
+        assert_eq!(posts[1].1, json!({"min_slots": 40}));
     }
 
     #[gpui_kit::test]
@@ -2251,9 +2474,9 @@ mod worktree_tests {
     #[test]
     fn slots_group_by_project_with_their_pool_and_waiting_tasks() {
         let pools = super::pools_vm(&pool());
-        assert_eq!(pools.iter().map(|p| (p.project.as_str(), p.count.as_str())).collect::<Vec<_>>(), [("board", "2 slots"), ("lens", "1 slot")]);
+        assert_eq!(pools.iter().map(|p| (p.project.as_str(), p.slots.len())).collect::<Vec<_>>(), [("board", 2), ("lens", 1)]);
         let board = &pools[0];
-        assert_eq!(board.settings, "Keeps 2 to 10 slots. Build output is cleared after 1 idle day, the slot removed after 7.");
+        assert_eq!(board.pool, Some(super::PoolLimits { min: 2, max: 10, trim: 1, remove: 7 }));
         assert_eq!(board.waiting, ["T13", "T14"], "each waiting task once");
         assert_eq!(board.slots[0].note, "2.3 GB · last used 2:30 PM");
         assert_eq!((board.slots[0].held_by.as_deref(), board.slots[0].tip.as_deref()), (Some("T12"), Some("Slot pool view")));
@@ -2262,6 +2485,25 @@ mod worktree_tests {
         assert_eq!((lens.slots[0].name.as_str(), lens.slots[0].note.as_str()), ("slot-2", ""), "not measured or used yet");
         assert!(lens.waiting.is_empty());
         assert!(super::pools_vm(&json!({"slots": []})).is_empty());
+    }
+
+    #[test]
+    fn pool_choices_offer_only_what_the_board_takes_and_keep_a_value_set_elsewhere() {
+        use super::{PoolLimits, day_choices, day_label, max_choices, min_choices, refused};
+        let c = PoolLimits { min: 1, max: 4, trim: 3, remove: 7 };
+        assert_eq!(min_choices(c), [0, 1, 2, 3, 4], "never more than it makes");
+        assert_eq!(max_choices(c), (1..=12).collect::<Vec<_>>());
+        assert_eq!(max_choices(PoolLimits { min: 0, max: 20, ..c }), (1..=20).collect::<Vec<_>>(), "a bigger pool set with tb shows");
+        assert_eq!(min_choices(PoolLimits { min: 30, max: 40, ..c }).last(), Some(&30));
+        let labels = |base: &[i64], cur| day_choices(base, cur).into_iter().map(day_label).collect::<Vec<_>>();
+        assert_eq!(labels(&[1, 3, 7, 0], 3), ["1 day", "3 days", "7 days", "Never"]);
+        assert_eq!(labels(&[1, 7, 30, 0], 14), ["1 day", "7 days", "14 days", "30 days", "Never"]);
+        assert_eq!(labels(&[1, 7, 30, 0], 0), ["1 day", "7 days", "30 days", "Never"]);
+        assert_eq!(refused("idle_remove_days", 1, c).as_deref(), Some("Build output is cleared after 3 days first."));
+        assert_eq!(refused("idle_trim_days", 30, c).as_deref(), Some("An idle slot is removed after 7 days, before this."));
+        assert_eq!(refused("idle_remove_days", 0, c), None, "never is always fine");
+        assert_eq!(refused("idle_trim_days", 30, PoolLimits { remove: 0, ..c }), None, "nothing to come before");
+        assert_eq!(refused("idle_remove_days", 1, PoolLimits { trim: 0, ..c }), None);
     }
 }
 

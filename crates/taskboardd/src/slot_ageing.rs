@@ -1,6 +1,7 @@
 //! Ageing of the worktree slot pool (`slots.rs`), on the board's clean-up timer. A free slot idle past
 //! `idle_trim_days` has its `target/` deleted (the checkout stays); one idle past `idle_remove_days` is
-//! removed with `git worktree remove`, never taking its repo's pool below `min_slots`. When free disk
+//! removed with `git worktree remove`, never taking its repo's pool below `min_slots`. A timer set to 0
+//! (never) doesn't run out. When free disk
 //! drops under `low_disk_gb`, the longest-idle free slots are trimmed first, before their timers. A
 //! claimed slot, or one with uncommitted changes, is never touched.
 
@@ -85,7 +86,7 @@ pub fn sweep_at(app: &App, now: f64, disk: &dyn Fn(&str) -> Option<f64>) -> Resu
                 total -= 1;
                 continue;
             }
-            if idle >= cfg.idle_remove_days as f64 && total > cfg.min_slots && clean(&path) {
+            if cfg.idle_remove_days > 0 && idle >= cfg.idle_remove_days as f64 && total > cfg.min_slots && clean(&path) {
                 trim(app, &path, &format!("idle {idle:.0} days"));
                 let r = git(&repo, &["worktree", "remove", &path], GIT_SECS);
                 if r.code == 0 {
@@ -97,7 +98,7 @@ pub fn sweep_at(app: &App, now: f64, disk: &dyn Fn(&str) -> Option<f64>) -> Resu
                 }
                 app.info(format!("worktrees: couldn't remove {path}: {}", last_line(&r.err)));
             }
-            if idle >= cfg.idle_trim_days as f64 && clean(&path) {
+            if cfg.idle_trim_days > 0 && idle >= cfg.idle_trim_days as f64 && clean(&path) {
                 trim(app, &path, &format!("idle {idle:.0} days"));
             }
             kept.push((s, cfg));

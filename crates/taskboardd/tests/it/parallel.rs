@@ -665,6 +665,12 @@ fn a_project_s_slot_settings_are_checked_and_go_back_to_config() {
     assert_eq!(b.get("projects")["projects"][0]["worktrees"]["idle_remove_days"], 7, "a refused change isn't kept");
     let out = b.post("projects/webapp", json!({"min_slots": "default", "idle_trim_days": null, "low_disk_gb": null}));
     assert_eq!(w(&out)["set"], json!({}));
+    let out = b.post("projects/webapp", json!({"idle_remove_days": "never", "idle_trim_days": 30}));
+    assert_eq!(w(&out)["set"], json!({"idle_trim_days": 30, "idle_remove_days": 0}), "never is 0, and any clearing comes before it");
+    let out = b.post("projects/webapp", json!({"idle_trim_days": "Never", "idle_remove_days": 7}));
+    assert_eq!((w(&out)["idle_trim_days"].clone(), w(&out)["idle_remove_days"].clone()), (json!(0), json!(7)), "a slot can be removed without clearing it first");
+    let (_, msg) = b.post_err("projects/webapp", json!({"min_slots": "never"}));
+    assert!(msg.contains("min_slots is a count from 0 to 50"), "only the idle timers take never: {msg}");
 }
 
 #[test]
@@ -1036,6 +1042,24 @@ fn idle_slots_lose_their_build_output_then_the_checkout_but_never_below_min() {
     slot_ageing::sweep_at(&b.app, taskboardd::util::now_ts() + 1.0, &|_| Some(1.0)).unwrap();
     assert!(!Path::new(&slot(&b, 3)).join("target").exists(), "low disk clears a free slot before its timer");
     assert!(Path::new(&slot(&b, 4)).join("target").exists(), "still claimed");
+}
+
+#[test]
+fn idle_timers_set_to_never_keep_a_free_slot_and_its_build_output() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("projects/webapp", json!({"min_slots": 0, "idle_trim_days": "never", "idle_remove_days": "never"}));
+    let t = b.task("T1", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    std::fs::create_dir_all(Path::new(&slot(&b, 1)).join("target")).unwrap();
+    finish(&b, t);
+    let later = taskboardd::util::now_ts() + 400.0 * 86_400.0;
+    assert!(slot_ageing::sweep_at(&b.app, later, &|_| None).unwrap().is_empty(), "never removed");
+    assert!(Path::new(&slot(&b, 1)).join("target").exists(), "never cleared");
+    b.post("projects/webapp", json!({"idle_remove_days": 7}));
+    assert_eq!(slot_ageing::sweep_at(&b.app, later, &|_| None).unwrap(), [slot(&b, 1)], "a removal timer takes it");
 }
 
 /// A commit on a new branch in the slot, pushed or not.

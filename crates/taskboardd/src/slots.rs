@@ -48,9 +48,9 @@ pub struct WorktreesConfig {
     pub min_slots: i64,
     /// The most slots a repo's pool grows to; past that a task waits for one to free up.
     pub max_slots: i64,
-    /// Days a slot sits idle before its build output is cleared.
+    /// Days a slot sits idle before its build output is cleared; 0 never clears it.
     pub idle_trim_days: i64,
-    /// Days a slot sits idle before it's removed (never below min_slots).
+    /// Days a slot sits idle before it's removed (never below min_slots); 0 never removes it.
     pub idle_remove_days: i64,
     /// Free disk in GB below which idle slots are cleared sooner.
     pub low_disk_gb: i64,
@@ -87,8 +87,17 @@ fn range(key: &str) -> (i64, i64, &'static str) {
         "min_slots" => (0, 50, "a count from 0 to 50"),
         "max_slots" => (1, 50, "a count from 1 to 50"),
         "low_disk_gb" => (0, 100_000, "a number of GB"),
-        _ => (1, 365, "a number of days from 1 to 365"),
+        _ => (0, 365, "a number of days from 1 to 365, or never"),
     }
+}
+
+/// An idle timer's value from a body: "never" is 0, the timer that doesn't run out.
+fn number(key: &str, v: &Value) -> Option<i64> {
+    let never = key.starts_with("idle_") && v.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("never"));
+    if never {
+        return Some(0);
+    }
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
 }
 
 /// Sets a project's pool settings from a body's `KEYS` (null or "default": back to config.toml's).
@@ -105,7 +114,7 @@ pub fn set(app: &App, name: &str, body: &Value) -> Result<bool> {
             continue;
         }
         let (lo, hi, what) = range(k);
-        match v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) {
+        match number(k, v) {
             Some(n) if (lo..=hi).contains(&n) => mine.insert(k.into(), json!(n)),
             _ => return err(400, format!("{k} is {what}, or default.")),
         };
@@ -121,7 +130,7 @@ pub fn set(app: &App, name: &str, body: &Value) -> Result<bool> {
     if c.min_slots > c.max_slots {
         return err(400, format!("min_slots ({}) can't be more than max_slots ({}).", c.min_slots, c.max_slots));
     }
-    if c.idle_trim_days > c.idle_remove_days {
+    if c.idle_remove_days > 0 && c.idle_trim_days > c.idle_remove_days {
         return err(400, format!("idle_trim_days ({}) can't be more than idle_remove_days ({}).", c.idle_trim_days, c.idle_remove_days));
     }
     Ok(true)

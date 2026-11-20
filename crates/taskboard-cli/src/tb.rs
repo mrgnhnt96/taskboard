@@ -2053,10 +2053,10 @@ enum ProjectCmd {
         /// Worktree slots its pool grows to before a task waits for one (default: config.toml's [worktrees] max_slots)
         #[arg(long = "max-slots")]
         max_slots: Option<String>,
-        /// Days a slot sits idle before its build output is cleared (default: config.toml's [worktrees] idle_trim_days)
+        /// Days a slot sits idle before its build output is cleared, or never (default: config.toml's [worktrees] idle_trim_days)
         #[arg(long = "idle-trim-days")]
         idle_trim_days: Option<String>,
-        /// Days a slot sits idle before it's removed (default: config.toml's [worktrees] idle_remove_days)
+        /// Days a slot sits idle before it's removed, or never (default: config.toml's [worktrees] idle_remove_days)
         #[arg(long = "idle-remove-days")]
         idle_remove_days: Option<String>,
         /// Free disk in GB below which idle slots are cleared sooner (default: config.toml's [worktrees] low_disk_gb)
@@ -7847,9 +7847,13 @@ fn project_line(p: &Value) -> String {
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
     let slots = if p["worktrees"]["set"].as_object().is_some_and(|s| !s.is_empty()) {
         let w = &p["worktrees"];
+        let after = |k: &str| match w[k].as_i64() {
+            Some(0) => "never".to_string(),
+            _ => format!("after {} days", w[k]),
+        };
         format!(
-            " · {}–{} worktree slots, idle ones cleared after {} days and removed after {} (sooner under {} GB free)",
-            w["min_slots"], w["max_slots"], w["idle_trim_days"], w["idle_remove_days"], w["low_disk_gb"]
+            " · {}–{} worktree slots, idle ones cleared {} and removed {} (sooner under {} GB free)",
+            w["min_slots"], w["max_slots"], after("idle_trim_days"), after("idle_remove_days"), w["low_disk_gb"]
         )
     } else {
         String::new()
