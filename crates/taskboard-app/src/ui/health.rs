@@ -27,6 +27,7 @@ pub enum Tone {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     TryBoard,
+    RetrySetup,
     InstallHooks,
     DismissHooks,
     OpenAccounts,
@@ -114,7 +115,7 @@ pub fn items(i: &Inputs) -> Vec<Item> {
     }
     if let LoginItem::Failed(e) = &i.login {
         let detail = format!("Registering the board as a login item: {e}");
-        out.push(item(Tone::Bad, "The board couldn’t be set to start on its own", detail.clone(), vec![("Copy details", Act::Copy(detail))]));
+        out.push(item(Tone::Bad, "The board couldn’t be set to start on its own", detail.clone(), vec![("Try again", Act::RetrySetup), ("Copy details", Act::Copy(detail))]));
     }
     if let Some(p) = i.st.get("pr_builds").and_then(crate::ui::prwatch::builds_pill) {
         out.push(item(Tone::Act, p.label, p.title, vec![]));
@@ -363,7 +364,7 @@ pub fn render_menu(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> Option<A
         let mut btns = div().flex().flex_wrap().gap(px(6.)).pt(px(4.));
         for (k, (label, act)) in it.acts.into_iter().enumerate() {
             let id = SharedString::from(format!("health-{n}-{k}"));
-            let b = if k == 0 && matches!(act, Act::RestartToUpdate | Act::TryBoard | Act::InstallHooks) { kit::btn_primary(&t, id, label) } else { kit::btn_small(&t, id, label) };
+            let b = if k == 0 && matches!(act, Act::RestartToUpdate | Act::TryBoard | Act::RetrySetup | Act::InstallHooks) { kit::btn_primary(&t, id, label) } else { kit::btn_small(&t, id, label) };
             btns = btns.child(b.on_click(cx.listener(move |m, _, window, cx| run(m, &act, window, cx))));
         }
         list = list.child(
@@ -386,6 +387,7 @@ pub fn render_menu(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> Option<A
 pub fn run(m: &mut MainWindow, act: &Act, window: &mut Window, cx: &mut Context<MainWindow>) {
     match act {
         Act::TryBoard => m.refresh(cx),
+        Act::RetrySetup => retry_setup(cx),
         Act::InstallHooks => {
             crate::hooks::dismiss();
             m.install_hooks(cx);
@@ -406,6 +408,25 @@ pub fn run(m: &mut MainWindow, act: &Act, window: &mut Window, cx: &mut Context<
     if !matches!(act, Act::Copy(_) | Act::WhatsNew(_)) {
         m.menu = None;
     }
+    cx.notify();
+}
+
+/// Try again on a setup row: register the board's service again off the UI thread, then say how it
+/// went (a row that still shows says what's still wrong).
+fn retry_setup(cx: &mut Context<MainWindow>) {
+    if crate::install::trying() {
+        return;
+    }
+    cx.spawn(async move |this, cx| {
+        let r = cx.background_executor().spawn(async move { crate::install::try_again() }).await;
+        let _ = this.update(cx, |m, cx| {
+            if let Some(words) = r.as_ref().and_then(crate::install::try_again_words) {
+                m.toast(words, false, cx);
+            }
+            cx.notify();
+        });
+    })
+    .detach();
     cx.notify();
 }
 
@@ -488,7 +509,7 @@ pub fn setup_words(login: &LoginItem, port: Option<String>) -> Option<(bool, Str
         LoginItem::RequiresApproval => Some((true, "The board starts on its own as a login item. Switch on Taskboard in System Settings ▸ Login Items.".into())),
         LoginItem::Blocked => {
             let held = port.unwrap_or_else(|| "Another program holds the board’s port.".into());
-            Some((true, format!("{held} The board can’t start until it’s free. Quit it; the app looks again on its own.")))
+            Some((true, format!("{held} The board can’t start until it’s free. Quit it, then try again. Taskboard also keeps trying on its own.")))
         }
         LoginItem::Failed(e) => Some((false, format!("The board couldn’t be set to start on its own. Registering it as a login item: {e}"))),
         _ => None,
@@ -501,11 +522,19 @@ fn setup_rows(t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     if let Some((act, text)) = setup_words(&login, crate::install::port_line()) {
         let row = if act { crate::app::bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)) } else { crate::app::bar(t.down_soft, t.down, t.down_line).child(kit::dot(t.down, 8.)) };
         let copy = text.clone();
+        let retry = crate::install::can_try_again(&login).then(|| {
+            if crate::install::trying() {
+                kit::disabled(kit::btn_primary(t, "setup-retry", "Trying…"))
+            } else {
+                kit::btn_primary(t, "setup-retry", "Try again").on_click(cx.listener(|_, _, _, cx| retry_setup(cx)))
+            }
+        });
         out.push(
             row.child(div().flex_1().min_w_0().child(text))
                 .when(login == LoginItem::RequiresApproval, |d| {
                     d.child(kit::btn_small(t, "open-login-items", "Open Login Items").on_click(|_, _, _| crate::install::open_login_items()))
                 })
+                .children(retry)
                 .child(crate::app::banner_btn(t, "setup-copy", "Copy details", false).on_click(cx.listener(move |m, _, _, cx| crate::app::copy_text(m, &copy, cx))))
                 .into_any_element(),
         );
@@ -633,6 +662,7 @@ mod tests {
         let (act, text) = setup_words(&LoginItem::Blocked, Some("Port 8792 is held by python3 (pid 812).".into())).unwrap();
         assert!(act);
         assert!(text.starts_with("Port 8792 is held by python3 (pid 812). The board can’t start"));
+        assert!(text.contains("Quit it, then try again."), "{text}");
         let (act, text) = setup_words(&LoginItem::Failed("denied".into()), None).unwrap();
         assert!(!act);
         assert!(text.contains("Registering it as a login item: denied"));
