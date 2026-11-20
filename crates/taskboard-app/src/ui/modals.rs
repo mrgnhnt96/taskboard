@@ -23,6 +23,19 @@ pub enum Modal {
     /// The menu skips Midna's approval, so nothing happens until the owner confirms here. Also the
     /// PR's Merge now, the owner's override.
     Finish(Finish),
+    /// Settling a goal's last miss would finish the goal: ask first.
+    LastMiss(LastMiss),
+}
+
+pub struct LastMiss {
+    /// The issue, "B15".
+    pub r: String,
+    /// What was pressed: `ticket`, `drop` or `without`.
+    pub act: &'static str,
+    /// The goal that would finish, "G3".
+    pub goal: String,
+    /// Its When done closes terminals.
+    pub auto_close: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +148,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         }
         Some(Modal::NewIdea) => crate::ui::ideas::form(m, &t, window, cx),
         Some(Modal::Finish(f)) => finish(m, &t, f, cx),
+        Some(Modal::LastMiss(x)) => last_miss(&t, x, cx),
         None => return div().into_any_element(),
     };
     deferred(
@@ -463,6 +477,64 @@ fn finish(m: &MainWindow, t: &Theme, f: &Finish, cx: &mut Context<MainWindow>) -
                 .children(warn)
                 .children(note.map(|n| div().id("finish-note").text_size(px(12.5)).text_color(t.down).child(n)))
                 .children(go.map(|go| div().flex().flex_none().justify_end().gap(px(8.)).pt(px(4.)).children(cancel).child(go))),
+        )
+        .into_any_element()
+}
+
+/// Pressing Ticket, Won't do or Finish without it on a goal's last miss opens the confirm instead
+/// of acting. True when it asked; false when the press goes ahead as it was.
+pub fn ask_last_miss(m: &mut MainWindow, r: &str, act: &'static str, cx: &mut Context<MainWindow>) -> bool {
+    let Some(b) = m.data.issue.as_ref().filter(|b| crate::fmt::ref_of(b, "B") == r && crate::fmt::b(b, "misses_goal")) else { return false };
+    let Some(g) = b.get("goal_id").and_then(|id| id.as_i64()).and_then(|id| m.data.goals.iter().find(|g| g.get("id").and_then(|x| x.as_i64()) == Some(id))) else { return false };
+    if !crate::ui::issue_panel::finishes_goal(g) {
+        return false;
+    }
+    let auto_close = !matches!(g.get("auto_close"), Some(serde_json::Value::Bool(false))) && g.get("auto_close").and_then(|v| v.as_f64()) != Some(0.);
+    let goal = crate::fmt::ref_of(g, "G");
+    m.modal = Some(Modal::LastMiss(LastMiss { r: r.to_string(), act, goal, auto_close }));
+    cx.notify();
+    true
+}
+
+/// What the yes does to the issue, for the dialog's line.
+fn last_miss_does(x: &LastMiss) -> String {
+    let what = match x.act {
+        "ticket" => format!("{} goes to Jira", x.r),
+        "drop" => format!("{} closes as won’t do", x.r),
+        _ => format!("{} stays in the backlog", x.r),
+    };
+    let when = if x.auto_close { " and its When done runs: terminals close" } else { "" };
+    format!("This is the last thing holding it. {what}. Its outcome stays unmet,{when}.").replace(",.", ".")
+}
+
+fn last_miss(t: &Theme, x: &LastMiss, cx: &mut Context<MainWindow>) -> AnyElement {
+    let (r, act) = (x.r.clone(), x.act);
+    kit::modal_box(t, 440.)
+        .child(div().px(px(20.)).pt(px(18.)).pb(px(12.)).text_size(px(17.)).font_weight(FontWeight::BOLD).child(format!("Finish {} now?", x.goal)))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .flex_col()
+                .gap(px(14.))
+                .px(px(20.))
+                .pb(px(20.))
+                .child(div().id("last-miss-does").line_height(relative(1.4)).text_color(t.text_2).child(last_miss_does(x)))
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(kit::btn(t, "last-miss-keep", "Keep it open").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))))
+                        .child(kit::btn_primary(t, "last-miss-go", format!("Finish {}", x.goal)).on_click(cx.listener(move |m, _, window, cx| {
+                            close(m, window, cx);
+                            match act {
+                                "ticket" => crate::ui::issue_panel::ticket(m, &r, cx),
+                                "without" => crate::ui::issue_panel::finish_without(m, &r, cx),
+                                _ => crate::ui::issue_panel::drop_issue(m, &r, cx),
+                            }
+                        }))),
+                ),
         )
         .into_any_element()
 }
