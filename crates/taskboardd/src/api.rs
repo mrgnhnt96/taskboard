@@ -3450,8 +3450,8 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let b = board::get_issue(app, id)?;
     need_open(&b)?;
-    // In its goal: planned, or queued when the goal is running so its run picks the task up.
-    let join = match b.i("goal_id").filter(|_| where_ == "goal") {
+    // In its goal, from either place: planned, or queued when the goal is running so its run picks the task up.
+    let join = match b.i("goal_id") {
         Some(g) => Some(board::joining_status(app, g, as_bool(body.get("planned"), false))?),
         None => None,
     };
@@ -3470,10 +3470,7 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     let text = if join.is_some() {
         format!("Made into {cref}, a {} task in its goal. Its handoff starts with this report and snapshot.", if planned { "planned" } else { "queued" })
     } else {
-        format!(
-            "Made into {cref}, a queued task{}. Its handoff starts with this report and snapshot.",
-            if b.i("goal_id").is_some() { "" } else { " with no goal" }
-        )
+        format!("Made into {cref}, a queued task with no goal. Its handoff starts with this report and snapshot.")
     };
     issue_tasked(app, id, c["id"].as_i64().unwrap_or(0), &who, &text)?;
     Ok(json!({"issue": issue_detail(app, id)?, "task": task_detail(app, c["id"].as_i64().unwrap_or(0))?, "why": join.map(|(_, why)| why)}))
