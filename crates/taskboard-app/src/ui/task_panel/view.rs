@@ -360,12 +360,8 @@ pub struct Ui {
     pub drafts: HashMap<String, String>,
     pub busy: HashSet<String>,
     pub notes: HashMap<String, (String, bool)>,
-<<<<<<< HEAD
-=======
     /// Human tasks whose empty Done was already asked about once: the next Done sends.
     pub did_asked: HashSet<String>,
-    pub meta_edit: HashMap<String, Vec<(String, String)>>,
->>>>>>> b4e4d349 (feat(panel): an empty Done asks once when a step wants a note)
     pub handoffs: HashMap<String, String>,
     /// "" means "all".
     pub log_filter: String,
