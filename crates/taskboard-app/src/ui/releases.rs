@@ -2,7 +2,8 @@
 //! state's `releases`): its newest release, what waits in Unreleased (and its next cut), and the
 //! few releases before. A project's page (`Page::ReleasesOf`) shows its counts, then the next
 //! release (what it cuts after, then the work already finished), and every release by month, each
-//! a row that opens in place to its tasks by goal (`GET /releases/:id`); the newest starts open.
+//! a row that opens in place to its tasks by goal (`GET /releases/:id`); the newest starts open. A
+//! failed release opens to the tasks it held and where each went out since.
 //! That page is a virtual list, paged from the board (`GET /releases?limit=`) as it nears its end.
 //! A failed answer says so with Try again and keeps what loaded before. With no project on, the
 //! pages are hidden. Read-only: cutting and editing releases stay in `tb`.
@@ -242,6 +243,20 @@ fn more_notes(notes: &str) -> String {
     lines.collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
+/// Where a task a failed release held is now: "went out in v0.11.2", "in Unreleased", or nothing
+/// once it isn't done (or for a task that isn't a held one).
+fn held_now(c: &Value) -> Option<String> {
+    match c.get("release")? {
+        Value::Null => (s(c, "status") == "done").then(|| "in Unreleased".to_string()),
+        r => Some(format!("went out in {}", s(r, "name"))),
+    }
+}
+
+/// The tasks a failed release held, as the board sends them: grouped by goal.
+fn held(d: Option<&Value>) -> &[Value] {
+    d.map(|d| arr(d, "held")).unwrap_or(&[])
+}
+
 /// "Failed Oct 21, 9:12 PM · its work went back to Unreleased".
 fn failed_line(when: &str) -> String {
     let when = if when.is_empty() { String::new() } else { format!(" {when}") };
@@ -479,16 +494,18 @@ fn task_row(t: &Theme, at: &str, c: &Value, indent: bool, open: Option<&str>, cx
         .pl(px(if indent { INDENT } else { 10. }))
         .pr(px(10.))
         .text_size(px(13.))
-        .child(div().flex_none().w(px(16.)).font_weight(FontWeight::BOLD).text_color(t.up_fg).child("✓"))
+        .child(div().flex_none().w(px(16.)).font_weight(FontWeight::BOLD).text_color(t.up_fg).when(opt_s(c, "status").is_none_or(|st| st == "done"), |d| d.child("✓")))
         .child(div().flex_none().w(px(46.)).whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(t.muted).child(r.clone()))
         .child(div().flex_1().min_w_0().truncate().child(s(c, "title").to_string()))
+        .children(held_now(c).map(|now| div().flex_none().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(now)))
         .children(pr_link(t, format!("releases-pr-{at}-{r}"), c))
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o.clone(), cx)));
     marked(t, row, open == Some(r.as_str()))
 }
 
-/// A goal's tasks under its ref and name (the heading opens the goal); tasks without a goal stand alone.
-fn group(t: &Theme, at: &str, g: &Value, open: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
+/// A goal's tasks under its ref and name (the heading opens the goal); tasks without a goal stand
+/// alone, or sit in with the rest under a label (`indent`).
+fn group(t: &Theme, at: &str, g: &Value, indent: bool, open: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
     let mut col = div().flex().flex_col();
     let goal = opt_s(g, "goal").map(str::to_string);
     if let Some(r) = goal.clone() {
@@ -507,7 +524,7 @@ fn group(t: &Theme, at: &str, g: &Value, open: Option<&str>, cx: &mut Context<Ma
         col = col.child(marked(t, head, open == Some(r.as_str())));
     }
     for c in arr(g, "tasks") {
-        col = col.child(task_row(t, at, c, goal.is_some(), open, cx));
+        col = col.child(task_row(t, at, c, indent || goal.is_some(), open, cx));
     }
     col
 }
@@ -526,7 +543,7 @@ fn work(t: &Theme, at: &str, d: Option<&Value>, err: bool, what: &str, open: Opt
         return col.child(div().px(px(10.)).py(px(4.)).child(kit::help(t, "No tasks")));
     }
     for g in groups {
-        col = col.child(group(t, at, g, open, cx));
+        col = col.child(group(t, at, g, false, open, cx));
     }
     col
 }
@@ -680,6 +697,13 @@ fn release_row(m: &MainWindow, t: &Theme, r: &Value, newest: bool, cx: &mut Cont
         if row.failed.is_none() || has_work {
             body = body.child(work(t, &row.key, d, m.releases.row_errs.contains_key(&row.key), &row.name, open_ref.as_deref(), cx));
         }
+        if row.failed.is_some() && !held(d).is_empty() {
+            let at = format!("{}-held", row.key);
+            body = body.child(label(t, "Was in it").px(px(10.)));
+            for g in held(d) {
+                body = body.child(group(t, &at, g, true, open_ref.as_deref(), cx));
+            }
+        }
         out = out.child(body);
     }
     out
@@ -713,7 +737,8 @@ fn sig(st: &State, l: &Value, it: &Item) -> String {
         Item::Release(r) => {
             let newest = arr(l, "releases").first().is_some_and(|x| s(x, "ref") == r);
             let open = is_open(st, r, newest);
-            let n = if open { st.details.get(r).map_or(-1, |d| arr(d, "groups").iter().map(|g| arr(g, "tasks").len() as i64 + 1).sum()) } else { 0 };
+            let tasks = |gs: &[Value]| gs.iter().map(|g| arr(g, "tasks").len() as i64 + 1).sum::<i64>();
+            let n = if open { st.details.get(r).map_or(-1, |d| tasks(arr(d, "groups")) + tasks(held(Some(d)))) } else { 0 };
             format!("{open}:{n}:{}", st.row_errs.contains_key(r))
         }
         _ => String::new(),
@@ -1110,5 +1135,16 @@ mod tests {
         assert_eq!(more_notes("Only a headline"), "");
         assert_eq!(failed_line("Oct 21, 9:12 PM"), "Failed Oct 21, 9:12 PM · its work went back to Unreleased");
         assert_eq!(failed_line(""), "Failed · its work went back to Unreleased");
+    }
+
+    #[test]
+    fn a_task_a_failed_release_held_says_where_it_went_since() {
+        let went = json!({"ref": "T58", "status": "done", "release": {"ref": "R7", "name": "v0.11.2"}});
+        assert_eq!(held_now(&went).as_deref(), Some("went out in v0.11.2"));
+        assert_eq!(held_now(&json!({"ref": "T58", "status": "done", "release": null})).as_deref(), Some("in Unreleased"));
+        assert_eq!(held_now(&json!({"ref": "T58", "status": "doing", "release": null})), None, "reopened, so in no release");
+        assert_eq!(held_now(&json!({"ref": "T58", "pr_num": 411})), None, "a release's own task says nothing");
+        assert_eq!(held(Some(&json!({"held": [{"goal": null, "tasks": [went]}]}))).len(), 1);
+        assert!(held(Some(&json!({"groups": []}))).is_empty());
     }
 }
