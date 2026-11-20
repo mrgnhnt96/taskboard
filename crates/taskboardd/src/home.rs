@@ -10,7 +10,8 @@
 //! up, and `waiting` counts the agents waiting on the owner, put off or not. A goal stopped at a
 //! wave (a review stop, a failed wave or a held one: the stage's `kind`) is a Needs you item too:
 //! its entry's `stage`, under a `stage:G12:1` id. Nothing from a paused
-//! or set-aside goal is listed, put off or not.
+//! or set-aside goal is listed, put off or not. The ideas a dig left waiting on the owner are
+//! `ideas`, apart from the items (`dig::needs_you`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,7 +20,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::dispatch::{self, Later};
 use crate::util::*;
-use crate::{board, human, p, quiet, waitsfor, waves};
+use crate::{board, dig, human, p, quiet, waitsfor, waves};
 
 fn in_flight(t: &Row) -> bool {
     match t.s("status") {
@@ -569,5 +570,6 @@ pub fn page(app: &App, project: &str) -> Result<Value> {
     entries.sort_by(|a, b| a["project"].as_str().unwrap_or("").cmp(b["project"].as_str().unwrap_or("")));
     let (needs, later) = needs(app)?;
     let next_back = later.iter().filter_map(|i| i["later"]["until"].as_str()).min().map(str::to_string);
-    Ok(json!({"goals": entries, "needs": needs, "later_count": later.len(), "next_back": next_back, "later": later, "waiting": waiting_count(app)?}))
+    Ok(json!({"goals": entries, "needs": needs, "later_count": later.len(), "next_back": next_back, "later": later, "waiting": waiting_count(app)?,
+              "ideas": dig::needs_you(app)?}))
 }

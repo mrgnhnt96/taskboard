@@ -238,3 +238,32 @@ fn a_running_dig_can_be_stopped() {
     assert_eq!((v["state"].clone(), v["rounds"][0]["stopped"].clone()), (json!("new"), json!(true)));
     assert!(b.app.shared.lock().dig_stop.is_empty());
 }
+
+#[test]
+fn a_dig_that_ends_waiting_on_the_owner_is_on_needs_you() {
+    let b = board();
+    let i = b.idea();
+    assert_eq!(b.get("/home")["ideas"], json!([]), "not dug yet");
+
+    b.answer(report());
+    let v = b.post(&format!("/ideas/{i}/dig"), json!({}));
+    let ideas = b.get("/home")["ideas"].clone();
+    assert_eq!(ideas.as_array().unwrap().len(), 1, "{ideas}");
+    let n = &ideas[0];
+    assert_eq!((n["id"].clone(), n["ref"].clone(), n["title"].clone(), n["project"].clone()),
+        (json!(format!("idea:{i}")), json!(i), json!("Offline mode"), json!("webapp")));
+    assert_eq!((n["verdict"].clone(), n["questions"].clone()), (json!("partly"), json!(1)));
+    assert_eq!(n["at"], v["rounds"][0]["finished_at"], "when the report came in");
+
+    let round = v["rounds"][0]["id"].clone();
+    b.post(&format!("/ideas/{i}/answer"), json!({"round": round, "question": "web", "answer": "No"}));
+    assert_eq!(b.get("/home")["ideas"], json!([]), "answered, and it only partly fits: nothing waits on the owner");
+
+    b.answer(json!({"blocks": [{"type": "gist", "text": "It fits."}, {"type": "scorecard", "fit": "fits", "size": "s", "risk": "low"}]}));
+    b.post(&format!("/ideas/{i}/dig"), json!({}));
+    let ideas = b.get("/home")["ideas"].clone();
+    assert_eq!((ideas[0]["verdict"].clone(), ideas[0]["questions"].clone()), (json!("fits"), json!(0)), "fits and asks nothing: ready to plan");
+
+    b.post(&format!("/ideas/{i}/shelve"), json!({}));
+    assert_eq!(b.get("/home")["ideas"], json!([]), "put aside");
+}

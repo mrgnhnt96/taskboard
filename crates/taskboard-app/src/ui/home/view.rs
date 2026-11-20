@@ -1,5 +1,5 @@
 //! Needs you on screen: a virtual list of the page's lines, so only what's in view is built.
-use super::groups::{self, Do, Entry, GoalRow, Group, Kind, LaterLine, Note, Row};
+use super::groups::{self, Do, Entry, GoalRow, Group, IdeaRow, Kind, LaterLine, Note, Row};
 use super::*;
 
 const LATER_MENU: &str = "home-later:";
@@ -43,6 +43,9 @@ enum Line {
     Row(usize, usize, bool),
     /// Group, row, kid, open.
     Kid(usize, usize, usize, bool),
+    /// The ideas waiting on the owner: their label, then each.
+    Ideas,
+    Idea(usize),
     /// Open.
     Later(bool),
     LaterItem(usize),
@@ -56,6 +59,7 @@ struct View {
     names: Rc<Vec<String>>,
     counts: Vec<(String, usize)>,
     groups: Vec<Group>,
+    ideas: Vec<IdeaRow>,
     later: Option<LaterLine>,
     sub: String,
 }
@@ -64,11 +68,12 @@ impl View {
     fn of(built: &Built, project: &str, home: &Value) -> View {
         let shown: Vec<&Ask> = built.asks.iter().filter(|a| project == "all" || a.project == project).collect();
         let groups = groups::groups_vm(&shown);
+        let ideas = groups::ideas_vm(home, project);
         let later = groups::later_vm(home, project);
         let agents = groups.iter().find(|g| g.kind == Kind::Waiting).map_or(0, |g| g.count);
         let sub = groups::waiting_line(agents + later.as_ref().map_or(0, |l| l.waiting));
         let counts = built.names.iter().map(|p| (p.clone(), built.asks.iter().filter(|a| &a.project == p).count())).collect();
-        View { asks: built.asks.clone(), project: project.to_string(), stats: built.stats.clone(), names: built.names.clone(), counts, groups, later, sub }
+        View { asks: built.asks.clone(), project: project.to_string(), stats: built.stats.clone(), names: built.names.clone(), counts, groups, ideas, later, sub }
     }
 }
 
@@ -97,7 +102,7 @@ fn lines_of(v: &View, later_open: bool, down: bool) -> Vec<Line> {
     if !v.stats.is_empty() && !down {
         out.push(Line::Stats);
     }
-    if v.groups.is_empty() {
+    if v.groups.is_empty() && v.ideas.is_empty() {
         out.push(Line::Empty);
     }
     for (gi, g) in v.groups.iter().enumerate() {
@@ -114,6 +119,10 @@ fn lines_of(v: &View, later_open: bool, down: bool) -> Vec<Line> {
                 }
             }
         }
+    }
+    if !v.ideas.is_empty() {
+        out.push(Line::Ideas);
+        out.extend((0..v.ideas.len()).map(Line::Idea));
     }
     if let Some(l) = &v.later {
         out.push(Line::Later(later_open));
@@ -176,6 +185,8 @@ fn line_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Contex
         Line::Group(gi) => group_label(&t, &v.groups[gi]),
         Line::Row(gi, ri, open) => row_line(m, &t, &v.groups[gi], ri, open, window, cx),
         Line::Kid(gi, ri, ki, open) => kid_line(m, &t, &v.groups[gi], ri, ki, open, window, cx),
+        Line::Ideas => label_line(&t, "Ideas", v.ideas.len()),
+        Line::Idea(i) => idea_line(&t, &v, i, cx),
         Line::Later(open) => later_line(&t, &v, open, cx),
         Line::LaterItem(i) => later_item(&t, &v, i, cx),
         Line::End => div().h(px(32.)),
@@ -236,6 +247,10 @@ fn stats_line(t: &Theme, v: &View) -> Div {
 }
 
 fn group_label(t: &Theme, g: &Group) -> Div {
+    label_line(t, g.kind.label(), g.count)
+}
+
+fn label_line(t: &Theme, label: &str, count: usize) -> Div {
     div()
         .flex()
         .items_center()
@@ -244,8 +259,8 @@ fn group_label(t: &Theme, g: &Group) -> Div {
         .pb(px(8.))
         .text_size(px(12.))
         .text_color(t.muted)
-        .child(div().font_weight(FontWeight::BOLD).child(g.kind.label().to_uppercase()))
-        .child(g.count.to_string())
+        .child(div().font_weight(FontWeight::BOLD).child(label.to_uppercase()))
+        .child(count.to_string())
 }
 
 // ------------------------------------------------------------------ rows
@@ -752,6 +767,26 @@ fn later_item(t: &Theme, v: &View, i: usize, cx: &mut Context<MainWindow>) -> Di
     div().child(row)
 }
 
+/// An idea waiting on the owner: its verdict, ref and title, and what it waits for. It opens the idea.
+fn idea_line(t: &Theme, v: &View, i: usize, cx: &mut Context<MainWindow>) -> Div {
+    let Some(x) = v.ideas.get(i) else { return div() };
+    let r = x.r.clone();
+    let head = div()
+        .id(SharedString::from(format!("home-idea-{}", x.r)))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .px(px(14.))
+        .py(px(9.))
+        .cursor_pointer()
+        .on_click(cx.listener(move |m, _, _, cx| crate::ui::idea::open(m, &r, cx)))
+        .children(x.pill.map(|(label, tone)| kit::tone_pill(t, tone, label).flex_none()))
+        .child(div().flex_none().text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(x.r.clone()))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(t.text).child(x.title.clone()))
+        .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(x.note.clone()));
+    div().pb(px(6.)).child(frame(t, false, false).rounded(px(10.)).border_1().child(head))
+}
+
 // ------------------------------------------------------------------ menus
 
 /// What a row's menus act on.
@@ -1078,8 +1113,20 @@ mod tests {
 
     #[test]
     fn with_the_board_down_the_page_drops_its_counts() {
-        let v = View { asks: Rc::new(vec![]), project: "all".into(), stats: Rc::new(stats_vm(&json!({}))), names: Rc::new(vec![]), counts: vec![], groups: vec![], later: None, sub: String::new() };
+        let v = View { asks: Rc::new(vec![]), project: "all".into(), stats: Rc::new(stats_vm(&json!({}))), names: Rc::new(vec![]), counts: vec![], groups: vec![], ideas: vec![], later: None, sub: String::new() };
         assert!(lines_of(&v, false, false).contains(&Line::Stats));
         assert!(!lines_of(&v, false, true).contains(&Line::Stats));
+    }
+
+    #[test]
+    fn ideas_waiting_on_the_owner_come_after_the_groups_and_before_later() {
+        let home = json!({
+            "ideas": [{"ref": "I3", "title": "Search across projects", "project": "web", "verdict": "fits", "questions": 1, "at": null}],
+            "later": [{"id": "stage:G2:1", "stage": true, "goal": "G2", "goal_name": "Faster sign-in", "wave": 1, "later": {"back": true}}]});
+        let v = View { asks: Rc::new(vec![]), project: "all".into(), stats: Rc::new(vec![]), names: Rc::new(vec![]), counts: vec![], groups: vec![],
+                       ideas: groups::ideas_vm(&home, "all"), later: groups::later_vm(&home, "all"), sub: String::new() };
+        assert_eq!(lines_of(&v, false, false), [Line::Head, Line::Ideas, Line::Idea(0), Line::Later(false), Line::End], "an idea waiting isn't Nothing needs you");
+        let none = View { ideas: vec![], ..v };
+        assert_eq!(lines_of(&none, false, false), [Line::Head, Line::Empty, Line::Later(false), Line::End]);
     }
 }
