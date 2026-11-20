@@ -48,11 +48,23 @@ the daemon's data model. The three design concepts built on this plan are on the
 - **Read-only.** The only buttons are signals:
   - Start, Pause and Resume
   - Continue the wave
-  - Answer, I reviewed it and Mark created
+  - Answer and I reviewed it
   - Focus in Midna, Close terminal
   - Dismiss and Snooze
 
-  Any change to tasks, goals or the backlog is an **Open in Claude** hand-off.
+  The owner has also approved these actions, which sit outside that list. Each one is named here so the rule says
+  what the app really does:
+  - New idea; shelve, drop or reopen an idea; Dig and Plan on an idea; Talk it over
+  - Pick a suggested choice, or type an answer, to an open question on a task or an idea
+  - Human-task answers (Done, Can't do this, Waiting on someone, Don't wait for me, Not needed), each with an
+    optional note
+  - Close or move a backlog issue, Move to goal, and finish a goal, each with an Undo or Reopen in the toast
+  - Write the note, Ask to rebase, Make all tasks, Add to last wave, File again, and Try again on setup
+  - Settings: work hours, the worktree pool and the Jira account
+  - Confirming an owner-only action that arrives from a Midna link (Mark done, Cancel task)
+
+  Mark created and Details editing leave the task panel. Any other change to tasks, goals or the backlog is an
+  **Open in Claude** hand-off.
 - **No helper copy.** Labels only where they name data. 12-hour times.
 - **Health is quiet until it isn't.** Midna, hooks, work hours, usage, accounts and updates fold into one health
   item. Anything broken turns it amber and moves into Needs you.
