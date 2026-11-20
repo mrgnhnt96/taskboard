@@ -205,7 +205,6 @@ pub enum K {
     List,
     Li,
     Files,
-    MetaRow,
     Chips,
     LogItem,
     Md,
@@ -361,7 +360,6 @@ pub struct Ui {
     pub drafts: HashMap<String, String>,
     pub busy: HashSet<String>,
     pub notes: HashMap<String, (String, bool)>,
-    pub meta_edit: HashMap<String, Vec<(String, String)>>,
     pub handoffs: HashMap<String, String>,
     /// "" means "all".
     pub log_filter: String,
@@ -1069,6 +1067,7 @@ fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             bx.push(el(K::Row, links.iter().map(|u| c.btn(&link_label(u), Act::new("open-url", u, &r, &grp), Look::Plain, false, Some(u))).collect()));
         }
         let k = format!("did:{r}");
+        bx.push(txt("Note for the agents", St::LrowKey));
         bx.push(Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false });
         // Waiting on another task: Done stays off until that one's done.
         let blockers: Vec<String> = arr(t, "blocked_by").iter().map(|x| or_empty(&x["ref"])).filter(|x| !x.is_empty()).collect();
@@ -2657,11 +2656,7 @@ pub fn handoff_text(t: &Value, ui: &Ui) -> Option<String> {
 }
 
 /// `metaRows(t)`.
-pub fn meta_rows(t: &Value, ui: &Ui) -> Vec<(String, String)> {
-    let r = rf(t, "T");
-    if let Some(rows) = ui.meta_edit.get(&r) {
-        return rows.clone();
-    }
+pub fn meta_rows(t: &Value) -> Vec<(String, String)> {
     arr(t, "meta")
         .iter()
         .map(|p| match p {
@@ -2698,10 +2693,8 @@ fn lent_devices(t: &Value) -> Vec<&str> {
     arr(d, "lent").iter().filter_map(|x| x.as_str()).collect()
 }
 
-/// The devices it has (or asks for) and its bits, as Context rows. A backend bit not made yet has
-/// "Mark created" (the owner's word that it's made in the flag tool, as on the goal page).
-fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
-    let r = rf(t, "T");
+/// The devices it has (or asks for) and its bits, as Context rows (shown only; the app doesn't mark a bit made).
+fn pool_rows(t: &Value) -> Vec<Node> {
     let mut out = vec![];
     let d = &t["devices"];
     let lent = lent_devices(t);
@@ -2714,9 +2707,6 @@ fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
         let state = if s(x, "kind") == "local" { "local" } else if b(x, "made") { "created" } else { "not created" };
         let sep = if ix + 1 < arr(t, "bits").len() { ", " } else { "" };
         bits.push(txt(format!("⚑ {} ({state}){sep}", s(x, "name")), St::Plain));
-        if s(x, "kind") != "local" && !b(x, "made") {
-            bits.push(c.btn("Mark created", Act::new("bit-made", s(x, "name"), &r, ""), Look::SoftSmall, false, Some(&format!("Tell the board {} is made", s(x, "name")))));
-        }
     }
     if !bits.is_empty() {
         out.push(el(K::KvRow, vec![txt("Bits", St::LrowKey), el(K::Line, bits)]));
@@ -2753,7 +2743,7 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     }
     let mut kv: Vec<Node> = wh.into_iter().map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)])).collect();
     kv.extend(origin_row(t));
-    kv.extend(pool_rows(c, t));
+    kv.extend(pool_rows(t));
     out.push(el(K::Kv, kv));
     for (title, key, glyph, dot) in [("Done so far", "done", "✓", Dot::Up), ("Next", "next", "→", Dot::Accent), ("Decisions", "decisions", "•", Dot::Faint), ("Your answers", "answers", "•", Dot::Warn)] {
         let items = arr(cx, key);
@@ -2798,20 +2788,12 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         ));
     }
     out.push(el(K::Stack, fl));
-    let meta = meta_rows(t, c.ui);
+    let meta = meta_rows(t);
     if !meta.is_empty() {
         let mut kids = vec![txt("Details", St::H3)];
-        for (i, (k, v)) in meta.iter().enumerate() {
-            kids.push(el(
-                K::MetaRow,
-                vec![
-                    Node::Field { key: format!("meta:{r}:{i}:0"), value: k.clone(), placeholder: "Name", multi: false, mono: false },
-                    Node::Field { key: format!("meta:{r}:{i}:1"), value: v.clone(), placeholder: "Value", multi: false, mono: false },
-                    c.btn("", Act::new("meta-del", i.to_string(), &r, ""), Look::Icon(Icon::Remove), false, None),
-                ],
-            ));
+        for (k, v) in &meta {
+            kids.push(el(K::KvRow, vec![txt(k.clone(), St::LrowKey), txt(v.clone(), St::Plain)]));
         }
-        kids.extend(c.note(&format!("meta:{r}")));
         out.push(el(K::Stack, kids));
     }
     let text = handoff_text(t, c.ui).unwrap_or_else(|| "Loading…".into());

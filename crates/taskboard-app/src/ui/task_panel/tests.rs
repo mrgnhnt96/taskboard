@@ -1,7 +1,7 @@
 //! The task panel against the web board: every panel state from `parity/golden/task.json` (what
 //! the web showed, its controls, tooltips and fields), and every action's request.
 use super::view::{self, Ctx, Ui};
-use super::{Act, act, build, handoff_stamp, on_input, save_meta, ui};
+use super::{Act, act, build, handoff_stamp, on_input, ui};
 use crate::app::{MainWindow, Panel, TaskTab};
 use crate::parity::{self, golden, settle};
 use crate::backend::Backend;
@@ -20,17 +20,6 @@ fn ui_from(v: &Value) -> Ui {
         notes: v["notes"]
             .as_object()
             .map(|o| o.iter().map(|(k, n)| (k.clone(), (n["text"].as_str().unwrap_or("").to_string(), n["err"].as_bool().unwrap_or(false)))).collect())
-            .unwrap_or_default(),
-        meta_edit: v["meta_edit"]
-            .as_object()
-            .map(|o| {
-                o.iter()
-                    .map(|(r, rows)| {
-                        let rows = rows.as_array().cloned().unwrap_or_default();
-                        (r.clone(), rows.iter().map(|p| (p[0].as_str().unwrap_or("").to_string(), p[1].as_str().unwrap_or("").to_string())).collect())
-                    })
-                    .collect()
-            })
             .unwrap_or_default(),
         log_filter: v["log_filter"].as_str().unwrap_or("").to_string(),
         att_menu: v["att_menu"].as_str().map(str::to_string),
@@ -75,10 +64,17 @@ fn web_parts(n: view::Node) -> view::Node {
     }
 }
 
+/// The web board edits a task's Details and marks a bit created; the app only shows them, so a case
+/// with Details (or a bit not made yet) can't match the web (see `details_and_bits_are_shown_only`).
+fn edits_left_on_purpose(c: &Value) -> bool {
+    let t = &c["input"]["task"];
+    t["meta"].as_array().is_some_and(|m| !m.is_empty()) || t["bits"].as_array().is_some_and(|b| b.iter().any(|x| x["kind"] != "local" && x["made"] != true))
+}
+
 fn check_part(part: &str, f: impl Fn(&view::Node) -> Value) {
     let g = golden("task").only("panel");
     let mut bad = Vec::new();
-    for c in &g.cases {
+    for c in g.cases.iter().filter(|c| !edits_left_on_purpose(c)) {
         let got = f(&web_parts(tree(&c["input"])));
         if got != c["expect"][part] {
             bad.push(format!("  {}:\n    web {}\n    app {}", c["name"].as_str().unwrap_or("?"), c["expect"][part], got));
@@ -321,9 +317,7 @@ fn sent_note(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>) ->
 fn cmd_c_copies_a_selection_made_after_typing_in_a_field(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::{Modifiers, MouseButton, VisualTestContext, point, px};
     let (w, rec) = parity::window(cx);
-    rec.board().post("tasks/T2/meta", json!({"meta": [["Owner", "Sam"]]})).unwrap();
-    open(cx, &w, "T2");
-    press(cx, &w, "tab", Some("context"));
+    open(cx, &w, "T5");
     let cx = &mut VisualTestContext::from_window(w.into(), cx);
     let width = cx.update(|window, cx| {
         drop(window.draw(cx));
@@ -331,7 +325,7 @@ fn cmd_c_copies_a_selection_made_after_typing_in_a_field(cx: &mut gpui_kit::Test
     });
     // The reader typed in one of the panel's fields: it still has focus.
     w.update(cx, |m, window, cx| {
-        let field = m.task_panel.fields["meta:T2:0:1"].focus.clone();
+        let field = m.task_panel.fields.values().next().expect("a queued task has a start-at field").focus.clone();
         window.focus(&field, cx);
     })
     .unwrap();
@@ -532,20 +526,15 @@ fn lost_task_resumes(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(resumes, vec![json!({"mode": "fresh"}), json!({"mode": "reopen"}), json!({"mode": "finish"})]);
 }
 
-#[gpui_kit::test]
-fn details_fields_edit_in_place(cx: &mut gpui_kit::TestAppContext) {
-    let (w, rec) = parity::window(cx);
-    rec.board().post("tasks/T2/meta", json!({"meta": [["Figma", "https://figma.com/a"], ["Owner", "Sam"]]})).unwrap();
-    open(cx, &w, "T2");
-    press(cx, &w, "tab", Some("context"));
-    typed(cx, &w, "meta:T2:1:1", " Alex ");
-    w.update(cx, |m, _, cx| save_meta(m, "T2", "Saved", cx)).unwrap();
-    settle(cx);
-    assert_eq!(rec.last("tasks/T2/meta"), Some(json!({"meta": [["Figma", "https://figma.com/a"], ["Owner", "Alex"]]})));
-    assert_eq!(note("meta:T2"), Some(("Saved".into(), false)));
-    press(cx, &w, "meta-del", Some("0"));
-    assert_eq!(rec.last("tasks/T2/meta"), Some(json!({"meta": [["Owner", "Alex"]]})));
-    assert_eq!(note("meta:T2"), Some(("Removed".into(), false)));
+#[::core::prelude::v1::test]
+fn details_and_bits_are_shown_only() {
+    let task = json!({"ref": "T7", "id": 7, "title": "T", "status": "working", "meta": [["Figma", "x"]], "bits": [{"name": "flag-a", "kind": "backend", "made": false}]});
+    let n = tree(&json!({"state": {}, "task": task, "tab": "context"}));
+    let text = json!(view::text(&n)).to_string();
+    assert!(text.contains("Details") && text.contains("Figma") && text.contains("flag-a (not created)"), "{text}");
+    let acts = json!(view::acts(&n)).to_string();
+    assert!(!acts.contains("meta-del") && !acts.contains("bit-made"), "{acts}");
+    assert!(!json!(view::values(&n)).to_string().contains("meta:"));
 }
 
 #[gpui_kit::test]
@@ -1685,6 +1674,13 @@ fn the_reason_is_said_once_on_a_task_started_by_hand() {
 fn a_human_task_says_the_reason_once_in_its_box() {
     let text = panel_text(blocked(json!({"kind": "human", "detail": "Do it"}), json!([blocker("T5", "done")])), json!({}));
     assert_eq!(text.matches("until its PR merges").count(), 1, "{text}");
+}
+
+/// The note box on a human task's open box is named: it is what the agents waiting on it read.
+#[::core::prelude::v1::test]
+fn a_human_tasks_note_box_is_labelled_for_the_agents() {
+    let text = panel_text(blocked(json!({"kind": "human", "detail": "Do it"}), json!([])), json!({}));
+    assert_eq!(text.matches("Note for the agents").count(), 1, "{text}");
 }
 
 #[::core::prelude::v1::test]
