@@ -162,6 +162,13 @@ approvals = 2                        # approvals a PR needs before it's ready to
 #                                     # TB_BASE, TB_BRANCH and TB_WORKTREE (when there is one). It prints a JSON list
 #                                     # of check names, which takes the place of `expected` for that push ([] = none);
 #                                     # null, nothing or a non-zero exit = can't tell (as if `expected` were unset)
+# azure_project = "org/project"       # Azure DevOps project its Azure Pipelines checks build in (or a dev.azure.com link)
+# azure_pipelines = { mobile = 16 }   # checks that are Azure builds, with their pipeline's definition id. The board asks
+#                                     # Azure (the CI token) for a check the host hasn't shown on the PR's head: a queued
+#                                     # or running build holds the merge until it finishes, past expected_wait_mins; a
+#                                     # finished one counts as passed or failed. No build in Azure: the wait runs out as before
+# azure_stacked_wait_mins = 5         # a PR into a branch other than the default whose checks Azure has no build for
+#                                     # waits only this long (unset: expected_wait_mins)
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests (and stages) for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 # ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
