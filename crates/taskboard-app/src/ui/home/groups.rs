@@ -325,6 +325,8 @@ pub enum Do {
     TalkTask(String),
     TalkAlert(String),
     MakeTask(String),
+    /// Every miss of a goal at once: one batch, so all of them become tasks or none do.
+    MakeAll(Vec<String>),
     WontDo(String),
     Ticket(String),
     FinishWithout(String),

@@ -350,7 +350,7 @@ fn goal_head(t: &Theme, g: &GoalRow, kind: Kind, open: bool) -> Head {
         tag: g.tag.clone(),
         tag_color: if g.kids.iter().all(|a| a.issue.is_some()) { g.kids.first().map_or(t.muted, |a| tag_color(t, a)) } else { t.muted },
         holds: g.holds.label(),
-        finish: g.finish.iter().map(|act| (act.label().to_string(), Do::Act(act.clone()))).collect(),
+        finish: g.finish.iter().map(|act| (act.label().to_string(), Do::Act(act.clone()))).chain(make_all(g)).collect(),
         later: g.kids.iter().any(|a| a.snooze),
         time: if g.quiet { String::new() } else { g.time.clone() },
         chevron: Some(open),
@@ -359,6 +359,12 @@ fn goal_head(t: &Theme, g: &GoalRow, kind: Kind, open: bool) -> Head {
         paused: false,
         form_open: false,
     }
+}
+
+/// "Make all 3 into tasks" on a goal whose open items are all misses.
+fn make_all(g: &GoalRow) -> Option<(String, Do)> {
+    let refs: Vec<String> = g.kids.iter().filter_map(|a| a.issue.clone()).collect();
+    (refs.len() > 1 && refs.len() == g.kids.len()).then(|| (format!("Make all {} into tasks", refs.len()), Do::MakeAll(refs)))
 }
 
 /// A head with what the page knows now: whether the board answers and which form is open.
@@ -1012,6 +1018,13 @@ fn run_do(m: &mut MainWindow, key: &str, act: &Do, window: &mut Window, cx: &mut
         Do::TalkTask(r) => talk(m, format!("tasks/{r}/talk"), cx),
         Do::TalkAlert(id) => talk(m, format!("alerts/{id}/talk"), cx),
         Do::MakeTask(b) => make_task(m, b, cx),
+        Do::MakeAll(ids) => {
+            let said = format!("Made {} into tasks", ids.len());
+            m.post("backlog/bulk",json!({"ids": ids, "action": "task", "where": "board"}), cx, move |m, _, cx| {
+                crate::ui::backlog::stale(m);
+                sent(m, said, cx);
+            })
+        }
         Do::WontDo(b) => settle_issue(m, format!("backlog/{b}/drop"), json!({}), "Closed as won’t do", cx),
         Do::Ticket(b) => settle_issue(m, format!("backlog/{b}/ticket"), json!({}), "Asked Jira for a ticket", cx),
         Do::FinishWithout(b) => settle_issue(m, format!("backlog/{b}/without-goal"), json!({}), "The goal finishes without it", cx),
@@ -1132,5 +1145,25 @@ mod tests {
         assert_eq!(lines_of(&v, false, false), [Line::Head, Line::Ideas, Line::Idea(0), Line::Later(false), Line::End], "an idea waiting isn't Nothing needs you");
         let none = View { ideas: vec![], ..v };
         assert_eq!(lines_of(&none, false, false), [Line::Head, Line::Empty, Line::Later(false), Line::End]);
+    }
+
+    #[test]
+    fn a_goal_of_misses_offers_one_button_for_all_of_them() {
+        let miss = |n: i64| json!({"id": format!("a{n}"), "key": format!("miss:{n}"), "text": format!("Miss {n}"), "title": format!("Miss {n}"), "goal": "G1", "goal_name": "Picto", "project": "p",
+            "at": format!("2026-11-0{n}T10:00:00Z"), "card": null, "waiting": false, "holds": {"tasks": [], "goal": "G1"}});
+        let asks = crate::ui::home::asks_vm(&json!({"needs": [miss(4), miss(5), miss(6)], "goals": []}));
+        let gs = groups::groups_vm(&asks.iter().collect::<Vec<_>>());
+        let Row::Goal(g) = &gs[0].rows[0] else { panic!("three misses fold into one goal row") };
+        assert_eq!(make_all(g), Some(("Make all 3 into tasks".to_string(), Do::MakeAll(vec!["B6".into(), "B5".into(), "B4".into()]))));
+        let one = GoalRow { kids: vec![g.kids[0].clone()], ..g.clone() };
+        assert_eq!(make_all(&one), None, "one miss has its own Make it a task");
+    }
+
+    #[gpui_kit::test]
+    fn make_all_sends_one_batch_over_the_promote_action(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |m, window, cx| run_do(m, "goal:G1", &Do::MakeAll(vec!["B4".into(), "B5".into()]), window, cx)).unwrap();
+        settle(cx);
+        assert_eq!(rec.last("backlog/bulk"), Some(json!({"ids": ["B4", "B5"], "action": "task", "where": "board"})));
     }
 }

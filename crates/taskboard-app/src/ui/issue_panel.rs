@@ -500,19 +500,28 @@ pub fn at_time(iso: &str) -> String {
     }
 }
 
+/// Whether settling the goal's only miss would finish it: nothing else holds it open.
+pub fn finishes_goal(goal: &Value) -> bool {
+    let mut g = goal.clone();
+    g["misses"] = json!(0);
+    fmt::i(goal, "misses") == 1 && crate::ui::goals::finished(&g)
+}
+
 /// The goal a miss holds open, and its choices.
 fn miss_view(cx: &Ctx, b: &Value, r: &str) -> MissView {
     let gid = b.get("goal_id").and_then(Value::as_i64);
     let goal = gid.and_then(|id| cx.goals.iter().find(|g| g.get("id").and_then(Value::as_i64) == Some(id)));
     let g = b.get("goal").filter(|g| g.is_object()).map(|g| fmt::ref_of(g, "G")).filter(|x| !x.is_empty()).or_else(|| gid.map(|n| format!("G{n}"))).unwrap_or_else(|| "The goal".into());
     let others = goal.map(|g| fmt::i(g, "misses") - 1).unwrap_or(0);
-    let head = if others > 0 { format!("Holds {g} open, with {} other {}.", others, if others == 1 { "miss" } else { "misses" }) } else { format!("Holds {g} open.") };
+    // Settling this one in any of the three ways would finish the goal.
+    let last = goal.is_some_and(finishes_goal);
+    let head = if last { format!("Last thing holding {g} open.") } else if others > 0 { format!("Holds {g} open, with {} other {}.", others, if others == 1 { "miss" } else { "misses" }) } else { format!("Holds {g} open.") };
     let mut acts = vec![(cx.act("promote", "Make it a task", "board", r), format!("{g} stays open until the task is done."))];
     if cx.jira {
-        acts.push((cx.act("ticket", "Create ticket", "", r), format!("Sends it to Jira. {g} stops waiting for it.")));
+        acts.push((cx.act("ticket", "Create ticket", "", r), if last { format!("Sends it to Jira and finishes {g}, outcome not met.") } else { format!("Sends it to Jira. {g} stops waiting for it.") }));
     }
-    acts.push((cx.act("drop", "Won’t do", "", r), format!("Closes the issue. {g} stops waiting for it.")));
-    acts.push((cx.act("without", "Finish without it", "", r), format!("Stays in the backlog. {g} stops waiting for it.")));
+    acts.push((cx.act("drop", "Won’t do", "", r), if last { format!("Closes the issue and finishes {g}, outcome not met.") } else { format!("Closes the issue. {g} stops waiting for it.") }));
+    acts.push((cx.act("without", "Finish without it", "", r), if last { format!("Stays in the backlog and finishes {g}, outcome not met.") } else { format!("Stays in the backlog. {g} stops waiting for it.") }));
     MissView { head, done_when: goal.and_then(|g| fmt::opt_s(g, "outcome")).map(|o| format!("Done when: {o}")), acts }
 }
 
@@ -1203,6 +1212,7 @@ fn act_el(t: &Theme, r: &str, a: &Act, style: &str, small: bool, id: &str, cx: &
         match act {
             "pick" => select_for_goal(m, &rr, cx),
             "promote" => promote(m, &rr, arg, cx),
+            "ticket" | "without" | "drop" if crate::ui::modals::ask_last_miss(m, &rr, act, cx) => {}
             "ticket" => ticket(m, &rr, cx),
             "defer" => defer(m, &rr, cx),
             "without" => finish_without(m, &rr, cx),
@@ -1708,6 +1718,40 @@ mod tests {
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/promote")), Some(json!({"where": "board"})));
         w.update(cx, |m, _, _| assert!(matches!(&m.panel, Some(Panel::Task { .. })), "the new task's panel opens")).unwrap();
+    }
+
+    #[test]
+    fn only_the_last_miss_on_finished_work_finishes_the_goal() {
+        assert!(super::finishes_goal(&json!({"total": 2, "done": 2, "misses": 1})));
+        assert!(!super::finishes_goal(&json!({"total": 2, "done": 2, "misses": 2})), "another miss still holds it");
+        assert!(!super::finishes_goal(&json!({"total": 2, "done": 1, "misses": 1})), "work is left");
+    }
+
+    #[gpui_kit::test]
+    fn settling_the_last_miss_asks_before_it_finishes_the_goal(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = parity::window(cx);
+        let g = rec.board().post("goals", json!({"name": "Ship it", "project": "webapp", "outcome": "Sign-in works offline"})).unwrap()["id"].as_i64().unwrap();
+        let r = add_issue(&rec, json!({"title": "Offline sign-in fails", "kind": "bug", "project": "webapp", "goal_id": g, "misses_goal": true}));
+        w.update(cx, |m, _, cx| m.open_issue(r.clone(), cx)).unwrap();
+        parity::settle(cx);
+        w.update(cx, |m, _, cx| {
+            for x in std::rc::Rc::make_mut(&mut m.data.goals).iter_mut().filter(|x| x["id"].as_i64() == Some(g)) {
+                *x = json!({"id": g, "ref": format!("G{g}"), "total": 1, "done": 1, "misses": 1, "outcome": "Sign-in works offline"});
+            }
+            let b = m.data.issue.clone().unwrap();
+            let mv = panel_head(&Ctx::of(m), &b).miss.unwrap();
+            assert_eq!(mv.head, format!("Last thing holding G{g} open."));
+            assert!(crate::ui::modals::ask_last_miss(m, &r, "drop", cx), "it asks first");
+            assert!(matches!(&m.modal, Some(crate::ui::modals::Modal::LastMiss(x)) if x.r == r && x.act == "drop" && x.goal == format!("G{g}")));
+        })
+        .unwrap();
+        assert_eq!(rec.last(&format!("backlog/{r}/drop")), None, "nothing is sent before the yes");
+        w.update(cx, |m, _, cx| {
+            std::rc::Rc::make_mut(&mut m.data.goals).iter_mut().filter(|x| x["id"].as_i64() == Some(g)).for_each(|x| x["misses"] = json!(2));
+            m.modal = None;
+            assert!(!crate::ui::modals::ask_last_miss(m, &r, "drop", cx), "another miss: it acts at once");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
