@@ -80,7 +80,7 @@ impl Board {
 
 #[test]
 fn the_owners_word_naming_the_tasks_marks_them_done() {
-    for word in ["mark H{a} and H{b} done", "H{a} and H{b} are done.", "I did H{a} and H{b}", "H{a}, H{b}: done", "Mark as done H{a} and H{b}", "done with H{a} and H{b}"] {
+    for word in ["mark H{a} and H{b} done", "H{a} and H{b} are done.", "I did H{a} and H{b}", "H{a}, H{b}: done", "Mark as done H{a} and H{b}", "done with H{a} and H{b}", "close H{a} and H{b}", "H{a} and H{b} are closed"] {
         let b = board();
         let (a, z) = (b.human("s1", "Make an account"), b.human("s1", "Sign the agreement"));
         b.refused(&[a, z], "nobody said so yet");

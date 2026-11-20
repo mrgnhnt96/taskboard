@@ -33,9 +33,9 @@ const UNNAMED: &str = concat!(
 /// Who a statement says is done: the tasks it names, or "they", "both", "it", "those tasks".
 static WHO: Lazy<String> = Lazy::new(|| format!(r"(?P<who>{NAMED}|they|{UNNAMED})"));
 /// The words for done in an ask ("mark it done").
-const DONE: &str = r"(?:done|complete|completed|finished)";
+const DONE: &str = r"(?:done|complete|completed|finished|closed)";
 /// The words for done in a statement ("it's done", "both are sorted").
-const DONE_SAID: &str = r"(?:done|complete|completed|finished|handled|sorted(?:\s+out)?|taken\s+care\s+of)";
+const DONE_SAID: &str = r"(?:done|complete|completed|finished|closed|handled|sorted(?:\s+out)?|taken\s+care\s+of)";
 /// Words between "is" and done that add nothing ("they're all done", "H4 is now done").
 const FILL: &str = r"(?:\s+(?:all|both|each|now|already|finally|actually|also|just|really|totally|fully))*";
 
@@ -59,7 +59,7 @@ static NOT_DID_RE: Lazy<Regex> = Lazy::new(|| {
 /// "I did T4", "I've finished both", "we took care of them".
 static DID_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
-        r"(?i)\b(?:i|we)(?:[’']ve|\s+have)?(?:\s+(?:just|already|now|finally|also|actually))*\s+(?:did|done|finished|completed|handled|sorted(?:\s+out)?|took\s+care\s+of|taken\s+care\s+of)\s+{}\b",
+        r"(?i)\b(?:i|we)(?:[’']ve|\s+have)?(?:\s+(?:just|already|now|finally|also|actually))*\s+(?:did|done|finished|completed|closed|handled|sorted(?:\s+out)?|took\s+care\s+of|taken\s+care\s+of)\s+{}\b",
         *WHO
     ))
     .unwrap()
@@ -84,6 +84,14 @@ static SAID_RE: Lazy<Regex> = Lazy::new(|| {
 static DONE_WITH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"(?i)\b(?:all\s+)?(?:done|finished)\s+with\s+{}\b", *WHO)).unwrap());
 /// "T4 done", "T3, T4: done", "T4 - done".
 static TERSE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"(?i)(?P<who>\b{NAMED})\s*(?:[:—–]|\s-+)?\s*(?:all\s+|both\s+)?{DONE}\b")).unwrap());
+/// "Close H4", "close out both of them": the owner's word for marking it done. Only tasks it names or
+/// "them", never "it" or "that", which may as well be a terminal or a PR.
+static CLOSE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)\bclose(?:\s+out)?\s+(?P<who>{NAMED}|(?:both|all|each)\s+of\s+(?:them|these|those)|them(?:\s+(?:all|both))?|these|those|both|(?:the|these|those|my|your)\s+(?:human\s+)?tasks?)\b"
+    ))
+    .unwrap()
+});
 /// A mark just before the tasks: what [`TERSE_RE`] found is an ask already ("mark T4 done").
 static MARK_BEFORE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"(?i)\bmark\s+(?:as\s+)?{LISTED}$")).unwrap());
 /// A prompt that's only a done ("done", "all done", "both finished", "did it", "yes, done").
@@ -121,6 +129,7 @@ pub fn as_asks(text: &str) -> String {
         })
         .into_owned()
     };
+    let text = CLOSE_RE.replace_all(&text, "mark $who done").into_owned();
     let text = said(&NOT_DID_RE, &text, "don't mark");
     let text = said(&DID_RE, &text, "mark");
     let text = said(&NOT_SAID_RE, &text, "don't mark");
@@ -305,6 +314,14 @@ mod tests {
             ("done", "mark it done"),
             ("all done!", "mark them done"),
             ("did it", "mark it done"),
+            ("close H4", "mark T4 done"),
+            ("close H3 and H4", "mark T3 and T4 done"),
+            ("don't close H4 yet", "don't mark T4 done yet"),
+            ("close out both of them", "mark both of them done"),
+            ("H4 is closed", "mark T4 done"),
+            ("mark H4 closed", "mark T4 closed"),
+            ("close it", "close it"),
+            ("close PR #194", "close PR #194"),
         ] {
             assert_eq!(as_asks(said), ask, "{said}");
         }
