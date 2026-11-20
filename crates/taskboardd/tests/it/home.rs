@@ -220,6 +220,23 @@ fn dismissing_a_task_with_no_alert_puts_it_away_until_it_asks_something_new() {
 }
 
 #[test]
+fn undo_on_dismiss_brings_a_task_with_no_alert_back() {
+    let b = new_board();
+    let (_, t) = goal(&b);
+    b.set(t[1], vec![("status", json!("needs")), ("needs_reason", json!("lost")), ("lost", json!(1))]);
+    let id = format!("task:T{}", t[1]);
+    b.post(&format!("alerts/{id}/dismiss"), json!({}));
+    assert_eq!(b.home()["needs"], json!([]));
+    b.post(&format!("alerts/{id}/restore"), json!({}));
+    assert_eq!(b.home()["needs"][0]["id"], id);
+    assert_eq!(api::dispatch(&b.app, "POST", &format!("alerts/{id}/restore"), &Query::new(), &json!({})).unwrap_err().status, 404, "once");
+
+    b.post(&format!("alerts/{id}/snooze"), json!({"mins": 60}));
+    assert_eq!(api::dispatch(&b.app, "POST", &format!("alerts/{id}/restore"), &Query::new(), &json!({})).unwrap_err().status, 404, "a snooze isn't a dismiss");
+    assert_eq!(b.home()["needs"], json!([]));
+}
+
+#[test]
 fn snoozing_a_task_with_no_alert_puts_it_away_until_its_time() {
     let b = new_board();
     let (_, t) = goal(&b);

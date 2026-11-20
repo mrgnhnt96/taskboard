@@ -465,6 +465,56 @@ pub fn clear_alerts(app: &App, task_id: Option<i64>, alert_id: Option<&str>) -> 
     keep(app, &rows)
 }
 
+/// The alerts dismissed lately, oldest first, kept so a toast's Undo can bring one back: each as
+/// `{alert, next}`, `next` the id of the alert that came after it then.
+const DISMISSED: &str = "alerts_dismissed";
+const DISMISSED_KEPT: usize = 10;
+
+fn dismissed(app: &App) -> Vec<Value> {
+    jloads_arr(crate::reqcache::setting(app, DISMISSED).ok().flatten().as_deref())
+}
+
+fn keep_dismissed(app: &App, rows: &[Value]) -> Result<()> {
+    crate::reqcache::forget_setting(DISMISSED);
+    app.db.set_setting(DISMISSED, Some(&jdumps(&Value::Array(rows.to_vec()))))
+}
+
+/// Dismiss on alert `id`: it goes (its notification too), and the last few dismissed are kept for Undo.
+pub fn dismiss_alert(app: &App, id: &str) -> Result<()> {
+    let rows = alerts(app);
+    if let Some(i) = rows.iter().position(|a| a["id"] == id) {
+        let mut gone: Vec<Value> = dismissed(app).into_iter().filter(|g| g["alert"]["id"] != id).collect();
+        gone.push(json!({"alert": rows[i], "next": rows.get(i + 1).map(|n| n["id"].clone())}));
+        let n = gone.len();
+        gone.drain(..n.saturating_sub(DISMISSED_KEPT));
+        keep_dismissed(app, &gone)?;
+    }
+    clear_alerts(app, None, Some(id))
+}
+
+/// Undo on a dismissed alert: it's back where it was, with no new notification. Left out when the
+/// same alert is up again, or a newer plain alert for its task took its place.
+pub fn restore_alert(app: &App, id: &str) -> Result<()> {
+    let mut gone = dismissed(app);
+    let Some(i) = gone.iter().position(|g| g["alert"]["id"] == id) else { return err(404, "That alert can't be brought back now.") };
+    let g = gone.remove(i);
+    let a = g["alert"].clone();
+    keep_dismissed(app, &gone)?;
+    let mut rows = alerts(app);
+    let task = a["task_id"].as_i64();
+    let up = rows.iter().any(|r| {
+        r["id"] == a["id"] || (!a["key"].is_null() && r["key"] == a["key"]) || (task.is_some() && r["task_id"].as_i64() == task && !stays(r))
+    });
+    if up {
+        return Ok(());
+    }
+    let at = a["at"].as_str().unwrap_or("").to_string();
+    let next = rows.iter().position(|r| !g["next"].is_null() && r["id"] == g["next"]);
+    let i = next.or_else(|| rows.iter().position(|r| r["at"].as_str().unwrap_or("") > at.as_str())).unwrap_or(rows.len());
+    rows.insert(i, a);
+    keep(app, &rows)
+}
+
 /// The snooze buttons on a notification, from config.toml's `[alerts] snooze_mins` (at most four).
 pub fn snooze_actions(app: &App) -> Vec<String> {
     app.cfg.alerts.snooze_mins.iter().filter(|m| **m > 0).take(4).map(|m| snooze_label(*m)).collect()

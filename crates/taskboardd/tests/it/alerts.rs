@@ -165,3 +165,29 @@ fn a_notifications_snooze_counts_once_however_late() {
     dispatch::tick(&app).unwrap();
     assert!(!waiters.lock().contains_key(id), "its waiter stops once the alert is gone");
 }
+
+#[test]
+fn undo_on_dismiss_brings_the_alert_back_in_its_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    let first = post(&app, "alerts", json!({"text": "api 2.4.0 wasn't released", "key": "rel:api"})).unwrap()["alert"].clone();
+    post(&app, "alerts", json!({"text": "Couldn't reach the PR host"})).unwrap();
+    let id = first["id"].as_str().unwrap();
+
+    let before = dispatch::alerts(&app);
+    post(&app, &format!("alerts/{id}/dismiss"), json!({})).unwrap();
+    assert!(dispatch::alerts(&app).iter().all(|a| a["id"] != id));
+
+    post(&app, &format!("alerts/{id}/restore"), json!({})).unwrap();
+    let rows = dispatch::alerts(&app);
+    assert_eq!(rows[0], before[0], "back as it was, before the newer one");
+    assert_eq!(rows.len(), 2);
+
+    let (status, _) = post(&app, &format!("alerts/{id}/restore"), json!({})).unwrap_err();
+    assert_eq!(status, 404, "an Undo counts once");
+
+    post(&app, &format!("alerts/{id}/dismiss"), json!({})).unwrap();
+    post(&app, "alerts", json!({"text": "api 2.4.0 wasn't released", "key": "rel:api"})).unwrap();
+    post(&app, &format!("alerts/{id}/restore"), json!({})).unwrap();
+    assert_eq!(dispatch::alerts(&app).iter().filter(|a| a["key"] == "rel:api").count(), 1, "raised again meanwhile, it shows once");
+}
