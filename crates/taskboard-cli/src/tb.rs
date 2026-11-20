@@ -716,26 +716,26 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         limit: i64,
     },
-    /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
+    /// Which accounts are connected (GitHub, Bitbucket, Azure DevOps, Slack, Jira); connect them in Taskboard ▸ Settings
     Accounts,
     /// The CI token the board reads failed steps and tests with (Azure DevOps): show, set or clear it
     CiToken {
         #[command(subcommand)]
         action: Option<CiTokenCmd>,
     },
-    /// Print an account's token for a script: github, bitbucket or slack
+    /// Print an account's token for a script: github, bitbucket, slack or jira
     Token {
-        #[arg(value_parser = ["github", "bitbucket", "slack"])]
+        #[arg(value_parser = ["github", "bitbucket", "slack", "jira"])]
         provider: String,
-        /// Print who the token belongs to instead (Bitbucket: the email for basic auth)
+        /// Print who the token belongs to instead (Bitbucket and Jira: the email for basic auth)
         #[arg(long)]
         user: bool,
     },
     /// Call an account's REST API with its token: `tb api bitbucket repositories/acme/web/pullrequests/9`
     Api {
-        #[arg(value_parser = ["github", "bitbucket", "slack"])]
+        #[arg(value_parser = ["github", "bitbucket", "slack", "jira"])]
         provider: String,
-        /// The path under https://api.github.com/, https://api.bitbucket.org/2.0/ or https://slack.com/api/ (or a full URL)
+        /// The path under https://api.github.com/, https://api.bitbucket.org/2.0/, https://slack.com/api/ or https://<jira site>/rest/api/3/ (or a full URL)
         path: String,
         /// GET, POST, PUT or DELETE (POST when there's --data)
         #[arg(short = 'X', long)]

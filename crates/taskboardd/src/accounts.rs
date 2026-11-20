@@ -1,5 +1,5 @@
-//! Accounts: GitHub, Bitbucket, Azure DevOps and Slack, so the board and its agents can check PRs,
-//! comment, push, read failed builds and assign reviewers.
+//! Accounts: GitHub, Bitbucket, Azure DevOps, Slack and Jira, so the board and its agents can check
+//! PRs, comment, push, read failed builds, assign reviewers and comment on tickets.
 //!
 //! Taskboard keeps its own sign-in for each and never touches the machine's: not `gh`'s login, not
 //! `~/.gitconfig`, not git's credential store.
@@ -13,9 +13,11 @@
 //!   may do, so it's tried on the organization's first project: a build read and a test-run read
 //!   ([`azure_who`]).
 //! - **Slack** is an app's OAuth token (`xoxp-` or `xoxb-`), checked with `auth.test`.
+//! - **Jira** is an Atlassian API token (email + token) for the `[jira] site` in config.toml, checked
+//!   with `/rest/api/3/myself`. `jira.rs` reads it before the `[jira]` email and token.
 //!
 //! The tokens live in the login Keychain (`taskboard-github`, `taskboard-bitbucket`,
-//! `taskboard-azure-devops`, `taskboard-slack`);
+//! `taskboard-azure-devops`, `taskboard-slack`, `taskboard-jira`);
 //! `accounts.json` in the data folder keeps who each account is and its scopes, never a secret. The API
 //! never returns a secret: `tb token <provider>` reads it from the Keychain itself, and agents on a task
 //! `git push` with it through `tb git-credential` (see `tb hook SessionStart`).
@@ -73,9 +75,10 @@ pub enum Provider {
     Bitbucket,
     Azure,
     Slack,
+    Jira,
 }
 
-pub const PROVIDERS: [Provider; 4] = [Provider::Github, Provider::Bitbucket, Provider::Azure, Provider::Slack];
+pub const PROVIDERS: [Provider; 5] = [Provider::Github, Provider::Bitbucket, Provider::Azure, Provider::Slack, Provider::Jira];
 
 impl Provider {
     pub fn parse(s: &str) -> Option<Provider> {
@@ -88,6 +91,7 @@ impl Provider {
             Provider::Bitbucket => "bitbucket",
             Provider::Azure => "azure",
             Provider::Slack => "slack",
+            Provider::Jira => "jira",
         }
     }
 
@@ -97,6 +101,7 @@ impl Provider {
             Provider::Bitbucket => "Bitbucket",
             Provider::Azure => "Azure DevOps",
             Provider::Slack => "Slack",
+            Provider::Jira => "Jira",
         }
     }
 
@@ -108,6 +113,7 @@ impl Provider {
             // the CI token's item (`tb ci-token`), so a token stored before the account existed still reads builds
             Provider::Azure => CI_SERVICE,
             Provider::Slack => "taskboard-slack",
+            Provider::Jira => "taskboard-jira",
         }
     }
 
@@ -116,7 +122,7 @@ impl Provider {
         match self {
             Provider::Github => Some(("github.com", GITHUB_GIT_USER)),
             Provider::Bitbucket => Some(("bitbucket.org", BITBUCKET_GIT_USER)),
-            Provider::Azure | Provider::Slack => None,
+            Provider::Azure | Provider::Slack | Provider::Jira => None,
         }
     }
 }
@@ -128,7 +134,7 @@ pub fn required_scopes(p: Provider) -> &'static [&'static str] {
         Provider::Github => &["repo", "read:org", "workflow"],
         Provider::Bitbucket => &["read:repository:bitbucket", "write:repository:bitbucket", "read:pullrequest:bitbucket", "write:pullrequest:bitbucket"],
         Provider::Azure => &[AZURE_BUILD, AZURE_TEST],
-        Provider::Slack => &[],
+        Provider::Slack | Provider::Jira => &[],
     }
 }
 
@@ -160,7 +166,7 @@ pub fn features(p: Provider) -> &'static [Feature] {
     match p {
         Provider::Bitbucket => BITBUCKET,
         Provider::Azure => AZURE,
-        Provider::Github | Provider::Slack => &[],
+        Provider::Github | Provider::Slack | Provider::Jira => &[],
     }
 }
 
@@ -220,7 +226,7 @@ fn features_off(p: Provider, w: &Value) -> (Vec<String>, Vec<Value>, Option<Stri
 }
 
 fn provider(id: &str) -> Result<Provider> {
-    Provider::parse(id).ok_or_else(|| ApiError::new(404, "There's no such account. Use github, bitbucket, azure or slack."))
+    Provider::parse(id).ok_or_else(|| ApiError::new(404, "There's no such account. Use github, bitbucket, azure, slack or jira."))
 }
 
 /// A token and who it belongs to: (email or user, secret).
@@ -340,6 +346,10 @@ fn account(app: &App, p: Provider, saved: &Map<String, Value>) -> Value {
         a["off"] = json!(off);
         a["note"] = json!(note);
     }
+    if p == Provider::Jira {
+        a["site"] = json!(jira_host(&app.cfg.jira.site));
+        a["qa"] = json!(crate::qa::on(app));
+    }
     if p == Provider::Github {
         let g = app.accounts.gh.lock();
         a["login"] = g.login.as_ref().map(|l| json!({"code": l.code, "url": l.url})).unwrap_or(Value::Null);
@@ -382,8 +392,8 @@ pub fn attention(cfg: &Config) -> Value {
     json!(out)
 }
 
-/// `POST accounts/<id>`: connect with a token (`{"token"}`, Bitbucket also `{"email"}`, Azure DevOps
-/// also `{"organization"}`: its name or its URL).
+/// `POST accounts/<id>`: connect with a token (`{"token"}`, Bitbucket and Jira also `{"email"}`,
+/// Azure DevOps also `{"organization"}`: its name or its URL). Jira's site is `[jira] site`.
 pub fn connect(app: &App, id: &str, body: &Value) -> Result<Value> {
     let p = provider(id)?;
     let token = body_str(body, "token");
@@ -406,6 +416,16 @@ pub fn connect(app: &App, id: &str, body: &Value) -> Result<Value> {
             }
             String::new()
         }
+        Provider::Jira => {
+            if app.cfg.jira.site.trim().is_empty() {
+                return err(400, "Set [jira] site in config.toml first, then connect.");
+            }
+            let email = body_str(body, "email");
+            if !email.contains('@') {
+                return err(400, "Enter the email of your Atlassian account.");
+            }
+            email
+        }
     };
     keep(app, p, user, token).map_err(|e| ApiError::new(400, e))?;
     status(app, false)
@@ -418,8 +438,19 @@ fn keep(app: &App, p: Provider, user: String, token: String) -> std::result::Res
     let user = if user.is_empty() { w["user"].as_str().unwrap_or("").to_string() } else { user };
     app.accounts.set(p, (user, token))?;
     save_who(&app.cfg, p, Some(w));
+    token_changed(app, p);
     app.info(format!("accounts: {} connected", p.label()));
     Ok(())
+}
+
+/// Jira's calls keep the token they read and stop after one is refused; a new, checked or forgotten
+/// account starts them over.
+fn token_changed(app: &App, p: Provider) {
+    if p == Provider::Jira {
+        let mut s = app.shared.lock();
+        s.jira_creds = None;
+        s.jira_token_off = false;
+    }
 }
 
 /// `POST accounts/<id>/check`: ask the service again whether the token still works.
@@ -437,7 +468,10 @@ fn recheck(app: &App, p: Provider) {
     let Some(cred) = app.accounts.get(p) else { return };
     let mut saved = load_who(&app.cfg).get(p.id()).cloned().unwrap_or_else(|| json!({}));
     match verify(app, p, &cred) {
-        Ok(w) => save_who(&app.cfg, p, Some(w)),
+        Ok(w) => {
+            save_who(&app.cfg, p, Some(w));
+            token_changed(app, p);
+        }
         Err(e) => {
             saved["error"] = json!(e);
             saved["checked_at"] = json!(now_iso());
@@ -451,6 +485,7 @@ pub fn disconnect(app: &App, id: &str) -> Result<Value> {
     let p = provider(id)?;
     app.accounts.remove(p);
     save_who(&app.cfg, p, None);
+    token_changed(app, p);
     app.info(format!("accounts: {} disconnected", p.label()));
     status(app, false)
 }
@@ -459,14 +494,14 @@ pub fn disconnect(app: &App, id: &str) -> Result<Value> {
 
 fn verify(app: &App, p: Provider, cred: &Cred) -> std::result::Result<Value, String> {
     if app.accounts.sandbox {
-        return sandbox_who(p, &cred.1);
+        return sandbox_who(p, &cred.1, app.cfg.jira.site.trim());
     }
-    ask_service(p, cred, &app.cfg.pr.bitbucket_api, &|| bitbucket_repos(app))
+    ask_service(p, cred, &app.cfg.pr.bitbucket_api, &|| bitbucket_repos(app), app.cfg.jira.site.trim())
 }
 
 /// Asks the service who a token belongs to and what it may do. Bitbucket is asked at `bitbucket_api`,
-/// and checked against `bitbucket_repos` when it can't read the user.
-fn ask_service(p: Provider, cred: &Cred, bitbucket_api: &str, bitbucket_repos: &dyn Fn() -> Vec<String>) -> std::result::Result<Value, String> {
+/// and checked against `bitbucket_repos` when it can't read the user; Jira at `jira_site`.
+fn ask_service(p: Provider, cred: &Cred, bitbucket_api: &str, bitbucket_repos: &dyn Fn() -> Vec<String>, jira_site: &str) -> std::result::Result<Value, String> {
     let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
     let scopes = |r: &ureq::Response| -> Vec<String> {
         r.header("x-oauth-scopes").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default()
@@ -524,7 +559,31 @@ fn ask_service(p: Provider, cred: &Cred, bitbucket_api: &str, bitbucket_repos: &
             }
             Err(_) => Err("Can't reach Slack.".into()),
         },
+        Provider::Jira => {
+            let auth = format!("Basic {}", b64(format!("{}:{}", cred.0, cred.1).as_bytes()));
+            let site = jira_host(jira_site);
+            match agent.get(&format!("https://{site}/rest/api/3/myself")).set("Authorization", &auth).set("Accept", "application/json").call() {
+                Ok(r) => Ok(jira_who(&cred.0, site, &r.into_json().unwrap_or(Value::Null))),
+                Err(ureq::Error::Status(401 | 403, _)) => Err("Jira didn't accept that email and token. Use an Atlassian API token made by the same account.".into()),
+                Err(ureq::Error::Status(404, _)) => Err(format!("There's no Jira at {site}. Check [jira] site in config.toml.")),
+                Err(ureq::Error::Status(code, _)) => Err(format!("Jira answered {code}.")),
+                Err(_) => Err(format!("Can't reach Jira at {site}.")),
+            }
+        }
     }
+}
+
+/// `[jira] site` as a host: "acme.atlassian.net", whether it was written with https:// or not.
+pub fn jira_host(site: &str) -> &str {
+    site.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/')
+}
+
+/// Who a Jira token belongs to, from `/myself`: the email it signed in with, the account's name, and
+/// the site as its detail.
+fn jira_who(email: &str, site: &str, me: &Value) -> Value {
+    let user = me["emailAddress"].as_str().filter(|e| !e.is_empty()).unwrap_or(email);
+    let name = me["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or(user);
+    who(user, name, site, vec![])
 }
 
 /// A Bitbucket GET's answer: the token's scopes and the body, or the HTTP status (0: no answer).
@@ -654,7 +713,7 @@ fn bitbucket_repos(app: &App) -> Vec<String> {
 }
 
 /// The sandbox's answer for a token: `bad` is refused, `narrow` lacks scopes Taskboard needs.
-fn sandbox_who(p: Provider, token: &str) -> std::result::Result<Value, String> {
+fn sandbox_who(p: Provider, token: &str, jira_site: &str) -> std::result::Result<Value, String> {
     if token == "bad" {
         return Err(format!("{} didn't accept that token.", p.label()));
     }
@@ -672,6 +731,7 @@ fn sandbox_who(p: Provider, token: &str) -> std::result::Result<Value, String> {
         Provider::Bitbucket => who("sample", "Sample User", "@sample", scopes),
         Provider::Azure => who("sample@example.com", "Sample User", "sample@example.com · dev.azure.com/sample", scopes),
         Provider::Slack => who("sample", "sample", "Sample Team · sample.slack.com", vec!["chat:write".into()]),
+        Provider::Jira => who("sample@example.com", "Sample User", jira_host(jira_site), vec![]),
     })
 }
 
@@ -828,7 +888,7 @@ fn take_login_token(cfg: &Config, bin: &Path, dir: &Path) -> std::result::Result
     if !o.status.success() || token.is_empty() {
         return Err("gh signed in but didn't hand over a token. Try again.".into());
     }
-    let probe = ask_service(Provider::Github, &(String::new(), token.clone()), &cfg.pr.bitbucket_api, &Vec::new)?;
+    let probe = ask_service(Provider::Github, &(String::new(), token.clone()), &cfg.pr.bitbucket_api, &Vec::new, "")?;
     keychain_set(Provider::Github.service(), probe["user"].as_str().unwrap_or(""), &token)?;
     save_who(cfg, Provider::Github, Some(probe));
     Ok(())
@@ -1104,7 +1164,7 @@ mod tests {
     fn connects_and_disconnects_without_saving_secrets_on_disk() {
         let (app, dir) = board();
         let v = status(&app, false).unwrap();
-        assert_eq!(v["accounts"].as_array().unwrap().len(), 4);
+        assert_eq!(v["accounts"].as_array().unwrap().len(), 5);
         assert!(PROVIDERS.iter().all(|p| account(&v, p.id())["connected"] == false));
 
         let e = connect(&app, "bitbucket", &json!({"email": "a@b.co", "token": "bad"})).unwrap_err();
@@ -1124,7 +1184,52 @@ mod tests {
         let v = disconnect(&app, "bitbucket").unwrap();
         assert_eq!(account(&v, "bitbucket")["connected"], false);
         assert_eq!(account(&v, "slack")["connected"], true);
-        assert!(connect(&app, "jira", &json!({"token": "x"})).is_err_and(|e| e.status == 404));
+        assert!(connect(&app, "gitlab", &json!({"token": "x"})).is_err_and(|e| e.status == 404));
+    }
+
+    #[test]
+    fn jira_connects_with_an_email_and_token_for_the_configured_site() {
+        let (app, _dir) = board();
+        let e = connect(&app, "jira", &json!({"email": "sam@acme.com", "token": "ATATT-j"})).unwrap_err();
+        assert!(e.status == 400 && e.message.contains("[jira] site"), "{}", e.message);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::for_tests(dir.path());
+        cfg.jira.site = "https://acme.atlassian.net/".into();
+        cfg.jira.project = "WEB".into();
+        let app = App::for_tests(cfg);
+        let ji = account(&status(&app, false).unwrap(), "jira");
+        assert_eq!((ji["label"].as_str(), ji["connected"].clone(), ji["site"].as_str(), ji["qa"].clone()), (Some("Jira"), json!(false), Some("acme.atlassian.net"), json!(false)));
+
+        assert!(connect(&app, "jira", &json!({"token": "ATATT-j"})).is_err_and(|e| e.message.contains("email")), "needs an email");
+        assert!(connect(&app, "jira", &json!({"email": "sam@acme.com", "token": "bad"})).is_err_and(|e| e.message.contains("Jira didn't accept")));
+        app.shared.lock().jira_token_off = true;
+        let v = connect(&app, "jira", &json!({"email": "sam@acme.com", "token": "ATATT-j"})).unwrap();
+        let ji = account(&v, "jira");
+        assert_eq!((ji["connected"].clone(), ji["detail"].as_str(), ji["reauth"].clone()), (json!(true), Some("acme.atlassian.net"), json!(false)));
+        assert!(!v.to_string().contains("ATATT-j"));
+        assert!(!app.shared.lock().jira_token_off, "a new token is tried again");
+        assert_eq!(board_credentials(&app, Provider::Jira), Some(("sam@acme.com".into(), "ATATT-j".into())));
+
+        app.db.set_setting("qa_on", Some("1")).unwrap();
+        let v = check(&app, "jira").unwrap();
+        assert_eq!((account(&v, "jira")["qa"].clone(), account(&v, "jira")["error"].clone()), (json!(true), Value::Null));
+
+        app.shared.lock().jira_creds = Some(("sam@acme.com".into(), "ATATT-j".into()));
+        let v = disconnect(&app, "jira").unwrap();
+        assert_eq!(account(&v, "jira")["connected"], false);
+        assert!(app.shared.lock().jira_creds.is_none(), "the forgotten token isn't kept for the next call");
+        assert_eq!(board_credentials(&app, Provider::Jira), None);
+    }
+
+    #[test]
+    fn a_jira_token_is_who_myself_says() {
+        let w = jira_who("sam@acme.com", "acme.atlassian.net", &json!({"accountId": "5b10", "displayName": "Sam Lee", "emailAddress": "sam@acme.com"}));
+        assert_eq!((w["user"].as_str(), w["name"].as_str(), w["detail"].as_str()), (Some("sam@acme.com"), Some("Sam Lee"), Some("acme.atlassian.net")));
+        let w = jira_who("sam@acme.com", "acme.atlassian.net", &json!({"accountId": "5b10", "displayName": ""}));
+        assert_eq!((w["user"].as_str(), w["name"].as_str()), (Some("sam@acme.com"), Some("sam@acme.com")), "a hidden email stands in");
+        assert_eq!(jira_host(" https://acme.atlassian.net/ "), "acme.atlassian.net");
+        assert_eq!(jira_host("acme.atlassian.net"), "acme.atlassian.net");
     }
 
     #[test]

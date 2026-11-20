@@ -20,6 +20,7 @@ pub fn base(app: &App, p: Provider) -> String {
         Provider::Bitbucket => format!("{}/", app.cfg.pr.bitbucket_api.trim_end_matches('/')),
         Provider::Azure => format!("https://dev.azure.com/{}/", crate::accounts::board_credentials(app, p).map(|(org, _)| org).unwrap_or_default()),
         Provider::Slack => "https://slack.com/api/".into(),
+        Provider::Jira => format!("https://{}/rest/api/3/", crate::accounts::jira_host(&app.cfg.jira.site)),
     }
 }
 
@@ -46,7 +47,7 @@ pub fn call(app: &App, body: &Value) -> Result<Value> {
     let key = match p {
         Provider::Bitbucket => Some(super::account_key("bitbucket", &[&who, &secret])),
         Provider::Github => Some(super::account_key("github", &[&secret])),
-        Provider::Azure | Provider::Slack => None,
+        Provider::Azure | Provider::Slack | Provider::Jira => None,
     };
     let keep = key.as_ref().filter(|_| method == "GET").map(|_| keep_for(app, p, &url));
     let limits = super::limit::limits();
@@ -62,6 +63,7 @@ pub fn call(app: &App, body: &Value) -> Result<Value> {
             Provider::Github => github(&secret, &method, &url, data),
             Provider::Azure => send(&format!("Basic {}", crate::jira::base64_lite::encode(format!(":{secret}").as_bytes())), "Azure DevOps", &method, &url, data).map(|(v, _)| v).map_err(|(e, _)| e),
             Provider::Slack => send(&format!("Bearer {secret}"), "Slack", &method, &url, data).map(|(v, _)| v).map_err(|(e, _)| e),
+            Provider::Jira => send(&format!("Basic {}", crate::jira::base64_lite::encode(format!("{who}:{secret}").as_bytes())), "Jira", &method, &url, data).map(|(v, _)| v).map_err(|(e, _)| e),
         })
     });
     let v = res.map_err(|e| ApiError::new(502, e))?;

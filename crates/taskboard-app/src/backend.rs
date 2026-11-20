@@ -197,6 +197,11 @@ impl Fake {
         std::fs::create_dir_all(&dir).expect("fake board folder");
         let mut cfg = Config::for_tests(&dir);
         cfg.owner = "Alex".into();
+        let jira = std::env::var("TASKBOARD_FAKE_JIRA").is_ok();
+        if jira {
+            cfg.jira.site = "acme.atlassian.net".into();
+            cfg.jira.project = "WEB".into();
+        }
         let board = Board::new(cfg, false).expect("fake board");
         if let Err(e) = taskboardd::seed::seed(&board) {
             eprintln!("taskboard-app: seeding the fake board failed: {}", e.message);
@@ -233,6 +238,9 @@ impl Fake {
         }
         if std::env::var("TASKBOARD_FAKE_SLOTS").is_ok() {
             seed_slots(&board);
+        }
+        if jira {
+            seed_jira(&board);
         }
         if std::env::var("TASKBOARD_FAKE_QUIET").is_ok() {
             let _ = taskboardd::dispatch::add_alert_keyed(&board, "T5: no update for 40 minutes", Some(5), None, "quiet:T5");
@@ -344,6 +352,16 @@ fn seed_stopped(board: &Board) {
     for t in [2, 3] {
         let _ = board::update_task(board, t, taskboardd::fields!["status" => "needs", "needs_reason" => "lost", "lost" => 1, "question" => null, "session_id" => null]);
         let _ = board::log_event(board, t, MIDNA, "status", &format!("Terminal ended ({CLOSED_BY_YOU}) before the task was done"));
+    }
+}
+
+/// GitHub, Slack and Jira connected (the sandbox's sample answers), with QA comments on.
+fn seed_jira(board: &Board) {
+    let _ = board.db.set_setting("qa_on", Some("1"));
+    for (id, body) in [("github", json!({"token": "ghp_sample"})), ("slack", json!({"token": "xoxp-sample"})), ("jira", json!({"email": "sample@example.com", "token": "ATATT-sample"}))] {
+        if let Err(e) = api::dispatch(board, "POST", &format!("accounts/{id}"), &Query::new(), &body) {
+            eprintln!("taskboard-app: connecting the fake {id} account failed: {}", e.message);
+        }
     }
 }
 
