@@ -194,7 +194,7 @@ pub struct View {
     pub fixes: Vec<Fix>,
     /// While no fix is filed: the running line, else the plain suggestions.
     pub fixes_note: Option<String>,
-    /// Filing them failed: why, and how to file one by hand.
+    /// Filing them failed, and why: File again beside it runs the filing over.
     pub fixes_failed: Option<String>,
     pub suggestions: Vec<(String, String)>,
     pub shipped: Shipped,
@@ -294,7 +294,7 @@ pub fn view(r: &Value, list: &[Value]) -> View {
     let f = &r["fixes"];
     let fixes_note = (fixes.is_empty() && s(f, "state") == "running").then(|| "Filing these as backlog issues…".to_string());
     let fixes_failed = (fixes.is_empty() && s(f, "state") == "failed")
-        .then(|| format!("Couldn’t file these as backlog issues: {}. To file one by hand, run tb backlog add.", s(f, "error").trim_end_matches('.')));
+        .then(|| format!("Couldn’t file these as backlog issues: {}.", s(f, "error").trim_end_matches('.')));
     let suggestions = if fixes.is_empty() { arr(d, "suggestions").iter().map(|x| (s(x, "title").to_string(), s(x, "detail").to_string())).collect() } else { vec![] };
     View {
         id: r["id"].as_i64().unwrap_or(0),
@@ -372,6 +372,17 @@ fn mark_seen(m: &mut MainWindow, r: &Value, cx: &mut Context<MainWindow>) {
     }
     m.post(format!("reviews/{id}/seen"), json!({}), cx, |m, v, cx| {
         if m.data.review.as_ref().and_then(|r| r["id"].as_i64()) == v["id"].as_i64() {
+            m.data.review = Some(v);
+        }
+        cx.notify();
+    });
+}
+
+/// File again: the board files the review's fixes over (`POST /reviews/:id/fixes`, safe to repeat), and
+/// its answer, filing under way, replaces the failure shown.
+fn file_again(m: &mut MainWindow, id: i64, cx: &mut Context<MainWindow>) {
+    m.post(format!("reviews/{id}/fixes"), json!({}), cx, move |m, v, cx| {
+        if m.data.review.as_ref().and_then(|r| r["id"].as_i64()) == Some(id) {
             m.data.review = Some(v);
         }
         cx.notify();
@@ -516,10 +527,15 @@ fn fixes_el(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Option<Div> {
             .child(kit::mono(t, f.r.clone()).flex_none().text_size(px(12.)).text_color(t.muted))
             .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
     });
+    let id = v.id;
     let failed = v.fixes_failed.clone().map(|e| {
+        let again = kit::btn_small(t, "review-file-again", "File again")
+            .bg(t.card)
+            .tooltip(kit::tip("Asks the board to file these as backlog issues again"))
+            .on_click(cx.listener(move |m, _, _, cx| file_again(m, id, cx)));
         div()
             .flex()
-            .items_start()
+            .items_center()
             .gap(px(8.))
             .px(px(12.))
             .py(px(10.))
@@ -529,6 +545,7 @@ fn fixes_el(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Option<Div> {
             .text_color(t.down)
             .child("⚠")
             .child(div().flex_1().min_w_0().child(sel(t, "review-fixes-failed", e)))
+            .child(again)
     });
     let suggestions = v.suggestions.iter().enumerate().map(|(n, (title, detail))| {
         div()
@@ -888,6 +905,8 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Beats the glob's `gpui_kit::test`.
+    use ::core::prelude::v1::test;
 
     fn review() -> Value {
         json!({
@@ -1001,7 +1020,7 @@ mod tests {
         r["fixes"] = json!({"state": "failed", "error": "Claude timed out"});
         let v = view(&r, &[]);
         assert_eq!(v.fixes_note, None);
-        assert_eq!(v.fixes_failed.as_deref(), Some("Couldn’t file these as backlog issues: Claude timed out. To file one by hand, run tb backlog add."));
+        assert_eq!(v.fixes_failed.as_deref(), Some("Couldn’t file these as backlog issues: Claude timed out."));
         assert_eq!(v.suggestions, [("Cap builds".to_string(), "Too many at once".to_string())]);
         assert!(v.plan().is_empty());
         r["fixes"] = json!({"state": "none"});
@@ -1024,5 +1043,29 @@ mod tests {
         let v = view(&old, &[]);
         assert!(v.shipped.is_empty());
         assert_eq!((v.kpis[0].value.as_str(), v.kpis[0].sub.as_deref()), ("0 tasks", Some("0 goals · 0 releases")));
+    }
+
+    /// File again asks the board to file the fixes over; when the board can't, the toast says why
+    /// and the review shown stays as it was.
+    #[gpui_kit::test]
+    fn file_again_posts_and_a_refusal_says_why(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend as _;
+        let (w, rec) = crate::parity::window(cx);
+        let r = rec.board().post("reviews", json!({})).unwrap();
+        let id = r["id"].as_i64().unwrap();
+        rec.clear();
+        w.update(cx, |m, _, cx| {
+            m.data.review = Some(r.clone());
+            file_again(m, id, cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(rec.last(&format!("reviews/{id}/fixes")), Some(json!({})));
+        w.update(cx, |m, _, _| {
+            let t = m.toasts.last().expect("a toast");
+            assert!(t.err && t.text.starts_with("Claude isn't available to the board"), "{}", t.text);
+            assert_eq!(m.data.review.as_ref(), Some(&r));
+        })
+        .unwrap();
     }
 }

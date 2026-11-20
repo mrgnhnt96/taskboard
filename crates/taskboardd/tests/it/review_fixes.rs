@@ -92,3 +92,72 @@ fn running_it_by_hand_needs_claude() {
     assert_eq!(call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap_err(), 409);
     assert_eq!(call(&app, "GET", &format!("/reviews/{id}")).unwrap()["fixes"]["state"], "none");
 }
+
+/// A board whose `claude` prints the `answer` file beside it, and fails while there's none.
+fn board_with_claude() -> (tempfile::TempDir, std::sync::Arc<App>, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let answer = dir.path().join("answer");
+    let script = dir.path().join("claude");
+    std::fs::write(&script, format!("#!/bin/sh\ncat '{}' || exit 1\n", answer.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.claude = script.to_string_lossy().to_string();
+    cfg.backlog.ai = true;
+    let app = App::for_tests(cfg);
+    app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": "/tmp/webapp"}]).to_string())).unwrap();
+    (dir, app, answer)
+}
+
+fn answers(path: &std::path::Path, fixes: Vec<Value>) {
+    std::fs::write(path, json!({"structured_output": {"fixes": fixes}}).to_string()).unwrap();
+}
+
+#[test]
+fn file_again_after_a_failure_files_them_once() {
+    let (_d, app, answer) = board_with_claude();
+    let id = review::save(&app, now_ts() - 7.0 * 86400.0, now_ts(), true).unwrap();
+    let r = call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap();
+    assert_eq!(r["fixes"]["state"], "failed", "{}", r["fixes"]);
+    assert_eq!(r["fix_issues"], json!([]));
+
+    answers(&answer, vec![fix("Run the integration tests as one binary"), fix("Share a build cache across worktrees")]);
+    let r = call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap();
+    assert_eq!(r["fixes"]["state"], "done", "{}", r["fixes"]);
+    assert_eq!(r["fix_issues"].as_array().unwrap().len(), 2);
+
+    // Filing again, even after one was closed, files nothing twice and keeps what it filed.
+    let first = r["fix_issues"][0]["id"].as_i64().unwrap();
+    app.db.x("UPDATE issues SET state = 'done' WHERE id = ?", vec![json!(first)]).unwrap();
+    answers(&answer, vec![fix("Run the integration tests as one binary")]);
+    let r = call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap();
+    assert_eq!(r["fixes"]["filed"].as_array().unwrap().len(), 2, "{}", r["fixes"]);
+    assert_eq!(r["fixes"]["linked"], json!([]));
+    assert_eq!(app.db.count("SELECT COUNT(*) FROM issues WHERE review_id = ?", vec![json!(id)]).unwrap(), 2);
+
+    // A failed rerun keeps what earlier runs filed.
+    std::fs::remove_file(&answer).unwrap();
+    let r = call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap();
+    assert_eq!(r["fixes"]["state"], "failed");
+    assert_eq!(r["fix_issues"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_run_cut_short_by_a_restart_reads_as_failed_and_files_again() {
+    let (_d, app, answer) = board_with_claude();
+    let id = review::save(&app, now_ts() - 7.0 * 86400.0, now_ts(), true).unwrap();
+    // Left running by an earlier board process, before the owner was told.
+    let stale = json!({"state": "running", "at": "2026-11-01T00:00:00Z", "run": "1-2026-11-01T00:00:00Z", "announce": true});
+    app.db.x("UPDATE reviews SET fixes = ? WHERE id = ?", vec![json!(stale.to_string()), json!(id)]).unwrap();
+    let st = review_fixes::status(&app, id).unwrap();
+    assert_eq!(st["state"], "failed");
+    assert_eq!(st["error"], "the board restarted before they were filed");
+    assert!(taskboardd::dispatch::alerts(&app).is_empty(), "the owner hasn't been told yet");
+
+    answers(&answer, vec![fix("Share a build cache across worktrees")]);
+    let r = call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap();
+    assert_eq!(r["fixes"]["state"], "done", "{}", r["fixes"]);
+    assert_eq!(r["fix_issues"].as_array().unwrap().len(), 1);
+    // The owner is told now, as the first run would have.
+    assert!(taskboardd::dispatch::alerts(&app).iter().any(|a| a["review_id"] == id), "the review's Needs you item is up");
+}
