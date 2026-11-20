@@ -902,13 +902,21 @@ fn send_note(m: &mut MainWindow, key: &str, r: &str, cx: &mut Context<MainWindow
     }
     let kind = c.kind;
     let Some((path, body)) = groups::note_post(r, kind, &c.input.text(cx), c.until.as_deref()) else { return };
-    let key = key.to_string();
+    let (key, said) = (key.to_string(), kind.sent(r));
     m.post(path, body, cx, move |m, _, cx| {
         m.home.notes.remove(&key);
         FLIPPED.with(|f| f.borrow_mut().remove(&key));
         take_off(m, std::slice::from_ref(&key));
-        sent(m, kind.said().to_string(), cx);
+        sent_undo(m, said, cx);
     });
+}
+
+/// A toast that may carry an Undo (Done, Don't wait for me).
+fn sent_undo(m: &mut MainWindow, (text, undo): (String, Option<String>), cx: &mut Context<MainWindow>) {
+    match undo {
+        Some(u) => m.toast_undo(text, u, cx),
+        None => sent(m, text, cx),
+    }
 }
 
 fn post_said(m: &mut MainWindow, path: String, said: &'static str, cx: &mut Context<MainWindow>) {
@@ -950,7 +958,7 @@ fn run_do(m: &mut MainWindow, key: &str, act: &Do, window: &mut Window, cx: &mut
             send_note(m, key, &r, cx);
         }
         Do::Ask(kind) => open_note(m, key, kind, window, cx),
-        Do::DontWait(r) => m.post(format!("tasks/{r}/owner-answer"), json!({"answer": "dont_wait"}), cx, |m, _, cx| sent(m, "The work goes on without you".to_string(), cx)),
+        Do::DontWait(r) => m.post(format!("tasks/{r}/owner-answer"), json!({"answer": "dont_wait"}), cx, move |m, _, cx| sent_undo(m, groups::dont_wait_sent(&r), cx)),
         Do::TalkTask(r) => talk(m, format!("tasks/{r}/talk"), cx),
         Do::TalkAlert(id) => talk(m, format!("alerts/{id}/talk"), cx),
         Do::MakeTask(b) => settle_issue(m, format!("backlog/{b}/promote"), json!({"where": "board"}), "Made into a task", cx),

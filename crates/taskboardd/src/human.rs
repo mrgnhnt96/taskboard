@@ -274,6 +274,50 @@ fn dont_wait(app: &App, t: &Row, note: &str) -> Result<()> {
     Ok(())
 }
 
+/// `POST /tasks/:id/owner-reopen` (only from the app): the owner's Reopen on a done human task, or the
+/// Undo of its Done. However it was finished (Done, Can't do this, Not needed), it's back in Needs you,
+/// waiting on the owner, with the note it was finished with gone. What already went on past it isn't
+/// called back, and a goal it finished doesn't run again; the goal just isn't finished any more.
+pub fn reopen(app: &App, id: i64) -> Result<()> {
+    app.db.tx(|| {
+        let t = board::get_task(app, id)?;
+        let r = task_ref(&t);
+        if !is(&t) {
+            return err(409, format!("{r} isn't a human task."));
+        }
+        if t.s("status") != Some("done") {
+            return err(409, format!("{r} isn't done, so there's nothing to reopen."));
+        }
+        if board::find_goal(app, t.i("goal_id"))?.is_some_and(|g| g.b("archived")) {
+            return err(409, format!("{r}'s goal is archived, so it stays done."));
+        }
+        let mut ctx = board::task_context(&t);
+        if ctx.remove("owner_note").is_some() {
+            board::save_context(app, id, &ctx, false)?;
+        }
+        board::update_task(app, id, fields!["finished_at" => null, "summary" => null, "failed" => 0])?;
+        board::log_event(app, id, OWNER, "status", "Reopened: it waits on you again")?;
+        ready(app, &board::get_task(app, id)?)
+    })?;
+    app.wake_runner();
+    Ok(())
+}
+
+/// `POST /tasks/:id/owner-wait` (only from the app): the Undo of Don't wait for me. What waits for it
+/// waits again from now on; a task that already went on past it keeps going.
+pub fn wait_again(app: &App, id: i64) -> Result<()> {
+    app.db.tx(|| {
+        let t = board::get_task(app, id)?;
+        if !released(&t) {
+            return err(409, format!("{} isn't one you said not to wait for.", task_ref(&t)));
+        }
+        board::update_task(app, id, fields!["owner_answer" => null])?;
+        board::log_event(app, id, OWNER, "status", "Wait for this again: what waits for it holds until it's done")
+    })?;
+    app.wake_runner();
+    Ok(())
+}
+
 /// Waiting on someone: off the list until the work hours of `date`. What waits for it keeps waiting.
 fn put_off(app: &App, t: &Row, date: &str, on: &str) -> Result<()> {
     let Ok(day) = chrono::NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d") else {

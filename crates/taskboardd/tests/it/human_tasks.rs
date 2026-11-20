@@ -405,3 +405,31 @@ fn an_agent_task_isn_t_screened() {
     assert!(out["created"][0].as_str().unwrap().starts_with('T'));
     assert!(!b.dir.path().join("prompt.txt").exists(), "claude isn't run");
 }
+
+#[test]
+fn reopen_takes_back_done_and_it_waits_on_the_owner_again() {
+    let b = new_board();
+    b.session("s1");
+    let h = b.human("s1", json!({}));
+    let id = id_of(&h);
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.from_app(&format!("tasks/{h}/owner-reopen"), json!({})).unwrap_err().0, 409, "nothing to reopen while it's open");
+    b.from_app(&format!("tasks/{h}/did"), json!({"note": "Tenancy acme-dev"})).unwrap();
+
+    let (status, _) = b.post(&format!("tasks/{h}/owner-reopen"), json!({})).unwrap_err();
+    assert_eq!(status, 403, "only the app reopens it");
+    let card = b.from_app(&format!("tasks/{h}/owner-reopen"), json!({})).unwrap();
+    assert_eq!((&card["status"], &card["owner_answer"], &card["owner_note"]), (&json!("needs"), &Value::Null, &Value::Null));
+    let t = b.row(id);
+    assert_eq!((t.s("needs_reason"), t.s("finished_at")), (Some("human"), None));
+    assert!(dispatch::alerts(&b.app).iter().any(|a| a["key"] == format!("human-{id}")), "its alert is back");
+    assert!(runner::start_queued(&b.app).unwrap().is_empty() && b.starts(id).is_empty(), "still no terminal");
+
+    let card = b.from_app(&format!("tasks/{h}/owner-answer"), json!({"answer": "not_needed"}));
+    assert_eq!(card.unwrap()["status"], "done");
+    assert_eq!(b.from_app(&format!("tasks/{h}/owner-reopen"), json!({})).unwrap()["owner_answer"], Value::Null, "Not needed reopens too");
+
+    let t = b.task("Deploy");
+    board::update_task(&b.app, t, vec![("status", json!("done"))]).unwrap();
+    assert_eq!(b.from_app(&format!("tasks/T{t}/owner-reopen"), json!({})).unwrap_err().0, 409, "only a human task");
+}

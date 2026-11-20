@@ -1534,8 +1534,17 @@ fn a_human_tasks_done_turns_the_box_without_a_note(cx: &mut gpui_kit::TestAppCon
         let tree = build(m).unwrap();
         assert!(!view::acts(&tree).iter().any(|x| x.starts_with("did")), "Done is gone once it's done: {:?}", view::acts(&tree));
         assert!(ui(|u| u.busy.is_empty()));
+        let undo = m.toasts.iter().find_map(|x| x.undo.clone());
+        assert!(undo.as_deref().is_some_and(|u| u.ends_with("/owner-reopen")), "the toast's Undo reopens it: {undo:?}");
     })
     .unwrap();
+
+    // Reopen in the done box puts it back in the owner's hands, with Done again.
+    let a = control(cx, &w, "owner-reopen", None);
+    w.update(cx, |m, _, cx| act(m, &a, cx)).unwrap();
+    settle(cx);
+    assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/owner-reopen")).count(), 1, "{:?}", rec.posts());
+    w.update(cx, |m, _, _| assert!(view::acts(&build(m).unwrap()).iter().any(|x| x.starts_with("did")), "Done is back")).unwrap();
 }
 
 /// A note's lines drawn as the panel draws them.

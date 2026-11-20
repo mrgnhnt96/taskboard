@@ -284,6 +284,20 @@ impl Note {
             Note::WaitingOn => "It comes back on that day",
         }
     }
+
+    /// The toast once human task `r`'s answer is in, with its Undo when it has one: Done is taken
+    /// back by reopening it.
+    pub fn sent(self, r: &str) -> (String, Option<String>) {
+        match self {
+            Note::Done => (format!("Marked {r} done"), Some(format!("tasks/{r}/owner-reopen"))),
+            _ => (self.said().to_string(), None),
+        }
+    }
+}
+
+/// Don't wait for me on human task `r`: its toast and the Undo that waits for it again.
+pub fn dont_wait_sent(r: &str) -> (String, Option<String>) {
+    ("The work goes on without you".to_string(), Some(format!("tasks/{r}/owner-wait")))
 }
 
 /// The post that sends a human task's note: its path and body. None while Waiting on someone has no date.
@@ -697,6 +711,13 @@ mod tests {
         assert_eq!(note_post("H1", Note::NotNeeded, "", None).unwrap().1["answer"], "not_needed");
         assert_eq!(note_post("H1", Note::WaitingOn, "Apple", None), None, "it needs a date");
         assert_eq!(note_post("H1", Note::WaitingOn, "Apple", Some("2026-11-12")).unwrap().1, json!({"answer": "waiting", "note": "Apple", "until": "2026-11-12"}));
+    }
+
+    #[test]
+    fn done_and_dont_wait_toasts_carry_their_undo() {
+        assert_eq!(Note::Done.sent("H4"), ("Marked H4 done".to_string(), Some("tasks/H4/owner-reopen".to_string())));
+        assert_eq!(Note::CantDo.sent("H4"), ("Told the agents you can't do this".to_string(), None));
+        assert_eq!(dont_wait_sent("H4").1.as_deref(), Some("tasks/H4/owner-wait"));
     }
 
     #[test]

@@ -1053,6 +1053,8 @@ fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         if let Some(n) = opt_s(t, "owner_note") {
             bx.push(txt(n, St::Plain));
         }
+        let reopen = c.btn("Reopen", Act::new("owner-reopen", "", &r, &grp), Look::Plain, false, Some("Back in Needs you, waiting on you"));
+        bx.push(el(K::Row, vec![reopen]));
         out.push(el(K::Box(BoxTone::Done), bx));
     } else {
         let mut bx = vec![txt("Yours to do", St::BoxLabel)];
