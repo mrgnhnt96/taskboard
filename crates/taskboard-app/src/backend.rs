@@ -338,7 +338,7 @@ fn seed_stopped(board: &Board) {
 }
 
 /// Dev (`TASKBOARD_FAKE_PANEL=1`): the task panel's need boxes: a lost task that looks finished,
-/// PRs waiting on your review, rebasing and stopped, and a human task waiting on a task with a PR.
+/// PRs waiting on your review, rebasing and stopped, one merged without its note for testers, and a human task waiting on a task with a PR.
 fn seed_panel(board: &Board) {
     use taskboardd::{board as b, fields, human, util};
     let post = |body: Value| api::dispatch(board, "POST", "/tasks", &Query::new(), &body).ok().and_then(|v| v["id"].as_i64());
@@ -363,6 +363,10 @@ fn seed_panel(board: &Board) {
     pr("Rename the auth helpers", 45, "rebase", json!({"rec": checks}));
     pr("Fix the flaky login test", 46, "fix", json!({"rec": {"checks": [{"name": "e2e", "state": "FAILURE"}], "failed": ["e2e"], "running": 0},
                                                        "stopped": {"at": ago(8), "message": "Tests still fail on CI only. Should I skip the e2e suite for this PR?", "asked": true}}));
+    // Merged without a note for testers, its ticket waiting for one: the panel offers Write the note.
+    if let Some(t) = pr("Passkey sign-in on the account page", 48, "merged", json!({})) {
+        let _ = b::update_task(board, t, fields!["pr_state" => "MERGED", "merged_note_wait" => ago(30)]);
+    }
     let signing = mk("Set up signing");
     if let Some(s) = signing {
         let _ = b::update_task(board, s, fields!["status" => "working", "started_at" => ago(50), "pr_repo" => "acme/webapp", "pr_num" => 47,

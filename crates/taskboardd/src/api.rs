@@ -312,6 +312,11 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             task_detail(app, id)
         }
         ("POST", ["tasks", id, "talk"]) => crate::human::talk(app, tid(id)?),
+        ("POST", ["tasks", id, "merged-note", "ask"]) => {
+            let id = tid(id)?;
+            let asked = app.db.tx(|| crate::merged_note::ask_now(app, id))?;
+            Ok(json!({"ok": true, "asked": asked}))
+        }
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
         ("POST", ["tasks", id, "close-terminal"]) => close_terminal(app, tid(id)?, body),
         ("POST", ["tasks", id, "focus"]) => focus_task(app, tid(id)?),
