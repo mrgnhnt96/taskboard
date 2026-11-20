@@ -31,6 +31,7 @@ actions!(
         InstallHooks,
         RestartDaemon,
         OpenLog,
+        EditUndo,
         EditCut,
         EditPaste,
         EditSelectAll,
@@ -48,6 +49,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-m", Minimize, None),
         // ⌘↩ in a field sends what's typed (an answer, New idea's details).
         KeyBinding::new("cmd-enter", NoAction, Some(ui::text_input::CTX)),
+        // ⌘Z takes back the last toast's change (Done, Don't wait for me); in a field it does nothing,
+        // so a slip while typing never undoes the board. The menu item still does.
+        KeyBinding::new("cmd-z", EditUndo, Some("MainWindow")),
+        KeyBinding::new("cmd-z", NoAction, Some(ui::text_input::CTX)),
         KeyBinding::new("cmd-x", EditCut, Some(MENU_ONLY)),
         KeyBinding::new("cmd-v", EditPaste, Some(MENU_ONLY)),
         KeyBinding::new("cmd-a", EditSelectAll, Some(MENU_ONLY)),
@@ -143,6 +148,8 @@ pub fn menus(fake: bool, here: &Page, name: &str) -> Vec<Menu> {
         ]),
         Menu::new("File").items([MenuItem::action("New Idea…", app::NewIdea), MenuItem::separator(), MenuItem::action("Close Window", crate::CloseWindow)]),
         Menu::new("Edit").items([
+            MenuItem::action("Undo", EditUndo),
+            MenuItem::separator(),
             MenuItem::os_action("Cut", EditCut, OsAction::Cut),
             MenuItem::os_action("Copy", app::CopySelection, OsAction::Copy),
             MenuItem::os_action("Paste", EditPaste, OsAction::Paste),
@@ -275,6 +282,10 @@ pub fn on_actions(m: &MainWindow, d: Stateful<Div>, cx: &mut Context<MainWindow>
         .when(!keys && matches!(m.modal, Some(ui::modals::Modal::NewIdea)), |d| d.on_action(cx.listener(|m, _: &app::NewIdea, w, cx| m.new_idea(w, cx))))
         .when(keys && m.can_go_back(), |d| d.on_action(cx.listener(move |m, a: &app::NavBack, w, cx| page(a, m, w, cx))))
         .when(keys && m.can_go_forward(), |d| d.on_action(cx.listener(move |m, a: &app::NavForward, w, cx| page(a, m, w, cx))))
+        // Edit › Undo: live while a toast has an Undo.
+        .when(keys && m.can_undo(), |d| d.on_action(cx.listener(|m, _: &EditUndo, _, cx| {
+            m.undo_toast(None, cx);
+        })))
         .when(keys && app::open_ref(m).is_some(), |d| d.on_action(cx.listener(move |m, a: &app::CopyRef, w, cx| page(a, m, w, cx))))
         .when(tc.focus, |d| {
             let r = tr.clone();

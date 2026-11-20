@@ -845,6 +845,22 @@ impl MainWindow {
         self.show_toast(Toast { text: text.into(), err: false, at: Instant::now(), undo: Some(undo.into()) }, cx);
     }
 
+    /// The toast's Undo, or Edit › Undo (⌘Z) for the newest toast that has one: the toast goes and
+    /// its undo is POSTed. False when no toast has an Undo.
+    pub fn undo_toast(&mut self, at: Option<Instant>, cx: &mut Context<Self>) -> bool {
+        let Some((at, path)) = self.toasts.iter().rev().filter(|t| at.is_none_or(|a| a == t.at)).find_map(|t| t.undo.clone().map(|u| (t.at, u))) else {
+            return false;
+        };
+        self.dismiss_toast(at, cx);
+        self.post(path, serde_json::json!({}), cx, |_, _, _| {});
+        true
+    }
+
+    /// Whether Edit › Undo has a toast to undo.
+    pub fn can_undo(&self) -> bool {
+        self.toasts.iter().any(|t| t.undo.is_some())
+    }
+
     /// Closes one toast (its ✕, or Undo).
     pub fn dismiss_toast(&mut self, at: Instant, cx: &mut Context<Self>) {
         self.toasts.retain(|t| t.at != at);
@@ -3125,6 +3141,40 @@ mod tests {
         if let Some(st) = m.data.state.as_mut().map(std::rc::Rc::make_mut) {
             st["releases"] = json!([]);
         }
+    }
+
+    #[gpui_kit::test]
+    fn cmd_z_undoes_the_newest_toast_with_an_undo(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        let (w, rec) = window(cx);
+        cx.update(crate::menu_bar::bind_keys);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        };
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            window.focus(&m.focus, cx);
+            assert!(!m.can_undo() && !m.undo_toast(None, cx), "nothing to undo");
+            m.toast_undo("Marked H4 done", "tasks/H4/owner-reopen", cx);
+            m.toast("Saved", true, cx);
+        })
+        .unwrap();
+        draw(cx);
+        cx.simulate_keystrokes(w.into(), "cmd-z");
+        settle(cx);
+        assert_eq!(rec.last("tasks/H4/owner-reopen"), Some(json!({})));
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert!(!m.can_undo(), "its toast went with it");
+            assert!(m.toasts.iter().any(|t| t.err && t.text.contains("Saved")), "the error stays");
+        })
+        .unwrap();
+        draw(cx);
+        cx.simulate_keystrokes(w.into(), "cmd-z");
+        settle(cx);
+        assert_eq!(rec.posts.lock().unwrap().iter().filter(|(p, _)| p == "tasks/H4/owner-reopen").count(), 1, "once");
     }
 
     #[gpui_kit::test]

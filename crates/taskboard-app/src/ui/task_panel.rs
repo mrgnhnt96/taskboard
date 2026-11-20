@@ -593,20 +593,26 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         "did" => {
             let k = format!("did:{id}");
             let note = ui(|u| u.drafts.get(&k).cloned().unwrap_or_default()).trim().to_string();
+            let r = id.clone();
             run(
                 m,
                 a,
                 tp("/did"),
                 json!({"note": note}),
-                // The box turning to "Done by you" says it; no note beside the button.
+                // The box turning to "Done by you" says it; no note beside the button, only the
+                // toast that can take it back.
                 move |m, _| {
                     ui(|u| u.drafts.remove(&k));
                     drop_field(m, &k);
+                    let (text, undo) = (format!("Marked {r} done"), format!("tasks/{r}/owner-reopen"));
+                    m.settle(Instant::now(), move |m, cx| m.toast_undo(text, undo, cx));
                     String::new()
                 },
                 cx,
             );
         }
+        // Reopen on a done human task: back in Needs you, waiting on the owner.
+        "owner-reopen" => run(m, a, tp("/owner-reopen"), json!({}), |_, _| String::new(), cx),
         "talk" => run(m, a, tp("/talk"), json!({}), |m, _| sent(m), cx),
         "open-url" => open_target(&a.arg, cx),
         // Another of the task's terminals (the PR's, or one still open from before): bring it up in Midna.

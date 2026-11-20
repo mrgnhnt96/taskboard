@@ -490,3 +490,21 @@ fn a_wave_that_stops_holds_the_next_once_nothing_in_it_is_left_to_start() {
     b.set(also, vec![("status", json!("done"))]);
     assert_eq!(b.item("needs", &format!("T{one}")).unwrap()["holds"], json!({"tasks": [format!("T{two}")], "goal": format!("G{g}")}));
 }
+
+#[test]
+fn undoing_dont_wait_holds_what_waits_again() {
+    let b = new_board();
+    let (two, h) = b.parked();
+    let t = format!("T{}", id_of(&h));
+    let q: Query = [(FROM.to_string(), "app".to_string())].into_iter().collect();
+    let wait = |q: &Query| api::dispatch(&b.app, "POST", &format!("tasks/{h}/owner-wait"), q, &json!({})).map_err(|e| e.status);
+    assert_eq!(wait(&q).unwrap_err(), 409, "nothing to undo before Don't wait for me");
+
+    b.answer(&h, json!({"answer": "dont_wait"})).unwrap();
+    assert_eq!(wait(&Query::new()).unwrap_err(), 403, "only the app undoes it");
+    let card = wait(&q).unwrap();
+    assert_eq!((&card["status"], &card["owner_answer"]), (&json!("needs"), &Value::Null));
+    assert!(runner::start_queued(&b.app).unwrap().is_empty(), "T{two} waits for it again");
+    assert_eq!(b.item("needs", &t).unwrap()["holds"]["tasks"], json!([format!("T{two}")]));
+    assert_eq!(wait(&q).unwrap_err(), 409, "once");
+}

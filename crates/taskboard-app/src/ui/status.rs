@@ -257,7 +257,7 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                 .items_center()
                 .gap(px(14.))
                 .child(x.text.clone())
-                .children(x.undo.clone().map(|path| {
+                .children(x.undo.is_some().then(|| {
                     div()
                         .id("toast-undo")
                         .font_weight(FontWeight::SEMIBOLD)
@@ -265,9 +265,18 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                         .cursor_pointer()
                         .child("Undo")
                         .on_click(cx.listener(move |m, _, _, cx| {
-                            m.dismiss_toast(at, cx);
-                            m.post(path.clone(), serde_json::json!({}), cx, |_, _, _| {});
+                            m.undo_toast(Some(at), cx);
                         }))
+                }))
+                // Edit › Undo's key: on the newest toast with an Undo, the one ⌘Z takes back.
+                .children((x.undo.is_some() && m.toasts.iter().rposition(|y| y.undo.is_some()) == Some(i)).then(|| div().text_size(px(11.5)).opacity(0.6).child("⌘Z")))
+                .children(x.undo.is_some().then(|| {
+                    div()
+                        .id(("toast-close", i))
+                        .opacity(0.6)
+                        .cursor_pointer()
+                        .child("✕")
+                        .on_click(cx.listener(move |m, _, _, cx| m.dismiss_toast(at, cx)))
                 }))
                 .children(m.backlog.open_toast.clone().filter(|(when, _)| *when == at).map(|(_, task)| {
                     div()

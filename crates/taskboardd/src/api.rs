@@ -302,6 +302,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["tasks", id, "pick"]) => pick(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "did"]) => owner_did(app, tid(id)?, query, body),
+        ("POST", ["tasks", id, "owner-reopen"]) => owner_undo(app, tid(id)?, query, "reopen", crate::human::reopen),
+        ("POST", ["tasks", id, "owner-wait"]) => owner_undo(app, tid(id)?, query, "wait for again", crate::human::wait_again),
         ("POST", ["humans", "done"]) => {
             let done = crate::human::done_on_word(app, body, |via, id| crate::doneword::owners_word(app, via, id))?;
             Ok(json!({"done": done}))
@@ -2098,6 +2100,16 @@ fn owner_did(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         return err(403, format!("Only {} marks a human task done, from the app.", app.cfg.owner));
     }
     crate::human::done(app, id, body)?;
+    task_detail(app, id)
+}
+
+/// The owner took back Done or Don't wait for me on a human task (Reopen, or the toast's Undo): only
+/// the app may, as only the app presses Done.
+fn owner_undo(app: &App, id: i64, query: &Query, what: &str, undo: fn(&App, i64) -> Result<()>) -> Result<Value> {
+    if !from_app(query) {
+        return err(403, format!("Only {} can {what} a human task, from the app.", app.cfg.owner));
+    }
+    undo(app, id)?;
     task_detail(app, id)
 }
 
