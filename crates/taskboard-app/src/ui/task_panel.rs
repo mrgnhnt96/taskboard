@@ -555,6 +555,14 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         "close-term" => {
             ui(|u| u.term_menu = false);
+            // A failed task's terminal, or a command still running: ask first.
+            let failed = m.data.task.as_ref().is_some_and(|t| t["failed"] == true);
+            if failed || a.arg == "force" {
+                let ask = if a.arg == "force" { crate::ui::modals::Ask::CloseForce } else { crate::ui::modals::Ask::Close };
+                m.modal = Some(crate::ui::modals::Modal::finish(a.id.clone(), ask));
+                cx.notify();
+                return;
+            }
             run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx)
         }
         "focus" => run(m, a, tp("/focus"), json!({}), |m, _| sent(m), cx),
@@ -564,6 +572,16 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             let k = format!("did:{id}");
             let note = ui(|u| u.drafts.get(&k).cloned().unwrap_or_default()).trim().to_string();
             let r = id.clone();
+            // An empty note when a step asks for one: ask once, and the next Done sends it as it is.
+            if note.is_empty() && !ui(|u| u.did_asked.contains(&k)) {
+                let detail = m.data.task.as_ref().map(|t| s(t, "detail").to_string()).unwrap_or_default();
+                if let Some(ask) = view::note_ask(&detail) {
+                    ui(|u| u.did_asked.insert(k.clone()));
+                    set_note(&a.grp, ask, true, cx);
+                    return;
+                }
+            }
+            ui(|u| u.did_asked.remove(&k));
             run(
                 m,
                 a,
