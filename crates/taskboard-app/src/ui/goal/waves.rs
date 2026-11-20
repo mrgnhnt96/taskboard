@@ -255,8 +255,12 @@ fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> S
     };
     // Just words: a click here opens the task like the rest of the row; its panel links the PR.
     let pr = div().flex_none().w(px(120.)).min_w_0().truncate().text_size(px(12.)).text_color(t.muted).child(kit::clipped(SharedString::from(format!("goal-task-pr-{}", x.r)), x.pr.clone()));
+    // The task open in the panel: a soft accent fill and a 2px accent edge on its left.
+    let on = crate::app::open_ref(m) == Some(x.r.as_str());
     div()
         .id(SharedString::from(format!("goal-task-{}", x.r)))
+        .relative()
+        .when(on, |d| d.bg(t.accent_soft).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
         .flex()
         .items_center()
         .gap(px(12.))
@@ -265,7 +269,7 @@ fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> S
         .border_b_1()
         .border_color(t.divider)
         .text_size(px(13.))
-        .hover(move |s| s.bg(hover))
+        .when(!on, |d| d.hover(move |s| s.bg(hover)))
         .cursor_pointer()
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx)))
         // A tighter chip than the board's, borrowing 6px of the gap so the ref and title stay put.

@@ -870,10 +870,11 @@ fn on_input(_m: &mut MainWindow, key: &str, text: String) {
 /// `.panel { width: min(480px, 100vw) }`, as wide as the issue panel.
 pub const WIDTH: f32 = 480.;
 
-/// The task panel on the right, floating over the page's right edge: going to another page keeps it; Esc
-/// and its close button close it.
+/// The task panel on the right, docked beside the page from [`crate::app::DOCK_FROM`] wide and floating
+/// over the page's right edge below that: going to another page keeps it; Esc and its close button close it.
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
+    let floats = !crate::app::docked(window);
     let body = match body(m, &t, window, cx) {
         Some(b) => b,
         None => {
@@ -890,7 +891,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .bg(t.card)
         .border_l_1()
         .border_color(t.border)
-        .shadow_lg()
+        .when(floats, |d| d.shadow_lg())
         .occlude()
         .child(div().flex().flex_col().flex_1().min_h_0().child(body))
         .into_any_element()

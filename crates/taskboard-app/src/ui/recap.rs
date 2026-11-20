@@ -291,7 +291,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             let mut c = Ctx::new(t.clone(), id, month, r["facts"].clone(), m.recap.open.clone());
             c.summary = s(&writing["page"], "summary").to_string();
             c.highlights = arr(&writing["page"], "highlights").iter().filter_map(|h| h.as_str().map(str::to_string)).collect();
-            let pair = window.viewport_size().width >= px(PAIR_AT);
+            let pair = crate::app::room(m, window) >= px(PAIR_AT);
             body(&c, &writing["page"], pair, cx)
         }
         false => {

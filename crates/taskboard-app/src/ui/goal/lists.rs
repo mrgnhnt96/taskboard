@@ -346,7 +346,7 @@ pub fn body(m: &MainWindow, cx: &mut Context<MainWindow>) -> Div {
 /// Note the window's width as the lists draw; crossing `STACK_BELOW` draws the body again the
 /// other way.
 fn watch_width(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) {
-    let narrow = window.viewport_size().width < px(STACK_BELOW);
+    let narrow = crate::app::room(m, window) < px(STACK_BELOW);
     if m.goal_page.lists.narrow != narrow {
         m.goal_page.lists.narrow = narrow;
         cx.notify();
