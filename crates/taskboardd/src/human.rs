@@ -118,7 +118,14 @@ pub fn refuse_terminal(app: &App, t: &Row) -> Result<()> {
 /// The refusal for an agent's `tb submit` or `tb fail` (or the API's done and fail) on a human task.
 pub fn refuse_agent_finish(app: &App, t: &Row) -> Result<()> {
     if is(t) {
-        return err(409, format!("{} is a human task: only {} marks it done, with Done in the app.", task_ref(t), app.cfg.owner));
+        let r = task_ref(t);
+        return err(
+            409,
+            format!(
+                "{r} is a human task: it's done on {owner}'s word, not yours. When {owner} says so here (\"close {r}\", \"{r} is done\"), run tb needs done {r}; otherwise they press Done in the app.",
+                owner = app.cfg.owner
+            ),
+        );
     }
     Ok(())
 }
