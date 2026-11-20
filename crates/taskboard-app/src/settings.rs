@@ -53,6 +53,7 @@ enum Sec {
     Accounts,
     History,
     Usage,
+    Hours,
     Qa,
     Questions,
     Reviewers,
@@ -60,7 +61,7 @@ enum Sec {
     System,
 }
 
-const SECS: [Sec; 8] = [Sec::Accounts, Sec::History, Sec::Usage, Sec::Qa, Sec::Questions, Sec::Reviewers, Sec::Worktrees, Sec::System];
+const SECS: [Sec; 9] = [Sec::Accounts, Sec::History, Sec::Usage, Sec::Hours, Sec::Qa, Sec::Questions, Sec::Reviewers, Sec::Worktrees, Sec::System];
 
 impl Sec {
     fn label(self) -> &'static str {
@@ -68,6 +69,7 @@ impl Sec {
             Sec::Accounts => "Accounts",
             Sec::History => "History",
             Sec::Usage => "Usage",
+            Sec::Hours => "Work hours",
             Sec::Qa => "QA",
             Sec::Questions => "Questions",
             Sec::Reviewers => "Reviewers",
@@ -81,6 +83,7 @@ impl Sec {
             Sec::Accounts => "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers.",
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
             Sec::Usage => "A daily share of Claude's weekly limit. Once today's share is used, the board starts no new work until midnight; running agents carry on.",
+            Sec::Hours => "When the board starts agents. Outside work hours it waits; running agents carry on.",
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
             Sec::Questions => "Questions agents ask you in their replies, and whether the board sends back one asked above the reply's last paragraph to ask it properly.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
@@ -94,6 +97,7 @@ impl Sec {
             Sec::Accounts => "@",
             Sec::History => "◷",
             Sec::Usage => "◔",
+            Sec::Hours => "◴",
             Sec::Qa => "✓",
             Sec::Questions => "?",
             Sec::Reviewers => "☺",
@@ -165,7 +169,7 @@ const IDLE_TICKS: u32 = 15;
 
 pub struct SettingsWindow {
     backend: Arc<dyn Backend>,
-    focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
     scroll: ScrollHandle,
     view: Sec,
     accounts: Vec<Value>,
@@ -210,6 +214,12 @@ pub struct SettingsWindow {
     daily_busy: bool,
     daily_note: Option<(String, bool)>,
     /// `GET /qa`, a call in flight, and the line under its card.
+    /// Work hours: the board's (`GET /state`'s `work_hours`, or a save's answer), the page's
+    /// edits, whether the board's hours are newer than the edits, and Midna's keep-awake.
+    pub(crate) work_hours: Option<Value>,
+    pub(crate) hours: crate::ui::hours::State,
+    pub(crate) hours_fresh: bool,
+    pub(crate) keep_awake: Option<Value>,
     qa: Option<Value>,
     qa_busy: bool,
     qa_note: Option<(String, bool)>,
@@ -271,6 +281,10 @@ impl SettingsWindow {
             daily: None,
             daily_busy: false,
             daily_note: None,
+            work_hours: None,
+            hours: Default::default(),
+            hours_fresh: false,
+            keep_awake: None,
             qa: None,
             qa_busy: false,
             qa_note: None,
@@ -337,6 +351,7 @@ impl SettingsWindow {
             Sec::Accounts => self.load(false, cx),
             Sec::History => self.load_history(cx),
             Sec::Usage => self.load_daily(cx),
+            Sec::Hours => self.load_hours(cx),
             Sec::Qa => self.load_qa(cx),
             Sec::Questions => self.load_questions(cx),
             Sec::Reviewers => self.load_reviewers(cx),
@@ -463,6 +478,49 @@ impl SettingsWindow {
                     Ok(v) => s.daily = Some(daily_of(&v)),
                     Err(e) => s.daily_note = Some((e.message, true)),
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Work hours and Midna's keep-awake, as the main window reads them (`GET /state`).
+    fn load_hours(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("state", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Some(v) = r.as_ref().ok().filter(|v| v["work_hours"].is_object()) {
+                    s.work_hours = Some(v["work_hours"].clone());
+                    s.keep_awake = Some(v["keep_awake"].clone()).filter(|k| k.is_object());
+                    s.hours_fresh = true;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `POST hours`: answers with the hours. A refusal puts the saved hours back, with why and
+    /// what was sent, for Try again.
+    pub(crate) fn post_hours(&mut self, body: Value, cx: &mut Context<Self>) {
+        self.hours.err = None;
+        self.hours.retry = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let sent = body.clone();
+            let r = cx.background_executor().spawn(async move { backend.post("hours", body) }).await;
+            let _ = this.update(cx, |s, cx| {
+                match r {
+                    Ok(v) if v.is_object() => s.work_hours = Some(v),
+                    Ok(_) => {}
+                    Err(e) => {
+                        s.hours.err = Some(e.message);
+                        s.hours.retry = Some(sent);
+                    }
+                }
+                s.hours_fresh = true;
                 cx.notify();
             });
         })
@@ -780,6 +838,7 @@ impl Render for SettingsWindow {
             Sec::Accounts => self.accounts_page(&t, window, cx).into_any_element(),
             Sec::History => self.history_page(&t, cx).into_any_element(),
             Sec::Usage => self.usage_page(&t, cx).into_any_element(),
+            Sec::Hours => crate::ui::hours::page(self, &t, window, cx),
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
             Sec::Questions => self.questions_page(&t, cx).into_any_element(),
             Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
@@ -1679,6 +1738,13 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Open on Work hours (the sidebar's work hours).
+    pub fn show_hours(&mut self, cx: &mut Context<Self>) {
+        self.view = Sec::Hours;
+        self.load_hours(cx);
+        cx.notify();
+    }
+
     /// Restart to update: swap the new app in, restart the daemon, quit; the new app opens itself.
     fn apply_update(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
@@ -2048,12 +2114,12 @@ fn used_at(iso: &str) -> String {
 // ------------------------------------------------------------------ rows
 
 /// A row's shell: padding and the line above every row but the first.
-fn row(t: &Theme, id: &str, first: bool) -> Stateful<Div> {
+pub(crate) fn row(t: &Theme, id: &str, first: bool) -> Stateful<Div> {
     div().id(SharedString::from(id.to_string())).flex().flex_wrap().items_center().gap_x(px(16.)).gap_y(px(8.)).px(px(16.)).py(px(9.)).min_h(px(46.)).when(!first, |d| d.border_t_1().border_color(t.border))
 }
 
 /// A row with a name (or `title`, bold) and what it means; the caller adds its controls.
-fn line(t: &Theme, id: &str, first: bool, warn: bool, label: &str, note: &str, title: Option<(&str, bool)>) -> Stateful<Div> {
+pub(crate) fn line(t: &Theme, id: &str, first: bool, warn: bool, label: &str, note: &str, title: Option<(&str, bool)>) -> Stateful<Div> {
     let label = title.map_or(label.to_string(), |(s, _)| s.to_string());
     row(t, id, first).when(warn, |d| d.bg(t.warn_soft)).child(
         div()
@@ -2066,7 +2132,7 @@ fn line(t: &Theme, id: &str, first: bool, warn: bool, label: &str, note: &str, t
     )
 }
 
-fn controls() -> Div {
+pub(crate) fn controls() -> Div {
     div().flex().flex_none().items_center().gap(px(8.))
 }
 

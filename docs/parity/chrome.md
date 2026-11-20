@@ -69,16 +69,17 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `hoursPill` | "No work hours", "Work hours until 4pm today", "Work hours 9am–5pm", "Agents off until [Thu ]6am" (warn pill); tooltip = `line`; ▾ | `hours::pill_view`, `pill` | 🔧 (pill style; trailing space when `next_open` is missing) | `pill_matches_web` |
 | `usagePill` / `usageLevel` / `USAGE_NAMES` / `resetWhen` | per window: label, bar (0–100), "N%"; levels ok / warm ≥ 75 / hot ≥ 90; tooltip "5-hour limit: 35% used, resets 6pm" / "7-day …", + "Last read 2h ago" when over an hour old (greyed); hidden with no windows | `app::usage_view`, `usage_pill` | 🔧 (warm was ≥ 70; "Weekly" instead of "7-day"; value was clamped; an unreadable `seen_at` counted as stale) | `status_bar_matches_web` |
 
-## Work hours menu
+## Work hours (Settings › Work hours)
+
+The footer shows `hoursPill`'s label as a plain readout (`hours::readout`); clicking it opens Settings › Work hours (`OpenHoursSettings`), where the menu's rows now live.
 
 | Web function | Behaviour | Native | Status | Test |
 |---|---|---|---|---|
 | `openHoursMenu` | copies on/start/end/days/today from `work_hours` | `hours::State::from_hours` | ✅ | `save_body_matches_web` (openHoursMenu) |
-| `hoursMenuHtml` | "Only start agents during work hours" check; From / to selects; S M T W T F S days (tooltips Sun…); "Today until" select with "Usual end"; all but the check disabled when off; error note | `hours::render_menu` | 🔧 (time steppers replaced by the same select lists) | `menu_matches_web` |
+| `hoursMenuHtml` | "Only start agents during work hours" check; From / to selects; S M T W T F S days (tooltips Sun…); "Today until" select with "Usual end"; all but the check disabled when off; error note | `hours::page` | 🔧 (a Settings page, not a menu: Off/On switch with the board's line, typed times; a refused save puts the saved hours back with Try again) | `menu_matches_web` |
 | `hourOptions` | every half hour labelled 12am…11:30pm, plus the current value when off the grid | `hours::hour_options`, `today_options` | 🔧 | `menu_matches_web` |
 | `hours-day` | toggle a day (appended) and save | `State::toggle_day` | ✅ | `changing_a_day_posts_hours` |
-| `saveHours` | `POST /hours {on, start, end, days}` + `today_until` only when changed (`""` → `"off"`); success replaces `work_hours`; failure shows in the menu | `State::body`, `hours::save` | ✅ | `save_body_matches_web`, `changing_a_day_posts_hours` |
-| close on Esc / outside click | | `MainWindow::escape` (menu first), menu dismiss layer | ✅ | `escape_follows_the_web_order` |
+| `saveHours` | `POST /hours {on, start, end, days}` + `today_until` only when changed (`""` → `"off"`); success replaces `work_hours`; failure shows on the page | `State::body`, `hours::save`, `SettingsWindow::post_hours` | ✅ | `save_body_matches_web`, `changing_a_day_posts_hours`, `a_refused_change_puts_the_saved_hours_back_with_try_again` |
 
 ## Toasts, title, keyboard
 

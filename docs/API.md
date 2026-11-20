@@ -116,7 +116,7 @@ setting `alert_digest`.
                           // because the browser parses it as local time (Python: isoformat(timespec="minutes") of a naive local datetime)
   "today_until": "HH:MM"|null, // today's end overridden by "Today until", null when not set or not today
   "week_days": ["sun", …]      // all seven days in week order, from config.toml's first_weekday (Sunday by default);
-                               // the hours menu lays its day buttons out in this order
+                               // Settings › Work hours lays its day buttons out in this order
 }
 ```
 The pill reads "Work hours until 4pm today" (open + today_until), "Work hours 6am–3pm" (open), "Agents off until
@@ -1018,7 +1018,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 ### Work hours, alerts
 | Path | Body | Notes |
 |---|---|---|
-| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
+| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in Settings › Work hours (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show on that page, with Try again. |
 | `POST /usage/daily` | `{base?: "off"\|"even"\|number\|"15%", carry?: "next_day"\|"spread"}` | The daily limit (`tb usage daily`). A number is 1–100; anything else is a 400. A 7-day reset starts a fresh plan from the week's % now; a new base or carry starts one from where today began, so what today already used still counts. `off` keeps the plan, so turning the limit back on the same day keeps today's start. **Response read:** the `usage` object. |
 | `POST /usage/override` | `{off?: bool}` | Lifts today's limit until local midnight (`tb usage override`); `off: true` puts it back. **Response read:** the `usage` object. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
