@@ -1327,8 +1327,9 @@ fn hist_row(t: &Theme, r: &str, n: usize, h: &HistRow, compact: bool) -> Div {
         .child(div().flex_1().min_w_0().child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.text.clone())))
 }
 
-/// The issue panel, over whichever page opened it.
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+/// The issue panel. `docked`: it sits beside the page, which stays usable, so clicking another
+/// row swaps what it shows; otherwise it floats over whichever page opened it.
+pub fn render(m: &mut MainWindow, docked: bool, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let r = match &m.panel {
         Some(Panel::Issue { r }) => r.clone(),
@@ -1355,6 +1356,10 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .child(kit::help(&t, "Loading…")),
     };
     let picker = m.issue_panel.picker.as_ref().is_some_and(|p| p.fixed.is_none()).then(|| render_picker(m, &t, window, cx)).flatten();
+    if docked {
+        // Beside the page: an edge, no shadow and no scrim. The picker draws over everything itself.
+        return div().id("issue-panel").size_full().bg(t.card).border_l_1().border_color(t.border).occlude().child(body).children(picker).into_any_element();
+    }
     deferred(
         // The web's `.panel` sits over the board without dimming it; a click outside still closes it.
         kit::scrim(&t, "issue-scrim")

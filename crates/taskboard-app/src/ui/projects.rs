@@ -572,7 +572,8 @@ const STACK_BELOW: f32 = 1180.;
 /// Where a stacked row's second line starts: under the title, past the chevron and ref.
 const STACK_INDENT: f32 = 16. + 18. + 12. + 44. + 12.;
 
-fn task_row(t: &Theme, c: &Value, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
+/// `shown`: the task open in the panel, whose row is marked.
+fn task_row(t: &Theme, c: &Value, narrow: bool, shown: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
     let r = s(c, "ref").to_string();
     let row = status::row(c);
     let (loud_fg, _, _) = row.st.colors(t);
@@ -599,7 +600,16 @@ fn task_row(t: &Theme, c: &Value, narrow: bool, cx: &mut Context<MainWindow>) ->
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx)));
     let meta = div().text_size(px(12.)).text_color(if row.loud { loud_fg } else { t.muted }).child(task_meta(c, &row));
     let chip = div().flex_none().w(px(status::CHIP_W + 12.)).flex().justify_end().child(status::chip(t, row.st));
-    let base = div().px(px(16.)).py(px(7.)).border_t_1().border_color(t.divider).text_size(px(13.));
+    // The open task's row: a soft accent fill and a 2px accent edge on its left.
+    let on = shown == Some(r.as_str());
+    let base = div()
+        .relative()
+        .px(px(16.))
+        .py(px(7.))
+        .border_t_1()
+        .border_color(t.divider)
+        .text_size(px(13.))
+        .when(on, |d| d.bg(t.accent_soft).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)));
     if narrow {
         return base
             .flex()
@@ -619,7 +629,7 @@ fn task_row(t: &Theme, c: &Value, narrow: bool, cx: &mut Context<MainWindow>) ->
 }
 
 /// An open goal's tasks by wave, then the shared tasks it counts, under the goal each came from.
-fn goal_tasks(t: &Theme, d: Option<&Value>, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
+fn goal_tasks(t: &Theme, d: Option<&Value>, narrow: bool, shown: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
     let mut body = div().flex().flex_col().bg(t.panel_2);
     let Some(d) = d.filter(|d| d["tasks"].is_array()) else {
         return body.child(div().px(px(16.)).pl(px(STACK_INDENT)).py(px(8.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).child("Loading…"));
@@ -627,14 +637,14 @@ fn goal_tasks(t: &Theme, d: Option<&Value>, narrow: bool, cx: &mut Context<MainW
     let mut tasks: Vec<&Value> = arr(d, "tasks").iter().collect();
     tasks.sort_by_key(|c| (c["wave"].as_i64().unwrap_or(i64::MAX), status::row(c).st.rank(), i(c, "id")));
     for c in tasks {
-        body = body.child(task_row(t, c, narrow, cx));
+        body = body.child(task_row(t, c, narrow, shown, cx));
     }
     for (from, cards) in shared_by_goal(d) {
         let (r, name) = (s(from, "ref"), s(from, "name"));
         body = body
             .child(div().px(px(16.)).pl(px(STACK_INDENT)).pt(px(10.)).pb(px(6.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).truncate().child(format!("From {r} {name}").trim_end().to_string()));
         for c in cards {
-            body = body.child(task_row(t, c, narrow, cx));
+            body = body.child(task_row(t, c, narrow, shown, cx));
         }
     }
     body
@@ -656,7 +666,7 @@ fn shared_by_goal(d: &Value) -> Vec<(&Value, Vec<&Value>)> {
     out
 }
 
-fn active_row(t: &Theme, g: &GoalLine, open: bool, d: Option<&Value>, first: bool, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
+fn active_row(t: &Theme, g: &GoalLine, open: bool, d: Option<&Value>, first: bool, narrow: bool, shown: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
     let name_color = if g.idle { t.muted } else { t.text };
     let name = div().min_w_0().text_color(name_color).when(open || !g.idle, |d| d.font_weight(FontWeight::SEMIBOLD)).child(g.name.clone());
     let with = (!g.with.is_empty()).then(|| div().flex_none().text_color(t.muted).child(format!("· {}", g.with)));
@@ -681,10 +691,10 @@ fn active_row(t: &Theme, g: &GoalLine, open: bool, d: Option<&Value>, first: boo
             .child(pill)
     };
     let head = head.on_click(cx.listener(toggle(&g.r)));
-    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, narrow, cx)))
+    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, narrow, shown, cx)))
 }
 
-fn done_row(t: &Theme, g: &DoneLine, open: bool, d: Option<&Value>, first: bool, narrow: bool, cx: &mut Context<MainWindow>) -> Div {
+fn done_row(t: &Theme, g: &DoneLine, open: bool, d: Option<&Value>, first: bool, narrow: bool, shown: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
     let name = div().text_color(t.text_2).child(g.name.clone());
     let tasks = div().text_size(px(12.)).text_color(t.muted).child(g.tasks.clone());
     let when = div().flex_none().w(px(96.)).text_right().text_size(px(12.)).text_color(t.muted).child(g.when.clone());
@@ -706,7 +716,7 @@ fn done_row(t: &Theme, g: &DoneLine, open: bool, d: Option<&Value>, first: bool,
             .child(when)
     };
     let head = head.on_click(cx.listener(toggle(&g.r)));
-    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, narrow, cx)))
+    div().flex().flex_col().when(!first, |d| d.border_t_1().border_color(t.divider)).child(head).when(open, |el| el.child(goal_tasks(t, d, narrow, shown, cx)))
 }
 
 fn card(t: &Theme) -> Div {
@@ -715,7 +725,9 @@ fn card(t: &Theme) -> Div {
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let narrow = window.viewport_size().width < px(STACK_BELOW);
+    let narrow = crate::app::room(m, window) < px(STACK_BELOW);
+    let shown = crate::app::open_ref(m).map(str::to_string);
+    let shown = shown.as_deref();
     let b = match &m.projects.built {
         Some(b) if b.holds(m) => b.clone(),
         _ => m.projects.built.insert(Rc::new(Built::of(m))).clone(),
@@ -732,7 +744,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         let mut c = card(&t);
         for (n, g) in act.iter().enumerate() {
             let r = &g.r;
-            c = c.child(active_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, narrow, cx));
+            c = c.child(active_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, narrow, shown, cx));
         }
         main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, "Active".into()))).child(c);
     }
@@ -740,7 +752,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     if let Some(tasks) = b.loose.as_ref().filter(|v| !v.is_empty()) {
         let mut c = card(&t);
         for (n, task) in tasks.iter().enumerate() {
-            c = c.child(task_row(&t, task, narrow, cx).when(n == 0, |d| d.border_t_0()));
+            c = c.child(task_row(&t, task, narrow, shown, cx).when(n == 0, |d| d.border_t_0()));
         }
         main = main.child(div().mt(px(22.)).mb(px(8.)).child(section(&t, format!("Tasks · {}", tasks.len())))).child(c);
     }
@@ -765,7 +777,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         let mut c = card(&t);
         for (n, g) in done.iter().enumerate() {
             let r = &g.r;
-            c = c.child(done_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, narrow, cx));
+            c = c.child(done_row(&t, g, m.projects.open.contains(r), m.projects.details.get(r), n == 0, narrow, shown, cx));
         }
         main = main.child(label).child(c);
     }

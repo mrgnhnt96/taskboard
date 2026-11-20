@@ -823,6 +823,9 @@ fn bar_colors(t: &Theme, kind: &str) -> (Hsla, Hsla, Hsla) {
 }
 
 /// The bar states the key names, each with a kind that draws it.
+/// Narrower than this, the key numbers go in rows of three.
+const KPI_ROW_AT: f32 = 1100.;
+
 const STATES: &[(&str, &str)] = &[("working", "Working"), ("done", "Done"), ("needs", "Waiting on you"), ("failed", "Failed or lost"), ("stopped", "Stopped or away")];
 
 /// A bar's shape for its state, so none rests on colour alone: waiting on you is hatched, failed
@@ -881,7 +884,7 @@ fn mark_el(t: &Theme, kind: &str, size: f32) -> impl IntoElement {
 
 const MARKS: &[(&str, &str)] = &[("commit", "Commit"), ("question", "Question"), ("pr", "PR"), ("done", "Done"), ("found", "Issue found")];
 
-pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let shell = div().id("days-page").flex().flex_col().flex_1().min_w_0().size_full().overflow_y_scroll();
     let Some(v) = m.data.days.clone().and_then(|d| m.days.view(&d)) else {
@@ -948,7 +951,9 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
 
     // ---- key numbers
     let any_delta = v.kpis.iter().any(|k| !k.delta.is_empty());
-    let kpis = div().flex().gap(px(10.)).children(v.kpis.iter().map(|k| {
+    // Beside a docked panel the six tiles go in two rows of three, so their numbers don't wrap.
+    let per_row = if crate::app::room(m, window) < px(KPI_ROW_AT) { 3 } else { v.kpis.len().max(1) };
+    let kpis = div().flex().flex_col().gap(px(10.)).children(v.kpis.chunks(per_row).map(|row| div().flex().gap(px(10.)).children(row.iter().map(|k| {
         card(&t)
             .flex_1()
             .min_w_0()
@@ -957,7 +962,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             .child(div().text_size(px(12.)).text_color(t.muted).child(k.label))
             .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(k.value.clone()))
             .when(any_delta, |d| d.child(div().text_size(px(12.)).text_color(t.text_2).min_h(px(16.)).child(k.delta.clone())))
-    }));
+    }))));
 
     let left = div()
         .flex()

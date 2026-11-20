@@ -290,6 +290,28 @@ pub struct MainWindow {
     poller: Option<Task<()>>,
 }
 
+/// From this window width an open panel docks beside the page instead of covering it.
+pub const DOCK_FROM: f32 = 1280.;
+/// A docked panel's width: the task and issue panels are as wide as each other.
+const PANEL_W: f32 = ui::task_panel::WIDTH;
+
+/// Whether a window this wide docks an open panel beside the page.
+pub fn docks(width: f32) -> bool {
+    width >= DOCK_FROM
+}
+
+/// Whether an open panel docks beside the page at this window's width.
+pub fn docked(window: &Window) -> bool {
+    docks(f32::from(window.viewport_size().width))
+}
+
+/// The width a page lays itself out for: the window's, less a panel docked beside the page. Pages
+/// that stack or drop columns when narrow measure this, so a docked panel doesn't crowd them.
+pub fn room(m: &MainWindow, window: &Window) -> Pixels {
+    let w = window.viewport_size().width;
+    if m.panel.is_some() && docked(window) { w - px(PANEL_W) } else { w }
+}
+
 /// How often to poll: slower while the window is away.
 fn pace(window: &Window) -> Duration {
     if !window.is_visible() {
@@ -1919,10 +1941,17 @@ impl Render for MainWindow {
             Page::Ideas => ui::ideas::render(self, window, cx),
             Page::Idea(_) => ui::idea::render(self, window, cx),
         };
+        // From DOCK_FROM wide a panel sits beside the page, which narrows to make room; narrower, it
+        // floats over the page's right edge (the task panel) or over the whole window (the issue panel).
+        let docked = docked(window);
         let (task_panel, panel) = match self.panel.clone() {
             Some(Panel::Task { .. }) => (Some(ui::task_panel::render(self, window, cx)), None),
-            Some(Panel::Issue { .. }) => (None, Some(ui::issue_panel::render(self, window, cx))),
+            Some(Panel::Issue { .. }) => (None, Some(ui::issue_panel::render(self, docked, window, cx))),
             None => (None, None),
+        };
+        let (beside, task_panel, panel) = match (docked, task_panel, panel) {
+            (true, Some(p), _) | (true, None, Some(p)) => (Some(p), None, None),
+            (_, tp, ip) => (None, tp, ip),
         };
         let modal = self.modal.is_some().then(|| ui::modals::render(self, window, cx));
 
@@ -1963,7 +1992,9 @@ impl Render for MainWindow {
                             .children(banner(self, &t, cx))
                             .child(div().flex().flex_1().min_h_0().child(page)),
                     )
-                    // The task panel floats over the page's right edge; no scrim, so the page stays usable.
+                    // Docked: beside the page, so clicking another row swaps what it shows.
+                    .children(beside.map(|p| div().flex_none().h_full().w(px(PANEL_W)).child(p)))
+                    // Narrower, the task panel floats over the page's right edge; no scrim, so the page stays usable.
                     .children(task_panel.map(|p| {
                         div().absolute().top_0().right_0().bottom_0().w(px(ui::task_panel::WIDTH)).max_w(relative(0.6)).child(p)
                     })),
@@ -3017,6 +3048,43 @@ mod tests {
             assert!(m.board.keep.is_empty());
         })
         .unwrap();
+    }
+
+    #[test]
+    fn panels_dock_from_1280_wide() {
+        assert!(!super::docks(1279.), "narrower, the panel covers the page");
+        assert!(super::docks(1280.) && super::docks(1440.), "from 1280 it sits beside the page");
+    }
+
+    /// Docked, the issue panel has no scrim: a click on the page reaches the page and the panel stays
+    /// (or swaps, on a row). Narrower, the panel covers the page and a click outside closes it.
+    #[gpui_kit::test]
+    fn a_docked_panel_leaves_the_page_clickable(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{Modifiers, MouseButton, point, px, size};
+        let (w, _rec) = window(cx);
+        let vcx = &mut gpui_kit::VisualTestContext::from_window(w.into(), cx);
+        let click_page = |vcx: &mut gpui_kit::VisualTestContext| {
+            vcx.update(|window, cx| {
+                window.refresh();
+                drop(window.draw(cx));
+            });
+            let at = point(px(ui::sidebar::WIDTH + 40.), px(60.));
+            vcx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+            vcx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            settle(vcx);
+            w.update(vcx, |m: &mut MainWindow, _, _| m.panel.clone()).unwrap()
+        };
+        w.update(vcx, |m: &mut MainWindow, _, cx| {
+            m.page = Page::Backlog;
+            m.open_issue("B1", cx);
+        })
+        .unwrap();
+        settle(vcx);
+        vcx.simulate_resize(size(px(1440.), px(900.)));
+        assert!(matches!(click_page(vcx), Some(Panel::Issue { .. })), "docked, the page takes the click and the panel stays");
+
+        vcx.simulate_resize(size(px(1100.), px(900.)));
+        assert!(click_page(vcx).is_none(), "covering the page, a click outside closes it");
     }
 
     #[gpui_kit::test]

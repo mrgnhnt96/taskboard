@@ -914,9 +914,9 @@ fn overview_card(m: &MainWindow, t: &Theme, p: &str, cx: &mut Context<MainWindow
     col
 }
 
-/// The overview's columns at this window width.
-fn columns(window: &Window) -> usize {
-    let room = f32::from(window.viewport_size().width) - sidebar::WIDTH - 2. * PAGE_X;
+/// The overview's columns in the room the page has (less a docked panel).
+fn columns(m: &MainWindow, window: &Window) -> usize {
+    let room = f32::from(crate::app::room(m, window)) - sidebar::WIDTH - 2. * PAGE_X;
     (((room + GAP) / (CARD_MIN + GAP)).floor() as usize).clamp(1, 4)
 }
 
@@ -941,7 +941,7 @@ fn overview(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
     if projects.is_empty() {
         page = page.child(if m.down.is_some() { cant_load(&t, "board", "Can't load the board.".into(), cx) } else { kit::help(&t, "Loading…") });
     }
-    let cols = columns(window);
+    let cols = columns(m, window);
     for chunk in projects.chunks(cols) {
         let mut line = div().flex().items_start().gap(px(GAP));
         for p in chunk {
