@@ -365,7 +365,7 @@ pub fn start(backend: &str) {
     let bundle = match installed_bundle() {
         Some(b) if backend != "fake" => b,
         _ => {
-            set_status(LoginItem::Dev);
+            set_status(fake_setup(backend, std::env::var("TASKBOARD_FAKE_SETUP").ok().as_deref()));
             return;
         }
     };
@@ -381,6 +381,20 @@ pub fn start(backend: &str) {
         .ok();
 }
 
+/// The sample board's setup row (`TASKBOARD_FAKE_SETUP=blocked|failed`), for screenshots; Dev otherwise.
+fn fake_setup(backend: &str, want: Option<&str>) -> LoginItem {
+    match (backend, want) {
+        ("fake", Some("blocked")) => {
+            if let Ok(mut g) = PORT.lock() {
+                *g = Some(port_sentence(8792, Some(taskboardd::cutover::Holder { pid: 812, command: "python3".into() }), String::new()));
+            }
+            LoginItem::Blocked
+        }
+        ("fake", Some("failed")) => LoginItem::Failed("Operation not permitted".into()),
+        _ => LoginItem::Dev,
+    }
+}
+
 fn register_and_link(bundle: &Path) {
     set_status(register(bundle));
     // Taskboard Dev leaves the link to the real app (TASKBOARD_NO_TB_LINK in its LSEnvironment).
@@ -393,6 +407,74 @@ fn register_and_link(bundle: &Path) {
             crate::log::info(format!("couldn't link tb: {e}"));
             set_link_failed(Some(format!("Linking ~/.local/bin/tb: {e}")));
         }
+    }
+}
+
+/// Whether the owner's Try again (see [`try_again`]) is running now.
+static TRYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a setup row offers Try again: the board couldn't be registered, or another program held
+/// its port.
+pub fn can_try_again(s: &LoginItem) -> bool {
+    matches!(s, LoginItem::Failed(_) | LoginItem::Blocked)
+}
+
+pub fn trying() -> bool {
+    TRYING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Try again on a setup row: look for the port again and, once it's free, register the board's
+/// service again (one launchd can't start is made again, see [`register`]), link `tb` and ask
+/// launchd to start the board if it isn't running. Blocks; returns the state it ends in. None when
+/// there's no installed bundle or a Try again is already running.
+pub fn try_again() -> Option<LoginItem> {
+    let bundle = installed_bundle()?;
+    if TRYING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    // A look already running would overwrite what this finds; let it finish first.
+    let mut holds_look = false;
+    for _ in 0..100 {
+        if !LOOKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            holds_look = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    crate::log::info("Try again: registering the board again");
+    if let Some(held) = held_back(check_in_the_way()) {
+        set_status(held);
+    } else {
+        register_and_link(&bundle);
+        if status() == LoginItem::Enabled {
+            start_daemon(&bundle);
+        }
+    }
+    if holds_look {
+        LOOKING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    TRYING.store(false, std::sync::atomic::Ordering::SeqCst);
+    Some(status())
+}
+
+/// `launchctl kickstart` (no `-k`): start the bundle's daemon unless it's already running, so a
+/// board launchd gave up on after the port was taken starts now.
+fn start_daemon(bundle: &Path) {
+    let Some(label) = bundled_agent_plist(bundle).and_then(|p| agent_label(&p)) else { return };
+    let uid = unsafe { libc::getuid() };
+    if let Ok(out) = std::process::Command::new("/bin/launchctl").arg("kickstart").arg(format!("gui/{uid}/{label}")).output()
+        && !out.status.success()
+    {
+        crate::log::info(format!("launchctl kickstart {label}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+}
+
+/// What the toast says after Try again: None while the row still shows (it says what's wrong).
+pub fn try_again_words(s: &LoginItem) -> Option<&'static str> {
+    match s {
+        LoginItem::Enabled => Some("The board is set to start on its own."),
+        LoginItem::RequiresApproval => Some("Registered. Switch on Taskboard in Login Items."),
+        _ => None,
     }
 }
 
@@ -463,6 +545,19 @@ mod tests {
         assert!(stale_registration(retrying));
         assert!(!stale_registration(running));
         assert!(!stale_registration(exited), "an ordinary crash isn't a registration problem");
+    }
+
+    #[test]
+    fn try_again_shows_on_a_failure_or_a_held_port_and_says_what_it_did() {
+        assert!(can_try_again(&LoginItem::Failed("denied".into())));
+        assert!(can_try_again(&LoginItem::Blocked));
+        for s in [LoginItem::RequiresApproval, LoginItem::Enabled, LoginItem::Dev, LoginItem::Checking, LoginItem::NotRegistered] {
+            assert!(!can_try_again(&s), "{s:?}");
+        }
+        assert_eq!(try_again_words(&LoginItem::Enabled), Some("The board is set to start on its own."));
+        assert!(try_again_words(&LoginItem::RequiresApproval).is_some_and(|w| w.contains("Login Items")));
+        assert_eq!(try_again_words(&LoginItem::Blocked), None, "the row says the port is still held");
+        assert_eq!(try_again_words(&LoginItem::Failed("x".into())), None);
     }
 
     #[test]
