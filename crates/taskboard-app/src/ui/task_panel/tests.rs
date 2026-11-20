@@ -1778,3 +1778,26 @@ fn term_focus_focuses_the_session(cx: &mut gpui_kit::TestAppContext) {
     settle(cx);
     assert!(rec.posts().iter().any(|(p, _)| p == "sessions/s7/focus"), "{:?}", rec.posts());
 }
+
+/// An empty Done asks once when a step wants a note; the second Done sends it, and a plain Done never asks.
+#[gpui_kit::test]
+fn an_empty_done_asks_once_when_a_step_wants_a_note(cx: &mut gpui_kit::TestAppContext) {
+    assert_eq!(
+        view::note_ask("1. Open it.\n4. Send back the Key ID and the Issuer ID in the note.").as_deref(),
+        Some("Step 4 asks for the Key ID and the Issuer ID. Press Done again to send no note.")
+    );
+    assert_eq!(view::note_ask("1. Open https://example.com and sign."), None);
+    let (w, rec) = parity::window(cx);
+    let t = rec.board().post("tasks", json!({"title": "Get the key", "detail": "1. Open https://example.com.\n2. Send back the Key ID in the note.", "project": "webapp", "kind": "human", "status": "queued"})).unwrap();
+    let r = format!("T{}", t["id"].as_i64().or_else(|| t["task"]["id"].as_i64()).expect("new task id"));
+    open(cx, &w, &r);
+    let a = control(cx, &w, "did", None);
+    w.update(cx, |m, _, cx| act(m, &a, cx)).unwrap();
+    // The note reads at once (settling would run its timer out).
+    assert!(note(&a.grp).is_some_and(|(s, err)| s.starts_with("Step 2 asks for the Key ID.") && err));
+    settle(cx);
+    assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/did")).count(), 0, "the first empty Done only asks");
+    w.update(cx, |m, _, cx| act(m, &a, cx)).unwrap();
+    settle(cx);
+    assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/did")).count(), 1, "the second sends");
+}

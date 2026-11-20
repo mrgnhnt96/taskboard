@@ -360,6 +360,12 @@ pub struct Ui {
     pub drafts: HashMap<String, String>,
     pub busy: HashSet<String>,
     pub notes: HashMap<String, (String, bool)>,
+<<<<<<< HEAD
+=======
+    /// Human tasks whose empty Done was already asked about once: the next Done sends.
+    pub did_asked: HashSet<String>,
+    pub meta_edit: HashMap<String, Vec<(String, String)>>,
+>>>>>>> b4e4d349 (feat(panel): an empty Done asks once when a step wants a note)
     pub handoffs: HashMap<String, String>,
     /// "" means "all".
     pub log_filter: String,
@@ -1031,6 +1037,33 @@ fn step_links(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The step of a human task that asks for something in the note ("4. Send back the Key ID in the
+/// note."), as the sentence Done answers an empty note with. None when no step wants a note.
+pub fn note_ask(detail: &str) -> Option<String> {
+    for line in detail.lines() {
+        let line = line.trim();
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 || !line[digits..].starts_with(['.', ')']) {
+            continue;
+        }
+        let (n, text) = (&line[..digits], line[digits + 1..].trim());
+        let lower = text.to_lowercase();
+        if !lower.split(|c: char| !c.is_alphanumeric()).any(|w| w == "note") {
+            continue;
+        }
+        let what = ["send back ", "send ", "paste ", "write ", "put ", "add "].iter().find_map(|v| {
+            let rest = lower.strip_prefix(v).map(|_| &text[v.len()..])?;
+            let end = [" in the note", " into the note", " to the note", " on the note"].iter().filter_map(|e| rest.to_lowercase().find(e)).min()?;
+            Some(rest[..end].trim().to_string())
+        });
+        return Some(match what.filter(|w| !w.is_empty()) {
+            Some(w) => format!("Step {n} asks for {w}. Press Done again to send no note."),
+            None => format!("Step {n} asks for a note. Press Done again to send no note."),
+        });
+    }
+    None
 }
 
 fn link_label(u: &str) -> String {
