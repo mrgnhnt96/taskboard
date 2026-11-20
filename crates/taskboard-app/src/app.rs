@@ -724,7 +724,10 @@ impl MainWindow {
                 self.show_toast(Toast { text: "Idea draft kept".into(), err: false, at, undo: None }, cx);
             }
         }
-        window.activate_window();
+        // A hidden run (Slate) never comes to the front.
+        if !crate::hidden::enabled() {
+            window.activate_window();
+        }
         self.open_link(url, cx);
     }
 

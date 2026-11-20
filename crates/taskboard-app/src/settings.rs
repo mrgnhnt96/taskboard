@@ -28,7 +28,14 @@ impl Global for SettingsHandle {}
 /// Open (or bring forward) the Settings window.
 pub fn open(backend: Arc<dyn Backend>, cx: &mut App) -> Option<WindowHandle<SettingsWindow>> {
     if let Some(h) = cx.try_global::<SettingsHandle>().and_then(|g| g.0)
-        && h.update(cx, |_, w, _| w.activate_window()).is_ok()
+        && h
+            .update(cx, |_, w, _| {
+                // A hidden run (Slate) keeps it off screen.
+                if !crate::hidden::enabled() {
+                    w.activate_window();
+                }
+            })
+            .is_ok()
     {
         return Some(h);
     }
@@ -42,7 +49,13 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) -> Option<WindowHandle<Sett
         focus: std::env::var("TASKBOARD_NO_ACTIVATE").is_err(),
         ..Default::default()
     };
-    let h = cx.open_window(opts, |window, cx| cx.new(|cx| SettingsWindow::new(backend, window, cx))).ok()?;
+    let opts = crate::hidden::settings_options(opts, cx);
+    let h = cx
+        .open_window(opts, |window, cx| {
+            crate::hidden::attach_settings(window, cx);
+            cx.new(|cx| SettingsWindow::new(backend, window, cx))
+        })
+        .ok()?;
     cx.set_global(SettingsHandle(Some(h)));
     Some(h)
 }
