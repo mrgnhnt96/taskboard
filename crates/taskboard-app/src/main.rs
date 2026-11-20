@@ -17,6 +17,7 @@
 //!   daemon's notifications link there. `TASKBOARD_LINK=<url>` follows one at startup.
 //! - `TASKBOARD_DEV=1` — dev mode even inside a bundle: no install / login item. See `install.rs`.
 //! - `TASKBOARD_PICK=B2,B3` — check these issues on the Backlog page.
+//! - `TASKBOARD_FAKE_PLAN=B2,B3` — with the fake backend, the Backlog's new goal already planned for these.
 //! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit;
 //!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips),
 //!   `TASKBOARD_SNAPSHOT_CLICK=x,y;x,y` clicks there in turn first (menus and opened rows),
