@@ -406,9 +406,14 @@ pub fn more_vm(a: &Ask, jira: bool) -> Vec<Entry> {
             if a.dismiss {
                 rest.push(Entry::Item("Dismiss", Do::Dismiss(a.id.clone())));
             }
+        } else if let Some(r) = task_ref(a) {
+            rest.push(Entry::Item("Talk it over", Do::TalkTask(r)));
         }
     }
     if let Some((g, _)) = &a.goal {
+        if !matches!(&a.act, Some(Act::OpenGoal(x)) if x == g) {
+            rest.push(Entry::Item("Open goal", Do::Act(Act::OpenGoal(g.clone()))));
+        }
         rest.extend(goal_entries(g));
     }
     if !top.is_empty() && !rest.is_empty() {
@@ -630,7 +635,7 @@ mod tests {
         assert_eq!(g.kids[1].title, "Two title");
         assert_eq!(g.kids[1].id, "task:T9", "Later puts the one task off");
         assert_eq!(finish_vm(&g.kids[1]), vec![("Restart".to_string(), Do::Act(Act::Restart("T9".into())))]);
-        assert_eq!(labels(&more_vm(&g.kids[1], false)), vec!["Mark done", "Cancel task", "—", "Pause goal", "Set goal aside"]);
+        assert_eq!(labels(&more_vm(&g.kids[1], false)), vec!["Mark done", "Cancel task", "—", "Talk it over", "Open goal", "Pause goal", "Set goal aside"]);
     }
 
     #[test]
@@ -639,7 +644,7 @@ mod tests {
         assert_eq!(finish_vm(&a), vec![("Done".to_string(), Do::Done("H1".into()))]);
         assert_eq!(
             labels(&more_vm(&a, false)),
-            vec!["Can't do this", "Waiting on someone", "Don't wait for me", "Not needed", "—", "Talk it over", "Pause goal", "Set goal aside"]
+            vec!["Can't do this", "Waiting on someone", "Don't wait for me", "Not needed", "—", "Talk it over", "Open goal", "Pause goal", "Set goal aside"]
         );
         assert_eq!(a.holds.label(), "Holds 1 task");
         assert_eq!(labels(&more_vm(&ask_vm(&todo("H2", None, json!([]))), false)).last(), Some(&"Talk it over"), "no goal, no goal items");
@@ -650,7 +655,7 @@ mod tests {
         let a = ask_vm(&miss(3, "G1"));
         let labels_on_row: Vec<String> = finish_vm(&a).into_iter().map(|(l, _)| l).collect();
         assert_eq!(labels_on_row, vec!["Make it a task", "Won’t do"]);
-        assert_eq!(labels(&more_vm(&a, true)), vec!["Create ticket", "Finish the goal without it", "—", "Pause goal", "Set goal aside"]);
+        assert_eq!(labels(&more_vm(&a, true)), vec!["Create ticket", "Finish the goal without it", "—", "Open goal", "Pause goal", "Set goal aside"]);
         assert_eq!(labels(&more_vm(&a, false))[0], "Finish the goal without it", "no Jira, no ticket");
         assert_eq!(a.holds.label(), "Holds the goal");
         assert_eq!(tag_of(&a, false).as_deref(), Some("1 missed"));
@@ -669,7 +674,7 @@ mod tests {
         let a = ask_vm(&agent("T5", "G1"));
         assert_eq!(kind_of(&a), Kind::Waiting);
         assert_eq!(finish_vm(&a), vec![("Open terminal".to_string(), Do::Act(Act::Focus("T5".into())))]);
-        assert_eq!(labels(&more_vm(&a, false)), vec!["Open task", "—", "Pause goal", "Set goal aside"]);
+        assert_eq!(labels(&more_vm(&a, false)), vec!["Open task", "—", "Talk it over", "Open goal", "Pause goal", "Set goal aside"]);
     }
 
     #[test]
@@ -687,7 +692,7 @@ mod tests {
         let a = ask_vm(&json!({"id": "task:T5", "task": "T5", "text": "", "card": card, "at": "2026-11-05T10:00:00Z", "waiting": false, "holds": {"tasks": [], "goal": null}}));
         let on_row: Vec<String> = finish_vm(&a).into_iter().map(|(l, _)| l).collect();
         assert_eq!(on_row, vec!["Mark done", "Open task"]);
-        assert_eq!(labels(&more_vm(&a, false)), vec!["Cancel task"]);
+        assert_eq!(labels(&more_vm(&a, false)), vec!["Cancel task", "—", "Talk it over"]);
     }
 
     #[test]
