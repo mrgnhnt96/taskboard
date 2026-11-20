@@ -1396,12 +1396,20 @@ pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, Str
         Ok(r) => r,
         Err(e) => return Ok(Err(e)),
     };
-    apply(app, id, &rec)?;
-    Ok(Ok(rec))
+    Ok(Ok(apply(app, id, &rec)?))
 }
 
-/// Steps one task's PR with a record, as a read of it would.
-pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
+/// The host's record with what Azure DevOps says about the expected checks the host hasn't shown yet
+/// (`azure_checks.rs`): asked, when due, then folded in as checks.
+pub fn with_azure(app: &App, id: i64, rec: &Value) -> Result<Value> {
+    crate::azure_checks::note(app, &board::get_task(app, id)?, rec)?;
+    Ok(crate::azure_checks::fold(&board::get_task(app, id)?, rec))
+}
+
+/// Steps one task's PR with a record, as a read of it would. The record it stepped with: the host's,
+/// with Azure DevOps' builds of its head folded in ([`with_azure`]).
+pub fn apply(app: &App, id: i64, rec: &Value) -> Result<Value> {
+    let rec = &with_azure(app, id, rec)?;
     let t = board::get_task(app, id)?;
     note_expected(app, &t, rec)?;
     note_stages(app, &board::get_task(app, id)?, rec, false)?;
@@ -1409,7 +1417,7 @@ pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
     gate(app, &t, rec)?;
     let t = board::get_task(app, id)?;
     app.db.tx(|| step(app, &t, rec))?;
-    Ok(())
+    Ok(rec.clone())
 }
 
 /// A stream pr event, stepped as the PR's state without reading its host (stream mode). A partial one
@@ -1430,9 +1438,7 @@ pub fn apply_event(app: &App, id: i64, ev: &Value) -> Result<Option<Value>> {
             _ => return Ok(None),
         }
     }
-    let rec = rec.to_value();
-    apply(app, id, &rec)?;
-    Ok(Some(rec))
+    Ok(Some(apply(app, id, &rec.to_value())?))
 }
 
 fn str_list(v: &Value) -> Vec<String> {
@@ -2118,11 +2124,15 @@ pub fn expected_wait_mins(app: &App, t: &Row) -> f64 {
     crate::projects::pr_rules(app, t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS)
 }
 
-/// How long this push waits for expected checks that haven't posted: `expected_wait_mins`, or only the
-/// `no_checks_after` grace when they were learned from an earlier push (`earlier_checks`) and every check
+/// How long this push waits for expected checks that haven't posted: `expected_wait_mins`; a stacked
+/// PR whose missing checks Azure DevOps has no build for, `azure_stacked_wait_mins`
+/// (`azure_checks::stacked_wait`); or only the `no_checks_after` grace when they were learned from an earlier push (`earlier_checks`) and every check
 /// this push posted has finished, as a check that no longer runs on the PR never posts.
 pub fn missing_wait_mins(app: &App, t: &Row, rec: &Value) -> f64 {
     let full = expected_wait_mins(app, t);
+    if let Some(stacked) = expected_missing(app, t, rec).and_then(|m| crate::azure_checks::stacked_wait(app, t, rec, &m)) {
+        return stacked.min(full);
+    }
     let checks = rec["checks"].as_array().cloned().unwrap_or_default();
     let finished = !checks.is_empty() && rec["running"].as_i64().unwrap_or(0) == 0 && checks.iter().all(|c| c["state"] != "running");
     if finished && expected_for(app, t, rec).source == Some("earlier") {
@@ -2837,6 +2847,7 @@ fn poll_host(app: &App, host: &str, tasks: &[Row], skip_covered: bool, streams: 
                 }
             },
         };
+        let rec = with_azure(app, t.id(), &rec)?;
         let t = board::get_task(app, t.id())?;
         note_expected(app, &t, &rec)?;
         note_stages(app, &board::get_task(app, t.id())?, &rec, false)?;

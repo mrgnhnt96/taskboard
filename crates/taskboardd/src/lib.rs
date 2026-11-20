@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod adf;
 pub mod areas;
 pub mod ask;
+pub mod azure_checks;
 pub mod api;
 pub mod app;
 pub mod apporigin;

@@ -795,9 +795,21 @@ board's own account on the host (the account it reads and posts as; the PR's aut
 **Per-project rules** (`[pr.projects.<name>]` in config.toml): `approvals` (needed to be ready to merge; unset =
 `pr.approvals`, default 2; 0 = the host's verdict or any approval), `expected` (check names that must post on every
 push; checks count as running until they do, for up to `expected_wait_mins`, default 90; `[]` = don't wait at all;
-unset = the `no_checks_after_mins` grace), `required`, `failures_cmd` and `merge_strategy`. `approvals`, `expected`,
+unset = the `no_checks_after_mins` grace), `required`, `failures_cmd`, `merge_strategy`, and `azure_project`,
+`azure_pipelines` and `azure_stacked_wait_mins` (below). `approvals`, `expected`,
 `expected_wait_mins` and `required` can be changed on the board with `tb project set` (`POST /projects/:name`), over
 config.toml's.
+
+**Azure Pipelines checks** (`azure_project` = `org/project` or a dev.azure.com link; `azure_pipelines` = check name →
+pipeline definition id, e.g. `{ roon_mobile = 16 }`): a PR host shows an Azure build only once it starts, so for each
+of those checks the host hasn't shown on the PR's head the board asks Azure's Build API (with the CI token, through the
+Azure DevOps rate-limit gate, reader "Azure expected checks"; at most once a minute per head, not again once the build
+finished) for that pipeline's build of the head, on the PR's branch, else its `refs/pull/<n>/merge` build. The answer
+joins the record as a check of that name with `via: "azure"` and `azure_status`: a queued or running build is a running
+check (it holds the stage and `tb pr merge` until it finishes, however long past `expected_wait_mins`), a finished one
+passed (`succeeded`, `partiallySucceeded`), failed or stopped. Once the host shows the check, the host's counts. With
+no build in Azure the expected wait runs out as before; `azure_stacked_wait_mins` shortens it for a PR into a branch
+other than the repo's default. Kept in `pr_flow.azure_runs`.
 
 **`required`** (`tb project set --required-check NAME`, repeat; `none` = `[]`) names the checks, or the stages and
 jobs inside a check's build, that must pass to merge (#928). A failed check that isn't named doesn't hold the PR once

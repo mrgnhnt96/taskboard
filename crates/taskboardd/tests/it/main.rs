@@ -86,6 +86,7 @@ mod pr_other_repo;
 mod pr_wait_watch;
 mod prbuilds;
 mod prhost;
+mod azure_checks;
 mod project_terminals;
 mod prplan;
 mod qa;

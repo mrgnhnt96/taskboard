@@ -163,6 +163,93 @@ pub fn azure_build(url: &str) -> Option<(String, String)> {
     Some((format!("https://{}/{}", &c[1], &c[2]), c[3].to_string()))
 }
 
+/// An Azure DevOps project's API base (`https://dev.azure.com/<org>/<project>`) from `org/project`
+/// or a link into the project.
+pub fn azure_project_base(s: &str) -> Option<String> {
+    let s = s.trim().trim_end_matches('/');
+    let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://")).unwrap_or(s);
+    let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+    let (org, project) = match parts.as_slice() {
+        ["dev.azure.com", org, project, ..] => (org.to_string(), project.to_string()),
+        [host, project, ..] if host.ends_with(".visualstudio.com") => return Some(format!("https://{host}/{project}")),
+        [org, project] => (org.to_string(), project.to_string()),
+        _ => return None,
+    };
+    (!org.starts_with('_') && !project.starts_with('_')).then(|| format!("https://dev.azure.com/{org}/{project}"))
+}
+
+/// One Azure Pipelines build of a PR's head, as the board reads it before the PR host shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AzureRun {
+    pub id: i64,
+    /// The board's check state: running (queued or started), passed, failed or stopped.
+    pub state: String,
+    /// Azure's own status: notStarted, inProgress, completed, …
+    pub status: String,
+    pub url: Option<String>,
+    pub at: Option<String>,
+}
+
+impl AzureRun {
+    fn of(b: &Value) -> Option<AzureRun> {
+        let status = b["status"].as_str().unwrap_or("").to_string();
+        let state = match (status.as_str(), b["result"].as_str().unwrap_or("")) {
+            ("completed", "succeeded" | "partiallySucceeded") => "passed",
+            ("completed", "failed") => "failed",
+            ("completed", _) => "stopped",
+            _ => "running",
+        };
+        let at = ["finishTime", "startTime", "queueTime"].iter().find_map(|k| b[*k].as_str()).map(str::to_string);
+        Some(AzureRun { id: b["id"].as_i64()?, state: state.into(), status, url: b["_links"]["web"]["href"].as_str().map(str::to_string), at })
+    }
+
+    pub fn json(&self) -> Value {
+        serde_json::json!({"id": self.id, "state": self.state, "status": self.status, "url": self.url, "at": self.at})
+    }
+}
+
+/// The same commit, either one possibly short (Bitbucket reads a 12-character head).
+fn same_commit(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// A query value with the characters a URL can't carry as they are escaped.
+fn query_value(s: &str) -> String {
+    s.bytes()
+        .map(|c| match c {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (c as char).to_string(),
+            _ => format!("%{c:02X}"),
+        })
+        .collect()
+}
+
+/// The newest build of pipeline `definition` for the commit `head`: one run on the PR's branch, else
+/// a pull-request build (`refs/pull/<n>/merge`, whose `pr.sourceSha` is the head). None: Azure has none.
+pub fn azure_run(http: &dyn Http, base: &str, definition: i64, branch: &str, pr_num: i64, head: &str) -> HostResult<Option<AzureRun>> {
+    let mut refs = vec![];
+    if !branch.is_empty() {
+        refs.push(format!("refs/heads/{branch}"));
+    }
+    if pr_num > 0 {
+        refs.push(format!("refs/pull/{pr_num}/merge"));
+    }
+    for r in refs {
+        let url = format!(
+            "{base}/_apis/build/builds?definitions={definition}&branchName={}&queryOrder=queueTimeDescending&$top=20&api-version=7.1",
+            query_value(&r)
+        );
+        let v = http.call("GET", &url, None).map_err(|e| azure_error(e, "the pipeline's builds", "Build (read)"))?;
+        let builds = v["value"].as_array().cloned().unwrap_or_default();
+        let ours = builds.iter().find(|b| {
+            same_commit(b["sourceVersion"].as_str().unwrap_or(""), head) || same_commit(b["triggerInfo"]["pr.sourceSha"].as_str().unwrap_or(""), head)
+        });
+        if let Some(run) = ours.and_then(AzureRun::of) {
+            return Ok(Some(run));
+        }
+    }
+    Ok(None)
+}
+
 pub struct AzurePipelines {
     pub http: Box<dyn Http>,
 }
@@ -478,6 +565,54 @@ mod tests {
         let cmd = CommandCi { cmd: format!("echo '{out}'") };
         assert_eq!(cmd.stages(&pr, "abc", &check("x")).unwrap(), Some(stages));
         assert_eq!(cmd.failures(&pr, "abc", &check("x")).unwrap().steps, vec!["Upload".to_string()]);
+    }
+
+    #[test]
+    fn reads_an_azure_project_from_its_name_or_a_link() {
+        let want = Some("https://dev.azure.com/roonlabs/76c1886c".to_string());
+        assert_eq!(azure_project_base("roonlabs/76c1886c"), want);
+        assert_eq!(azure_project_base("https://dev.azure.com/roonlabs/76c1886c/_build?definitionId=16"), want);
+        assert_eq!(azure_project_base("dev.azure.com/roonlabs/76c1886c/"), want);
+        assert_eq!(azure_project_base("https://acme.visualstudio.com/Proj/_build"), Some("https://acme.visualstudio.com/Proj".into()));
+        assert_eq!(azure_project_base("roonlabs"), None);
+        assert_eq!(azure_project_base("https://dev.azure.com/roonlabs/_apis"), None);
+    }
+
+    #[test]
+    fn finds_the_head_s_build_on_its_branch_then_its_pull_request() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let http = Canned(
+            vec![
+                ("refs/heads/fix/RRD-1%20x", json!({"value": [
+                    {"id": 7, "status": "completed", "result": "succeeded", "sourceVersion": "0ld0ld0ld0ld"}
+                ]})),
+                ("refs/pull/18117/merge", json!({"value": [
+                    {"id": 9, "status": "notStarted", "sourceVersion": "merge1", "triggerInfo": {"pr.sourceSha": "abc123def456789"},
+                     "queueTime": "2026-11-20T19:10:00Z", "_links": {"web": {"href": "https://dev.azure.com/o/p/_build/results?buildId=9"}}}
+                ]})),
+            ],
+            calls.clone(),
+        );
+        let run = azure_run(&http, "https://dev.azure.com/o/p", 16, "fix/RRD-1 x", 18117, "abc123def456").unwrap().unwrap();
+        assert_eq!(run.id, 9);
+        assert_eq!(run.state, "running", "a queued build is a check that's coming");
+        assert_eq!(run.at.as_deref(), Some("2026-11-20T19:10:00Z"));
+        let calls = calls.lock();
+        assert!(calls[0].starts_with("https://dev.azure.com/o/p/_apis/build/builds?definitions=16&branchName=refs/heads/fix/RRD-1%20x&"), "{}", calls[0]);
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn reads_a_finished_azure_build_as_passed_failed_or_stopped() {
+        let state = |status: &str, result: &str| AzureRun::of(&json!({"id": 1, "status": status, "result": result})).unwrap().state;
+        assert_eq!(state("completed", "succeeded"), "passed");
+        assert_eq!(state("completed", "partiallySucceeded"), "passed");
+        assert_eq!(state("completed", "failed"), "failed");
+        assert_eq!(state("completed", "canceled"), "stopped");
+        assert_eq!(state("inProgress", ""), "running");
+        assert_eq!(state("notStarted", ""), "running");
+        let http = Canned(vec![("builds?", json!({"value": [{"id": 3, "status": "inProgress", "sourceVersion": "ffff"}]}))], Arc::new(Mutex::new(vec![])));
+        assert_eq!(azure_run(&http, "https://dev.azure.com/o/p", 16, "feat", 4, "abcd").unwrap(), None, "another commit's build isn't this head's");
     }
 
     #[test]

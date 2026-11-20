@@ -351,6 +351,17 @@ pub struct PrProject {
     pub owner_review: Option<bool>,
     /// When to rebase its PRs onto their base. Unset: `pr.rebase`.
     pub rebase: Option<RebasePolicy>,
+    /// The Azure DevOps project its Azure Pipelines checks build in: `org/project`, or a dev.azure.com
+    /// link into it. With `azure_pipelines`, the board asks Azure for a check the PR host hasn't shown
+    /// yet (`azure_checks.rs`): a queued or running build for the PR's head holds the merge until it
+    /// finishes, as the host shows a build only once it starts.
+    pub azure_project: Option<String>,
+    /// Checks that are Azure Pipelines builds: the check's name, with its pipeline's definition id
+    /// (`roon_mobile = 16`).
+    pub azure_pipelines: Option<BTreeMap<String, i64>>,
+    /// How long a stacked PR (one into a branch other than the repo's default) waits for expected
+    /// checks once Azure has no build for its head, in minutes. Unset: `expected_wait_mins`, as for any PR.
+    pub azure_stacked_wait_mins: Option<f64>,
 }
 
 /// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).

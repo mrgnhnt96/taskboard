@@ -89,6 +89,8 @@ pub struct Shared {
     pub pr_hosts: std::collections::HashMap<String, Arc<dyn crate::prhost::PrHost>>,
     /// Default-branch CI readers used in place of the real ones (`breaks::install`, tests).
     pub branch_ci: std::collections::HashMap<String, Arc<dyn crate::breaks::BranchCi>>,
+    /// The Azure DevOps reader used in place of the real one (`azure_checks::install`, tests).
+    pub azure_http: Option<Arc<dyn crate::prhost::bitbucket::Http>>,
     /// Alerts' notification responses Midna reported (alert id, `notify.response`), for the next tick.
     pub notify_inbox: Arc<Mutex<Vec<(String, Value)>>>,
     /// Alerts with a thread waiting on their notification's response: alert id -> the `notified_at` of its
