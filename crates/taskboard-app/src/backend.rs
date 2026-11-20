@@ -224,6 +224,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_PANEL").is_ok() {
             seed_panel(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_SLOTS").is_ok() {
+            seed_slots(&board);
+        }
         if std::env::var("TASKBOARD_FAKE_QUIET").is_ok() {
             let _ = taskboardd::dispatch::add_alert_keyed(&board, "T5: no update for 40 minutes", Some(5), None, "quiet:T5");
         }
@@ -335,6 +338,19 @@ fn seed_stopped(board: &Board) {
         let _ = board::update_task(board, t, taskboardd::fields!["status" => "needs", "needs_reason" => "lost", "lost" => 1, "question" => null, "session_id" => null]);
         let _ = board::log_event(board, t, MIDNA, "status", &format!("Terminal ended ({CLOSED_BY_YOU}) before the task was done"));
     }
+}
+
+/// Dev (`TASKBOARD_FAKE_SLOTS=1`): webapp's worktree pool, keeping 1 to 4 slots: slot-1 held by
+/// T2, slot-2 and slot-3 free.
+fn seed_slots(board: &Board) {
+    let now = taskboardd::util::now_iso();
+    for (n, task) in [(1, Some(2i64)), (2, None), (3, None)] {
+        let _ = board.db.insert(
+            "worktree_slots",
+            taskboardd::fields!["repo" => "/tmp/webapp", "n" => n, "path" => format!("/tmp/webapp/.claude/worktrees/slot-{n}"), "project" => "webapp", "task_id" => task, "made_at" => now.clone(), "used_at" => now.clone()],
+        );
+    }
+    let _ = api::dispatch(board, "POST", "/projects/webapp", &Query::new(), &json!({"min_slots": 1, "max_slots": 4, "idle_trim_days": 3, "idle_remove_days": 7}));
 }
 
 /// Dev (`TASKBOARD_FAKE_PANEL=1`): the task panel's need boxes: a lost task that looks finished,
