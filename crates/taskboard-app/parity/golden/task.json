@@ -464,7 +464,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Send answer Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -472,6 +472,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer!",
           "focus",
           "term-menu"
         ],
@@ -480,7 +481,9 @@
           "Open G1 · next up: T8",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -618,7 +621,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Write an answer first. Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Send answer Focus in Midna Write an answer first. Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -626,6 +629,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer",
           "focus",
           "term-menu"
         ],
@@ -634,7 +638,9 @@
           "Open G1 · next up: T8",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          "Yes, ask for it."
+        ]
       }
     },
     {
@@ -766,7 +772,7 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Sending… Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -774,6 +780,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer!",
           "focus",
           "term-menu"
         ],
@@ -782,7 +789,9 @@
           "Open G1 · next up: T8",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -910,7 +919,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Send answer Send at Thu 6:00 AM Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -918,15 +927,20 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer!",
+          "answer:morning!",
           "focus",
           "term-menu"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
+          "Hold the answer until work hours start; the task doesn’t start before then",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -1054,7 +1068,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Send answer Send at 6:00 PM Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1062,15 +1076,20 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer!",
+          "answer:morning!",
           "focus",
           "term-menu"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
+          "Hold the answer until work hours start; the task doesn’t start before then",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -1216,7 +1235,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Yes Ask for the password first No Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Yes Ask for the password first No Send answer Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -1226,6 +1245,7 @@
           "tab:log",
           "answer-opt:Yes",
           "answer-opt:No",
+          "answer!",
           "focus",
           "term-menu"
         ],
@@ -1234,7 +1254,9 @@
           "Open G1 · next up: T8",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -2100,7 +2122,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Your answer to T7 didn’t arrive. Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Send answer Focus in Midna Your answer to T7 didn’t arrive. Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2108,6 +2130,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer!",
           "focus",
           "term-menu"
         ],
@@ -2116,7 +2139,9 @@
           "Open G1 · next up: T8",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -2244,7 +2269,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Timeline Brief Context Full log Asks you · 2:56 PM Should removing the last passkey require a password re-check? Send answer Focus in Midna Waiting on you After 2h 1m of work Then: Pull request, Checks, Review, Merge Started In T7 Sign in with a passkey 12:55 PM",
         "acts": [
           "close-panel",
           "open-project:webapp",
@@ -2252,6 +2277,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
+          "answer!",
           "focus",
           "term-menu"
         ],
@@ -2260,7 +2286,9 @@
           "Open G1 · next up: T8",
           "Terminal actions"
         ],
-        "values": []
+        "values": [
+          ""
+        ]
       }
     },
     {
@@ -8133,7 +8161,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
-          "answer",
+          "answer!",
           "focus",
           "pr-menu"
         ],
@@ -8295,7 +8323,7 @@
           "tab:what",
           "tab:context",
           "tab:log",
-          "answer",
+          "answer!",
           "focus",
           "pr-menu"
         ],
