@@ -1,6 +1,7 @@
 //! The Review page: one weekly time review (`GET /reviews/:id`) with the same numbers as
 //! `tb review`, a picker for earlier weeks, and its suggested fixes as backlog issues. Read-only:
-//! opening a review marks it seen (its Needs you item goes), and Plan a goal hands the open fixes
+//! opening a review marks it seen (its Needs you item goes once its fixes are dealt with, or at once
+//! when it filed none), and Plan a goal hands the open fixes
 //! to the Backlog page, checked.
 //!
 //! Layout: the week and its key numbers against the review before; the suggested fixes, since
@@ -362,7 +363,8 @@ fn pick(m: &mut MainWindow, id: i64, cx: &mut Context<MainWindow>) {
     m.refresh(cx);
 }
 
-/// Opening an unseen review clears its Needs you item and withdraws its notification.
+/// Opening an unseen review withdraws its notification. Its Needs you item goes too, unless fixes it
+/// filed still wait in the Backlog: the board keeps it until they're planned, deferred or dropped.
 fn mark_seen(m: &mut MainWindow, r: &Value, cx: &mut Context<MainWindow>) {
     let Some(id) = r["id"].as_i64() else { return };
     if !r["seen_at"].is_null() || !m.review.marked.insert(id) {

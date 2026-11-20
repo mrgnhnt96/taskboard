@@ -110,6 +110,8 @@ pub enum Act {
     OpenIssue(String),
     /// A weekly review is ready: its Review page, which marks it seen.
     OpenReview(i64),
+    /// A weekly review opened with fixes still to deal with: the Backlog, where they're planned or dropped.
+    OpenBacklog,
 }
 
 impl Act {
@@ -128,12 +130,13 @@ impl Act {
             Act::OpenGoal(_) => "Open goal",
             Act::OpenIssue(_) => "Open issue",
             Act::OpenReview(_) => "Open review",
+            Act::OpenBacklog => "Open Backlog",
         }
     }
 
     /// Whether it changes something on the board, rather than opening a page.
     pub fn posts(&self) -> bool {
-        !matches!(self, Act::OpenPr(_) | Act::OpenTask(_) | Act::OpenGoal(_) | Act::OpenIssue(_) | Act::OpenReview(_))
+        !matches!(self, Act::OpenPr(_) | Act::OpenTask(_) | Act::OpenGoal(_) | Act::OpenIssue(_) | Act::OpenReview(_) | Act::OpenBacklog)
     }
 }
 
@@ -284,7 +287,9 @@ pub fn ask_vm(a: &Value) -> Ask {
     // Its terminal is gone and it still asks: Focus opens a new terminal to ask again.
     let focus = |r: String| if card["terminal_open"] == false && opt_s(card, "question").is_some() { Act::AskAgain(r) } else { Act::Focus(r) };
     let (sev, kind, act): (Sev, &str, Option<Act>) = if let Some(id) = a["review_id"].as_i64() {
-        (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
+        // Opened, it stays while its fixes wait in the Backlog, so that's where the button goes.
+        let act = if a["opened"] == true && a["fixes"].as_i64().unwrap_or(0) > 0 { Act::OpenBacklog } else { Act::OpenReview(id) };
+        (Sev::Ok, "Weekly review", Some(act))
     } else if s(a, "key").starts_with("quiet:") {
         (Sev::Warn, "Gone quiet", pr_url(card).map(Act::OpenPr).or(r.clone().map(Act::OpenTask)))
     } else if let Some(b) = &miss {
@@ -678,6 +683,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::OpenGoal(g) => m.go(Page::Goal(g), cx),
         Act::OpenIssue(r) => m.open_issue(r, cx),
         Act::OpenReview(id) => crate::ui::review::open(m, Some(id), cx),
+        Act::OpenBacklog => m.go(Page::Backlog, cx),
     }
 }
 
@@ -1096,6 +1102,18 @@ mod tests {
         assert_eq!(asks[0].act, Some(Act::OpenReview(4)));
         assert_eq!(asks[0].act.as_ref().map(Act::label), Some("Open review"));
         assert!(!asks[0].dismiss, "the board keeps it until the review is opened");
+    }
+
+    #[test]
+    fn an_opened_review_with_fixes_left_opens_the_backlog() {
+        let home = json!({"needs": [
+            {"id": "a9", "at": "2026-11-13T17:00:00Z", "text": "Weekly review: 12.5 h on builds, 3 fixes suggested", "quiet": true, "review_id": 4,
+             "key": "review:4", "title": "3 fixes from this week’s review", "detail": "Opened Monday · 2 dealt with", "fixes": 3, "opened": true}
+        ]});
+        let asks = asks_vm(&home);
+        assert_eq!((asks[0].kind.as_str(), asks[0].title.as_str(), asks[0].text.as_str()), ("Weekly review", "3 fixes from this week’s review", "Opened Monday · 2 dealt with"));
+        assert_eq!(asks[0].act.as_ref().map(Act::label), Some("Open Backlog"));
+        assert!(!Act::OpenBacklog.posts());
     }
 
     #[test]

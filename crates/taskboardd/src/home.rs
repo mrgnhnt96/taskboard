@@ -241,6 +241,9 @@ fn alert_item(app: &App, goals: &mut Goals, mut a: Value) -> Result<Value> {
         Some(t) => task_holds(app, goals, t)?,
         None => no_holds(),
     };
+    if let Some(id) = a["review_id"].as_i64() {
+        crate::review::needs_row(app, id, &mut a)?;
+    }
     a["card"] = card;
     a["goal_name"] = goal_name;
     a["waiting"] = json!(gone_quiet(&a) || task.as_ref().is_some_and(agent_waiting));
@@ -306,7 +309,9 @@ fn needs(app: &App) -> Result<(Vec<Value>, Vec<Value>)> {
     let mut goals = Goals::default();
     let (mut out, mut later) = (vec![], vec![]);
     let resting = resting_goals(app)?;
-    let (snoozed, up): (Vec<Value>, Vec<Value>) = dispatch::listing(app).into_iter().partition(dispatch::snoozed);
+    // A weekly review whose fixes were all just dealt with leaves now, not on the review's next tick.
+    let listing = dispatch::listing(app).into_iter().filter(|a| a["review_id"].as_i64().is_none_or(|id| crate::review::holds_owner(app, id).unwrap_or(true)));
+    let (snoozed, up): (Vec<Value>, Vec<Value>) = listing.partition(dispatch::snoozed);
     for a in up.into_iter().filter(|a| !rests(app, a, &resting)) {
         out.push(alert_item(app, &mut goals, a)?);
     }
