@@ -123,9 +123,25 @@ scripts/dev-app.sh --seed                                    # install "Taskboar
 ```
 
 A board on any data folder but the default runs without its runner (it never opens or closes terminals,
-moves tickets or sends notifications) unless you pass `--runner`. Screenshots without a screen:
-`cargo build -p taskboard-app --features snapshot`, then run with `TASKBOARD_BACKEND=fake TASKBOARD_SNAPSHOT=out.png`
-(`TASKBOARD_PAGE=backlog|sessions|G1`, `TASKBOARD_OPEN=T3|B1`, `TASKBOARD_SEARCH=pass`, `TASKBOARD_THEME=dark`).
+moves tickets or sends notifications) unless you pass `--runner`.
+
+Screenshots and driving the app go through [Slate](https://github.com/mrgnhnt96/slate): the app's window
+opens below the desktop and never takes focus, so nothing shows on screen and the app you're using keeps
+the keyboard. `scripts/slate.sh` builds this checkout's app, installs the `slate` command and runs the
+app on the sample board:
+
+```sh
+scripts/slate.sh shoot --out shot.png --size 1360x860 --wait 2500
+scripts/slate.sh drive --steps steps.json --out shots/ --wait 2500    # keys, typing, clicks, scrolls, shots
+TASKBOARD_PAGE=backlog TASKBOARD_OPEN=B1 TASKBOARD_THEME=light scripts/slate.sh shoot --out backlog.png
+```
+
+The steps file is Slate's (its README lists the steps), for example
+`[{"click": {"x": 64, "y": 219}}, {"key": "cmd-k"}, {"type": "pass"}, {"shot": "search"}]`.
+`TASKBOARD_PAGE=backlog|settings|G1`, `TASKBOARD_OPEN=T3|B1`, `TASKBOARD_SEARCH=pass`,
+`TASKBOARD_THEME=dark` and the other variables at the top of `crates/taskboard-app/src/main.rs` pass
+through; `TASKBOARD_PAGE=settings` shoots the Settings window. `--url http://127.0.0.1:18792` runs it
+against a daemon you started instead of the sample board (never the real board's).
 
 main only takes PRs (a GitHub ruleset; force-pushes and deletes are refused too). Releases are the
 exception: `scripts/release.sh` pushes its version commit with a deploy key the ruleset lets past,

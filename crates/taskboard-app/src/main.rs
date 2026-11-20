@@ -19,15 +19,15 @@
 //! - `TASKBOARD_DEV=1` — dev mode even inside a bundle: no install / login item. See `install.rs`.
 //! - `TASKBOARD_PICK=B2,B3` — check these issues on the Backlog page.
 //! - `TASKBOARD_FAKE_PLAN=B2,B3` — with the fake backend, the Backlog's new goal already planned for these.
-//! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit;
-//!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips),
-//!   `TASKBOARD_SNAPSHOT_CLICK=x,y;x,y` clicks there in turn first (menus and opened rows),
-//!   `TASKBOARD_SNAPSHOT_KEYS=tab tab` presses those keys in turn after the clicks (focus rings),
-//!   `TASKBOARD_SNAPSHOT_SCROLL=x,y,dy` scrolls what's under x,y down dy px after the clicks.
+//! - `TASKBOARD_NO_ACTIVATE=1` — don't take focus on launch.
+//! - `SLATE=1` (set by `slate shoot` / `slate drive`, see `scripts/slate.sh`) — run hidden below
+//!   the desktop, never focused, and shoot or drive the main window, or Settings with
+//!   `TASKBOARD_PAGE=settings` (`hidden.rs`). Debug and `snapshot` builds only.
 mod app;
 mod backend;
 mod fingerprint;
 mod fmt;
+mod hidden;
 mod hooks;
 mod install;
 mod log;
@@ -76,7 +76,9 @@ fn main() {
     // `taskboard://…` links (clicked notifications) can arrive before the window exists, so
     // they wait in a channel.
     let (link_tx, link_rx) = async_channel::unbounded::<Vec<String>>();
-    let application = gpui_kit::application();
+    // Under `slate shoot` / `slate drive` (SLATE=1) the app runs hidden: an accessory app whose
+    // window sits below the desktop without focus (hidden.rs). Unchanged otherwise.
+    let application = hidden::application(gpui_kit::application());
     application.on_open_urls(move |urls| drop(link_tx.try_send(urls)));
     application.run(move |cx| {
         let (ui_font, mono_font) = theme::load_fonts(cx);
@@ -147,12 +149,20 @@ fn main() {
             focus: std::env::var("TASKBOARD_NO_ACTIVATE").is_err(),
             ..Default::default()
         };
+        let opts = hidden::main_options(opts, cx);
         let b = backend.clone();
-        let handle = cx.open_window(opts, |window, cx| cx.new(|cx| app::MainWindow::new(b, window, cx))).expect("open main window");
+        let handle = cx
+            .open_window(opts, |window, cx| {
+                hidden::attach_main(window, cx);
+                cx.new(|cx| app::MainWindow::new(b, window, cx))
+            })
+            .expect("open main window");
         cx.spawn(async move |cx| {
             while let Ok(urls) = link_rx.recv().await {
                 cx.update(|cx| {
-                    cx.activate(true);
+                    if !hidden::enabled() {
+                        cx.activate(true);
+                    }
                     for u in &urls {
                         let _ = handle.update(cx, |m, window, cx| m.arrive(u, window, cx));
                     }
@@ -167,104 +177,11 @@ fn main() {
         })
         .detach();
         let _ = handle.update(cx, |m, _, cx| relaunch::restore(m, cx));
-        let settings_page = std::env::var("TASKBOARD_PAGE").as_deref() == Ok("settings");
-        let settings = settings_page.then(|| settings::open(backend.clone(), cx)).flatten();
-        #[cfg(feature = "snapshot")]
-        snapshot(settings.map_or(handle.into(), Into::into), cx);
-        let _ = settings;
-        let _ = handle;
-        if std::env::var("TASKBOARD_NO_ACTIVATE").is_err() {
+        if std::env::var("TASKBOARD_PAGE").as_deref() == Ok("settings") {
+            settings::open(backend.clone(), cx);
+        }
+        if hidden::may_activate() {
             cx.activate(true);
         }
     });
-}
-
-/// Dev: render the main window offscreen to `TASKBOARD_SNAPSHOT` after
-/// `TASKBOARD_SNAPSHOT_DELAY_MS` (default 1500), then quit.
-#[cfg(feature = "snapshot")]
-fn snapshot(any: AnyWindowHandle, cx: &mut App) {
-    let Ok(path) = std::env::var("TASKBOARD_SNAPSHOT") else {
-        return;
-    };
-    let delay: u64 = std::env::var("TASKBOARD_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
-    cx.spawn(async move |cx| {
-        cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
-        let spot = |v: &str| {
-            let (x, y) = v.split_once(',')?;
-            Some(point(px(x.trim().parse().ok()?), px(y.trim().parse().ok()?)))
-        };
-        let clicks = std::env::var("TASKBOARD_SNAPSHOT_CLICK").unwrap_or_default();
-        for position in clicks.split(';').filter_map(spot) {
-            let _ = cx.update_window(any, |_, window, cx| {
-                window.refresh();
-                window.draw(cx).clear(cx);
-                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
-                window.refresh();
-                window.draw(cx).clear(cx);
-                let (button, modifiers, click_count) = (MouseButton::Left, Modifiers::default(), 1);
-                window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers, click_count, first_mouse: false }), cx);
-                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers, click_count }), cx);
-            });
-            cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
-        }
-        let keys = std::env::var("TASKBOARD_SNAPSHOT_KEYS").unwrap_or_default();
-        for key in keys.split_whitespace().filter_map(|k| Keystroke::parse(k).ok()) {
-            let _ = cx.update_window(any, |_, window, cx| {
-                window.refresh();
-                window.draw(cx).clear(cx);
-                window.dispatch_keystroke(key, cx);
-            });
-            cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-        }
-        if let Some((at, dy)) = std::env::var("TASKBOARD_SNAPSHOT_SCROLL").ok().and_then(|v| {
-            let (xy, dy) = v.rsplit_once(',')?;
-            Some((spot(xy)?, dy.trim().parse::<f32>().ok()?))
-        }) {
-            let _ = cx.update_window(any, |_, window, cx| {
-                window.refresh();
-                window.draw(cx).clear(cx);
-                let delta = ScrollDelta::Pixels(point(px(0.), px(-dy)));
-                window.dispatch_event(PlatformInput::ScrollWheel(ScrollWheelEvent { position: at, delta, modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved }), cx);
-            });
-            cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
-        }
-        let mouse = std::env::var("TASKBOARD_SNAPSHOT_MOUSE").ok().and_then(|v| spot(&v));
-        if let Some(position) = mouse {
-            for _ in 0..2 {
-                let _ = cx.update_window(any, |_, window, cx| {
-                    window.refresh();
-                    window.draw(cx).clear(cx);
-                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
-                });
-                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-            }
-            for _ in 0..5 {
-                cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
-                let _ = cx.update_window(any, |_, window, cx| {
-                    window.refresh();
-                    window.draw(cx).clear(cx);
-                });
-            }
-        }
-        for _ in 0..2 {
-            let _ = cx.update_window(any, |_, window, cx| {
-                window.refresh();
-                window.draw(cx).clear(cx);
-            });
-            cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
-        }
-        let _ = cx.update_window(any, |_, window, cx| {
-            window.refresh();
-            window.draw(cx).clear(cx);
-            match window.render_to_image() {
-                Ok(img) => match img.save(&path) {
-                    Ok(()) => eprintln!("taskboard-app: snapshot saved to {path}"),
-                    Err(e) => eprintln!("taskboard-app: snapshot save failed: {e}"),
-                },
-                Err(e) => eprintln!("taskboard-app: render_to_image failed: {e:#}"),
-            }
-        });
-        let _ = cx.update(|cx| cx.quit());
-    })
-    .detach();
 }

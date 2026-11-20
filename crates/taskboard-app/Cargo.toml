@@ -10,8 +10,9 @@ name = "taskboard-app"
 path = "src/main.rs"
 
 [features]
-# `TASKBOARD_SNAPSHOT=out.png`: draw the main window offscreen, save it, then quit. Dev only.
-snapshot = ["gpui-kit/test-support"]
+# Slate renders its shots in the app (GPUI's render_to_image), with no Screen Recording
+# permission, and a release build honours SLATE=1 too (src/hidden.rs). Dev only.
+snapshot = ["gpui-kit/test-support", "slate/render"]
 
 [dev-dependencies]
 gpui-kit = { version = "0.7", default-features = false, features = ["test-support"] }
@@ -23,6 +24,9 @@ chrono.workspace = true
 ureq.workspace = true
 gpui-kit = { version = "0.7", default-features = false }
 async-channel = "2"
+# `slate shoot` / `slate drive` run the app hidden below the desktop, never focused (src/hidden.rs,
+# scripts/slate.sh, which installs the `slate` command at this same rev).
+slate = { git = "https://github.com/mrgnhnt96/slate", rev = "34b9471f4ce2828733589d8377336043ff47eba2" }
 libc = "0.2"
 # updater (src/updater.rs): the downloaded DMG's sha256
 ring = "0.17"
