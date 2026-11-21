@@ -1119,8 +1119,9 @@ pub fn panel_field(field: &str) -> bool {
     tab_field(field) || matches!(field, "session_id" | "title" | "goal_id")
 }
 
-/// The badge and color a task's panel shows for its state.
-pub fn panel_state(t: &Row) -> (&'static str, &'static str) {
+/// The badge and color a task's panel shows for its state. A terminal closed by hand (`by_hand`,
+/// `board::closed_by_hand`) is quiet, as the app's Stopped row is, not a red Lost.
+pub fn panel_state(t: &Row, by_hand: bool) -> (&'static str, &'static str) {
     match t.s("status") {
         Some("done") if t.b("failed") => ("Failed", "red"),
         Some("done") if pr_merged(t) => ("Merged", "green"),
@@ -1130,6 +1131,7 @@ pub fn panel_state(t: &Row) -> (&'static str, &'static str) {
         },
         Some("done") if t.i("pr_num").is_some() || has(t.s("pr_url")) => ("PR closed", "gray"),
         Some("done") => ("Done", "green"),
+        Some("needs") if by_hand => ("Stopped", "gray"),
         Some("needs") => match t.s("needs_reason") {
             Some("question") => ("Question", "amber"),
             Some("lost") => ("Lost", "red"),
@@ -1142,12 +1144,17 @@ pub fn panel_state(t: &Row) -> (&'static str, &'static str) {
     }
 }
 
-/// The panel a task puts on its terminals' entries in Midna's Summary: the task and its state, its
-/// goal (`goal`, with how many of its tasks are done) and buttons to the task, its PR and the goal's
-/// next task (`next`).
-pub fn task_panel(app: &App, t: &Row, goal: Option<(&Row, i64, i64)>, next: Option<&Row>) -> Value {
+/// The badge and color task `t`'s panel shows now (`panel_state`).
+fn panel_state_now(app: &App, t: &Row) -> Result<(&'static str, &'static str)> {
+    Ok(panel_state(t, board::closed_by_hand(app, t)?))
+}
+
+/// The panel a task puts on its terminals' entries in Midna's Summary: the task and its state
+/// (`state`, from `panel_state`), its goal (`goal`, with how many of its tasks are done) and buttons
+/// to the task, its PR and the goal's next task (`next`).
+pub fn task_panel(app: &App, t: &Row, state: (&str, &str), goal: Option<(&Row, i64, i64)>, next: Option<&Row>) -> Value {
     let tref = rf("task", t.id());
-    let (badge, color) = panel_state(t);
+    let (badge, color) = state;
     let open = dispatch::page_link(app, &format!("task/{tref}"));
     let mut buttons = vec![json!({"label": "Open task", "open": open})];
     if let Some(pr) = t.s("pr_url").filter(|u| u.starts_with("https://") || u.starts_with("http://")) {
@@ -1187,7 +1194,7 @@ fn panel_of(app: &App, t: &Row) -> Result<Option<(Vec<String>, Value)>> {
         None => (None, None),
     };
     let goal = goal.as_ref().zip(counts).map(|(g, c)| (g, c["done"].as_i64().unwrap_or(0), c["total"].as_i64().unwrap_or(0)));
-    Ok(Some((sids, task_panel(app, t, goal, next.as_ref()))))
+    Ok(Some((sids, task_panel(app, t, panel_state_now(app, t)?, goal, next.as_ref()))))
 }
 
 /// The goal's next task for `t`: the first not done after it in the goal's order, else before it.
@@ -1250,13 +1257,14 @@ pub fn panel_changed(app: &App, before: &Row, after: &Row) -> Result<()> {
     if !app.cfg.runner {
         return Ok(());
     }
-    let shown = |t: &Row| (panel_state(t), t.v("title"), t.v("session_id"), t.v("goal_id"), t.v("pr_url"), t.v("pr_num"));
-    if shown(before) == shown(after) {
+    let (was, is) = (panel_state_now(app, before)?, panel_state_now(app, after)?);
+    let shown = |t: &Row| (t.v("title"), t.v("session_id"), t.v("goal_id"), t.v("pr_url"), t.v("pr_num"));
+    if was == is && shown(before) == shown(after) {
         return Ok(());
     }
     queue_panel(app, after.id());
     let goals = [before.i("goal_id"), after.i("goal_id")];
-    if panel_state(before) == panel_state(after) && goals[0] == goals[1] {
+    if was == is && goals[0] == goals[1] {
         return Ok(());
     }
     for g in goals.into_iter().flatten() {
@@ -1598,8 +1606,10 @@ mod tests {
             (row(json!({})), ("Planned", "gray")),
         ];
         for (t, want) in cases {
-            assert_eq!(panel_state(&t), want, "{t:?}");
+            assert_eq!(panel_state(&t, false), want, "{t:?}");
         }
+        let lost = row(json!({"status": "needs", "needs_reason": "lost", "lost": 1}));
+        assert_eq!(panel_state(&lost, true), ("Stopped", "gray"), "a terminal closed by hand is quiet, not Lost");
     }
 
     #[test]
@@ -1611,7 +1621,7 @@ mod tests {
         let g = row(json!({"id": 12, "name": "Drag and drop"}));
         let next = row(json!({"id": 732, "title": "Drop folders"}));
         assert_eq!(
-            task_panel(&app, &t, Some((&g, 3, 5)), Some(&next)),
+            task_panel(&app, &t, ("In review", "purple"), Some((&g, 3, 5)), Some(&next)),
             json!({
                 "title": "T731 Dropped files type their path",
                 "url": "taskboard://task/T731",
@@ -1629,7 +1639,7 @@ mod tests {
             })
         );
         let alone = row(json!({"id": 5, "title": "Fix", "status": "working", "pr_url": "file:///tmp/x"}));
-        let p = task_panel(&app, &alone, None, None);
+        let p = task_panel(&app, &alone, ("Working", "teal"), None, None);
         assert_eq!(p["buttons"], json!([{"label": "Open task", "open": "taskboard://task/T5"}]), "only web PR links");
         assert!(p.get("subtitle").is_none() && p.get("subtitle_url").is_none());
     }
