@@ -577,7 +577,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
                     let path = p.get("path").and_then(|v| v.as_str()).unwrap_or("");
                     !path.is_empty() && std::path::Path::new(path).exists() && crate::projects::main_checkout(path).is_none()
                 })
-                .map(|p| json!({"name": p.get("name"), "path": p.get("path")}))
+                .map(|p| json!({"name": p.get("name"), "path": p.get("path"), "id": p.get("id")}))
                 .collect();
             let list = jdumps(&Value::Array(list));
             if app.db.get_setting("midna_projects")?.as_deref() != Some(list.as_str()) {

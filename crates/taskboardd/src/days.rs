@@ -469,6 +469,31 @@ fn stored(app: &App, date: NaiveDate) -> Result<BTreeMap<String, Value>> {
     Ok(v)
 }
 
+/// Forgets the kept days task `id` shows on, so each is worked out again under the task's project
+/// now (after a move). Only days whose log is still whole are: from the day after History's detail
+/// cut and the task's first kept status change, to its last one (yesterday while it's open). An
+/// older day's summary is all that's left of it, and stays. Returns the days forgotten.
+pub fn forget_task(app: &App, id: i64) -> Result<i64> {
+    let Some(t) = app.db.q1("SELECT status FROM tasks WHERE id = ?", p![id])? else { return Ok(0) };
+    let r = app
+        .db
+        .q1(
+            "SELECT (SELECT MIN(at) FROM task_states WHERE task_id = ?) AS first, \
+             MAX((SELECT MAX(at) FROM task_states WHERE task_id = ?), COALESCE((SELECT MAX(at) FROM events WHERE task_id = ?), '')) AS last",
+            p![id, id, id],
+        )?
+        .unwrap_or_default();
+    let day_of = |k: &str| r.s(k).and_then(parse_iso).map(|t| local_dt(t).date_naive());
+    let Some(first) = day_of("first") else { return Ok(0) };
+    let yesterday = today() - Duration::days(1);
+    let last = if t.s("status") == Some("done") { day_of("last").unwrap_or(first).min(yesterday) } else { yesterday };
+    let from = first.max(today() - Duration::days(detail_days(app)) + Duration::days(1));
+    if from > last {
+        return Ok(0);
+    }
+    app.db.changed("DELETE FROM day_stats WHERE date >= ? AND date <= ?", p![date_str(from), date_str(last)])
+}
+
 // ------------------------------------------------------------------ adding projects up
 
 fn f(v: &Value, k: &str) -> f64 {
@@ -952,8 +977,13 @@ pub fn cleanup(app: &App) -> Result<Value> {
     Ok(json!({"removed": {"events": events, "status_changes": states, "terminal_lines": lines, "day_rows": days}, "history": history(app)?}))
 }
 
-/// Once a day, after 3 AM local time, clean up.
+/// Once a day, after 3 AM local time, clean up. First, on start, earlier moves carry their history.
 pub fn cleanup_loop(app: std::sync::Arc<App>) {
+    match crate::reproject::carry_earlier_moves(&app) {
+        Ok(0) => {}
+        Ok(n) => app.info(format!("history: {n} moved tasks' merges and days now count under their project")),
+        Err(e) => app.info(format!("history: carrying moved tasks' history failed: {}", e.message)),
+    }
     while !app.stopping() {
         let now = local_now();
         let last = app.db.get_setting(LAST_CLEANUP_KEY).ok().flatten().and_then(|s| parse_iso(&s)).map(|t| local_dt(t).date_naive());

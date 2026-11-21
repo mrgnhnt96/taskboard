@@ -580,6 +580,16 @@ pub fn facts(app: &App, list: &[Value]) -> Result<Vec<Value>> {
         .collect())
 }
 
+/// The board's name for project `v`: the board keeps projects by name, and an agent may give Midna's
+/// id for one instead (`p_c1de7f`, as `midna project list` prints it). Anything else stays as given.
+pub fn named(app: &App, v: &str) -> Result<String> {
+    let list = jloads_arr(crate::reqcache::setting(app, "midna_projects")?.as_deref());
+    if list.iter().any(|p| p["name"] == v) {
+        return Ok(v.to_string());
+    }
+    Ok(list.iter().find(|p| p["id"] == v).and_then(|p| p["name"].as_str()).unwrap_or(v).to_string())
+}
+
 pub fn project_for_path(app: &App, path: Option<&str>) -> Result<Option<String>> {
     let Some(path) = path.filter(|p| !p.is_empty()) else { return Ok(None) };
     Ok(deepest(&list_projects(app)?, path).or_else(|| base_name(path.trim_end_matches('/'))))
