@@ -107,6 +107,20 @@ fn serve(cfg: Config) -> i32 {
             return 2;
         }
     };
+    // One board per data folder, whatever its port. A board still stopping gets a moment to let go;
+    // turned away, this one exits cleanly, as on a port this board already has, so launchd doesn't
+    // keep starting it.
+    let _instance = match taskboardd::instance::hold(&cfg.data, std::time::Duration::from_secs(30)) {
+        Ok(i) => i,
+        Err(e @ taskboardd::instance::Refused::Held(_)) => {
+            eprintln!("taskboardd: {e} ({}); not starting a second one.", cfg.data.display());
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("taskboardd: {e} ({})", cfg.data.display());
+            return 1;
+        }
+    };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     rt.block_on(async move {
         let listener = match tokio::net::TcpListener::bind(addr).await {

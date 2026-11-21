@@ -417,3 +417,22 @@ fn a_board_without_the_runner_sends_no_panels() {
     assert!(b.app.shared.lock().midna_panels.is_empty());
     assert_eq!(panels(&b), vec![]);
 }
+
+#[test]
+fn a_terminal_midna_no_longer_has_gets_no_more_panels() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    // Midna has closed s1 and dropped it from its Summary.
+    let exe = b.dir.path().join("midna");
+    let log = b.dir.path().join("calls");
+    let script = format!(
+        "#!/bin/sh\necho \"$2 $3\" >> {log}\ncase \"$2\" in\n  summary.annotate) echo 'midna: no terminal s1 (running or in a Summary)' >&2; exit 1 ;;\n  *) echo '{{}}' ;;\nesac\n",
+        log = log.display(),
+    );
+    std::fs::write(&exe, script).unwrap();
+    assert_eq!(panels(&b).len(), 1, "asked once");
+    for phase in ["checks", "review", "merged"] {
+        b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_url" => "https://github.com/acme/webapp/pull/9", "pr_phase" => phase]);
+        assert_eq!(panels(&b).len(), 1, "not asked again after Midna said it's gone");
+    }
+}
