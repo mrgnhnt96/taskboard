@@ -1,11 +1,18 @@
 # Work event stream, protocol v1
 
 The board defines this format; a work relay (anything that hears Bitbucket, GitHub, git, CI or Jira) adapts
-to it. An event carries every field the board needs, so the board never has to call the host to finish one.
+to it. A complete event carries every field the board needs, so in stream mode the board applies it without
+calling the host. An incomplete pr event without its state, title, branch and base, a review or comment,
+or a pr event in board mode makes the board read the PR from its host instead (see Kinds and Modes).
 
 ```
-POST /stream/events          (tb stream send '<json>'   or   … | tb stream send)
+POST http://127.0.0.1:8792/tasks/api/stream/events     (tb stream send '<json>'   or   … | tb stream send)
+X-Task-Board: 1
+Content-Type: application/json
 ```
+
+The address is the board's API (config `host` and `port`, or `TASKBOARD_PORT`). A POST without the
+`X-Task-Board: 1` header gets 403, and a body over 2 MiB gets 413. `tb stream send` sets both for you.
 
 ## Envelope
 
@@ -17,7 +24,7 @@ POST /stream/events          (tb stream send '<json>'   or   … | tb stream sen
 - `events` holds 1 to 500 events. A body without `events` but with a `kind` is read as a single event:
   `{"v": 1, "id": …, "kind": …}`.
 - Every event has these fields:
-  - `id`: a string of 1 to 200 characters, unique to that event. Sending the same id again is a duplicate.
+  - `id`: a string of 1 to 200 bytes (UTF-8, leading and trailing spaces not counted), unique to that event. Sending the same id again is a duplicate.
   - `kind`: what kind of event it is (see Kinds).
   - `at`: when it happened, as ISO 8601.
   - `source`: the relay or feed it came from.
@@ -116,7 +123,8 @@ any case. A display name, a username or an account id all match once they're in 
 
 ### `jira.comment`
 
-`key`, `comment_id` (Jira's numeric id), `author` and `body` are required. `visibility?` is optional.
+`key`, `comment_id` (Jira's numeric id, digits only), `author` and `body` are required. Any other field, such as
+`visibility`, is kept with the event but not read.
 
 ### `heartbeat`: the relay is alive
 

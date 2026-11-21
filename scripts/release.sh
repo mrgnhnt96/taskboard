@@ -9,7 +9,8 @@
 # signs and notarizes Taskboard.app and publishes the GitHub release with the
 # DMG attached. The website's Download button reads that release.
 #
-# A beta is published as a prerelease, which the website skips.
+# A beta is published as a prerelease, which the website still offers while
+# it's the newest.
 #
 # plugin-version.sh sets the Claude Code plugin's version from a hash of its
 # files, so it changes only in a release that changes the skill or /start

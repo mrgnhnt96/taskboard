@@ -1,8 +1,8 @@
 //! Triage of a code review round (docs/REVIEW-PROTOCOL.md): after a round with findings, the board opens
 //! a fresh agent in its own terminal (never the task's) with the task's intent, the diff and the
 //! findings. It judges only whether this task's change caused each finding, and records each one's
-//! outcome with `tb finding T<n> F1 fix|backlog|dismiss "<reason>"`; `backlog` files a backlog item in the
-//! task's project and goal. It never edits code. Once every finding has an outcome, the board closes its
+//! outcome with `tb finding T<n> F1 fix|dismiss "<reason>"` or `backlog --blocks none|pr|goal "<reason>"`;
+//! `backlog` files a backlog item in the task's project and goal. It never edits code. Once every finding has an outcome, the board closes its
 //! terminal and the round is triaged. With `fix` findings, the task's own agent gets the fix list, marks
 //! each with `tb finding T<n> F1 fixed "<what it changed>"` and submits again for the next round.
 
@@ -58,7 +58,7 @@ pub fn intro(app: &App, sid: Option<&str>) -> Result<String> {
     let tb = board::tb_cmd(app);
     Ok(format!(
         "You are a triage agent for {me}'s code review, not a task's agent: don't take board tasks and never change code. \
-         {tb} finding {me} lists the findings and what's left; record each with {tb} finding {me} <id> fix|backlog|dismiss \"<reason>\"."
+         {tb} finding {me} lists the findings and what's left; record each with {tb} finding {me} <id> fix|dismiss \"<reason>\", or backlog --blocks none|pr|goal \"<reason>\"."
     ))
 }
 

@@ -426,8 +426,9 @@ enum Cmd {
         rest: Vec<String>,
     },
     /// A code review's triage: the round's findings and what's left (tb finding T5), or one finding's outcome:
-    /// tb finding T5 F2 fix|backlog|dismiss "<reason>". backlog files it in the task's backlog. The task's
-    /// own agent marks a fix finding it has fixed: tb finding T5 F2 fixed "<what it changed>"
+    /// tb finding T5 F2 fix|dismiss "<reason>", or tb finding T5 F2 backlog --blocks none|pr|goal "<reason>", which
+    /// files it in the task's backlog. The task's own agent marks a fix finding it has fixed: tb finding T5 F2
+    /// fixed "<what it changed>"
     Finding {
         /// T5, the task whose review is in triage or being fixed
         task: String,
@@ -3713,12 +3714,12 @@ fn finding_cmd(c: &Ctx, task: String, finding: Option<String>, outcome: Option<S
         if left.is_empty() {
             out("Every finding has an outcome.");
         } else {
-            out(&format!("Left: {}. Mark each: tb finding {task} <id> fix|backlog|dismiss \"<reason>\"", left.join(", ")));
+            out(&format!("Left: {}. Mark each: tb finding {task} <id> fix|dismiss \"<reason>\", or backlog --blocks none|pr|goal \"<reason>\"", left.join(", ")));
         }
         return Ok(0);
     };
     let Some(outcome) = outcome else {
-        return Err(format!("Say what to do with it: tb finding {task} {finding} fix|backlog|dismiss \"<reason>\""));
+        return Err(format!("Say what to do with it: tb finding {task} {finding} fix|dismiss \"<reason>\", or backlog --blocks none|pr|goal \"<reason>\""));
     };
     let reason = reason.join(" ");
     if reason.trim().is_empty() && outcome == "fixed" {
@@ -9920,6 +9921,16 @@ mod tests {
         let help = setup.render_help().to_string();
         assert!(help.contains("{task} {n} {wave} {goal} {jira} {device} {target} {device2} {target2}"), "{help}");
         assert!(Cli::try_parse_from(["tb", "task", "new", "Form", "--goal", "G3", "--wave", "1", "--file", "src/a.rs", "--file", "src/b.rs"]).is_ok());
+    }
+
+    #[test]
+    fn finding_help_gives_backlog_its_blocks() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd.find_subcommand_mut("finding").unwrap().render_help().to_string();
+        assert!(help.contains("backlog --blocks none|pr|goal"), "{help}");
+        assert!(!help.contains("fix|backlog|dismiss"), "{help}");
+        assert!(Cli::try_parse_from(["tb", "finding", "T5", "F2", "backlog", "--blocks", "none", "not", "this", "change"]).is_ok());
     }
 
     #[test]
