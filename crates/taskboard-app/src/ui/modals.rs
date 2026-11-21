@@ -159,7 +159,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .justify_center()
             .on_action(cx.listener(|m, _: &CloseOverlay, window, cx| on_escape(m, window, cx)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().id("modal-body").flex().flex_col().max_h(relative(0.92)).child(body)),
+            .child(div().id("modal-body").debug_selector(|| "modal-body".into()).flex().flex_col().max_h(relative(0.9)).child(body)),
     )
     .with_priority(1)
     .into_any_element()
