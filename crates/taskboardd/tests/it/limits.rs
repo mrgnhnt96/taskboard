@@ -189,11 +189,11 @@ fn merge_and_ask_visits_start_fresh_on_the_pr_visit_model() {
     let log = b.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'handoff' AND text LIKE 'Starting a fresh%' ORDER BY id DESC", p![id]).unwrap().unwrap();
     assert!(log.st("text").contains("Starting a fresh conversation on sonnet for PR #9"), "{}", log.st("text"));
 
-    assert_eq!(wake(&b, "fix").st("flags"), "--resume c-s1 --model opus", "a code fix resumes on the task's model");
+    assert_eq!(wake(&b, "fix").st("flags"), "--resume c-s1 --model opus --effort high", "a code fix resumes on the task's model and effort");
     assert_eq!(resume_cid(&b), Some(Value::Null), "and takes the conversation back");
 
     b.app.db.x("UPDATE tasks SET model = 'small' WHERE id = ?", p![id]).unwrap();
-    assert_eq!(wake(&b, "comments").st("flags"), "--resume c-s1 --model sonnet");
+    assert_eq!(wake(&b, "comments").st("flags"), "--resume c-s1 --model sonnet --effort medium");
 }
 
 #[test]

@@ -114,7 +114,10 @@ fn it_parks_while_the_pr_is_open_and_resumes_once_it_merges() {
     let card = b.card(two);
     assert_eq!(card["status"], "queued");
     assert_eq!(card["blocked"], true);
-    assert_eq!(card["waits_for_state"], json!([{"ref": format!("T{one}"), "done": false}]));
+    assert_eq!(
+        card["waits_for_state"],
+        json!([{"ref": format!("T{one}"), "done": false, "pr": {"num": 9, "url": "https://github.com/acme/webapp/pull/9", "state": "OPEN"}}])
+    );
     assert!(card["waiting"].as_str().unwrap().contains("until PR #9 merges"), "{card}");
     assert!(runner::start_queued(&b.app).unwrap().is_empty(), "it waits while the PR is open");
     assert!(b.starts(two).is_empty());

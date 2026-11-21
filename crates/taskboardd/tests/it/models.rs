@@ -43,6 +43,8 @@ impl Board {
         let t = board::get_task(&self.app, id).unwrap();
         let jid = runner::start_task(&self.app, &t, "new", None, Some("go".into()), flags.map(str::to_string), None).unwrap();
         let job = self.app.db.q("SELECT * FROM jobs WHERE id = ?", taskboardd::p![jid]).unwrap().remove(0);
+        // Settle the start so the next one isn't refused as a second start of the same task.
+        self.app.db.x("UPDATE jobs SET state = 'done' WHERE id = ?", taskboardd::p![jid]).unwrap();
         board::job_args(&job).s("flags").map(str::to_string)
     }
 }

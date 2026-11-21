@@ -717,7 +717,7 @@ fn a_task_s_own_need_or_none_wins_over_its_project_s() {
     assert_eq!(b.get(&format!("tasks/T{a}"))["devices"]["lent"], json!(["pixel-7"]));
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_loans WHERE task_id = ?", p![n]).unwrap(), 0);
     let h = handoff::build(&b.app, n).unwrap();
-    assert!(h.contains("don't pick one yourself"), "{h}");
+    assert!(h.contains("Never look for, start or boot an emulator, simulator or phone yourself"), "{h}");
     b.post(&format!("tasks/T{n}"), json!({"devices": "goal"}));
     assert_eq!(b.get(&format!("tasks/T{n}"))["devices"]["lent"], json!(["sim-a"]), "back to its project's need, lent at once");
 }
