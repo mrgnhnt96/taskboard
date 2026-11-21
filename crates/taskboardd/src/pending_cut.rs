@@ -4,6 +4,10 @@
 //! just as `tb release cut` does. A named task that fails or whose PR closes unmerged, or a goal that can
 //! no longer finish, drops the pending cut and tells the owner, as does a script that fails. Its name is
 //! held while it waits, so no other cut, rename or tag takes it.
+//!
+//! `tb release cut` without `--after` sets one up too (`now`): it waits for nothing, so the board cuts it on
+//! its next step, in the background, and `tb release status` follows it. Its script's output goes to a log
+//! the cut's status shows the end of.
 
 use std::sync::Arc;
 
@@ -25,6 +29,8 @@ const SCRIPT_SECS: f64 = 1800.0;
 /// A cut still marked running this long after it started was cut short (the board stopped mid-script).
 const STALE_SECS: f64 = SCRIPT_SECS + 600.0;
 const OUTPUT_TAIL: usize = 400;
+/// How many of the script's last output lines a running cut shows.
+const LOG_LINES: usize = 20;
 
 /// Where one named task or goal stands.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +48,24 @@ pub fn for_project(app: &App, project: &str) -> Result<Option<Row>> {
 /// Whether the project's pending cut holds this name (any case).
 pub fn holds_name(app: &App, project: &str, name: &str) -> Result<bool> {
     Ok(app.db.count("SELECT COUNT(*) FROM pending_cuts WHERE project = ? AND name = ? COLLATE NOCASE", p![project, name])? > 0)
+}
+
+/// Where the project's cut writes its release script's output, kept until its next cut.
+pub fn log_path(app: &App, project: &str) -> std::path::PathBuf {
+    let file: String = project.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    app.cfg.data.join("release-cuts").join(format!("{file}.log"))
+}
+
+/// The log's last `LOG_LINES` lines, and how many it has in all.
+fn log_tail(app: &App, project: &str) -> (Vec<String>, usize) {
+    let text = std::fs::read_to_string(log_path(app, project)).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    (lines[lines.len().saturating_sub(LOG_LINES)..].iter().map(|l| l.to_string()).collect(), lines.len())
+}
+
+/// Whether the cut is under way: its script is running, or it waits for nothing (`now`), so it runs next.
+pub fn cutting_now(r: &Row) -> bool {
+    r.s("running_at").is_some() || after(r).is_empty()
 }
 
 fn after(r: &Row) -> Vec<String> {
@@ -171,19 +195,26 @@ pub fn dict(app: &App, r: &Row) -> Result<Value> {
             Ok(v)
         })
         .collect::<Result<Vec<_>>>()?;
+    let running = r.s("running_at").is_some();
+    let (log, log_lines) = if running { log_tail(app, &r.st("project")) } else { (vec![], 0) };
     Ok(json!({
-        "project": r.v("project"), "name": r.v("name"), "notes": r.v("notes"), "after": after,
-        "no_script": r.b("no_script"), "made_at": r.v("made_at"), "made_by": r.v("made_by"), "running": r.s("running_at").is_some(),
+        "project": r.v("project"), "name": r.v("name"), "notes": r.v("notes"), "after": after, "now": after.is_empty(),
+        "no_script": r.b("no_script"), "made_at": r.v("made_at"), "made_by": r.v("made_by"), "running": running,
+        "running_at": r.v("running_at"), "log": log, "log_lines": log_lines,
     }))
 }
 
-/// `POST /releases` with `after`: sets up the project's pending cut. `dir` is the checkout its release
-/// script will run in.
+/// `POST /releases` with `after`, or with `now` (a cut that waits for nothing, so the board cuts it on its
+/// next step): sets up the project's pending cut. `dir` is the checkout its release script will run in.
 pub fn make(app: &App, project: &str, name: &str, notes: Option<String>, body: &Value, dir: Option<String>) -> Result<Value> {
     if let Some(p) = for_project(app, project)? {
+        if cutting_now(&p) {
+            return err(409, format!("{project} is cutting {} now. Don't cut it again: follow it with tb release status", p.st("name")));
+        }
         return err(409, format!("{project} already has a cut pending ({}). Cancel it first with: tb release cancel", p.st("name")));
     }
-    let after = clean_after(app, project, body)?;
+    let after = if body["now"] == true { vec![] } else { clean_after(app, project, body)? };
+    let _ = std::fs::remove_file(log_path(app, project));
     let who = board::caller(app, body, board::OWNER);
     let now = now_iso();
     app.db.insert(
@@ -191,7 +222,11 @@ pub fn make(app: &App, project: &str, name: &str, notes: Option<String>, body: &
         fields!["project" => project, "name" => name, "notes" => notes, "after" => jdumps(&json!(after)), "dir" => dir,
                 "no_script" => body["no_script"] == true, "made_at" => now, "made_by" => who],
     )?;
-    app.info(format!("pending cut: {project}: {name} waits for {}", after.join(", ")));
+    if after.is_empty() {
+        app.info(format!("pending cut: {project}: {name} cuts now, in the background"));
+    } else {
+        app.info(format!("pending cut: {project}: {name} waits for {}", after.join(", ")));
+    }
     dict(app, &for_project(app, project)?.ok_or_else(|| ApiError::new(500, "The pending cut wasn't kept."))?)
 }
 
@@ -229,6 +264,10 @@ fn drop_cut(app: &App, r: &Row, why: &str) -> Result<()> {
     let kept = json!({"name": name, "why": why, "at": now_iso(), "next": next});
     app.db.set_setting(&dropped_key(&project), Some(&jdumps(&kept)))?;
     app.info(format!("pending cut: {project}: dropped {name}: {why}"));
+    // A cut that waited for nothing was started by hand, and whoever started it follows it with tb release status.
+    if after(r).is_empty() {
+        return Ok(());
+    }
     let text = format!("The pending release {name} for {project} was dropped: {why}. Cut it by hand with {next} once it's ready.");
     if let Err(e) = crate::dispatch::raise(app, &text, None, None, Some(&format!("pending-cut:{project}:{name}")), false) {
         app.info(format!("pending cut: {project}: couldn't tell the owner {name} was dropped: {e}"));
@@ -323,13 +362,18 @@ fn run_script(app: &App, r: &Row, script: &str) -> Option<String> {
         env.push(("TB_RELEASE_REPLACE".into(), "1".into()));
     }
     app.info(format!("pending cut: running the release script in {top}: {script} {name}"));
-    let args = vec!["-c".to_string(), format!("{script} \"$1\""), "sh".to_string(), name];
+    let log = log_path(app, &r.st("project"));
+    let logged = log.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
+        && std::fs::write(&log, format!("Running the release script in {top}: {script} {name}\n")).is_ok();
+    // On a line of its own, the group's close isn't swallowed by a script that ends in a comment.
+    let (cmd, log_arg) = if logged { (format!("{{ {script} \"$1\"\n}} >>\"$2\" 2>&1"), log.to_string_lossy().to_string()) } else { (format!("{script} \"$1\""), String::new()) };
+    let args = vec!["-c".to_string(), cmd, "sh".to_string(), name, log_arg];
     match crate::proc::run_with(std::path::Path::new("/bin/sh"), &args, Some(std::path::Path::new(&top)), SCRIPT_SECS, &env, None) {
         Err(crate::proc::RunError::Spawn(e)) => Some(format!("the release script couldn't start: {e}")),
         Err(crate::proc::RunError::TimedOut) => Some(format!("the release script ran past {} minutes and was stopped", SCRIPT_SECS as i64 / 60)),
         Ok(o) if o.code == Some(0) => None,
         Ok(o) => {
-            let out = if o.stderr.trim().is_empty() { o.stdout } else { o.stderr };
+            let out = if logged { std::fs::read_to_string(&log).unwrap_or_default() } else if o.stderr.trim().is_empty() { o.stdout } else { o.stderr };
             Some(format!("the release script exited {}: {}", o.code.unwrap_or(1), tail(&out)))
         }
     }

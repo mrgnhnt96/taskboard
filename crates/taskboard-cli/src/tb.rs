@@ -951,7 +951,8 @@ enum BitCmd {
 #[derive(Subcommand)]
 enum ReleaseCmd {
     /// Cut a release holding every done task in Unreleased (its PR merged, or done with no PR). A project
-    /// with a release script runs it first (from main or a release/* branch), with the name, and records the release only if it succeeds
+    /// with a release script has the board run it in the background (from main or a release/* branch), with the
+    /// name, and record the release only if it succeeds; this follows it for a minute or so, then tb release status does
     Cut {
         name: String,
         /// The project (this terminal's when left out)
@@ -966,6 +967,12 @@ enum ReleaseCmd {
         /// finished), then the board cuts it, release script included. Repeat for more. One per project
         #[arg(long, value_name = "T<n>|G<n>")]
         after: Vec<String>,
+    },
+    /// Where the project's cut stands: running (with its script's latest output), pending, dropped (and why), or the last release
+    Status {
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Drop the project's pending cut (tb release cut --after)
     Cancel {
@@ -4691,6 +4698,9 @@ fn pending_line(p: &Value) -> String {
         })
         .collect();
     let state = if p["running"] == true { "cutting now" } else { "pending" };
+    if after.is_empty() {
+        return format!("{} · {state}", p["name"].as_str().unwrap_or(""));
+    }
     format!("{} · {state} · after {}", p["name"].as_str().unwrap_or(""), after.join(", "))
 }
 
@@ -4710,17 +4720,18 @@ fn release_groups(v: &Value) {
 
 enum ReleaseCut {
     Cut(Value),
-    /// The release script's exit status: nothing was recorded.
-    ScriptFailed(i32),
+    /// The board took the cut and runs the release script in the background: its pending cut.
+    Started(Value),
 }
 
 /// `tb release cut`: unless `no_script`, asks the board whether the cut would go through (Unreleased
-/// isn't empty, the name is free) and for the project's release script, runs the script with the
-/// release name, and records the release only when it exits 0. `call` posts to /releases; `run` runs
-/// a script (command, release name, folder, whether it replaces a failed release) and gives its exit status.
+/// isn't empty, the name is free) and for the project's release script. With a script, checks the
+/// checkout's branch and hands the cut to the board, which runs the script in the background and records
+/// the release only when it exits 0; without one, records the release. `call` posts to /releases;
+/// `branch_ok` checks the checkout the script would run in.
 fn cut_release(
     call: &mut dyn FnMut(Value) -> Result<Value, String>,
-    run: &mut dyn FnMut(&str, &str, Option<&str>, bool) -> Result<i32, String>,
+    branch_ok: &mut dyn FnMut(Option<&str>) -> Result<(), String>,
     mut body: Value,
     no_script: bool,
 ) -> Result<ReleaseCut, String> {
@@ -4728,25 +4739,148 @@ fn cut_release(
         let mut check = body.clone();
         check["check"] = json!(true);
         let v = call(check)?;
-        if let Some(script) = v["script"].as_str() {
-            let started = std::time::Instant::now();
-            let code = run(script, v["name"].as_str().unwrap_or(""), v["dir"].as_str(), v["replaces"] == true)?;
-            if code != 0 {
-                return Ok(ReleaseCut::ScriptFailed(code));
-            }
-            // The board looks for the run the script's tag started from then on.
-            body["script_secs"] = json!(started.elapsed().as_secs_f64());
+        if v["script"].is_string() {
+            branch_ok(v["dir"].as_str())?;
+            body["now"] = json!(true);
+            return call(body).map(ReleaseCut::Started);
         }
     }
     call(body).map(ReleaseCut::Cut)
 }
 
-/// The CI run the release started, waiting up to a minute for the board to find it; none when the
+/// Where a background cut called `name` stands in a `GET /releases` list.
+#[derive(Debug, PartialEq)]
+enum CutState {
+    /// Still pending or running: the pending cut.
+    Running(Value),
+    /// Recorded: the release.
+    Done(Value),
+    /// The board dropped it: what it kept of why.
+    Dropped(Value),
+    /// None of those, as when it was cancelled before it ran.
+    Gone,
+}
+
+fn cut_state(list: &Value, name: &str) -> CutState {
+    let named = |v: &Value| v["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name));
+    if named(&list["pending"]) {
+        return CutState::Running(list["pending"].clone());
+    }
+    if named(&list["dropped"]) {
+        return CutState::Dropped(list["dropped"].clone());
+    }
+    match list["releases"].as_array().into_iter().flatten().find(|r| named(r) && !r["failed_at"].is_string()) {
+        Some(r) => CutState::Done(r.clone()),
+        None => CutState::Gone,
+    }
+}
+
+/// The lines of a running cut's log not printed yet, given how many of its `log_lines` were.
+fn new_log_lines(p: &Value, seen: usize) -> Vec<String> {
+    let log: Vec<String> = p["log"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(str::to_string)).collect();
+    let fresh = (p["log_lines"].as_u64().unwrap_or(0) as usize).saturating_sub(seen).min(log.len());
+    log[log.len() - fresh..].to_vec()
+}
+
+/// How long `tb release cut` follows a background cut before leaving it to `tb release status`, kept
+/// with the run lookup under the two minutes an agent's command gets.
+const CUT_FOLLOW_SECS: u64 = 75;
+
+/// Follows the background cut `name` for `CUT_FOLLOW_SECS`, printing its script's output as it comes: the
+/// release once it's recorded, why it dropped (exit 1), or where to look next while it still runs.
+fn follow_cut(c: &Ctx, project: Option<String>, name: &str) -> Result<i32, String> {
+    let q = release_project_query(c, project);
+    let started = std::time::Instant::now();
+    let mut seen = 0;
+    loop {
+        let v = c.call("GET", &format!("/releases?{q}&limit=5"), None)?;
+        match cut_state(&v, name) {
+            CutState::Running(p) => {
+                for l in new_log_lines(&p, seen) {
+                    out(&format!("  {l}"));
+                }
+                seen = seen.max(p["log_lines"].as_u64().unwrap_or(0) as usize);
+            }
+            CutState::Done(r) => {
+                let r = c.call("GET", &format!("/releases/{}", r["ref"].as_str().unwrap_or("")), None).unwrap_or(r);
+                out(&format!("Cut {}.", release_line(&r)));
+                release_groups(&r);
+                if let Some(url) = release_run(c, &r, 15) {
+                    out(&format!("Release run: {url}"));
+                }
+                return Ok(0);
+            }
+            CutState::Dropped(d) => {
+                eprintln!("tb: {name} didn't go out: {}. Fix it and run {} again.", d["why"].as_str().unwrap_or("the board dropped it"), d["next"].as_str().unwrap_or("tb release cut"));
+                return Ok(1);
+            }
+            CutState::Gone => return Err(format!("{name} isn't pending any more and no release by that name went out. tb releases shows where things stand.")),
+        }
+        if started.elapsed().as_secs() >= CUT_FOLLOW_SECS {
+            out(&format!("{name} is still being cut; release scripts can take several minutes. Don't cut it again: follow it with tb release status."));
+            return Ok(0);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+/// `tb release status`: the project's cut while one runs or waits, else why the last one dropped (exit 1),
+/// else the last release.
+fn release_status(c: &Ctx, project: Option<String>) -> Result<i32, String> {
+    let v = c.call("GET", &format!("/releases?{}&limit=1", release_project_query(c, project)), None)?;
+    let name = v["project"].as_str().unwrap_or("");
+    if v["on"] != true {
+        return Err(format!("releases are off for {name}. Turn them on with: tb project set {name} --releases on"));
+    }
+    for l in status_lines(&v) {
+        out(&l);
+    }
+    Ok(if v["pending"].is_object() || !v["dropped"].is_object() { 0 } else { 1 })
+}
+
+fn status_lines(v: &Value) -> Vec<String> {
+    let p = &v["pending"];
+    if p.is_object() && p["now"] == true {
+        let name = p["name"].as_str().unwrap_or("");
+        let mut lines = vec![match p["running_at"].as_str() {
+            Some(at) => format!("{name} · cutting now · started {}", match crate::needs::ago(at).as_str() {
+                "now" => "just now".to_string(),
+                a => format!("{a} ago"),
+            }),
+            None => format!("{name} · starting"),
+        }];
+        lines.extend(p["log"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).map(|l| format!("  {l}")));
+        lines.push("Still going: check again in a minute. Don't cut it again.".into());
+        return lines;
+    }
+    if p.is_object() {
+        return vec![pending_line(p)];
+    }
+    let d = &v["dropped"];
+    if d.is_object() {
+        return vec![
+            format!("{} didn't go out: {}", d["name"].as_str().unwrap_or(""), d["why"].as_str().unwrap_or("the board dropped it")),
+            format!("Fix it and cut it again with: {}", d["next"].as_str().unwrap_or("tb release cut")),
+        ];
+    }
+    match v["releases"].as_array().and_then(|r| r.first()) {
+        Some(r) => {
+            let mut lines = vec![format!("Last release: {}", release_line(r))];
+            if let Some(u) = r["run_url"].as_str() {
+                lines.push(format!("  Run: {u}"));
+            }
+            lines
+        }
+        None => vec!["No release yet.".into()],
+    }
+}
+
+/// The CI run the release started, waiting up to `tries` 2-second polls for the board to find it; none when the
 /// board isn't looking for one (the project isn't on GitHub) or doesn't find it in time.
-fn release_run(c: &Ctx, v: &Value) -> Option<String> {
+fn release_run(c: &Ctx, v: &Value, tries: usize) -> Option<String> {
     let r = v["ref"].as_str()?;
     let mut v = v.clone();
-    for _ in 0..30 {
+    for _ in 0..tries {
         if let Some(url) = v["run_url"].as_str() {
             return Some(url.to_string());
         }
@@ -4791,35 +4925,9 @@ fn checkout_branch(top: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Runs a project's release script in its checkout with the release name as its one argument and in
-/// TB_RELEASE (so the script can tell tb started it), its output going straight to this terminal. When
-/// the name's last release failed, TB_RELEASE_REPLACE=1 tells the script it may replace that one's tag.
-fn run_release_script(script: &str, name: &str, dir: Option<&str>, replaces: bool) -> Result<i32, String> {
-    let top = release_checkout(dir);
-    out(&format!("Running the release script in {top}: {script} {name}"));
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg("-c").arg(format!("{script} \"$1\"")).arg("sh").arg(name).current_dir(&top).env("TB_RELEASE", name).env_remove("TB_RELEASE_REPLACE");
-    if replaces {
-        cmd.env("TB_RELEASE_REPLACE", "1");
-    }
-    let status = cmd
-        .stdin(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("couldn't start the release script: {e}"))?;
-    // Killed by a signal: no code, so say 1.
-    Ok(status.code().unwrap_or(1))
-}
-
-/// `tb release cut`'s runner: the release script, once the checkout is on main or a release/* branch
-/// and fast-forwarded to origin's copy of it, so the release is cut from the latest.
-fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<&str>, replaces: bool) -> Result<i32, String> {
-    let top = release_checkout(dir);
-    let branch = checkout_branch(&top);
-    need_release_branch(&branch)?;
-    if let Some(did) = taskboardd::default_sync::catch_up(&top, &branch).map_err(|e| format!("{e}."))? {
-        out(&format!("{did}."));
-    }
-    run_release_script(script, name, dir, replaces)
+/// Whether the checkout a release script would run in is on main or a release/* branch.
+fn release_branch_ok(dir: Option<&str>) -> Result<(), String> {
+    need_release_branch(&checkout_branch(&release_checkout(dir)))
 }
 
 fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
@@ -4835,21 +4943,23 @@ fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
             out(&format!("Cancelled the pending cut {}.", v["name"].as_str().unwrap_or("")));
         }
         ReleaseCmd::Cut { name, project, notes, no_script, .. } => {
-            let body = json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd});
-            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run_release_script_on_a_release_branch, body, no_script)? {
+            let body = json!({"name": name, "project": project.clone(), "notes": notes, "cwd": c.cwd});
+            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut release_branch_ok, body, no_script)? {
                 ReleaseCut::Cut(v) => {
                     out(&format!("Cut {}.", release_line(&v)));
                     release_groups(&v);
-                    if let Some(url) = release_run(c, &v) {
+                    if let Some(url) = release_run(c, &v, 30) {
                         out(&format!("Release run: {url}"));
                     }
                 }
-                ReleaseCut::ScriptFailed(code) => {
-                    eprintln!("tb: the release script exited {code}, so {name} isn't recorded. Fix it and run tb release cut again.");
-                    return Ok(code);
+                ReleaseCut::Started(p) => {
+                    let name = p["name"].as_str().unwrap_or(&name).to_string();
+                    out(&format!("The board is cutting {name} in the background; it runs the release script and records the release once it succeeds."));
+                    return follow_cut(c, project, &name);
                 }
             }
         }
+        ReleaseCmd::Status { project } => return release_status(c, project),
         ReleaseCmd::Show { release, project, markdown } => {
             let r = release_ref(&release)?;
             let v = c.call("GET", &format!("/releases/{r}?{}", release_project_query(c, project)), None)?;
@@ -9974,27 +10084,29 @@ mod tests {
         assert_eq!(pr_hint("GET", "repositories/acme/web/src/main/README.md", None), None);
     }
 
-    /// `cut_release` against a fake board: the bodies it posted, and the scripts it ran.
-    fn cut_with(script: Option<&str>, code: i32, no_script: bool) -> (Result<ReleaseCut, String>, Vec<Value>, Vec<(String, String, Option<String>)>) {
+    /// `cut_release` against a fake board: the result, the bodies it posted, and the checkouts it checked.
+    fn cut_with(script: Option<&str>, branch: Result<(), String>, no_script: bool) -> (Result<ReleaseCut, String>, Vec<Value>, Vec<Option<String>>) {
         let mut posted = vec![];
-        let mut ran = vec![];
+        let mut checked = vec![];
         let r = cut_release(
             &mut |b| {
                 posted.push(b.clone());
                 Ok(if b["check"] == true {
                     json!({"project": "webapp", "name": "v1.4", "script": script, "dir": "/repo"})
+                } else if b["now"] == true {
+                    json!({"name": "v1.4", "now": true, "after": []})
                 } else {
                     json!({"ref": "R1", "name": "v1.4"})
                 })
             },
-            &mut |s, n, d, _| {
-                ran.push((s.to_string(), n.to_string(), d.map(str::to_string)));
-                Ok(code)
+            &mut |d| {
+                checked.push(d.map(str::to_string));
+                branch.clone()
             },
             json!({"name": "v1.4", "cwd": "/repo"}),
             no_script,
         );
-        (r, posted, ran)
+        (r, posted, checked)
     }
 
     #[test]
@@ -10007,46 +10119,76 @@ mod tests {
     }
 
     #[test]
-    fn release_cut_runs_the_script_then_records_the_release() {
-        let (r, posted, ran) = cut_with(Some("scripts/release.sh"), 0, false);
-        assert!(matches!(r, Ok(ReleaseCut::Cut(v)) if v["ref"] == "R1"));
-        assert_eq!(ran, vec![("scripts/release.sh".into(), "v1.4".into(), Some("/repo".into()))]);
+    fn release_cut_hands_a_script_cut_to_the_board_to_run_in_the_background() {
+        let (r, posted, checked) = cut_with(Some("scripts/release.sh"), Ok(()), false);
+        assert!(matches!(r, Ok(ReleaseCut::Started(v)) if v["name"] == "v1.4"));
+        assert_eq!(checked, vec![Some("/repo".to_string())], "it checks the branch the script would run on");
         assert_eq!(posted.len(), 2);
-        assert_eq!(posted[0]["check"], true, "it asks before running the script");
+        assert_eq!(posted[0]["check"], true, "it asks before handing it over");
+        assert_eq!(posted[1]["now"], true);
         assert_eq!(posted[1].get("check"), None);
     }
 
     #[test]
-    fn release_cut_records_nothing_when_the_script_fails() {
-        let (r, posted, ran) = cut_with(Some("scripts/release.sh"), 3, false);
-        assert!(matches!(r, Ok(ReleaseCut::ScriptFailed(3))));
-        assert_eq!(ran.len(), 1);
+    fn release_cut_hands_nothing_over_from_a_feature_branch() {
+        let (r, posted, _) = cut_with(Some("scripts/release.sh"), Err("on feat/x".into()), false);
+        assert_eq!(r.err().as_deref(), Some("on feat/x"));
         assert_eq!(posted.len(), 1, "only the check, no cut");
     }
 
     #[test]
     fn release_cut_without_a_script_or_with_no_script_just_records() {
-        let (r, posted, ran) = cut_with(None, 0, false);
+        let (r, posted, checked) = cut_with(None, Ok(()), false);
         assert!(matches!(r, Ok(ReleaseCut::Cut(_))));
-        assert!(ran.is_empty());
+        assert!(checked.is_empty());
         assert_eq!(posted.len(), 2);
+        assert_eq!(posted[1].get("now"), None);
 
-        let (r, posted, ran) = cut_with(Some("scripts/release.sh"), 1, true);
+        let (r, posted, checked) = cut_with(Some("scripts/release.sh"), Ok(()), true);
         assert!(matches!(r, Ok(ReleaseCut::Cut(_))));
-        assert!(ran.is_empty(), "--no-script skips it");
+        assert!(checked.is_empty(), "--no-script skips it");
         assert_eq!(posted.len(), 1);
         assert_eq!(posted[0].get("check"), None);
     }
 
     #[test]
-    fn release_cut_tells_the_script_when_it_replaces_a_failed_release() {
-        for replaces in [true, false] {
-            let mut told = None;
-            let check = json!({"name": "v1.4", "script": "scripts/release.sh", "replaces": replaces});
-            let r = cut_release(&mut |b| Ok(if b["check"] == true { check.clone() } else { json!({"ref": "R2"}) }), &mut |_, _, _, re| { told = Some(re); Ok(0) }, json!({"name": "v1.4"}), false);
-            assert!(r.is_ok());
-            assert_eq!(told, Some(replaces));
-        }
+    fn a_background_cut_is_found_by_name_in_the_release_list() {
+        let running = json!({"pending": {"name": "v1.4", "now": true, "running": true}, "dropped": null, "releases": []});
+        assert!(matches!(cut_state(&running, "V1.4"), CutState::Running(_)));
+        let failed_before = json!({"name": "v1.4", "ref": "R1", "failed_at": "2026-11-20T10:00:00Z"});
+        let done = json!({"pending": null, "dropped": null, "releases": [{"name": "v1.4", "ref": "R2"}, failed_before]});
+        assert!(matches!(cut_state(&done, "v1.4"), CutState::Done(r) if r["ref"] == "R2"));
+        let dropped = json!({"pending": null, "dropped": {"name": "v1.4", "why": "the release script exited 1: no key"}, "releases": [failed_before]});
+        assert!(matches!(cut_state(&dropped, "v1.4"), CutState::Dropped(_)));
+        assert_eq!(cut_state(&json!({"pending": {"name": "v2"}, "releases": [failed_before]}), "v1.4"), CutState::Gone);
+    }
+
+    #[test]
+    fn a_followed_cut_prints_only_the_log_lines_it_hasnt_yet() {
+        let p = json!({"log": ["c", "d", "e"], "log_lines": 5});
+        assert_eq!(new_log_lines(&p, 0), vec!["c", "d", "e"], "only what the board kept");
+        assert_eq!(new_log_lines(&p, 3), vec!["d", "e"]);
+        assert!(new_log_lines(&p, 5).is_empty());
+        assert!(new_log_lines(&json!({}), 0).is_empty());
+    }
+
+    #[test]
+    fn release_status_says_where_the_cut_stands() {
+        let starting = json!({"pending": {"name": "v1.4", "now": true, "running": false, "after": []}});
+        assert_eq!(status_lines(&starting)[0], "v1.4 · starting");
+        let running = json!({"pending": {"name": "v1.4", "now": true, "running": true, "running_at": taskboardd::util::now_iso(), "log": ["Pushed v1.4."]}});
+        let lines = status_lines(&running);
+        assert_eq!(lines[0], "v1.4 · cutting now · started just now");
+        assert_eq!(lines[1], "  Pushed v1.4.");
+        assert!(lines[2].contains("Don't cut it again"));
+        let waiting = json!({"pending": {"name": "v1.5", "running": false, "after": [{"ref": "T1", "state": "waiting"}]}});
+        assert_eq!(status_lines(&waiting), vec!["v1.5 · pending · after T1"]);
+        let dropped = json!({"pending": null, "dropped": {"name": "v1.4", "why": "the release script exited 1: no key", "next": "tb release cut v1.4"}});
+        assert_eq!(status_lines(&dropped), vec!["v1.4 didn't go out: the release script exited 1: no key", "Fix it and cut it again with: tb release cut v1.4"]);
+        let last = json!({"pending": null, "dropped": null, "releases": [{"ref": "R2", "name": "v1.4", "cut_at": "2026-11-21T10:00:00Z", "tasks": 3, "run_url": "https://x/runs/1"}]});
+        assert_eq!(status_lines(&last), vec!["Last release: R2 · v1.4 · 2026-11-21 · 3 tasks", "  Run: https://x/runs/1"]);
+        assert_eq!(status_lines(&json!({"releases": []})), vec!["No release yet."]);
+        assert_eq!(pending_line(&json!({"name": "v1.4", "running": true, "after": []})), "v1.4 · cutting now");
     }
 
     #[test]
@@ -10059,49 +10201,10 @@ mod tests {
 
     #[test]
     fn release_cut_stops_when_the_board_refuses_the_check() {
-        let mut ran = false;
-        let r = cut_release(&mut |_| Err("Nothing to release".into()), &mut |_, _, _, _| { ran = true; Ok(0) }, json!({"name": "v1"}), false);
+        let mut checked = false;
+        let r = cut_release(&mut |_| Err("Nothing to release".into()), &mut |_| { checked = true; Ok(()) }, json!({"name": "v1"}), false);
         assert_eq!(r.err().as_deref(), Some("Nothing to release"));
-        assert!(!ran, "a doomed cut never runs the script");
-    }
-
-    #[test]
-    fn release_script_gets_the_name_as_one_argument() {
-        let dir = std::env::temp_dir().join(format!("tb-release-script-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let d = dir.to_string_lossy().to_string();
-        std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && test \"$TB_RELEASE\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
-        assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d), false).unwrap(), 7);
-        assert_eq!(run_release_script("true", "v1", Some(&d), false).unwrap(), 0);
-        assert_eq!(run_release_script("test \"$TB_RELEASE_REPLACE\" = 1 #", "v1", Some(&d), true).unwrap(), 0);
-        assert_eq!(run_release_script("test -z \"$TB_RELEASE_REPLACE\" #", "v1", Some(&d), false).unwrap(), 0);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn release_cut_runs_the_script_only_from_main_or_a_release_branch() {
-        let dir = std::env::temp_dir().join(format!("tb-release-branch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let d = dir.to_string_lossy().to_string();
-        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&d).args(args).output().unwrap().status.success());
-        git(&["init", "-q", "-b", "main"]);
-        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
-        let ran = dir.join("ran");
-        let script = format!("touch '{}' #", ran.display());
-        let run = |branch: &str| {
-            git(&["checkout", "-q", "-B", branch]);
-            let _ = std::fs::remove_file(&ran);
-            let r = run_release_script_on_a_release_branch(&script, "v1", Some(&d), false);
-            (r, ran.exists())
-        };
-
-        let (r, did) = run("feat/t1-x");
-        assert!(r.unwrap_err().contains("on feat/t1-x"));
-        assert!(!did, "a feature branch doesn't run the script");
-        assert!(matches!(run("release/1.4"), (Ok(0), true)));
-        assert!(matches!(run("main"), (Ok(0), true)));
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!checked, "a doomed cut is never handed over");
     }
 
     /// Runs this repo's scripts/release.sh with `args` and TB_RELEASE (unset when None): its exit
