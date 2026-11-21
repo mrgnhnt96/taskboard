@@ -91,6 +91,24 @@ impl Board {
     fn push(&self) {
         git(&self.repo, &["push", "-q", "-u", "origin", "feat/passkeys"]);
     }
+    /// Moves origin's main on by a commit made in another clone, as other work landing would.
+    fn move_base(&self, file: &str) {
+        let other = self.dir.path().join(format!("other-{file}"));
+        let origin = self.dir.path().join("origin.git");
+        git(self.dir.path(), &["clone", "-q", "-b", "main", &origin.to_string_lossy(), &other.to_string_lossy()]);
+        git(&other, &["config", "user.email", "test@example.com"]);
+        git(&other, &["config", "user.name", "Test"]);
+        std::fs::write(other.join(file), "landed\n").unwrap();
+        git(&other, &["add", file]);
+        git(&other, &["commit", "-q", "-m", file]);
+        git(&other, &["push", "-q", "origin", "main"]);
+    }
+    /// Rebases the branch onto origin's main and force-pushes it, as the agent does when turned back.
+    fn rebase_and_push(&self) {
+        git(&self.repo, &["fetch", "-q", "origin"]);
+        git(&self.repo, &["rebase", "-q", "origin/main"]);
+        git(&self.repo, &["push", "-q", "--force-with-lease", "origin", "feat/passkeys"]);
+    }
     fn done(&self) -> Result<Value, (u16, String)> {
         self.report("tb.done", json!({"summary": "Passkeys", "pr_body": BODY}))
     }
@@ -278,6 +296,48 @@ fn changed_code_gets_another_round_with_the_last_one_and_the_kept_state() {
     assert_eq!(prev["findings"][0]["reason"], "The change counts pages wrong");
     assert_eq!(prev["findings"][0]["fixed"], "Counts from zero");
     assert_eq!(b.seen("kept-2"), "round 1\nround 2\n");
+    assert_eq!(b.row(id).i("pr_num"), Some(77));
+}
+
+#[test]
+fn a_clean_rebase_onto_a_base_that_moved_during_review_keeps_the_review() {
+    let b = new_board(|d| Some(reviewer(d, PASS)));
+    let id = b.task();
+    b.push();
+    b.move_base("other.txt");
+
+    assert_eq!(b.done().unwrap()["code_review"], true);
+    code_review::sweep(&b.app).unwrap();
+    let rounds = code_review::rounds(&b.app, id).unwrap();
+    assert!(rounds[0]["patch"].as_str().is_some_and(|p| p.len() == 40), "{}", rounds[0]);
+    assert_eq!(b.row(id).i("pr_num"), None);
+    assert!(b.alerts().iter().any(|a| a.contains("isn't rebased on origin/main")), "{:?}", b.alerts());
+
+    // Rebased with the change as it was: the tree differs, but the review stands.
+    b.rebase_and_push();
+    assert_ne!(rounds[0]["tree"], git(&b.repo, &["rev-parse", "HEAD^{tree}"]));
+    let v = b.done().unwrap();
+    assert_ne!(v["code_review"], true, "{v}");
+    assert_eq!(code_review::rounds(&b.app, id).unwrap().len(), 1);
+    assert_eq!(b.row(id).i("pr_num"), Some(77));
+}
+
+#[test]
+fn a_rebase_that_changes_the_diff_gets_another_round() {
+    let b = new_board(|d| Some(reviewer(d, PASS)));
+    let id = b.task();
+    b.push();
+    b.move_base("other.txt");
+
+    b.done().unwrap();
+    code_review::sweep(&b.app).unwrap();
+    assert_eq!(b.row(id).i("pr_num"), None);
+
+    b.commit("a.txt", "a changed while rebasing\n");
+    b.rebase_and_push();
+    assert_eq!(b.done().unwrap()["code_review"], true);
+    code_review::sweep(&b.app).unwrap();
+    assert_eq!(code_review::rounds(&b.app, id).unwrap().len(), 2);
     assert_eq!(b.row(id).i("pr_num"), Some(77));
 }
 
