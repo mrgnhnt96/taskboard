@@ -13,6 +13,10 @@ const NOTE_PAGE: usize = 100;
 const NOTE_AHEAD: usize = 20;
 /// Narrower than this, the aside stacks under the waves.
 const STACK_BELOW: f32 = 1180.;
+/// The body's side padding and, side by side, the gap and the aside beside the waves.
+const BODY_X: f32 = 36.;
+const ASIDE_W: f32 = 330.;
+const ASIDE_GAP: f32 = 16.;
 
 #[derive(Default)]
 pub struct Lists {
@@ -22,6 +26,8 @@ pub struct Lists {
     stack: Option<Body>,
     /// The window was narrower than `STACK_BELOW` when the lists last drew.
     narrow: bool,
+    /// The waves column was narrower than `waves::ROWS_STACK_BELOW`: task rows take two lines.
+    pub stack_rows: bool,
     cards: Rc<Vec<waves::Card>>,
     wave_items: Rc<Vec<WItem>>,
     aside_items: Rc<Vec<AItem>>,
@@ -330,7 +336,7 @@ fn load_older_notes(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 /// The two lists side by side under the header, or the one stacked list in a narrow window.
 pub fn body(m: &MainWindow, cx: &mut Context<MainWindow>) -> Div {
     let l = &m.goal_page.lists;
-    let mut out = div().flex_1().min_h_0().flex().gap(px(16.)).pt(px(16.)).px(px(36.));
+    let mut out = div().flex_1().min_h_0().flex().gap(px(ASIDE_GAP)).pt(px(16.)).px(px(BODY_X));
     if l.narrow {
         if let Some(st) = &l.stack {
             out = out.child(list(st.state.clone(), cx.processor(stack_item)).flex_1().min_w_0().h_full());
@@ -338,17 +344,29 @@ pub fn body(m: &MainWindow, cx: &mut Context<MainWindow>) -> Div {
     } else if let (Some(w), Some(a)) = (&l.waves, &l.aside) {
         out = out
             .child(list(w.state.clone(), cx.processor(wave_item)).flex_1().min_w_0().h_full())
-            .child(list(a.state.clone(), cx.processor(aside_item)).flex_none().w(px(330.)).h_full());
+            .child(list(a.state.clone(), cx.processor(aside_item)).flex_none().w(px(ASIDE_W)).h_full());
     }
     out
 }
 
+/// How wide the waves column is in a page `room` wide: past the sidebar and the body's padding,
+/// and the aside beside it when the window is wide enough for one.
+pub fn waves_width(room: f32) -> f32 {
+    let w = room - crate::ui::sidebar::WIDTH - 2. * BODY_X;
+    if room < STACK_BELOW { w } else { w - ASIDE_GAP - ASIDE_W }
+}
+
 /// Note the window's width as the lists draw; crossing `STACK_BELOW` draws the body again the
-/// other way.
+/// other way. The task rows' stacking follows the waves column's width; the list measures its
+/// items again when that width changes, and the item drawing this runs before reads the new flag.
 fn watch_width(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) {
-    let narrow = crate::app::room(m, window) < px(STACK_BELOW);
-    if m.goal_page.lists.narrow != narrow {
-        m.goal_page.lists.narrow = narrow;
+    let room = f32::from(crate::app::room(m, window));
+    let narrow = room < STACK_BELOW;
+    let stack_rows = waves_width(room) < waves::ROWS_STACK_BELOW;
+    let l = &mut m.goal_page.lists;
+    if l.narrow != narrow || l.stack_rows != stack_rows {
+        l.narrow = narrow;
+        l.stack_rows = stack_rows;
         cx.notify();
     }
 }
@@ -504,6 +522,37 @@ mod tests {
         cx.simulate_resize(size(px(1400.), px(900.)));
         draw(cx);
         assert!(!narrow(cx), "wide again, side by side again");
+    }
+
+    #[test]
+    fn the_waves_column_leaves_room_for_the_sidebar_and_the_aside() {
+        let side = crate::ui::sidebar::WIDTH;
+        assert_eq!(waves_width(1000.), 1000. - side - 72.);
+        assert_eq!(waves_width(1600.), 1600. - side - 72. - 346.);
+    }
+
+    #[gpui_kit::test]
+    fn task_rows_take_two_lines_when_the_waves_column_is_narrow(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{VisualTestContext, size};
+        let (w, _rec) = crate::parity::window(cx);
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        crate::parity::settle(cx);
+        let cx = &mut VisualTestContext::from_window(w.into(), cx);
+        let at = |width: f32, cx: &mut VisualTestContext| {
+            cx.simulate_resize(size(px(width), px(900.)));
+            for _ in 0..2 {
+                cx.update(|window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                });
+                cx.run_until_parked();
+            }
+            w.update(cx, |m, _, _| m.goal_page.lists.stack_rows).unwrap()
+        };
+        assert!(!at(1800., cx), "a wide waves column keeps each row on one line");
+        assert!(at(960., cx), "at 960 the rows stack so titles keep their room");
+        assert!(at(1300., cx), "beside the aside the column is narrow too");
+        assert!(!at(1800., cx), "wide again, one line again");
     }
 
     #[gpui_kit::test]
