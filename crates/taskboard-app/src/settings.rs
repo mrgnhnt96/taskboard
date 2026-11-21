@@ -170,6 +170,17 @@ fn account_line(id: &str, a: &Value) -> (String, bool) {
     (match at { Some(at) => format!("{who} · checked {at}, works"), None => who }, false)
 }
 
+/// What the Accounts page shows in place of its rows before the board's first answer: `None` once
+/// accounts loaded; otherwise a title and line, either still asking or the board is down. Never
+/// "Not connected" rows, which would ask for a sign-in nothing needs.
+fn accounts_wait(loaded: bool, error: Option<&str>) -> Option<(&'static str, String)> {
+    match (loaded, error) {
+        (true, _) => None,
+        (false, None) => Some(("Asking the board…", String::new())),
+        (false, Some(e)) => Some(("The board isn’t answering", format!("{e} Your sign-ins show once it’s back; trying again every {} seconds.", POLL.as_secs() * IDLE_TICKS as u64))),
+    }
+}
+
 /// What a row's agent line shows, per account.
 fn agent_cli(id: &str) -> &'static str {
     match id {
@@ -894,7 +905,8 @@ impl Render for SettingsWindow {
                     .flex()
                     .flex_col()
                     .child(self.page_header(&t, cx))
-                    .when_some(self.error.clone(), |d, e| {
+                    // Accounts with nothing loaded says it in place of its rows
+                    .when_some(self.error.clone().filter(|_| self.view != Sec::Accounts || self.loaded), |d, e| {
                         d.child(div().mx(px(28.)).mb(px(10.)).px(px(12.)).py(px(8.)).rounded(px(8.)).bg(t.warn_soft).text_color(t.warn_fg).text_size(px(12.)).child(format!("The board didn't answer: {e}")))
                     })
                     .child(body),
@@ -1022,8 +1034,35 @@ impl SettingsWindow {
 
     fn accounts_page(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(10.)).px(px(28.)).pt(px(4.)).pb(px(28.));
-        if !self.loaded && self.error.is_none() {
-            return list.child(kit::empty(t, "Asking the board…"));
+        match accounts_wait(self.loaded, self.error.as_deref()) {
+            Some((title, line)) if line.is_empty() => return list.child(kit::empty(t, title)),
+            Some((title, line)) => {
+                return list.child(
+                    div()
+                        .id("accounts-down")
+                        .px(px(16.))
+                        .py(px(12.))
+                        .rounded(px(10.))
+                        .bg(t.down_soft)
+                        .border_1()
+                        .border_color(t.down_line)
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.down).child(title))
+                                .child(div().text_size(px(12.5)).text_color(t.down).child(line)),
+                        )
+                        .child(kit::btn_small(t, "accounts-retry", "Try again").on_click(cx.listener(|s, _, _, cx| s.load(false, cx)))),
+                );
+            }
+            None => {}
         }
         let mut card = kit::card(t).overflow_hidden();
         for (i, (id, mark)) in CARDS.into_iter().enumerate() {
@@ -2347,6 +2386,44 @@ mod tests {
         })
         .unwrap();
         settle(cx);
+    }
+
+    #[gpui_kit::test]
+    fn accounts_say_the_board_is_down_instead_of_not_connected(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        rec.fail("accounts", 0, "Can’t reach the board.");
+        w.update(cx, |s, window, cx| {
+            // a window opened while the board is down: nothing has loaded yet
+            s.loaded = false;
+            s.accounts.clear();
+            s.view = super::Sec::Accounts;
+            s.load(false, cx);
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, window, cx| {
+            assert_eq!(s.error.as_deref(), Some("Can’t reach the board."));
+            let (title, line) = super::accounts_wait(s.loaded, s.error.as_deref()).expect("the rows wait for the board");
+            assert_eq!(title, "The board isn’t answering");
+            assert!(line.starts_with("Can’t reach the board. ") && line.contains("every 30 seconds"), "{line}");
+            assert!(!line.contains("Not connected") && !line.contains("Sign in"), "{line}");
+            cx.notify();
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
+        rec.heal();
+        w.update(cx, |s, _, cx| s.load(false, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |s, _, _| {
+            assert!(s.loaded && s.error.is_none());
+            assert_eq!(super::accounts_wait(s.loaded, s.error.as_deref()), None, "the rows show once it answers");
+            assert_eq!(s.accounts.len(), 5);
+        })
+        .unwrap();
+        assert_eq!(super::accounts_wait(false, None), Some(("Asking the board…", String::new())));
+        assert_eq!(super::accounts_wait(true, Some("Can’t reach the board.")), None, "rows already shown stay, with the banner above");
     }
 
     #[gpui_kit::test]
