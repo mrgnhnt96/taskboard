@@ -2521,7 +2521,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         }
     }
     let stalled = phase == "merge" && merge_stalled(&now_flow, &key);
-    let fresh = f.s("woke") != Some(key.as_str()) && f.s("handled") != Some(key.as_str());
+    // Against the flow after this step's changes: a phase change drops what the last visit settled, so a
+    // merge held for checks running on the host wakes again once the hold ends, on the same record.
+    let fresh = now_flow.s("woke") != Some(key.as_str()) && now_flow.s("handled") != Some(key.as_str());
     let would_wake = may_wake
         && WAKE.contains(&phase.as_str())
         && t.s("status") == Some("done")
