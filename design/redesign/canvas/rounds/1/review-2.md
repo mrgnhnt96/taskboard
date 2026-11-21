@@ -1,0 +1,87 @@
+## Verdict
+
+This is a macOS desktop app (sidebar, one main column, details panel), reviewed as an ultrahand canvas build with real input in headless Chrome. I measured at laptop-125 (1536 × 864, large width) and the 720 × 480 minimum window, in light and dark, at 100% and 200% text, in the default and down states. The review covers the fix-1 changes and the screens they touch: Needs you, the T3 question, Idea I2, Goal G2, Backlog, Plan and Settings. The blurred Needs-you screen still reads as calm and ordered, and the round added almost no chrome: one compact ⋯ button in the Backlog bulk bar, and Settings lost a button. Status of last round's findings:
+
+- **R1 (typed answer wiped):** resolved for the actions reported. The T3 draft survived a Dismiss on another row, the 10-second toast expiring, and switching pages with ⌘2 and ⌘1. Two smaller draft losses remain (new R5, R6).
+- **R2 (links ignore Enter and Space):** resolved. Enter and Space now work on the sidebar pages, the active goals, the breadcrumbs and the Settings sections; ↑/↓ move through the page list; ⌘1–9 pick a Settings section. Two parts of the suggested fix are missing: focus is still lost after picking a section, and the sidebar is still 11 separate tab stops (new R7).
+- **R4 (offline commands report success):** NOT resolved. Mouse clicks on guarded buttons now show "The board is offline", and those buttons look disabled. But keyboard shortcuts, the New idea form and several menu commands still report success while the board is down. This includes ⌘↩, which sent the T3 answer and removed the row.
+- **R5 (undo):** mostly resolved. There is now an undo stack, ⌘Z works, the toast lasts 10 s and stays while hovered, and focus moves to the next row after a removal and back to the row after Undo. The new stack brings its own bug: Undo on any toast pops the last removed row, whatever the toast was about (new R2).
+
+The round also removed "Back to the board" from Settings while Settings still replaces the board, so a pointer user has no visible way out.
+
+Counts: 0 Catastrophe, 3 Major, 5 Minor, 0 Cosmetic. The top problem is R1: the board can still say an answer was sent when it is offline. R3 from the last round ("Many changes the owner's read-only rule doesn't allow are offered as buttons") stays open as the brief says, and I didn't re-judge it.
+
+## Findings
+
+### R1 · 3 Major · With the board down, ⌘↩ Send, Backlog key shortcuts, New idea and several menu commands still report success (last round's R4 is still open)
+- **Element:** Needs you › T3 question › Other answer › ⌘↩; Backlog › selection › X and D keys; New idea dialog › Add idea; Needs you › row ⋯ menus › Resume in a new terminal and Detach terminal. laptop-125, light, State = down
+- **Evidence:** Confirmed
+- **Problem:** The offline guard now runs only in the click handler. In the down state I typed "Ask Sam" and pressed ⌘↩: the toast said "Answer sent to T3 · Undo" and the row disappeared. In Backlog, Space then X said "Closed 1 issues as won't do". New idea › Add idea said "Kept I10". The menu commands "Resume in a new terminal" and "Detach terminal" showed success toasts and look enabled. The owner is told an answer reached an agent when the board never got it, on the app's main task.
+- **Principle:** Visibility of system status: in the offline state, commands never report success they didn't have [NNG-H1]; error prevention [NNG-H5]
+- **Fix:** 1. Move the isDown() check out of onClick and into run() and submitIdea(), so every path is guarded: clicks, keys (⌘↩ send, D, X, 1–3, ⌘Z), menus and form submit. 2. Stop guessing from the toast text with the MUT_TOAST regex. Instead, tag each command that changes the board with data-mut="1" where it is built: Ask for an update, Ask for the note, Detach terminal, Resume in a new terminal, Reopen the old conversation, Start now (T8), Add idea, and the rest. Disable exactly those, so local actions such as "Saved taskboard-debug.zip" stay enabled. 3. In the down state, show the New idea dialog's Add idea as aria-disabled with the line "The board is offline. Your idea is kept as a draft."
+
+### R2 · 3 Major · Undo on any toast undoes the last removed row, not the action the toast names
+- **Element:** Every toast with Undo that isn't a row removal: Goal G2 › Pause, Backlog bulk actions, Start now, the Plan page's Create the goal, and similar. laptop-125, light, default
+- **Evidence:** Confirmed
+- **Problem:** I dismissed T5 on Needs you, opened Goal G2 and pressed Pause. The toast said "Paused G2 … Undo". Undo didn't touch the pause; instead it silently brought T5 back on another page. Bulk Defer, Won't do and Priority also offer Undo but push nothing onto the stack, so their Undo pops an unrelated row too. In the other direction, Merge now and Finish G9 add T6 or B41 to the stack without offering Undo, so a later ⌘Z quietly reverses the merge's row. After an Undo, the follow-up toast says only "1 more to undo" without saying what that is.
+- **Principle:** Undo holds up: it reverses the action it names, and two in a row both undo [NNG-H3]; visibility of system status [NNG-H1]
+- **Fix:** Make every toast that offers Undo push one entry onto S.undo: { label: 'Pause G2', revert: () => … }. Make Undo and ⌘Z pop and run that entry. Don't push entries for Merge now or Finish G9 (they can't be undone). After an Undo, name the next entry in the toast: "Undo: Dismissed the alert for T5  ⌘Z", not "1 more to undo".
+
+### R3 · 3 Major · Settings has no visible way back to the board
+- **Element:** Settings, all nine sections, laptop-125 and 720 × 480
+- **Evidence:** Confirmed
+- **Problem:** The round removed "Back to the board", but Settings still takes over the main window. Its only controls are the nine section links; there is no toolbar, Back button or close button. Only the hidden keys ⌘[, ⌘W and Esc lead out, so a pointer user who opens Settings from the sidebar has no visible way back to the board.
+- **Principle:** User control and freedom: no dead ends [NNG-H3]; macOS Settings is its own window, which the app's own close control dismisses [HIG-MACOS]
+- **Fix:** Do last round's R11: draw Settings as its own window, about 720 × 520, titled "Settings", with its own close control and the board window left unchanged behind it, closed with ⌘W. Until then, put back a visible "Back to the board ⌘[" button at the bottom of the Settings sidebar.
+
+### R4 · 2 Minor · Esc inside a Settings field leaves Settings and drops the typed value
+- **Element:** Settings › Work hours › End field (and every field in Settings), laptop-125, light, default
+- **Evidence:** Confirmed
+- **Problem:** I typed "7:30 PM" into End and pressed Esc. The app left Settings for the previous page, and when I reopened Work hours the field showed 6:00 PM again. The new Esc handler runs before the in-field check, so Esc in any Settings field leaves Settings. Work hours is one of the few changes the owner's rule allows.
+- **Principle:** Esc cancels transient UI but doesn't navigate back [MS-KBD]; unsaved input survives in-app actions [NNG-H3] [NNG-H5]
+- **Fix:** Ignore Escape in the Settings handler when focus is in an input, textarea or select. Let Esc in a field restore that field's last saved value. Once Settings is its own window (R3), drop Esc-to-close and keep ⌘W. Save Work hours on blur, and show "Saved" beside the field.
+
+### R5 · 2 Minor · Picking an answer option silently erases the typed Other answer
+- **Element:** Needs you › T3 question › answer options and Other answer field, laptop-125, light, default
+- **Evidence:** Confirmed
+- **Problem:** I typed "Only for admins, ask Sam", then clicked "Yes, always". The textarea emptied, and nothing could bring the text back. One misclick on an option loses a written answer to an agent. (Last round's fix said "a typed answer deselects the options and vice versa"; clearing the text is the harsh reading of that.)
+- **Principle:** Unsaved input survives in-app actions [NNG-H3]; error prevention [NNG-H5]
+- **Fix:** Keep the draft when an option is picked: leave the text in the field and mark the option as what will be sent. Make the Send button name the choice: "Send 'Yes, always'" or "Send your answer". Clicking back into the field switches the choice back to the typed text. Delete the draft only after Send succeeds.
+
+### R6 · 2 Minor · On the idea questions, one typed answer carries over to Question 2 and sits alongside a picked option
+- **Element:** Idea I2 › 2 questions before planning › Other answer and options, laptop-125, light, default
+- **Evidence:** Confirmed
+- **Problem:** On Question 1 I picked "Everything the person has opened" and then typed "Only the open task". Both stayed selected. After Next, Question 2 ("What happens on a conflict?") showed the same text, because the draft is stored under 'I2' while the picks are stored per step ('I2-0'). The owner can't tell which answer will be sent for which question.
+- **Principle:** Consistency [NNG-H4]; visibility of system status [NNG-H1]
+- **Fix:** Store the draft per step (data-answer="I2-${step}", S.drafts['I2-0']) so each question has its own text. Use the same either-or rule as T3 (see R5) so only one answer per question shows as chosen.
+
+### R7 · 2 Minor · Focus drops to the page after picking a Settings section or switching pages
+- **Element:** Settings › section list (Enter, click, ⌘1–⌘9); main window ⌘1–⌘7 and ⌘,; sidebar page list, laptop-125
+- **Evidence:** Confirmed
+- **Problem:** Enter on Work hours and ⌘3 in Settings left focus on body, because S.focusNext targets `.sw-col h2`, which can't take focus. ⌘1, ⌘2 and ⌘, do the same in the main window. A keyboard user has to Tab from the top of the window each time. The sidebar is also still 11 separate tab stops (7 pages and 4 goals), not the single tab stop with ↑/↓ that last round's fix asked for.
+- **Principle:** Focus order [WCAG 2.4.3]; arrow keys move inside groups, one tab stop per group [MS-KBD]
+- **Fix:** Give each page's h1 and the Settings h2 tabindex="-1" so focusNext can land on them, or keep focus on the link that was chosen. Make the sidebar page list and the Active goals list one tab stop each: a roving tabindex on the current item, with ↑/↓ and Home/End moving inside the list.
+
+### R8 · 2 Minor · At 200% text, sidebar goal names break in the middle of words
+- **Element:** Sidebar › Active goals, laptop-125, light, text 200%
+- **Evidence:** Confirmed
+- **Problem:** I saw this in passing; it is outside the four findings in scope. Last round's text fix uses overflow-wrap:anywhere, and the "1 of 5" count still sits beside each name. The names now break mid-word into three lines ("Passwor / d reset", "Rate / limits per / key"), and only two goals fit above the sidebar footer.
+- **Principle:** Resize text: content stays readable at 200% [WCAG 1.4.4]
+- **Fix:** Use overflow-wrap: break-word (not anywhere) on .gl .lbl. When the text scale is above 1.5, put the "1 of 5" count on its own line under the name, so the name gets the sidebar's full width.
+
+## What works
+
+- Typed answers now survive other actions: the T3 draft lasted through a Dismiss on another row, the toast expiring and leaving and returning with ⌘2 and ⌘1.
+- Row removals behave well with the keyboard. Focus moves to the next row's title, Undo and ⌘Z bring the rows back in order and refocus them, and the toast stays while hovered and closes 10 s after the pointer leaves.
+- In the down state, guarded commands now look disabled (Send, I reviewed it, Make a task, Mark reviewed in the ⋯ menu, Merge now in the dialog) and explain why with a tooltip and a toast.
+- Links now respond to Enter and Space everywhere (sidebar, Active goals, breadcrumbs, Settings sections). At 720 × 480 the Backlog bulk bar gains a ⋯ overflow for Defer and Won't do. In dark mode, inspect finds no field-edge failures on the Needs-you question card.
+
+## Not checked
+
+- Presets other than laptop-125 and the 720 × 480 minimum window (laptop-hd, macbook, desktop-fhd, desktop-qhd up to 2560 × 1440, snap and half-width presets). The composition audit was not re-run.
+- The empty state (last round's R10 fix): my navigate call used a screen id that doesn't exist, so I never saw the empty Needs you with the panel open. 200% text was measured only at laptop-125, not at 720 × 480.
+- The Plan these → Plan page route (last round's R12) and the Settings ⌘W shortcut were read in the code but not driven. Dialog focus return (last round's R6) was checked in the code only.
+- Whether the toast pauses while a keyboard user has focus on it: only pointer hover was driven.
+- Screen reader output (VoiceOver) and whether aria-disabled commands and role=status toasts are announced; the native select popup in New idea (set with type-ahead); real macOS window chrome and the menu bar; motion; real devices.
+- The owner's read-only rule (last round's R3), which the brief keeps open; I didn't re-judge it. FEATURES.md coverage was not re-checked.
+- One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE].
