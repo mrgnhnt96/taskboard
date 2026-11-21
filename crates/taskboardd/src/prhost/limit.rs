@@ -416,8 +416,8 @@ pub const POLL_STREAM_DOWN: &str = "poll (stream down)";
 pub const POLL_NOT_COVERED: &str = "poll (not covered)";
 
 /// The readers [`reader`] names, in the order the split shows them.
-pub const READERS: [&str; 10] =
-    ["poll", POLL_STREAM_DOWN, POLL_NOT_COVERED, POLL_CATCH_UP, "full-read fallback", "hint", "master", "reviewers", "agent", "tb api"];
+pub const READERS: [&str; 11] =
+    ["poll", POLL_STREAM_DOWN, POLL_NOT_COVERED, POLL_CATCH_UP, "full-read fallback", "hint", "master", "reviewers", "lost tasks", "agent", "tb api"];
 
 /// Runs `f` with the calls it makes counted against `name` (one of [`READERS`]) in the split of an
 /// account's calls (see "Who made the calls"); an inner one names its own calls.

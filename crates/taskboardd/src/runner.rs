@@ -788,7 +788,6 @@ pub fn prs(app: &App) -> Result<()> {
     app.db.tx(|| crate::declined::sweep(app))?;
     crate::setup::auto_sync(app)?;
     app.db.tx(|| crate::setup::sweep(app))?;
-    crate::lost_done::sweep(app)?;
     crate::release_tags::sweep(app)?;
     crate::default_sync::sweep(app)?;
     crate::stack_drop::sweep(app)?;
@@ -838,6 +837,8 @@ pub fn run(app: Arc<App>) {
         if due(last_prs, iv.prs * stretch) {
             last_prs = Some(Instant::now());
             safe("prs", prs(&app));
+            // On a thread of its own: git and gh in every lost task's project may take a while.
+            crate::lost_done::start(&app);
         }
         if due(last_reviews, iv.reviews * stretch) {
             last_reviews = Some(Instant::now());
