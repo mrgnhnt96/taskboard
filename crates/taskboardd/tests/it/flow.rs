@@ -627,6 +627,54 @@ fn a_turn_that_loses_the_network_waits_for_midna_to_carry_it_on() {
     assert!(b.task(id).st("question").contains("type anything"), "a plain 429 isn't a limit Claude Code waits out");
 }
 
+/// Terminal `s1` as Midna lists it: needs_you, either held by the board's Question tab (`labelled`)
+/// or by a prompt of Claude's, and settled long enough for the board to type in it.
+fn needs_you(b: &Board, labelled: bool) {
+    let repo = b._dir.path().join("webapp");
+    let (reason, custom) = if labelled {
+        ("Question", json!({"label": "Question", "color": "amber", "base": "needs_you"}))
+    } else {
+        ("Claude needs your permission to use Bash", json!({"label": "Question", "color": "amber", "base": "needs_you"}))
+    };
+    let s = json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo.to_string_lossy(),
+                   "status": {"state": "needs_you", "reason": reason}, "custom_status": custom});
+    midna::sync(&b.app, &[s], &[]).unwrap();
+    b.app.db.x("UPDATE sessions SET status_at = '2026-01-01T00:00:00Z' WHERE id = 's1'", p![]).unwrap();
+}
+
+fn asked_and_answered(b: &Board) {
+    new_task(b, "Pick a colour", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("tb.question", "s1", json!({"text": "Blue or green?"}));
+    b.report("hook.stop", "s1", json!({"last_message": "Asked."}));
+    b.post("/tasks/T1/answer", json!({"text": "Green"}));
+}
+
+#[test]
+fn an_answer_is_typed_into_a_terminal_idle_under_its_question_tab() {
+    let b = new_board();
+    asked_and_answered(&b);
+    needs_you(&b, true);
+    taskboardd::deliver::tick(&b.app).unwrap();
+    let sent = b.jobs("message");
+    assert_eq!(sent.len(), 1, "the Question tab is only the board's label: the terminal sits at its prompt");
+    let a = board::job_args(&sent[0]);
+    assert_eq!(a.s("to"), Some("s1"));
+    assert!(a.st("text").contains("answer: Green"));
+    let log = b.get("/tasks/T1/log")["log"].as_array().unwrap().clone();
+    assert!(log.iter().any(|e| e["text"].as_str().unwrap().contains("sent it your answer through Midna")));
+}
+
+#[test]
+fn an_answer_waits_while_claude_shows_a_prompt() {
+    let b = new_board();
+    asked_and_answered(&b);
+    needs_you(&b, false);
+    taskboardd::deliver::tick(&b.app).unwrap();
+    assert!(b.jobs("message").is_empty(), "a permission prompt is waiting, so nothing is typed over it");
+}
+
 #[test]
 fn a_terminal_waiting_out_a_usage_limit_stays_open_after_hours() {
     let b = new_board();

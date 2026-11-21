@@ -519,6 +519,13 @@ fn git_of(s: &Value) -> (Value, Value) {
     }
 }
 
+/// Midna's state for terminal `s` is only held by a tab status (the board's own Question puts it in
+/// needs_you), not by a prompt of the agent's: Midna's own rule for typing into a terminal.
+fn labelled(s: &Value) -> bool {
+    let (st, cs) = (&s["status"], &s["custom_status"]);
+    cs["label"].is_string() && cs["base"] == st["state"] && cs["label"] == st["reason"]
+}
+
 fn state_of(s: &str) -> &'static str {
     match s {
         "working" => "working",
@@ -620,7 +627,7 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
             };
             let mut f = crate::fields![
                 "name" => name, "project" => project, "project_path" => path, "cwd" => s.get("cwd"), "branch" => branch, "dirty" => dirty,
-                "agent" => agent, "status" => state_of(&state), "prompt_waiting" => (state == "needs_you") as i64,
+                "agent" => agent, "status" => state_of(&state), "prompt_waiting" => (state == "needs_you" && !labelled(s)) as i64,
                 "last_activity" => s.get("last_activity_at"), "source" => "midna", "missed" => 0, "gone_at" => null
             ];
             if let Some(c) = info.s("conversation_id").filter(|c| !c.is_empty()) {
