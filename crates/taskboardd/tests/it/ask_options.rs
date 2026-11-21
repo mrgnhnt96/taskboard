@@ -135,6 +135,19 @@ fn a_question_answered_another_way_is_withdrawn() {
     assert_eq!(logged, "Withdrew the question: The config already says 10");
 }
 
+#[test]
+fn a_question_withdrawn_after_its_terminal_closed_requeues_the_task() {
+    let b = new_board();
+    b.report("tb.question", json!({"text": "10 or 30 retries?"}));
+    board::update_task(&b.app, 1, taskboardd::fields!["session_id" => null,
+        "latest" => "Closed idle after work hours. It starts again once you answer."]).unwrap();
+
+    reports::handle(&b.app, json!({"event": "tb.withdraw", "session": "s2", "task": "T1", "why": "The config already says 10"}), false).unwrap();
+    let t = board::get_task(&b.app, 1).unwrap();
+    assert_eq!((t.s("status"), t.s("needs_reason"), t.s("question")), (Some("queued"), None, None), "nothing runs it, so it waits to start again");
+    assert_eq!(t.s("latest"), Some("Its question was withdrawn. It starts again from its handoff."));
+}
+
 /// Midna's socket, answering each connection with the next reply (`result` or `error`) after a
 /// notification line, and keeping the requests it got.
 struct FakeMidna {
