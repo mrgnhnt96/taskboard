@@ -562,6 +562,49 @@ fn the_desk_opens_once_while_midna_syncs_and_keeps_one_desk() {
 }
 
 #[test]
+fn a_busy_extra_desk_waits_to_be_closed_gently_and_isn_t_retried_forever() {
+    let b = board_with(|c, _| c.jira.desk = true);
+    let desk_jobs = || b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
+    let cwd = b.dir.path().to_string_lossy().to_string();
+    let desk = |sid: &str, state: &str| json!({"id": sid, "name": "TB Jira desk", "agent": "claude", "cwd": cwd, "status": {"state": state}});
+    b.new_task(json!({"jira": "create"}));
+    b.tick();
+    let old = taskboardd::util::iso(taskboardd::util::now_ts() - jira_desk::SYNC_WAIT_SECS - 5.0);
+    b.app.db.x("UPDATE jobs SET state = 'done', updated_at = ?, target = ? WHERE id = ?", taskboardd::p![old, json!({"session": "s9"}).to_string(), desk_jobs()[0].id()]).unwrap();
+    b.tick();
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s10"}).to_string(), desk_jobs()[1].id()]).unwrap();
+
+    // The extra desk is still working (on its intro): a force close would ask the owner, so it waits.
+    midna::sync(&b.app, &[desk("s9", "idle"), desk("s10", "working")], &[]).unwrap();
+    b.tick();
+    assert!(b.jobs("kind = 'close'").is_empty(), "a busy extra desk isn't closed yet");
+
+    midna::sync(&b.app, &[desk("s9", "idle"), desk("s10", "idle")], &[]).unwrap();
+    b.tick();
+    let closes = b.jobs("kind = 'close'");
+    assert_eq!(closes.len(), 1, "closed once it's idle");
+    assert_eq!(board::job_args(&closes[0]).st("session"), "s10");
+    assert_eq!(board::job_args(&closes[0])["force"], false);
+
+    // A close that failed (Midna timed out) is tried again a little later, a few times at most.
+    let fail_all = |at: &str| {
+        b.app.db.x("UPDATE jobs SET state = 'failed', updated_at = ? WHERE kind = 'close' AND state = 'pending'", taskboardd::p![at]).unwrap();
+    };
+    fail_all(&taskboardd::util::now_iso());
+    b.tick();
+    assert_eq!(b.jobs("kind = 'close'").len(), 1, "not sent again right after it failed");
+    for tries in 2..=4 {
+        b.app.db.x("UPDATE jobs SET updated_at = '2000-01-01T00:00:00Z' WHERE kind = 'close'", taskboardd::p![]).unwrap();
+        b.tick();
+        assert_eq!(b.jobs("kind = 'close'").len(), tries, "tried again a little later");
+        fail_all("2000-01-01T00:00:00Z");
+    }
+    b.tick();
+    assert_eq!(b.jobs("kind = 'close'").len(), 4, "gives up after four tries");
+    assert!(b.jobs("kind = 'close'").iter().all(|j| board::job_args(j)["force"] == false), "never forced");
+}
+
+#[test]
 fn a_cold_desk_is_swapped_for_a_fresh_one_instead_of_sent_compact() {
     let b = board_with(|c, _| c.jira.desk = true);
     let desk_jobs = || b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
