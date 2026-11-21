@@ -21,6 +21,9 @@ static HEADING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#{1,6}\s+(.+?)\s*#*\
 static BULLET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s+\S").unwrap());
 static BARE_PR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|[^\w&/#])#(\d+)\b").unwrap());
 static CLOSING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(?:#\d+\s*(?:,|\band\b)?\s*)*$").unwrap());
+/// What the board-word check skips: a code span, a link's address (its text stays) and a bare URL, so a
+/// crate path in backticks or a PR link to this repo isn't the board named in prose.
+static NOT_PROSE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"`+[^`\n]*`+|!?\[([^\]\n]*)\]\([^)\n]*\)|<?https?://[^\s>)]+>?").unwrap());
 static LINK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"!?\[[^\]]*\]\([^)]*\)|<?https?://[^\s>)]+>?|`[^`]*`").unwrap());
 static RULE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$").unwrap());
 /// A coding agent's closing line: "🤖 Generated with [Tool](url)" or a "Co-Authored-By:" trailer.
@@ -121,7 +124,8 @@ pub fn body_problems(cfg: &PrBodyConfig, body: &str) -> Vec<String> {
         if let Some(m) = BOARD_REF_RE.find(&text) {
             out.push(format!("It mentions {}: the board's task, goal and backlog refs mean nothing to a reviewer; say what the work is instead.", m.as_str()));
         }
-        if let Some(m) = BOARD_WORD_RE.find(&text) {
+        let words = NOT_PROSE_RE.replace_all(&text, |c: &regex::Captures| c.get(1).map_or(" ".to_string(), |t| t.as_str().to_string()));
+        if let Some(m) = BOARD_WORD_RE.find(&words) {
             out.push(format!("It mentions “{}”: leave the board out of the PR.", m.as_str()));
         }
     }
@@ -958,6 +962,27 @@ mod tests {
         // Code isn't prose.
         let p = body_problems(&c, &format!("{GOOD}\n```\nT12 {}\n```\n", "x".repeat(500)));
         assert!(p.is_empty(), "{p:?}");
+    }
+
+    /// A PR link to the repo and a crate path in backticks name the repo, not the board; a link's text
+    /// is still prose.
+    #[test]
+    fn the_board_word_check_skips_links_and_code() {
+        let c = PrBodyConfig::default();
+        let ok = [
+            "Stacked on [Parse the settings file](https://github.com/acme/taskboard/pull/1004).",
+            "Builds on https://github.com/acme/taskboard/pull/1004 and <https://github.com/acme/task-board/pull/9>.",
+            "Moves the check into `crates/taskboard-core/src/lib.rs` and ``taskboard::run``.",
+            "![Shot](https://x.test/taskboard.png) shows it.",
+        ];
+        for line in ok {
+            let p = body_problems(&c, &GOOD.replace("Adds passkey sign-in.", line));
+            assert!(p.is_empty(), "{line}: {p:?}");
+        }
+        for line in ["Stacked on [the taskboard fix](https://github.com/acme/webapp/pull/12).", "The taskboard at https://x.test now reads it."] {
+            let p = body_problems(&c, &GOOD.replace("Adds passkey sign-in.", line));
+            assert!(p.iter().any(|x| x.contains("leave the board out")), "{line}: {p:?}");
+        }
     }
 
     /// A rule and an attribution line after the last section is a footer, not part of `## Testing`,
