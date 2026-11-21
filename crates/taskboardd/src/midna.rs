@@ -117,7 +117,7 @@ fn open_app(app: &App) {
         }
         s.midna_opened = Some(Instant::now());
     }
-    if std::process::Command::new("open").args(["-g", "-b", &app.cfg.midna_bundle]).spawn().is_ok() {
+    if proc::start_reaped(std::process::Command::new("open").args(["-g", "-b", &app.cfg.midna_bundle])).is_ok() {
         app.info("midna: it wasn't running; opened it");
     }
 }
@@ -1111,6 +1111,8 @@ pub fn send_tabs(app: &App) {
 const PANELS_KEPT: usize = 200;
 /// The most terminals whose last panel is kept, so an unchanged one isn't sent again.
 const PANELS_REMEMBERED: usize = 500;
+/// The most terminals kept as gone from Midna's Summary, so no panel is sent to them again.
+const GONE_REMEMBERED: usize = 2000;
 
 /// The task fields a terminal's panel is read from (`task_panel`), beyond the tab status's.
 pub fn panel_field(field: &str) -> bool {
@@ -1270,8 +1272,8 @@ pub fn panel_changed(app: &App, before: &Row, after: &Row) -> Result<()> {
 }
 
 /// Sends the queued tasks' panels to the Summary entries of their terminals. One Midna won't take is
-/// logged (one for a terminal it doesn't know, quietly) and dropped; with Midna down they wait. A
-/// Midna too old for `summary.annotate` is logged once.
+/// logged and dropped; one for a terminal it doesn't know is dropped quietly, and that terminal gets
+/// no panel again. With Midna down they wait. A Midna too old for `summary.annotate` is logged once.
 pub fn send_panels(app: &App) {
     static TOO_OLD: AtomicBool = AtomicBool::new(false);
     loop {
@@ -1286,8 +1288,11 @@ pub fn send_panels(app: &App) {
         };
         let owner = links_owner(app).to_lowercase().replace(' ', "-");
         for sid in sids {
-            if app.shared.lock().midna_panels_sent.get(&sid) == Some(&panel) {
-                continue;
+            {
+                let s = app.shared.lock();
+                if s.midna_panels_sent.get(&sid) == Some(&panel) || s.midna_panels_gone.contains(&sid) {
+                    continue;
+                }
             }
             match call_timeout(app, "summary.annotate", json!({"id": sid, "owner": owner, "panel": panel}), 5.0) {
                 Ok(_) => {
@@ -1306,8 +1311,16 @@ pub fn send_panels(app: &App) {
                         app.info("midna: it doesn't take Summary panels yet (summary.annotate); closed terminals show no task until it's updated".to_string());
                     }
                 }
-                // A terminal Midna has dropped from its Summary.
-                Err(MidnaError::Refused(e)) if e.starts_with("no terminal") => {}
+                // A terminal Midna has dropped from its Summary doesn't come back: asking again for every
+                // change to its task (and its goal's other tasks) only loads Midna with refused calls.
+                Err(MidnaError::Refused(e)) if e.starts_with("no terminal") => {
+                    let mut s = app.shared.lock();
+                    if s.midna_panels_gone.len() >= GONE_REMEMBERED {
+                        s.midna_panels_gone.clear();
+                    }
+                    s.midna_panels_sent.remove(&sid);
+                    s.midna_panels_gone.insert(sid);
+                }
                 Err(MidnaError::Refused(e)) => app.info(format!("midna: couldn't put {}'s panel on {sid}: {e}", rf("task", id))),
             }
         }

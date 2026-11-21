@@ -112,6 +112,16 @@ pub fn run_until(
     Ok(Some(Output { code, stdout, stderr }))
 }
 
+/// Starts a command the board doesn't wait for, and reaps it once it exits so it isn't left a
+/// zombie under the board (a `Child` dropped without a wait is never reaped).
+pub fn start_reaped(cmd: &mut Command) -> std::io::Result<()> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Finds a command on PATH (or returns the path as given when it has a slash).
 pub fn which(name: &str) -> Option<std::path::PathBuf> {
     if name.contains('/') {
@@ -132,4 +142,32 @@ pub fn which(name: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_started_command_is_reaped_once_it_exits() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo $$ > \"$0\"", "pidfile"]);
+        let dir = tempfile::tempdir().unwrap();
+        cmd.current_dir(dir.path());
+        start_reaped(&mut cmd).ok().unwrap();
+        let file = dir.path().join("pidfile");
+        let until = Instant::now() + Duration::from_secs(5);
+        let pid = loop {
+            if let Some(p) = std::fs::read_to_string(&file).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
+                break p;
+            }
+            assert!(Instant::now() < until, "the command never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // Reaped: the process is gone, not a zombie still waiting for the board to wait on it.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < until, "process {pid} is still there (a zombie)");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }

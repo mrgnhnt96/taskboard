@@ -48,6 +48,8 @@ pub struct Shared {
     pub midna_panels: VecDeque<i64>,
     /// The panel last sent for each terminal, so one that hasn't changed isn't sent again.
     pub midna_panels_sent: HashMap<String, Value>,
+    /// Terminals Midna said it doesn't have (closed and gone from its Summary): no panel goes to them again.
+    pub midna_panels_gone: HashSet<String>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,
