@@ -94,7 +94,7 @@ const WHERE: &str = r"(?:in|on)\s+(?:a\s+|the\s+)?(?:new|fresh|separate|another|
 /// task. Asking to hear back ("queue it and let me know when it's done") says nothing more about "it".
 static BARE_ASK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
-        r"(?i)^(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|yup|sure|great|cool|nice|perfect|awesome|good|thanks|thank\s+you|ty|please|pls|looks\s+good|lgtm|sounds\s+good|go\s+ahead(?:\s+and)?|now|then|so|and|just|you\s+can|can\s+you|could\s+you|let[’']?s|that[’']?s\s+(?:fine|great|good|perfect))[\s,.!]*)*(?:{VERB}\s+(?:{UNNAMED})|kick\s+(?:{UNNAMED})\s+off|get\s+(?:{UNNAMED})\s+going|(?:spin|fire)\s+(?:{UNNAMED})\s+up)(?:\s+(?:up|off|now|please|pls|too|for\s+me|right\s+away|right\s+now|asap|{WHERE}))*(?:[\s,]*(?:and\s+)?(?:let\s+me\s+know|tell\s+me|ping\s+me|lmk)\b[^.!?;\n]*)?[\s.!]*(?:(?:thanks|thank\s+you|ty|please|pls)[\s.!]*)?$"
+        r"(?i)^(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|yup|sure|great|cool|nice|perfect|awesome|good|thanks|thank\s+you|ty|please|pls|looks\s+good|lgtm|sounds\s+good|go\s+ahead(?:\s+and)?|now|then|so|and|just|you\s+can|can\s+you|could\s+you|let[’']?s|that[’']?s\s+(?:fine|great|good|perfect))[\s,.!]*)*(?:{VERB}\s+(?:{UNNAMED})|kick\s+(?:{UNNAMED})\s+off|get\s+(?:{UNNAMED})\s+(?:going|started)|(?:spin|fire)\s+(?:{UNNAMED})\s+up)(?:\s+(?:up|off|now|please|pls|too|for\s+me|right\s+away|right\s+now|asap|{WHERE}))*(?:[\s,]*(?:and\s+)?(?:let\s+me\s+know|tell\s+me|ping\s+me|lmk)\b[^.!?;\n]*)?[\s.!]*(?:(?:thanks|thank\s+you|ty|please|pls)[\s.!]*)?$"
     ))
     .unwrap()
 });
@@ -198,7 +198,7 @@ const DO_TASKS: &str = concat!(
 
 fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &str, goal: bool) -> Kind {
     let mut on = format!(
-        r"(?:\b{verb}\s+(?:{LISTED}(?P<named>{named})|(?P<unnamed>{unnamed}))|\bkick\s+(?:(?P<named2>{named})|(?P<unnamed2>{unnamed}))\s+off|\bget\s+(?:(?P<named6>{named})|(?P<unnamed6>{unnamed}))\s+going|\b(?:spin|fire)\s+(?:(?P<named7>{named})|(?P<unnamed7>{unnamed}))\s+up|\bstart\s+in\s+(?P<named8>{named})|\bdo\s+(?P<unnamed8>{DO_TASKS})"
+        r"(?:\b{verb}\s+(?:{LISTED}(?P<named>{named})|(?P<unnamed>{unnamed}))|\bkick\s+(?:(?P<named2>{named})|(?P<unnamed2>{unnamed}))\s+off|\bget\s+(?:(?P<named6>{named})|(?P<unnamed6>{unnamed}))\s+(?:going|started)|\b(?:spin|fire)\s+(?:(?P<named7>{named})|(?P<unnamed7>{unnamed}))\s+up|\bstart\s+in\s+(?P<named8>{named})|\bdo\s+(?P<unnamed8>{DO_TASKS})"
     );
     if let Some(v) = named_verb {
         on.push_str(&format!(r"|\b{v}\s+{LISTED}(?P<named3>{named})|(?P<named5>\b{named}){NAMED_GO}"));
@@ -480,17 +480,25 @@ pub struct Reading {
     pub steps: Vec<Step>,
     /// The prompt asks for a new task: what an unnamed ask can mean.
     pub makes: bool,
+    /// How many asks for a new task the prompt makes ("make a task for A. Make a task for B" is two).
+    pub(crate) make_count: usize,
+    /// For each of `steps`, how many asks for a new task come before it in the prompt.
+    pub(crate) step_makes: Vec<usize>,
 }
 
 impl Reading {
     /// Whether the prompt is the word to start task `id` (`Some(true)`), takes it back (`Some(false)`),
     /// or says nothing on it. `unnamed` says whether an unnamed ask means `id`.
     pub(crate) fn word_for(&self, id: i64, unnamed: impl Fn(&Ask) -> bool) -> Option<bool> {
-        self.steps.iter().rev().find_map(|s| match s {
+        self.word_for_nth(id, |a, _| unnamed(a))
+    }
+    /// [`Reading::word_for`] with `unnamed` also told how many asks for a new task come before the ask.
+    pub(crate) fn word_for_nth(&self, id: i64, unnamed: impl Fn(&Ask, usize) -> bool) -> Option<bool> {
+        self.steps.iter().enumerate().rev().find_map(|(i, s)| match s {
             Step::Hold(Ask::Named(ids)) => ids.contains(&id).then_some(false),
             Step::Hold(_) => Some(false),
             Step::Ask(Ask::Named(ids)) => ids.contains(&id).then_some(true),
-            Step::Ask(a) => unnamed(a).then_some(true),
+            Step::Ask(a) => unnamed(a, self.step_makes.get(i).copied().unwrap_or(0)).then_some(true),
         })
     }
     /// Whether the prompt, on its own, leaves task `id` held: the last it says on the task takes it back.
@@ -983,6 +991,8 @@ pub fn read_of(k: &Kind, text: &str) -> Reading {
     let mut r = Reading::default();
     // (where it's said, what's said), sorted at the end so the steps run in the prompt's order.
     let mut steps: Vec<(usize, Step)> = vec![];
+    // Where in `own` each ask for a new task starts.
+    let mut made_at: Vec<usize> = vec![];
     for c in SENTENCE_RE.captures_iter(&own) {
         let Some(sm) = c.name("s") else { continue };
         let (base, s) = (sm.start(), sm.as_str());
@@ -990,6 +1000,7 @@ pub fn read_of(k: &Kind, text: &str) -> Reading {
             continue;
         }
         r.makes |= makes_in(s);
+        made_at.extend(MAKE_RE.find_iter(s).filter(|m| negs_in(&s[..m.start()]).is_empty()).map(|m| base + m.start()));
         // "Can you start T8?" asks for it; "should I start T8?" and "would you start T8 or T9 first?" ask
         // about it.
         let polite = k.mention.find(s).is_some_and(|m| POLITE_RE.is_match(&s[..m.start()])) && !CHOICE_RE.is_match(s);
@@ -1000,6 +1011,8 @@ pub fn read_of(k: &Kind, text: &str) -> Reading {
         }
     }
     steps.sort_by_key(|(at, _)| *at);
+    r.make_count = made_at.len();
+    r.step_makes = steps.iter().map(|(at, _)| made_at.iter().filter(|m| *m < at).count()).collect();
     r.steps = steps.into_iter().map(|(_, s)| s).collect();
     // An ask stands unless something after it in the prompt takes it back ("start T8. jk").
     for (i, step) in r.steps.iter().enumerate() {
@@ -1217,17 +1230,22 @@ static ACK_RE: Lazy<Regex> = Lazy::new(|| {
 
 /// The tasks an unnamed ask in the latest prompt, `prompts[0]`, can mean. In a prompt that asks for new
 /// tasks, the ones made in reply to it: "make a task for it and queue it" means the first, "make tasks
-/// for A and B and queue them" every one. In a prompt that's only the ask ("queue it", "ok, start them"),
+/// for A and B and queue them" every one. A prompt with several asks for a new task, one task made for
+/// each, pairs "it" with the task of the ask it follows (`nth` asks come before it): "make a task for A.
+/// Make a task for B and start it" means B's. In a prompt that's only the ask ("queue it", "ok, start them"),
 /// the ones made in reply to the latest prompt that got some, when that one asked for them and the
 /// prompts since ("thanks") said nothing else: "it" only when there's one. "The first one" is the first
 /// of them either way. A prompt with more in it ("the dev server won't come up; start it") may mean
 /// something else.
-fn unnamed_tasks(prompts: &[Prompt], r: &Reading, ask: &Ask) -> Vec<i64> {
+fn unnamed_tasks(prompts: &[Prompt], r: &Reading, ask: &Ask, nth: usize) -> Vec<i64> {
     let Some(p) = prompts.first() else { return vec![] };
     let first = |made: &[i64]| made.first().copied().into_iter().collect();
     if r.makes {
         if p.made_goal {
             return vec![];
+        }
+        if *ask == Ask::Unnamed && r.make_count > 1 && r.make_count == p.made.len() && nth > 0 {
+            return vec![p.made[nth - 1]];
         }
         return if *ask == Ask::Them { p.made.clone() } else { first(&p.made) };
     }
@@ -1302,13 +1320,14 @@ pub fn word_in_own(prompts: &[Prompt], id: i64, own: bool) -> Option<usize> {
             Ask::First => named_asked.first() == Some(&id),
             _ => named_asked == [id],
         };
-        let ours = |a: &Ask| {
-            own && *a == Ask::Unnamed && named_asked.is_empty() && unnamed_tasks(prompts, &r, a).is_empty() && bare()
+        let ours = |a: &Ask, nth: usize| {
+            own && *a == Ask::Unnamed && named_asked.is_empty() && unnamed_tasks(prompts, &r, a, nth).is_empty() && bare()
         };
         // "Start them" that asks for no new task: the tasks talked over, each one the agent names.
         let talked = |a: &Ask| *a == Ask::Them && !r.makes && p.talked.contains(&id);
-        let unnamed = |a: &Ask| i == 0 && (unnamed_tasks(prompts, &r, a).contains(&id) || (answers(a) && bare()) || ours(a) || talked(a));
-        match r.word_for(id, unnamed) {
+        let unnamed =
+            |a: &Ask, nth: usize| i == 0 && (unnamed_tasks(prompts, &r, a, nth).contains(&id) || (answers(a) && bare()) || ours(a, nth) || talked(a));
+        match r.word_for_nth(id, unnamed) {
             Some(true) if p.clipped => {}
             Some(true) => return Some(i),
             Some(false) => return None,
@@ -3876,6 +3895,28 @@ mod tests {
         assert_eq!(word_in(&convo(&[("make tasks for A and B and queue them. jk", &[9, 10])]), 9), None);
         assert_eq!(word_in(&convo(&[("make tasks for A and B but don't queue them", &[9, 10])]), 9), None);
         assert_eq!(word_in(&convo(&[("don't make tasks, just queue them", &[9, 10])]), 9), None, "it asks for no new task");
+    }
+
+    #[test]
+    fn each_unnamed_ask_means_the_task_made_for_the_ask_before_it() {
+        let two = "Create a new task to create a chart that shows the tickets that were done today. Get that task started\nCreate a new task to create a new release and also start that task";
+        let c = convo(&[(two, &[100, 101])]);
+        assert_eq!((word_in(&c, 100), word_in(&c, 101)), (Some(0), Some(0)));
+        for one in ["get that task started", "get it started", "get T8 started"] {
+            assert!(says_start(one), "{one}");
+        }
+        assert_eq!(word_in(&convo(&[("make a task for the footer and get it started", &[9])]), 9), Some(0));
+        // Only the one asked to start.
+        let c = convo(&[("Make a task for the footer. Make a task for the header and start it.", &[9, 10])]);
+        assert_eq!((word_in(&c, 9), word_in(&c, 10)), (None, Some(0)));
+        let c = convo(&[("Make a task for the footer and start it. Make a task for the header.", &[9, 10])]);
+        assert_eq!((word_in(&c, 9), word_in(&c, 10)), (Some(0), None));
+        // Made tasks that don't pair one to one with the asks: no pairing.
+        let c = convo(&[("Make a task for the footer. Make a task for the header and start it.", &[9, 10, 11])]);
+        assert_eq!((word_in(&c, 10), word_in(&c, 11)), (None, None));
+        // Held still holds.
+        let c = convo(&[("Make a task for the footer. Make a task for the header and start it tomorrow.", &[9, 10])]);
+        assert_eq!(word_in(&c, 10), None);
     }
 
     #[test]
