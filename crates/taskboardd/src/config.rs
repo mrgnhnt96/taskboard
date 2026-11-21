@@ -608,6 +608,8 @@ pub struct TerminalsConfig {
 
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
 pub const GLOBAL_MAX_TERMINALS: i64 = 8;
+/// The most a terminal cap (board-wide or a project's) or a project's worktree slots may be set to.
+pub const MAX_PARALLEL: i64 = 100;
 /// What opens in the background unless config.toml says: the Jira desk, and the terminals that need
 /// nobody watching them. A PR visit that fixes checks or answers review comments stays in its project's tabs.
 pub const BACKGROUND: [&str; 8] = ["jira_desk", "slots", "reopen", "pr:rebase", "pr:steps", "pr:merge", "pr:follow", "pr:note"];

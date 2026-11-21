@@ -618,7 +618,7 @@ enum Cmd {
     },
     /// Show or change how many task terminals run at once across the board; tasks over it wait for a free slot
     Terminals {
-        /// A count from 1 to 50, or default (config.toml's [terminals] global_max)
+        /// A count from 1 to 100, or default (config.toml's [terminals] global_max)
         #[arg(long)]
         max: Option<String>,
     },

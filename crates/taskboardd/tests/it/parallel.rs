@@ -663,7 +663,12 @@ fn a_project_s_slot_settings_are_checked_and_go_back_to_config() {
     assert_eq!(w(&out)["set"], json!({"min_slots": 1, "idle_trim_days": 3, "low_disk_gb": 20}));
     let (code, msg) = b.post_err("projects/webapp", json!({"max_slots": 0}));
     assert_eq!(code, 400);
-    assert!(msg.contains("max_slots is a count from 1 to 50"), "{msg}");
+    assert!(msg.contains("max_slots is a count from 1 to 100"), "{msg}");
+    assert_eq!(w(&b.post("projects/webapp", json!({"max_slots": 100})))["set"]["max_slots"], 100);
+    let (code, msg) = b.post_err("projects/webapp", json!({"max_slots": 101}));
+    assert_eq!(code, 400);
+    assert!(msg.contains("max_slots is a count from 1 to 100"), "{msg}");
+    b.post("projects/webapp", json!({"max_slots": "default"}));
     let (_, msg) = b.post_err("projects/webapp", json!({"idle_remove_days": 2}));
     assert!(msg.contains("idle_trim_days (3) can't be more than idle_remove_days (2)"), "{msg}");
     assert_eq!(b.get("projects")["projects"][0]["worktrees"]["idle_remove_days"], 7, "a refused change isn't kept");
@@ -674,7 +679,7 @@ fn a_project_s_slot_settings_are_checked_and_go_back_to_config() {
     let out = b.post("projects/webapp", json!({"idle_trim_days": "Never", "idle_remove_days": 7}));
     assert_eq!((w(&out)["idle_trim_days"].clone(), w(&out)["idle_remove_days"].clone()), (json!(0), json!(7)), "a slot can be removed without clearing it first");
     let (_, msg) = b.post_err("projects/webapp", json!({"min_slots": "never"}));
-    assert!(msg.contains("min_slots is a count from 0 to 50"), "only the idle timers take never: {msg}");
+    assert!(msg.contains("min_slots is a count from 0 to 100"), "only the idle timers take never: {msg}");
 }
 
 #[test]
