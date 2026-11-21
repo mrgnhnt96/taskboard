@@ -69,6 +69,7 @@ mod merge_progress;
 mod merge_retry;
 mod merged_note;
 mod models;
+mod moved_history;
 mod multi_project_goals;
 mod midna_sync;
 mod needs_answers;

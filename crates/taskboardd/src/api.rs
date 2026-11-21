@@ -1552,6 +1552,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if let Some(text) = &moved_text {
             crate::reproject::leave_old(app, &t)?;
+            if let Some(p) = &moved_to {
+                crate::reproject::carry_history(app, id, p)?;
+            }
             board::log_event(app, id, &who, "status", text)?;
         }
         if wave_changed.is_some() || new_goal_id.is_some() {

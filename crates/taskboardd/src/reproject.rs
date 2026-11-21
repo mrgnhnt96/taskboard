@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, fields, lines, projects};
+use crate::{board, deliver, fields, lines, p, projects};
 
 /// The board's own spelling of a project named in any case; refused when the board doesn't know it.
 pub fn name(app: &App, v: &Value) -> Result<String> {
@@ -17,6 +17,8 @@ pub fn name(app: &App, v: &Value) -> Result<String> {
     if want.is_empty() {
         return err(400, "Say which project to move it to.");
     }
+    let want = projects::named(app, want)?;
+    let want = want.as_str();
     let known: Vec<String> = projects::list_projects(app)?.iter().filter_map(|p| p["name"].as_str().map(|s| s.to_string())).collect();
     if let Some(p) = known.iter().find(|p| p.as_str() == want).or_else(|| known.iter().find(|p| p.eq_ignore_ascii_case(want))) {
         return Ok(p.clone());
@@ -108,6 +110,29 @@ fn forget_old_checkouts(app: &App, id: i64) -> Result<()> {
         w.remove(k);
     }
     board::save_context(app, id, &ctx, false)
+}
+
+/// Puts task `id`'s history in `project` with it: its merged PRs, its status changes, and the kept
+/// days it shows on (worked out again while their log is kept), so counts by project follow the move.
+pub fn carry_history(app: &App, id: i64, project: &str) -> Result<()> {
+    app.db.x("UPDATE pr_merges SET project = ? WHERE task_id = ? AND project IS NOT ?", p![project, id, project])?;
+    crate::days::forget_task(app, id)?;
+    app.db.x("UPDATE task_states SET project = ? WHERE task_id = ? AND project IS NOT ?", p![project, id, project])?;
+    Ok(())
+}
+
+/// Tasks moved before a move carried their history: their status changes still name the project they
+/// left (a Midna project id, at worst). Each one's history follows it now. Returns how many moved.
+pub fn carry_earlier_moves(app: &App) -> Result<usize> {
+    let moved = app.db.q(
+        "SELECT DISTINCT t.id, t.project FROM task_states s JOIN tasks t ON t.id = s.task_id \
+         WHERE COALESCE(t.project, '') != '' AND s.project IS NOT t.project ORDER BY t.id",
+        p![],
+    )?;
+    for t in &moved {
+        carry_history(app, t.id(), &t.st("project"))?;
+    }
+    Ok(moved.len())
 }
 
 /// The log line for task `t` moving to `to`, naming the terminal that carries on with it.

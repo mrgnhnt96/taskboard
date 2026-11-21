@@ -94,7 +94,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         Some(id) => Some(board::get_goal(app, id)?),
         None => None,
     };
-    let mut project = body_str(body, "project");
+    let mut project = projects::named(app, &body_str(body, "project"))?;
     if project.is_empty() {
         project = g.as_ref().map(|g| g.st("project")).unwrap_or_default();
     }
@@ -308,7 +308,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
     if name.is_empty() {
         return err(400, "The name can't be empty.");
     }
-    let project = body_str(body, "project");
+    let project = projects::named(app, &body_str(body, "project"))?;
     if project.is_empty() {
         return err(400, "The project can't be empty.");
     }

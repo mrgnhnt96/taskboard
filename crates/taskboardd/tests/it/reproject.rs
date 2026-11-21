@@ -278,3 +278,16 @@ fn a_backlog_issue_moves_and_says_so_in_its_log() {
     let (code, _) = b.post_err(&format!("backlog/B{i}"), json!({"project": "nowhere"}));
     assert_eq!(code, 400);
 }
+
+#[test]
+fn a_midna_project_id_is_kept_as_the_projects_name() {
+    let b = new_board();
+    let projects = json!([{"name": "notes", "path": b.repo("notes"), "id": "p_c1de7f"}, {"name": "taskboard", "path": b.repo("taskboard"), "id": "p_406a42"}]);
+    b.app.db.set_setting("midna_projects", Some(&projects.to_string())).unwrap();
+    let g = b.post("/goals", json!({"name": "Notes polish", "project": "p_c1de7f"}));
+    assert_eq!(board::get_goal(&b.app, g["id"].as_i64().unwrap()).unwrap().st("project"), "notes");
+    let t = b.task(json!({"title": "Badge is stale", "project": "p_c1de7f", "status": "planned"}));
+    assert_eq!(b.row(&t).st("project"), "notes");
+    b.post(&format!("tasks/{t}"), json!({"project": "p_406a42"}));
+    assert_eq!(b.row(&t).st("project"), "taskboard");
+}
