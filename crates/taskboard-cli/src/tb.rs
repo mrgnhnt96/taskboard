@@ -2038,7 +2038,7 @@ enum ProjectCmd {
         /// Swap a reviewer who hasn't reviewed after [reviewers] swap_after_mins work minutes (default: config.toml's)
         #[arg(long, value_parser = ["on", "off", "default"])]
         swap: Option<String>,
-        /// The Review step: off, its PRs go to merge without reviewers (default: on)
+        /// The Review step: off, its PRs go to merge without reviewers (default: tb project review, else config.toml's pr.review)
         #[arg(long, value_parser = ["on", "off", "default"])]
         review: Option<String>,
         /// Agents merge its PRs once they're approved and green (tb pr merge) (default: config.toml's pr.agents_merge)
@@ -2094,6 +2094,11 @@ enum ProjectCmd {
     },
     /// Whether green PRs wait for your review on every project that doesn't say; off: the board marks them reviewed (default: config.toml's pr.owner_review)
     OwnerReview {
+        #[arg(value_parser = ["on", "off", "default"])]
+        value: Option<String>,
+    },
+    /// Whether every project that doesn't say has the Review step; off: its PRs go to merge without reviewers or approvals (default: config.toml's pr.review)
+    Review {
         #[arg(value_parser = ["on", "off", "default"])]
         value: Option<String>,
     },
@@ -8080,6 +8085,20 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             let on = if v["owner_review"] == true { "on" } else { "off: the board marks green PRs reviewed" };
             let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.owner_review" };
             out(&format!("Owner review: {on} for projects that don't say ({from})."));
+            Ok(0)
+        }
+        ProjectCmd::Review { value } => {
+            let v = match value {
+                None => c.call("GET", "/projects/review", None)?,
+                Some(s) => {
+                    let mut body = serde_json::Map::new();
+                    project_switch(&mut body, "review", Some(s));
+                    c.call("POST", "/projects/review", Some(Value::Object(body)))?
+                }
+            };
+            let on = if v["review"] == true { "on" } else { "off: PRs go to merge without reviewers" };
+            let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.review" };
+            out(&format!("Review step: {on} for projects that don't say ({from})."));
             Ok(0)
         }
     }

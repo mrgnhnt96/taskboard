@@ -196,6 +196,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("POST", ["projects", "agents-merge"]) => set_agents_merge(app, body),
         ("GET", ["projects", "owner-review"]) => Ok(projects::describe_owner_review(app)),
         ("POST", ["projects", "owner-review"]) => set_owner_review(app, body),
+        ("GET", ["projects", "review"]) => Ok(projects::describe_review(app)),
+        ("POST", ["projects", "review"]) => set_review(app, body),
         ("POST", ["projects", name]) => patch_project(app, name, body),
         ("GET", ["sessions"]) => Ok(json!({"sessions": ops::session_list(app, q(query, "project", "all"))?})),
         ("GET", ["sessions", "closed"]) => {
@@ -955,6 +957,19 @@ fn set_owner_review(app: &App, body: &Value) -> Result<Value> {
     };
     app.db.tx(|| projects::set_owner_review(app, on))?;
     Ok(projects::describe_owner_review(app))
+}
+
+/// `tb project review on|off|default`: whether projects that don't say have the Review step.
+fn set_review(app: &App, body: &Value) -> Result<Value> {
+    let on = match body.get("review") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) if s == "on" => Some(true),
+        Some(Value::String(s)) if s == "off" => Some(false),
+        Some(Value::Null) => None,
+        _ => return err(400, "review is true (on), false (off) or null (config.toml's pr.review)."),
+    };
+    app.db.tx(|| projects::set_review(app, on))?;
+    Ok(projects::describe_review(app))
 }
 
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {

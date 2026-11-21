@@ -231,6 +231,9 @@ pub struct PrConfig {
     /// A green PR waits for the owner's own look ("Waiting on your review") before it moves on. Off:
     /// the board marks it reviewed for them. Unset: on.
     pub owner_review: Option<bool>,
+    /// The Review step on projects that don't say: off skips it, so a PR goes to merge without
+    /// reviewers or approvals. Unset: on.
+    pub review: Option<bool>,
     /// When `tb pr status` and a failed check's wake tell the agent to rebase onto the base.
     pub rebase: RebasePolicy,
     pub gh: String,
@@ -261,6 +264,7 @@ impl Default for PrConfig {
             wake: true,
             agents_merge: None,
             owner_review: None,
+            review: None,
             rebase: RebasePolicy::default(),
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
@@ -288,6 +292,11 @@ impl PrConfig {
     /// `owner_review`, on when unset.
     pub fn owner_review_on(&self) -> bool {
         self.owner_review.unwrap_or(true)
+    }
+
+    /// `review`, on when unset.
+    pub fn review_on(&self) -> bool {
+        self.review.unwrap_or(true)
     }
 
     /// The rebase policy for a project: its own `rebase`, else `pr.rebase`.
@@ -343,7 +352,7 @@ pub struct PrProject {
     pub swap: Option<bool>,
     /// The `ask` stage after the owner's review. Unset: `[reviewers] ask_stage`.
     pub ask_stage: Option<bool>,
-    /// The Review step: off skips it, so a PR goes to merge without reviewers. Unset: on.
+    /// The Review step: off skips it, so a PR goes to merge without reviewers. Unset: `pr.review`.
     pub review: Option<bool>,
     /// Agents may merge this project's PRs once they're approved and green. Unset: `pr.agents_merge`.
     pub agents_merge: Option<bool>,
