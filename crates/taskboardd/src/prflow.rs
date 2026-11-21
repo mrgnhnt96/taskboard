@@ -3063,9 +3063,30 @@ pub fn mark_merged(app: &App, t: &Row, who: &str) -> Result<()> {
             return mark_landing(app, t, who, &held);
         }
     }
+    merged_now(app, t, who, &format!("Merged PR #{}", t.i0("pr_num")), fields!["woke" => null, "stopped" => null])
+}
+
+/// Counts a still-open PR as merged because a stacked child `by` merged into its base carrying every
+/// one of its commits (`stack_carried.rs`). Its own checks don't hold it on `landing`: the child's
+/// checks ran on the code that merged.
+pub fn mark_carried(app: &App, t: &Row, by: &Row, base: &str) -> Result<()> {
+    if matches!(t.s("pr_phase"), Some("merged" | "landing")) {
+        return Ok(());
+    }
+    let line = format!(
+        "PR #{}'s commits reached {base} through {}'s PR #{}, which stacked on it and merged with all of them, so it counts as merged",
+        t.i0("pr_num"),
+        rf("task", by.id()),
+        by.i0("pr_num")
+    );
+    let carried = json!({"task": by.id(), "pr": by.i0("pr_num"), "base": base, "at": now_iso()});
+    merged_now(app, t, board::BOARD, &line, fields!["woke" => null, "stopped" => null, "carried" => carried])
+}
+
+fn merged_now(app: &App, t: &Row, who: &str, line: &str, flow: Vec<(&str, Value)>) -> Result<()> {
     board::update_task(app, t.id(), fields!["pr_state" => "MERGED", "pr_phase" => "merged"])?;
-    merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null])?;
-    board::log_event(app, t.id(), who, "status", &format!("Merged PR #{}", t.i0("pr_num")))?;
+    merge_flow(app, t.id(), flow)?;
+    board::log_event(app, t.id(), who, "status", line)?;
     dispatch::clear_alerts(app, Some(t.id()), None)?;
     crate::merged_note::ticket_merged(app, &board::get_task(app, t.id())?, &merged_comment(t))?;
     Ok(())

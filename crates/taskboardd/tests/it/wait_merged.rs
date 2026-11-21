@@ -718,3 +718,80 @@ fn a_task_finished_without_a_pr_on_purpose_holds_nobody() {
     assert!(alert(&b, three).is_none());
     assert!(declined::held(&b.app, &b.row(three)).unwrap().iter().all(|w| w.id() != two));
 }
+
+fn github(b: &Board) -> Arc<taskboardd::prhost::FakeHost> {
+    let h = taskboardd::prhost::FakeHost::new("github", taskboardd::prhost::Record { state: "OPEN".into(), ..Default::default() });
+    taskboardd::prhost::install(&b.app, h.clone());
+    h
+}
+
+/// #1072: T3 stacked on T1, was pointed at main while T1's PR was still open, and merged there with
+/// T1's commit. T1's PR counts as merged, is closed with a comment, and T2's wait for it ends.
+#[test]
+fn a_parent_pr_whose_commits_a_merged_child_carried_to_main_counts_as_merged() {
+    let b = new_board();
+    let (one, two) = done_with_open_pr(&b);
+    let three = stacked_and_merged(&b, one, "tail");
+    let (a, c) = stack_repo(&b);
+    set_head(&b, one, "OPEN", "feat/endpoint", &a);
+    set_head(&b, three, "MERGED", "feat/polish", &c);
+    let h = github(&b);
+    let out = b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}")], "merged": true}));
+    assert_eq!(out["parked"], true, "{out}");
+
+    assert_eq!(taskboardd::stack_carried::sweep(&b.app).unwrap(), 1);
+
+    let t = b.row(one);
+    assert_eq!(t.s("pr_phase"), Some("merged"));
+    assert_eq!(t.s("pr_state"), Some("MERGED"));
+    assert_eq!(taskboardd::util::jloads_obj(t.s("pr_flow"))["carried"]["task"], json!(three));
+    let closes: Vec<String> = h.calls().into_iter().filter(|c| c.starts_with("close")).collect();
+    assert_eq!(closes.len(), 1, "{closes:?}");
+    assert!(closes[0].contains("reached main through #10"), "{closes:?}");
+    assert!(logged(&b, one, &format!("commits reached main through T{three}'s PR #10")));
+    assert!(logged(&b, one, "Closed PR #9 on its host"));
+    assert!(waitsfor::merged(&b.app, Some(&t)).unwrap());
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two]);
+
+    assert_eq!(taskboardd::stack_carried::sweep(&b.app).unwrap(), 0, "landed once");
+}
+
+/// A child rebased onto main with copies of its parent's commits (new SHAs) still carries them.
+#[test]
+fn a_child_rebased_onto_main_with_its_parents_commits_carries_them() {
+    let b = new_board();
+    let (one, _) = done_with_open_pr(&b);
+    let three = stacked_and_merged(&b, one, "tail");
+    let (a, _) = stack_repo(&b);
+    git(&b, &["switch", "-q", "-c", "feat/rebased", "main"]);
+    git(&b, &["cherry-pick", &a]);
+    let c = commit(&b, "polish.txt", "polish");
+    set_head(&b, one, "OPEN", "feat/endpoint", &a);
+    set_head(&b, three, "MERGED", "feat/rebased", &c);
+    github(&b);
+
+    assert_eq!(taskboardd::stack_carried::sweep(&b.app).unwrap(), 1);
+    assert_eq!(b.row(one).s("pr_phase"), Some("merged"));
+}
+
+/// The parent has a commit the child doesn't, or the child merged into the parent's branch rather than
+/// its base: the parent's work hasn't landed, so its PR stays open.
+#[test]
+fn a_parent_pr_stays_open_while_a_merged_child_doesnt_carry_all_of_it() {
+    let b = new_board();
+    let (one, _) = done_with_open_pr(&b);
+    let three = stacked_and_merged(&b, one, "tail");
+    let (a, c) = stack_repo(&b);
+    let more = commit(&b, "endpoint2.txt", "more");
+    set_head(&b, one, "OPEN", "feat/endpoint", &more);
+    set_head(&b, three, "MERGED", "feat/polish", &c);
+    let h = github(&b);
+    assert_eq!(taskboardd::stack_carried::sweep(&b.app).unwrap(), 0);
+    assert_eq!(b.row(one).s("pr_phase"), None);
+
+    set_head(&b, one, "OPEN", "feat/endpoint", &a);
+    prflow::merge_flow(&b.app, three, vec![("rec", json!({"state": "MERGED", "branch": "feat/polish", "base": "feat/endpoint", "head": c}))]).unwrap();
+    assert_eq!(taskboardd::stack_carried::sweep(&b.app).unwrap(), 0, "merged into the parent's branch");
+    assert!(b.row(one).s("pr_phase") != Some("merged"));
+    assert!(!h.calls().iter().any(|c| c.starts_with("close")));
+}

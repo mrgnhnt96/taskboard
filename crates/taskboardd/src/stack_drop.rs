@@ -26,7 +26,7 @@ fn pr_merged(o: &Row) -> bool {
 }
 
 /// The head commit its PR record holds.
-fn rec_head(t: &Row) -> Option<String> {
+pub fn rec_head(t: &Row) -> Option<String> {
     prflow::flow(t).get("rec").and_then(|r| r["head"].as_str()).filter(|h| !h.is_empty()).map(|h| h.to_string())
 }
 

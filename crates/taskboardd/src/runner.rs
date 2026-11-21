@@ -760,6 +760,7 @@ pub fn prs(app: &App) -> Result<()> {
     crate::release_tags::sweep(app)?;
     crate::default_sync::sweep(app)?;
     crate::stack_drop::sweep(app)?;
+    crate::stack_carried::sweep(app)?;
     crate::slot_ageing::sweep(app)?;
     crate::slot_tidy::sweep(app)?;
     crate::slots::sweep_stuck(app)?;
