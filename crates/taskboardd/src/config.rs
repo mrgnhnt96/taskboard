@@ -61,6 +61,7 @@ pub struct FileConfig {
     pub pr_builds: crate::prbuilds::PrBuildsConfig,
     pub master: crate::breaks::MasterConfig,
     pub code_review: crate::code_review::CodeReviewConfig,
+    pub agent_starts: crate::agent_starts::AgentStartsConfig,
     /// The owner's commit emails: their own pushes (`prbuilds.rs`) and commits on a red default branch.
     pub owner_emails: Vec<String>,
 }
@@ -813,6 +814,7 @@ pub struct Config {
     pub pr_builds: crate::prbuilds::PrBuildsConfig,
     pub master: crate::breaks::MasterConfig,
     pub code_review: crate::code_review::CodeReviewConfig,
+    pub agent_starts: crate::agent_starts::AgentStartsConfig,
     pub owner_emails: Vec<String>,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
@@ -996,6 +998,7 @@ impl Config {
             pr_builds: f.pr_builds,
             master: f.master,
             code_review: f.code_review,
+            agent_starts: f.agent_starts,
             owner_emails: f.owner_emails,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,

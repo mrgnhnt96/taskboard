@@ -451,6 +451,14 @@ tool = ""                            # its name, as the app says it ("Create in 
 create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
 local_hint = ""                      # how to turn a local bit on while testing, for the handoff; example: "a BitOverride in DebugSettings"
 
+# Starts from a terminal (`tb start T4`, `tb start G2`). With `ask` an agent starts a task or runs a goal
+# only on your word typed in its terminal. `own_project` lets it start work in its own terminal's project
+# by itself (work in other projects still needs your word); `free` lets it start any work. A project can
+# set its own mode under [agent_starts.projects]; a goal runs only when every project it holds allows it.
+[agent_starts]
+mode = "ask"
+# projects = { webapp = "free", client-work = "ask" }   # example
+
 # Releases (`tb release cut`): each one holds the tasks done since the one before. Off unless a
 # project turns them on (`tb project set <name> --releases on`); `on` here turns them on for every
 # project that doesn't say.
