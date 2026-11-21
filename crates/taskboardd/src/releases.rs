@@ -167,6 +167,9 @@ fn name_taken(app: &App, project: &str, name: &str, but: i64) -> Result<()> {
         return err(409, format!("{project} already has a release called {name}."));
     }
     if crate::pending_cut::holds_name(app, project, name)? {
+        if crate::pending_cut::for_project(app, project)?.is_some_and(|p| crate::pending_cut::cutting_now(&p)) {
+            return err(409, format!("{project} is cutting {name} now. Don't cut it again: follow it with tb release status"));
+        }
         return err(409, format!("{name} is held by {project}'s pending cut. Cancel it first with: tb release cancel"));
     }
     Ok(())
@@ -407,7 +410,8 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
 /// `POST /releases`: cut a release holding every task in Unreleased. With `check`, only says whether
 /// the cut would go through, and the project's release script and where to run it, without cutting:
 /// `tb release cut` asks first so a doomed cut doesn't run the script. With `after` (tasks and goals),
-/// sets up the project's pending cut instead, which the board cuts once they're through.
+/// sets up the project's pending cut instead, which the board cuts once they're through; with `now`, a
+/// pending cut that waits for nothing, which the board cuts in the background on its next step.
 fn cut(app: &App, body: &Value) -> Result<Value> {
     let project = body_project(app, body)?;
     need_on(app, &project)?;
@@ -420,6 +424,9 @@ fn cut(app: &App, body: &Value) -> Result<Value> {
     let tasks = unreleased_rows(app, &project)?;
     if tasks.is_empty() {
         return err(409, format!("Nothing to release in {project}: no done task waits in Unreleased."));
+    }
+    if body["now"] == true {
+        return crate::pending_cut::make(app, &project, &name, notes, body, script_dir(app, body, &project)?);
     }
     if body["check"] == true {
         let dir = script_dir(app, body, &project)?;

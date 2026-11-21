@@ -337,7 +337,7 @@ pub fn find<'a>(items: &'a [Item], handle: &str) -> Result<&'a Item, String> {
         .ok_or_else(|| format!("{h} isn't on the Needs you list. tb needs lists what is."))
 }
 
-fn ago(at: &str) -> String {
+pub(crate) fn ago(at: &str) -> String {
     match taskboardd::util::wall_age_secs(Some(at)) {
         Some(s) if s < 60.0 => "now".into(),
         Some(s) if s < 3600.0 => format!("{}m", (s / 60.0) as i64),

@@ -635,3 +635,71 @@ fn a_pending_cut_on_a_diverged_checkout_drops_and_pushes_nothing() {
     assert_eq!(pending(&app, "webapp"), Value::Null);
     assert!(alert_texts(&app).iter().any(|a| a.contains("v1") && a.contains("can't fast-forward")), "{:?}", alert_texts(&app));
 }
+
+/// webapp's checkout on main, cloned from a bare origin, with `script` as its release script and one done
+/// task in Unreleased.
+fn checkout_with_script(d: &std::path::Path, app: &App, script: &str) -> std::path::PathBuf {
+    let (origin, webapp) = (d.join("origin.git"), d.join("webapp"));
+    let _ = std::fs::remove_dir_all(&webapp);
+    git(d, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(d, &["clone", "-q", origin.to_str().unwrap(), webapp.to_str().unwrap()]);
+    git(&webapp, &["switch", "-q", "-c", "main"]);
+    commit(&webapp, "a");
+    git(&webapp, &["push", "-q", "origin", "main"]);
+    releases_on(app, "webapp");
+    call(app, "POST", "/projects/webapp", json!({"release_script": script}));
+    done(app, task(app, "webapp", "Login form", None), None);
+    webapp
+}
+
+#[test]
+fn a_cut_now_runs_its_script_in_the_background_and_shows_its_output() {
+    let (d, app) = new_board();
+    let webapp = checkout_with_script(d.path(), &app, "echo building $1 && echo pushed $1 >&2 #");
+    let cwd = webapp.to_string_lossy().to_string();
+    let p = call(&app, "POST", "/releases", json!({"name": "v1", "project": "webapp", "cwd": cwd, "now": true}));
+    assert_eq!((p["name"].as_str(), p["now"].as_bool(), p["running"].as_bool()), (Some("v1"), Some(true), Some(false)), "{p}");
+    assert_eq!(get(&app, "/releases", "webapp")["releases"], json!([]), "nothing is recorded until the script succeeds");
+
+    let ready = taskboardd::pending_cut::check(&app).unwrap();
+    assert_eq!(ready.len(), 1, "it waits for nothing");
+    let again = try_call(&app, "POST", "/releases", &[], json!({"name": "v1", "project": "webapp", "cwd": cwd, "now": true})).unwrap_err();
+    assert_eq!(again.0, 409);
+    assert!(again.1.contains("tb release status"), "a second cut while one runs points at its status: {}", again.1);
+
+    let rel = taskboardd::pending_cut::fire(&app, &ready[0]).unwrap();
+    assert!(rel.is_some());
+    let list = get(&app, "/releases", "webapp");
+    assert_eq!((list["pending"].clone(), list["releases"][0]["name"].as_str()), (Value::Null, Some("v1")));
+    let log = std::fs::read_to_string(taskboardd::pending_cut::log_path(&app, "webapp")).unwrap();
+    assert!(log.contains("building v1") && log.contains("pushed v1"), "{log}");
+}
+
+#[test]
+fn a_running_cut_shows_the_end_of_its_log() {
+    let (d, app) = new_board();
+    let webapp = checkout_with_script(d.path(), &app, "true");
+    call(&app, "POST", "/releases", json!({"name": "v1", "project": "webapp", "cwd": webapp.to_string_lossy(), "now": true}));
+    taskboardd::pending_cut::check(&app).unwrap();
+    let log = taskboardd::pending_cut::log_path(&app, "webapp");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, (1..=30).map(|n| format!("line {n}\n")).collect::<String>()).unwrap();
+    let p = pending(&app, "webapp");
+    assert_eq!((p["running"].as_bool(), p["log_lines"].as_u64()), (Some(true), Some(30)));
+    let shown: Vec<&str> = p["log"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+    assert_eq!((shown.len(), shown.last().copied()), (20, Some("line 30")));
+}
+
+#[test]
+fn a_cut_now_whose_script_fails_drops_with_its_output_and_leaves_the_owner_be() {
+    let (d, app) = new_board();
+    let webapp = checkout_with_script(d.path(), &app, "echo no deploy key >&2; exit 3 #");
+    call(&app, "POST", "/releases", json!({"name": "v1", "project": "webapp", "cwd": webapp.to_string_lossy(), "now": true}));
+    let ready = taskboardd::pending_cut::check(&app).unwrap();
+    assert_eq!(taskboardd::pending_cut::fire(&app, &ready[0]).unwrap(), None);
+    let list = get(&app, "/releases", "webapp");
+    assert_eq!((list["pending"].clone(), list["releases"].clone()), (Value::Null, json!([])));
+    let why = list["dropped"]["why"].as_str().unwrap();
+    assert!(why.contains("exited 3") && why.contains("no deploy key"), "{why}");
+    assert!(alert_texts(&app).is_empty(), "whoever cut it follows it with tb release status: {:?}", alert_texts(&app));
+}
