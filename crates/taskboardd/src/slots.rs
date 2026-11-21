@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::App;
+use crate::config::MAX_PARALLEL;
 use crate::util::*;
 use crate::worktrees::{git, last_line, Git, GIT_SECS};
 use crate::{board, p};
@@ -82,12 +83,12 @@ pub fn config(app: &App, project: Option<&str>) -> WorktreesConfig {
     serde_json::from_value(c).unwrap_or_else(|_| app.cfg.worktrees.clone())
 }
 
-fn range(key: &str) -> (i64, i64, &'static str) {
+fn range(key: &str) -> (i64, i64, String) {
     match key {
-        "min_slots" => (0, 50, "a count from 0 to 50"),
-        "max_slots" => (1, 50, "a count from 1 to 50"),
-        "low_disk_gb" => (0, 100_000, "a number of GB"),
-        _ => (0, 365, "a number of days from 1 to 365, or never"),
+        "min_slots" => (0, MAX_PARALLEL, format!("a count from 0 to {MAX_PARALLEL}")),
+        "max_slots" => (1, MAX_PARALLEL, format!("a count from 1 to {MAX_PARALLEL}")),
+        "low_disk_gb" => (0, 100_000, "a number of GB".into()),
+        _ => (0, 365, "a number of days from 1 to 365, or never".into()),
     }
 }
 

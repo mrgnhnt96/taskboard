@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 
 use crate::app::App;
+use crate::config::MAX_PARALLEL;
 use crate::util::*;
 use crate::{board, digest, hours, midna, p, prflow};
 
@@ -95,8 +96,8 @@ pub fn set_board_max(app: &App, body: &Value) -> Result<()> {
         Value::Null => None,
         Value::String(s) if s.trim().eq_ignore_ascii_case("default") => None,
         _ => match v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) {
-            Some(n) if (1..=50).contains(&n) => Some(n),
-            _ => return err(400, "max_terminals is a count from 1 to 50, or default."),
+            Some(n) if (1..=MAX_PARALLEL).contains(&n) => Some(n),
+            _ => return err(400, format!("max_terminals is a count from 1 to {MAX_PARALLEL}, or default.")),
         },
     };
     app.db.set_setting(BOARD_MAX_SETTING, n.map(|n| n.to_string()).as_deref())

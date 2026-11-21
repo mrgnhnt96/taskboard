@@ -104,10 +104,13 @@ fn a_project_sets_its_own_cap() {
 }
 
 #[test]
-fn a_cap_is_a_count_from_one() {
+fn a_cap_is_a_count_from_one_to_a_hundred() {
     let b = new_board(5);
     let e = api::dispatch(&b.app, "POST", "projects/webapp", &Query::new(), &json!({"max_terminals": 0})).unwrap_err();
     assert_eq!(e.status, 400);
+    assert_eq!(b.post("projects/webapp", json!({"max_terminals": 100}))["max_terminals"], 100);
+    let e = api::dispatch(&b.app, "POST", "projects/webapp", &Query::new(), &json!({"max_terminals": 101})).unwrap_err();
+    assert_eq!((e.status, e.message.as_str()), (400, "max_terminals is a count from 1 to 100, or default."));
 }
 
 /// A board over four projects with `n` working tasks in `alpha`, each in its own idle terminal, and one
@@ -180,8 +183,11 @@ fn the_board_cap_holds_a_start_in_a_new_terminal_too() {
 }
 
 #[test]
-fn the_board_cap_is_a_count_from_one() {
+fn the_board_cap_is_a_count_from_one_to_a_hundred() {
     let (b, _) = board_with_tasks(0);
     let e = api::dispatch(&b.app, "POST", "terminals", &Query::new(), &json!({"max_terminals": 0})).unwrap_err();
     assert_eq!(e.status, 400);
+    assert_eq!(b.post("terminals", json!({"max_terminals": 100}))["max_terminals"], 100);
+    let e = api::dispatch(&b.app, "POST", "terminals", &Query::new(), &json!({"max_terminals": 101})).unwrap_err();
+    assert_eq!((e.status, e.message.as_str()), (400, "max_terminals is a count from 1 to 100, or default."));
 }
