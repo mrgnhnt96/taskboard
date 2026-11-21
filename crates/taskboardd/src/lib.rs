@@ -129,6 +129,7 @@ pub mod stamp;
 pub mod tidy;
 pub mod samepr;
 pub mod stack;
+pub mod stack_carried;
 pub mod stack_drop;
 pub mod suggest;
 pub mod startwatch;
