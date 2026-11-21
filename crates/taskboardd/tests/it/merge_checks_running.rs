@@ -105,6 +105,7 @@ fn a_merge_refused_for_running_checks_watches_the_build() {
     let id = b.pr_task(9);
     let e = b.post(&format!("tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
     assert!(e.contains("checks are still running: build, e2e"), "{e}");
+    assert!(e.ends_with("run tb pr wait and stop here."), "the board watches it, so the agent stops: {e}");
     let noted = &b.flow(id)["checks_running"];
     assert_eq!(noted["head"], "abcdef123456");
     assert_eq!(noted["checks"], json!(["build", "e2e"]));
@@ -127,7 +128,8 @@ fn a_merge_refused_for_running_checks_watches_the_build() {
     // A failed check is no running build: nothing is noted.
     let failed = b.pr_task(10);
     *host.rec.lock() = record(HEAD, &[("build", "failed")]);
-    b.post(&format!("tasks/T{failed}/pr/merge"), json!({"agent": true})).unwrap_err();
+    let e = b.post(&format!("tasks/T{failed}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(!e.contains("tb pr wait"), "a failed check needs the agent: {e}");
     assert!(b.flow(failed).get("checks_running").is_none());
 
     // A running check the feed never reports is re-checked with a fresh merge after 30 minutes.

@@ -243,6 +243,9 @@ pub struct PrConfig {
     /// Seconds after a stream review or comment hint before its PR is read once more: a review's
     /// changes request often follows its comments as its own event, or none. 0: no second read.
     pub comment_settle_secs: f64,
+    /// Seconds before each new try when the host refuses a merge for a passing reason (its base moved
+    /// under it, a merge already running, a 502): `tb pr merge` tries again itself. Empty: no new tries.
+    pub merge_retry_secs: Vec<f64>,
     /// The timed poll reads a PR less often the longer it stays the same, and outside work hours only
     /// the PRs that can move at night at that pace (`prpace.rs`). Off: every PR on every poll.
     pub pace_polls: bool,
@@ -270,6 +273,7 @@ impl Default for PrConfig {
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
             comment_settle_secs: 90.0,
+            merge_retry_secs: vec![3.0, 8.0, 15.0],
             pace_polls: true,
             bitbucket_api: "https://api.bitbucket.org/2.0".into(),
             azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
