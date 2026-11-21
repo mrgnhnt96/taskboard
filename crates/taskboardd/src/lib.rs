@@ -119,6 +119,7 @@ pub mod review;
 pub mod review_fixes;
 pub mod review_triage;
 pub mod slot_ageing;
+pub mod build_sweep;
 pub mod slot_keep;
 pub mod slot_tidy;
 pub mod slots;
@@ -197,6 +198,7 @@ pub fn start_threads(app: &Arc<App>) {
         }
     });
     spawn(app, "history", days::cleanup_loop);
+    spawn(app, "build-sweep", build_sweep::sweep_loop);
     spawn(app, "backlog-ai", |a| {
         while !a.stopping() {
             if let Some(f) = a.next_ai(Duration::from_secs(5)) {

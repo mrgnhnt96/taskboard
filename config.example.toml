@@ -341,6 +341,7 @@ max_slots = 10                       # slots the pool grows to before a task wai
 idle_trim_days = 2                   # days idle before a slot's build output is cleared
 idle_remove_days = 7                 # days idle before a slot is removed (never below min_slots)
 low_disk_gb = 50                     # free disk (GB) below which idle slots are cleared sooner
+stale_build_days = 3                 # nightly: build units in any slot or main checkout unused this many days are removed (0 never)
 
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
 # MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb submit`
