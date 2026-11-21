@@ -2984,9 +2984,16 @@ static GOAL_WAIT_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// A condition on the goal not being there yet ("If this doesn't already exist, create a goal and start
-/// it", "start it if we don't have one"): met once the agent made the goal in reply.
+/// it", "start it if we don't have one"), or on there being more than one thing to put in it ("If there's
+/// more than one, you can create a goal and start it"): met once the agent made the goal in reply.
 static MADE_IF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\bif\s+(?:there\s+(?:is|are|[’']s)\s+no\b|[^,.;!?\n]*?(?:n[’']t|\bnot)\s+(?:already\s+|yet\s+)?(?:exist|have|got|there)\b)[^,.;!?\n]*,?").unwrap()
+    Regex::new(concat!(
+        r"(?i)\bif\s+(?:there(?:\s+(?:is|are)|[’']s)\s+no\b|[^,.;!?\n]*?(?:n[’']t|\bnot)\s+(?:already\s+|yet\s+)?(?:exist|have|got|there)\b|",
+        r"(?:there(?:\s+(?:is|are)|[’'](?:s|re))|you\s+(?:find|see|get)|we\s+(?:have|got)|it[’']s)\s+",
+        r"(?:more\s+than\s+(?:one|1|a\s+(?:few|couple))|(?:two|2)\s+or\s+more|several|multiple|many|a\s+(?:few|couple|bunch|lot)|lots)\b)",
+        r"[^,.;!?\n]*,?"
+    ))
+    .unwrap()
 });
 
 /// `text` less its conditions on the goal not being there yet ([`MADE_IF_RE`]).
