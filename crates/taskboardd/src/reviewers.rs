@@ -239,7 +239,7 @@ pub fn swap_on(app: &App, project: Option<&str>) -> bool {
 /// Whether a project's PRs have a Review step (`tb project set --review`, `[pr.projects.<name>] review`):
 /// off, they go to merge without reviewers. On unless the project says.
 pub fn review_on(app: &App, project: Option<&str>) -> bool {
-    crate::projects::pr_rules(app, project).review.unwrap_or(true)
+    crate::projects::pr_rules(app, project).review.unwrap_or_else(|| crate::projects::review_default(app))
 }
 
 /// Whether the board has anyone it could ask on a project's PRs: a roster reviewer, not removed,

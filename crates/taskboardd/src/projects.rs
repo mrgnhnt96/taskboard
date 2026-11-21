@@ -20,6 +20,8 @@ pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 const AGENTS_MERGE_SETTING: &str = "pr_agents_merge";
 /// `tb project owner-review on|off`: the board's own word on `pr.owner_review`, over config.toml's.
 const OWNER_REVIEW_SETTING: &str = "pr_owner_review";
+/// `tb project review on|off`: the board's own word on `pr.review`, over config.toml's.
+const REVIEW_SETTING: &str = "pr_review";
 /// `tb project set --max-terminals`: name → how many of its terminals may be busy before a queued task waits.
 const MAX_TERMINALS_SETTING: &str = "project_max_terminals";
 /// `tb project set --waits-on`: name → the other projects its tasks may wait for (`tb wait-for`), one way only.
@@ -77,6 +79,32 @@ pub fn set_owner_review(app: &App, on: Option<bool>) -> Result<()> {
 /// `GET /projects/owner-review`: the board-wide switch, what the board set, and config.toml's.
 pub fn describe_owner_review(app: &App) -> Value {
     json!({"owner_review": owner_review_default(app), "set": owner_review_set(app), "config": app.cfg.pr.owner_review_on()})
+}
+
+/// Whether a project that doesn't say has the Review step: the board's word (`tb project review`),
+/// else config.toml's `pr.review`.
+pub fn review_default(app: &App) -> bool {
+    review_set(app).unwrap_or(app.cfg.pr.review_on())
+}
+
+/// What `tb project review` set on the board, if anything.
+pub fn review_set(app: &App) -> Option<bool> {
+    match crate::reqcache::setting(app, REVIEW_SETTING).ok().flatten()?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Sets the board's word on `pr.review`; None goes back to config.toml's.
+pub fn set_review(app: &App, on: Option<bool>) -> Result<()> {
+    crate::reqcache::forget_setting(REVIEW_SETTING);
+    app.db.set_setting(REVIEW_SETTING, on.map(|b| if b { "true" } else { "false" }))
+}
+
+/// `GET /projects/review`: the board-wide switch, what the board set, and config.toml's.
+pub fn describe_review(app: &App) -> Value {
+    json!({"review": review_default(app), "set": review_set(app), "config": app.cfg.pr.review_on()})
 }
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {
