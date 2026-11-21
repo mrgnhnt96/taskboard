@@ -1823,6 +1823,32 @@ fn a_wait_on_the_goal_it_follows_is_no_hold() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// "If there's more than one, you can create a goal and start it": the agent meets the count by making
+/// the goal, so the run is the owner's word. A condition on anything else still puts the run off.
+#[test]
+fn a_count_of_what_the_goal_holds_is_no_hold() {
+    let cases: Vec<(&str, bool)> = vec![
+        ("Go look for GitHub issues, and address them and new tasks. If there's more than one, you can create a goal and start it", true),
+        ("if there are several, make a goal and run it", true),
+        ("If you find more than one bug, create a goal and start it", true),
+        ("If there are multiple issues, put them in a goal and start it", true),
+        ("If the tests pass, create a goal and start it", false),
+        ("If there's more than one, create a goal and start it tomorrow", false),
+        ("If there's more than one, create a goal but don't start it", false),
+    ];
+    let mut wrong = vec![];
+    for (prompt, runs) in cases {
+        let b = board();
+        b.typed(prompt);
+        let g = b.goal_new();
+        let got = b.tb_run(g);
+        if got.is_ok() != runs {
+            wrong.push(format!("{prompt}: {got:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// #844: "You can queue it after G107, that is allowed", "queue it" and "queue G109" after the agent
 /// made the goal and its run was refused: "it" is the goal it just made or just tried to run.
 #[test]
