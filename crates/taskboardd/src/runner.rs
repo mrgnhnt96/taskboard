@@ -687,7 +687,7 @@ pub fn close_idle_after_hours(app: &App) -> Result<()> {
 pub const PR_TAB_CLOSE: &str = "pr_tab_close";
 
 /// Whether to send `sid` another `purpose` close: a few tries, a little apart, after ones that failed.
-fn close_worth_trying(app: &App, sid: &str, purpose: &str) -> Result<bool> {
+pub(crate) fn close_worth_trying(app: &App, sid: &str, purpose: &str) -> Result<bool> {
     let failed: Vec<Row> = app
         .db
         .q(

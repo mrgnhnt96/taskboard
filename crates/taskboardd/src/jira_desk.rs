@@ -79,18 +79,24 @@ fn ready(app: &App, sid: &str) -> Result<bool> {
             .is_some())
 }
 
-/// Closes every open desk but the one kept: the board opened them all.
+/// Closes every open desk but the one kept: the board opened them all. Never force-closed: Midna asks
+/// the owner before an agent force-closes a terminal, so a busy desk is closed once it's idle, and a
+/// close that failed is tried again only a few times, a little apart.
 fn close_extra(app: &App, live: &[String], kept: &str) -> Result<()> {
     for sid in live.iter().filter(|s| *s != kept) {
         if crate::jobs::closing(app, sid)? {
             continue;
         }
-        let force = board::close_rule(board::get_session(app, Some(sid))?.as_ref()) == Some("force");
+        if board::close_rule(board::get_session(app, Some(sid))?.as_ref()) != Some("close")
+            || !crate::runner::close_worth_trying(app, sid, PURPOSE)?
+        {
+            continue;
+        }
         app.db.tx(|| {
             board::create_job(
                 app,
                 "close",
-                json!({"session": sid, "force": force, "reason": "Task board: a second Jira desk; the board keeps one"}),
+                json!({"session": sid, "force": false, "reason": "Task board: a second Jira desk; the board keeps one"}),
                 None,
                 PURPOSE,
                 None,
@@ -250,12 +256,11 @@ pub fn tick(app: &App) -> Result<()> {
 /// Swaps a cold desk for a fresh one that takes the next job. The desk runs with slash commands off,
 /// so `/compact` can't shrink it, and it keeps nothing between jobs a new desk would miss.
 fn refresh(app: &App, sid: &str, c: &crate::limits::Conversation, jira_job: i64) -> Result<()> {
-    let force = board::close_rule(board::get_session(app, Some(sid))?.as_ref()) == Some("force");
     app.db.tx(|| {
         board::create_job(
             app,
             "close",
-            json!({"session": sid, "force": force, "reason": "Task board: the Jira desk went idle; a fresh desk takes the next job"}),
+            json!({"session": sid, "force": false, "reason": "Task board: the Jira desk went idle; a fresh desk takes the next job"}),
             None,
             PURPOSE,
             None,
