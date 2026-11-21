@@ -107,6 +107,12 @@ static SOFT_TAIL_RE: Lazy<Regex> = Lazy::new(|| {
     ))
     .unwrap()
 });
+/// What may come before a task named with the word to go ([`Mention::bare`]): nothing, or only a word
+/// that leads into an ask ("ok T8 now", "alright, T8 go"), not one that makes it about something else
+/// ("let T8 go", "how did T8 go", "close T8 now").
+static BARE_LEAD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^[\s_,.!]*(?:(?:ok(?:ay)?|alright|all\s+right|so|and|then|now|yes|yeah|yep|sure|cool|great|right|please|pls)[\s,.!]*)*$").unwrap()
+});
 /// What after the task tells of a start instead of asking for one: "start T8 failed", "start T8 is
 /// broken", "run T8 keeps timing out".
 static STORY_RE: Lazy<Regex> = Lazy::new(|| {
@@ -147,6 +153,8 @@ static LEAVE_RE: Lazy<Regex> = Lazy::new(|| {
 static REPORTED_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:says?|said|saying|reads?|wrote|writes|prints?|printed|shows?|showed|outputs?)\s*["“‘']?\s*$"#).unwrap()
 });
+/// What just before a start word asks to be reminded of it, not for it ("remind me to start T8").
+static REMIND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bremind\s+(?:me|us)\b[^.!?;\n]*?\bto\s+$").unwrap());
 /// The start words. "Start building it" and "start fixing these" ask for it as well.
 const VERB: &str = r"(?:start|strat|satrt|queue|begin|launch|kick\s+off|get\s+going)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on|\s+(?:building|fixing|implementing|tackling))?";
 /// The start words that ask only with a task named ("run T8", "resume T8", "continue T8", "pick up T8",
@@ -768,6 +776,9 @@ struct Mention {
     /// A start word that asks only in an ask's shape ("run T8", not "run T8's tests"): out of that shape
     /// it says nothing on the start.
     soft: bool,
+    /// A task and the word to go with no start word before it ("T8 go", "T8 now"): an ask only when it
+    /// opens its clause, so "let T8 go" and "close T8 now" aren't one.
+    bare: bool,
 }
 
 /// Whether mention `m` in `s` is a start word on something of a task's ("start T8's review", "run T8's
@@ -781,7 +792,8 @@ fn mention_of(k: &Kind, c: &regex::Captures<'_>) -> Option<Mention> {
     let (verb, end) = (c.get(0)?.start(), c.get(0)?.end());
     let soft = c.name("named3").or(c.name("named5"));
     if let Some(n) = c.name("named").or(c.name("named2")).or(c.name("named4")).or(c.name("named6")).or(c.name("named7")).or(c.name("named8")).or(soft) {
-        return Some(Mention { verb, span: (n.start(), n.end()), end, ask: Ask::Named(ids_in(k, n.as_str())), soft: soft.is_some() });
+        let bare = c.name("named5").is_some();
+        return Some(Mention { verb, span: (n.start(), n.end()), end, ask: Ask::Named(ids_in(k, n.as_str())), soft: soft.is_some(), bare });
     }
     let u = c.name("unnamed").or(c.name("unnamed2")).or(c.name("unnamed4")).or(c.name("unnamed6")).or(c.name("unnamed7")).or(c.name("unnamed8"))?;
     let ask = if k.goal {
@@ -797,7 +809,7 @@ fn mention_of(k: &Kind, c: &regex::Captures<'_>) -> Option<Mention> {
     } else {
         Ask::Unnamed
     };
-    Some(Mention { verb, span: (u.start(), u.end()), end, ask, soft: false })
+    Some(Mention { verb, span: (u.start(), u.end()), end, ask, soft: false, bare: false })
 }
 
 /// The words in `s` that say no, less the "no" of "no problem".
@@ -1079,8 +1091,11 @@ fn sentence(k: &Kind, own: &str, base: usize, s: &str, asked: bool, steps: &mut 
             let after = &s[m.end..];
             // Told of, not asked for: "start T8 failed", "how do I start T8", "I'll start T8", "the log
             // says start T8".
-            let told = STORY_RE.is_match(after) || QUESTION_RE.is_match(lead) || (SPEAKER_RE.is_match(lead) && !LEAVE_RE.is_match(&s[..m.verb])) || REPORTED_RE.is_match(lead);
+            let told = STORY_RE.is_match(after) || QUESTION_RE.is_match(lead) || (SPEAKER_RE.is_match(lead) && !LEAVE_RE.is_match(&s[..m.verb])) || REPORTED_RE.is_match(lead) || REMIND_RE.is_match(lead);
             if m.soft && (told || !SOFT_TAIL_RE.is_match(after)) && !asked && !timed && !pending {
+                continue;
+            }
+            if m.bare && !BARE_LEAD_RE.is_match(lead) {
                 continue;
             }
             let clean = !told && !asked && !pending && !timed && !quoted && negs_in(lead).is_empty();
@@ -1591,14 +1606,18 @@ static START_COMMAND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)^\s*/(?:ta
 static START_TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<command-name>/?(?:task-board:)?start</command-name>").unwrap());
 static COMMAND_ARGS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<command-args>(.*?)</command-args>").unwrap());
 /// A prompt that ends in a lone "go" ("make a task for the footer. go", "T8 go", "go"): its own token,
-/// after a stop, a comma, a dash or a ref, so "ready to go" and "where did it go?" aren't it.
-static GO_END_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[.,;:!?—–\n]|\s-+|\b[TtGg]-?\d+)\s*(?P<go>go)[.!]*\s*$").unwrap());
+/// after a stop, a comma, a dash or refs that open their clause, so "ready to go", "where did it go?"
+/// and "how did T8 go" aren't it.
+static GO_END_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?:^|[.,;:!?—–\n]|\s-+)\s*(?:[TtGg]-?\d+(?:\s*(?:\+|&|and)\s*[TtGg]-?\d+)*\s*)?(?P<go>go)[.!]*\s*$").unwrap()
+});
 
 /// What the owner's `/start` command or a prompt's trailing "go" asks, as a plain ask the check always
 /// takes ("start T8.", "run G2.", "start it."): both are the owner's word, whatever else the prompt
 /// says. `/start` with no task or goal means the terminal's own task or what the turn makes; with "the
 /// goal", the goal. A trailing "go" starts what the prompt before it makes ("make a task for X. go"),
-/// keeping that prompt, or else the tasks and goals it names, or else "it". `None` for any other prompt.
+/// keeping that prompt, or else the tasks and goals it names, or else "it". `None` for a lone "go" and
+/// any other prompt.
 pub fn start_command(text: &str) -> Option<String> {
     let (rest, refs) = if let Some(c) = START_COMMAND_RE.captures(text) {
         (None, c.name("args").map_or("", |m| m.as_str()).to_string())
@@ -1610,6 +1629,11 @@ pub fn start_command(text: &str) -> Option<String> {
     } else {
         let go = GO_END_RE.captures(text)?.name("go")?.start();
         let rest = &text[..go];
+        // A lone "go" is a yes like "go for it": it answers what the agent just asked, which may be
+        // something else ("Should I rename it?").
+        if rest.trim().is_empty() {
+            return None;
+        }
         // "T7 broke the footer, make a task for it. go" starts the task it makes, not T7.
         let makes = read(rest).makes || read_of(&GOALS, rest).makes;
         // Otherwise only the ask counts: what came before may be a question or a no ("should I start T8?").

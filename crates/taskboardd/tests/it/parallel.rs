@@ -409,7 +409,7 @@ fn finish(b: &Board, t: i64) {
 }
 
 #[test]
-fn a_task_takes_the_free_slot_used_last_and_passes_over_a_dirty_one() {
+fn a_task_takes_the_free_slot_used_last_and_saves_what_it_was_left_with() {
     let b = new_board();
     git_repo(&b);
     let g = b.side_by_side();
@@ -436,8 +436,9 @@ fn a_task_takes_the_free_slot_used_last_and_passes_over_a_dirty_one() {
     std::fs::write(Path::new(&slot(&b, 2)).join("left"), "x\n").unwrap();
     let after = b.task("After", json!({"goal_id": g}));
     runner::start_queued(&b.app).unwrap();
-    assert_eq!(b.start_job(after).st("cwd"), slot(&b, 1), "a slot with uncommitted changes is passed over");
-    assert!(Path::new(&slot(&b, 2)).join("left").exists());
+    assert_eq!(b.start_job(after).st("cwd"), slot(&b, 2), "a slot with uncommitted changes is still the warmest");
+    assert!(!Path::new(&slot(&b, 2)).join("left").exists(), "taken clean");
+    assert_eq!(git(Path::new(&slot(&b, 2)), &["show", &format!("wip/T{next}-slot-2:left")]), "x", "what it was left with is saved off it");
 }
 
 #[test]
@@ -570,7 +571,7 @@ fn queue_with_no_free_slot_queues_the_task_to_start_once_one_frees() {
 }
 
 #[test]
-fn a_full_pool_keeps_the_task_queued_and_a_dirty_free_slot_alerts_once() {
+fn a_full_pool_keeps_the_task_queued_and_a_free_slot_it_cant_save_alerts_once() {
     let b = new_board();
     git_repo(&b);
     let g = b.side_by_side();
@@ -579,7 +580,10 @@ fn a_full_pool_keeps_the_task_queued_and_a_dirty_free_slot_alerts_once() {
     let one = b.task("One", json!({"goal_id": g}));
     runner::start_queued(&b.app).unwrap();
     finish(&b, one);
-    std::fs::write(Path::new(&slot(&b, 1)).join("left"), "x\n").unwrap();
+    // A file git can't read, so the slot's changes can't be saved off it and it's passed over.
+    let left = Path::new(&slot(&b, 1)).join("left");
+    std::fs::write(&left, "x\n").unwrap();
+    std::fs::set_permissions(&left, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
 
     let two = b.task("Two", json!({"goal_id": g}));
     for _ in 0..6 {
