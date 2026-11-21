@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -443,6 +443,8 @@ pub struct Db {
     /// The recent writes by number (the first part of `mark`) with the rows each changed; None for
     /// one that changed too many to list.
     log: Mutex<VecDeque<(i64, Option<Vec<(String, i64)>>)>>,
+    /// Every read run, for `reads`.
+    reads: AtomicU64,
 }
 
 // The connection is only touched while the re-entrant lock is held.
@@ -543,6 +545,7 @@ impl Db {
             readers: path.map(|path| Readers { path, idle: Mutex::new(vec![]), marker: Mutex::new(None) }),
             writes: AtomicI64::new(0),
             log: Mutex::new(VecDeque::new()),
+            reads: AtomicU64::new(0),
         })
     }
 
@@ -565,6 +568,7 @@ impl Db {
     /// Runs `f` with a connection for reading. Outside a transaction that is a pooled reader, so it
     /// doesn't wait for another thread's; inside one, the writer's, to see its own changes.
     fn read<T>(&self, what: &str, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         match &self.readers {
             Some(readers) if !self.held_here() => {
                 let c = readers.take()?;
@@ -766,6 +770,16 @@ impl Db {
             None => 0,
         };
         Ok((self.writes.load(Ordering::Acquire), others))
+    }
+
+    /// How many writes this board has committed: the first part of `mark`, without asking SQLite.
+    pub fn writes(&self) -> i64 {
+        self.writes.load(Ordering::Acquire)
+    }
+
+    /// How many reads (`q`, `val` and the like) this board has run: what a request costs, counted.
+    pub fn reads(&self) -> u64 {
+        self.reads.load(Ordering::Relaxed)
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {

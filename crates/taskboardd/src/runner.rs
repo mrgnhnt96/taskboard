@@ -213,12 +213,13 @@ pub fn skip_task(app: &App, t: &Row, d: &hooks::Decision) -> Result<()> {
 
 /// Why a goal holds this queued task back: paused, an earlier task not done, or too many terminals.
 pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
-    if let Some(why) = goal_order_blocker(app, t, g)? {
+    let order = GoalOrder::read(app, g)?;
+    if let Some(why) = order.blocker(t)? {
         return Ok(Some(why));
     }
-    let tasks = board::goal_tasks(app, g.id())?;
     let max = g.i("max_terminals").unwrap_or(2).max(1);
-    let active = tasks
+    let active = order
+        .tasks()
         .iter()
         .filter(|x| x.id() != t.id())
         .filter(|x| {
@@ -240,16 +241,24 @@ pub fn goal_order_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>>
 
 /// What a goal's order holds its queued tasks back with, read once for all of them: the goal itself,
 /// the goals it runs after, and its waves (worked out the first time they're asked for).
+///
+/// Inside a read request (`reqcache::scope`) one reading serves every card of the goal until the
+/// board writes: `GET /state` asked each queued card's goal for its waves again, and each wave asks
+/// every task in it for its locks, slot and lane, so a goal of 50 queued tasks cost 50 times that.
 pub struct GoalOrder<'a> {
     app: &'a App,
-    g: &'a Row,
+    kept: std::rc::Rc<KeptOrder>,
+}
+
+struct KeptOrder {
+    g: Row,
     why: Option<String>,
     tasks: Vec<Row>,
     waves: once_cell::unsync::OnceCell<Vec<serde_json::Value>>,
 }
 
-impl<'a> GoalOrder<'a> {
-    pub fn read(app: &'a App, g: &'a Row) -> Result<Self> {
+impl KeptOrder {
+    fn read(app: &App, g: &Row) -> Result<Self> {
         let why = if g.b("deprioritized") {
             Some("Its goal is deprioritized".into())
         } else if g.b("paused") {
@@ -257,39 +266,62 @@ impl<'a> GoalOrder<'a> {
         } else {
             crate::chain::blocker(app, g)?
         };
-        Ok(GoalOrder { app, g, why, tasks: board::goal_tasks(app, g.id())?, waves: Default::default() })
+        Ok(KeptOrder { g: g.clone(), why, tasks: board::goal_tasks(app, g.id())?, waves: Default::default() })
+    }
+}
+
+impl<'a> GoalOrder<'a> {
+    pub fn read(app: &'a App, g: &Row) -> Result<Self> {
+        // Inside a transaction its own writes aren't counted yet, so a kept reading could miss them.
+        let kept = if app.db.held_here() {
+            std::rc::Rc::new(KeptOrder::read(app, g)?)
+        } else {
+            let key = format!("goal_order:{}:{}", g.id(), app.db.writes());
+            crate::reqcache::try_get(&key, || Ok(std::rc::Rc::new(KeptOrder::read(app, g)?)))?
+        };
+        Ok(GoalOrder { app, kept })
     }
 
     pub fn goal(&self) -> &Row {
-        self.g
+        &self.kept.g
     }
 
     pub fn goal_id(&self) -> i64 {
-        self.g.id()
+        self.kept.g.id()
+    }
+
+    /// The goal's tasks in order (`board::goal_tasks`).
+    pub fn tasks(&self) -> &[Row] {
+        &self.kept.tasks
     }
 
     /// The goal's waves (`waves::waves`), empty when it doesn't use them.
     pub fn waves(&self) -> Result<&[serde_json::Value]> {
-        let wl = self.waves.get_or_try_init(|| {
-            if crate::waves::uses_waves(&self.tasks) { crate::waves::waves(self.app, self.g, &self.tasks) } else { Ok(vec![]) }
-        })?;
-        Ok(wl)
+        let k = &self.kept;
+        if let Some(wl) = k.waves.get() {
+            return Ok(wl);
+        }
+        // Worked out outside the cell: a task's blockers can ask this goal's waves again while they're
+        // being worked out, which reads them afresh as before.
+        let wl = if crate::waves::uses_waves(&k.tasks) { crate::waves::waves(self.app, &k.g, &k.tasks)? } else { vec![] };
+        let _ = k.waves.set(wl);
+        Ok(k.waves.get().expect("set above"))
     }
 
     /// Why the goal's order holds `t` back: paused, a goal it runs after not finished, or an earlier
     /// wave or task not done. Waves take the place of running in order.
     pub fn blocker(&self, t: &Row) -> Result<Option<String>> {
-        if let Some(why) = &self.why {
+        if let Some(why) = &self.kept.why {
             return Ok(Some(why.clone()));
         }
-        let waved = crate::waves::uses_waves(&self.tasks);
+        let waved = crate::waves::uses_waves(&self.kept.tasks);
         if waved && t.i("wave").is_some() {
             if let Some(w) = crate::waves::holding_wave(t, self.waves()?) {
                 return Ok(Some(crate::waves::hold_reason(&w)));
             }
         }
-        if self.g.b("run_in_order") && !waved {
-            for x in &self.tasks {
+        if self.kept.g.b("run_in_order") && !waved {
+            for x in &self.kept.tasks {
                 if x.id() == t.id() {
                     break;
                 }
