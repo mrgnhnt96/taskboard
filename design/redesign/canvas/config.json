@@ -1,0 +1,10 @@
+{
+  "title": "Taskboard · redesign",
+  "initialScreen": "needs",
+  "initialPreset": "laptop-125",
+  "states": ["default", "loading", "empty", "down", "setup"],
+  "limits": { "minWidth": 720, "minHeight": 480, "maxWidth": 2560, "maxHeight": 1440 },
+  "extraChecks": [
+    { "id": "min-window", "label": "Min window · 720 × 480", "width": 720, "height": 480, "window": "plain" }
+  ]
+}

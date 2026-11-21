@@ -1,0 +1,290 @@
+--- rounds/1/screen.html	2026-11-21 13:41:40
++++ screen.html	2026-11-21 13:38:22
+@@ -588,6 +588,25 @@
+ .rel-drop { margin-bottom: var(--s5); }
+ .rel-drop .lines { display: flex; flex-direction: column; gap: var(--s1); }
+ 
++/* Titles wrap instead of cutting off; goal names in the sidebar too */
++.row .ti .tt { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
++.gl a { align-items: flex-start; }
++.gl a .lbl { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
++/* Large text (rem-based query, so 200% text trips it at laptop widths): actions drop under the meta */
++@container screen (width < 52rem) {
++  .row { grid-template-columns: 24px minmax(0, 1fr); }
++  .row .end { grid-column: 2; flex-wrap: wrap; justify-content: flex-start; margin-top: var(--s1); }
++  .row .age { min-width: 0; text-align: left; }
++  .kv { grid-template-columns: minmax(0, 1fr); gap: 0; }
++  .kv dd { margin: 0 0 var(--s2); }
++}
++/* Answer choices keep a 3:1 edge on the amber card in dark mode */
++.attn .opt, .attn .in, .q .opt, .q .in { border-color: light-dark(var(--outline-strong), #8a7a58); }
++/* Commands that change the board look off while it's down */
++[data-act].off { opacity: .45; cursor: not-allowed; }
++/* Compact-only overflow */
++.cmp { display: none; }
++@container screen (width < 840px) { .cmp { display: inline-grid; } }
+ </style>
+ 
+ <!-- Needs you: the home. Panels open on the right for one task or issue. -->
+@@ -842,7 +861,7 @@
+   overlay: null, menu: null, dlg: null, side: true, insW: null,
+   open: { T3: true, 'b-G3': true, 'g-G2': true, later: false, earlier: false, closedIdeas: false, H1: false },
+   picked: new Set(), lens: 'similar', kind: 'all', folded: new Set(), gone: new Set(), snoozed: {},
+-  pick: {}, toast: null, fwd: [], flow: null, qStep: {}, errors: null, ideaDraft: null, sending: null
++  pick: {}, drafts: {}, undo: [], toast: null, fwd: [], flow: null, qStep: {}, errors: null, ideaDraft: null, sending: null
+ };
+ const CTX = ['page', 'panel', 'panelTab', 'goal', 'goalTab', 'idea', 'dayView', 'setSec', 'blTab', 'proj', 'relProj', 'overlay', 'dlg', 'flow'];
+ const hist = [];
+@@ -851,6 +870,21 @@
+ 
+ const live = (ref) => !S.gone.has(ref) && !S.snoozed[ref];
+ const isDown = () => C && C.state === 'down';
++const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
++// Commands that change the board: off while it's down
++const MUT_TOAST = /\|undo$|^(Filing again|Hooks reinstalled|Re-planning|Restarting to update|Saved )/;
++const mutating = (act, arg) => ['gone', 'snooze', 'unsnooze', 'send', 'bulk', 'dlg-done', 'qstep'].includes(act) || (act === 'toast' && MUT_TOAST.test(arg || ''));
++// Where focus goes when a row leaves the list: the next row, or the one before at the end
++function nextRowSel(ref) {
++  const rows = [...C.root.querySelectorAll(`[data-screen="${S.screen}"] .main .row[data-ref]`)].filter(r => r.querySelector('.tt'));
++  const i = rows.findIndex(r => r.dataset.ref === ref); if (i < 0) return null;
++  const n = rows[i + 1] || rows[i - 1]; return n ? `.main .row[data-ref="${n.dataset.ref}"] .tt` : null;
++}
++function remove(ref, txt) {
++  S.focusNext = nextRowSel(ref);
++  S.gone.add(ref); S.undo.push(ref); if (S.panel === ref) S.panel = null;
++  if (txt) toast(txt, { undo: true });
++}
+ 
+ function defaults(screen) {
+   const sec = C.root.querySelector(`[data-screen="${screen}"]`);
+@@ -903,13 +937,14 @@
+     let el = null; try { el = sec.querySelector(sel) || (fk.includes('|') ? sec.querySelector(`[data-act="${fk.split('|')[0]}"]:not([data-arg])`) : null); } catch (e) {}
+     if (el) el.focus({ preventScroll: true });
+   }
++  if (isDown()) sec.querySelectorAll('[data-act]').forEach(b => { if (mutating(b.dataset.act, b.dataset.arg)) { b.setAttribute('aria-disabled', 'true'); b.classList.add('off'); b.title = "The board is offline"; } });
+   placeOverlays(sec);
+   C.refresh && C.refresh();
+ }
+ function snapshot() { const o = {}; CTX.forEach(k => o[k] = S[k]); return o; }
+ 
+ function win(ds) {
+-  const panelOn = !!S.panel && ds !== 'loading' && ds !== 'setup';
++  const panelOn = !!S.panel && ds !== 'loading' && ds !== 'setup' && ds !== 'empty';
+   const w = S.insW ? ` style="--insp-w:${S.insW}px"` : '';
+   return `<div class="win${S.side ? '' : ' side-off'}${panelOn ? ' panel-on' : ''}"${w}>
+   ${toolbar()}
+@@ -982,7 +1017,7 @@
+   }).join('')}</div></div>`;
+   const health = ds === 'down'
+     ? `<button class="sf bad" data-act="pop" data-arg="health" aria-label="Health: can't reach the board" title="Health">${ic('red')}<span class="lbl">Board offline</span></button>`
+-    : `<button class="sf warn" data-act="pop" data-arg="health" aria-label="Health: Midna is at its terminal limit" title="Health">${ic('pulse')}<span class="lbl">Midna at its limit</span></button>`;
++    : empty || setup ? '' : `<button class="sf warn" data-act="pop" data-arg="health" aria-label="Health: Midna is at its terminal limit" title="Health">${ic('pulse')}<span class="lbl">Midna at its limit</span></button>`;
+   return `<nav class="side" aria-label="Sidebar">
+   <div class="side-scroll">
+     <button class="scope" data-act="menu" data-arg="scope" aria-haspopup="menu" aria-label="Projects shown: all projects" title="Projects shown">${ic('project')}<span class="lbl">All projects</span><span class="chev">${ic('down')}</span></button>
+@@ -1091,6 +1126,7 @@
+   else if (id === 'misses') items = `<h3>Misses holding G9</h3>${MI('B41 Reset links expire after 15 minutes', 'open', 'B41')}<hr>${MI('Make every miss a task', 'toast', 'Made T24 from B41|undo')}`;
+   else if (id === 'kind') items = ['All kinds|23', 'Bug|9', 'Test gap|6', 'Follow-up|5', 'Clean-up|3'].map(s => { const [l, n] = s.split('|'); const k = l === 'All kinds' ? 'all' : l; return `<button role="menuitemradio" aria-checked="${S.kind === k}" data-act="kind" data-arg="${k}">${S.kind === k ? ic('check') : '<span class="i"></span>'}<span class="lbl">${l}</span><span class="k">${n}</span></button>`; }).join('');
+   else if (id === 'bulk-move') items = `<h3>Move 3 issues into</h3>${MI('G1 Sign-in with passkeys', 'bulk', 'Moved 3 issues into G1')}${MI('G2 Faster sign-in', 'bulk', 'Moved 3 issues into G2')}${MI('G6 Offline mode groundwork', 'bulk', 'Moved 3 issues into G6')}<hr>${MI('Choose a goal…', 'dlg', 'chooser', 'M')}`;
++  else if (id === 'bulk-more') items = `${MI('Defer', 'bulk', 'Deferred 3 issues', 'D')}${MI('Won’t do', 'bulk', 'Closed 3 issues as won’t do', 'X')}`;
+   else if (id === 'bulk-pri') items = `<h3>Priority</h3>${MI('P1 · now', 'bulk', 'Set 3 issues to P1', '1')}${MI('P2 · soon', 'bulk', 'Set 3 issues to P2', '2')}${MI('P3 · some day', 'bulk', 'Set 3 issues to P3', '3')}`;
+   else if (id === 'day-projects') items = `<h3>Projects on the timeline</h3><button role="menuitemcheckbox" aria-checked="true" data-act="noop">${ic('check')}<span class="lbl">webapp</span></button><button role="menuitemcheckbox" aria-checked="true" data-act="noop">${ic('check')}<span class="lbl">api</span></button>`;
+   else if (id === 'weeks') items = `<h3>Weeks</h3>${['Nov 14 – 20 · 41 h', 'Nov 7 – 13 · 37 h', 'Oct 31 – Nov 6 · 29 h', 'Oct 24 – 30 · 33 h', 'Oct 17 – 23 · 30 h'].map((w, i) => `<button role="menuitemradio" aria-checked="${i === 0}" data-act="noop">${i === 0 ? ic('check') : '<span class="i"></span>'}<span class="lbl">${w}</span></button>`).join('')}`;
+@@ -1207,9 +1243,11 @@
+ let toastTimer = null;
+ function toast(text, opts = {}) {
+   S.toast = Object.assign({ text }, opts);
+-  clearTimeout(toastTimer);
+-  toastTimer = setTimeout(() => { S.toast = null; render(); }, 7000);
++  armToast();
+ }
++function armToast() { clearTimeout(toastTimer); toastTimer = setTimeout(() => { S.toast = null; render(); }, 10000); }
++function holdToast(e) { if (e.target.closest && e.target.closest('.toast')) clearTimeout(toastTimer); }
++function releaseToast(e) { const t = e.target.closest && e.target.closest('.toast'); if (t && S.toast && !(e.relatedTarget && t.contains(e.relatedTarget))) armToast(); }
+ 
+ // ── Actions ──
+ function setup(canvas) {
+@@ -1240,6 +1278,14 @@
+   canvas.root.addEventListener('keydown', onKey);
+   canvas.root.addEventListener('contextmenu', onContext);
+   canvas.root.addEventListener('pointerdown', onDividerDown);
++  canvas.root.addEventListener('pointerover', holdToast); canvas.root.addEventListener('focusin', holdToast);
++  canvas.root.addEventListener('pointerout', releaseToast); canvas.root.addEventListener('focusout', releaseToast);
++  canvas.root.addEventListener('input', (e) => {
++    const ref = e.target.dataset && e.target.dataset.answer; if (!ref) return;
++    S.drafts[ref] = e.target.value;
++    C.root.querySelectorAll(`[data-answer="${ref}"]`).forEach(f => { if (f !== e.target) f.value = e.target.value; });
++    if (e.target.value && S.pick[ref] != null) { delete S.pick[ref]; C.root.querySelectorAll(`[data-act="pickopt"][data-arg^="${ref}|"]`).forEach(o => { o.setAttribute('aria-checked', 'false'); o.setAttribute('aria-pressed', 'false'); }); }
++  });
+   document.addEventListener('keydown', (e) => { if (e.target === document.body && (e.metaKey || e.ctrlKey)) onKey(e); });
+ }
+ 
+@@ -1264,8 +1310,8 @@
+   if (!t) { if (S.menu && !e.target.closest('.menu')) { S.menu = null; render(); } else if (S.overlay && S.overlay.startsWith('pop:') && !e.target.closest('.pop')) { S.overlay = null; render(); } return; }
+   if (t.closest('form') && t.type === 'submit') return;
+   const act = t.dataset.act, arg = t.dataset.arg || '';
++  if (isDown() && mutating(act, arg)) { e.preventDefault(); toast("The board is offline. Try again when it's back.", { err: true }); render(); return; }
+   if (t.getAttribute('aria-disabled') === 'true') return;
+-  if (isDown() && t.closest('.main .end, .main .body, .insp-b .attn, .ph .acts') && !['open', 'expand', 'menu', 'go', 'goal', 'idea', 'restart-board'].includes(act)) { toast("The board is offline. Try again when it's back.", { err: true }); render(); return; }
+   e.preventDefault();
+   const wasMenu = !!S.menu && act !== 'menu';
+   if (wasMenu) S.menu = null;
+@@ -1303,25 +1349,29 @@
+       if (t.closest('.menu')) S.menu.anchor = S.lastAnchor; else S.lastAnchor = arg;
+       break;
+     }
+-    case 'dlg': S.menu = null; S.dlg = arg; S.dlgFrom = t && t.dataset ? t.dataset.k || null : null; break;
+-    case 'newidea': S.menu = null; S.overlay = null; S.dlg = 'newidea'; S.errors = null; break;
++    case 'dlg': S.menu = null; S.dlg = arg; S.dlgOpener = t && t.closest && t.closest('.menu') ? (S.lastAnchor ? `[data-act="menu"][data-arg="${S.lastAnchor}"]` : null) : t && t.dataset && t.dataset.k ? `[data-k="${t.dataset.k}"]` : `[data-act="dlg"][data-arg="${arg}"]`; break;
++    case 'newidea': S.menu = null; S.overlay = null; S.dlg = 'newidea'; S.errors = null; S.dlgOpener = t && t.dataset && t.dataset.act === 'newidea' ? '[data-act="newidea"]' : '.find'; break;
+     case 'reopen-draft': S.dlg = 'newidea'; S.toast = null; break;
+     case 'close-dlg': {
+       if (S.dlg === 'newidea') { const f = C.root.querySelector('form[data-form="idea"]'); if (f && (f.title.value || f.detail.value)) { S.ideaDraft = { title: f.title.value, project: f.project.value, detail: f.detail.value }; toast('Idea draft kept', { reopen: true }); } }
+-      S.dlg = null; S.errors = null; break;
++      S.dlg = null; S.errors = null; S.focusNext = S.dlgOpener || null; break;
+     }
+-    case 'dlg-done': { S.dlg = null; const [txt, u] = arg.split('|'); toast(txt, { undo: !!u }); if (txt.startsWith('Merged') || txt.startsWith('G9 finished')) { S.gone.add(txt.startsWith('Merged') ? 'T6' : 'B41'); S.lastGone = txt.startsWith('Merged') ? 'T6' : 'B41'; toast(txt, { undo: false }); } break; }
+-    case 'toast': { const [txt, u] = arg.split('|'); toast(txt, { undo: !!u }); S.lastGone = null; break; }
+-    case 'gone': { const [ref, txt] = arg.split('|'); S.gone.add(ref); S.lastGone = ref; if (S.panel === ref) S.panel = null; toast(txt, { undo: true }); break; }
+-    case 'snooze': { const [ref, when] = arg.split('|'); S.snoozed[ref] = when; S.lastGone = ref; if (S.panel === ref) S.panel = null; toast(`${ref} is in Later, ${when}`, { undo: true }); break; }
++    case 'dlg-done': {
++      S.dlg = null; S.focusNext = S.dlgOpener || null; const [txt, u] = arg.split('|');
++      if (txt.startsWith('Merged') || txt.startsWith('G9 finished')) { remove(txt.startsWith('Merged') ? 'T6' : 'B41'); toast(txt); } else toast(txt, { undo: !!u });
++      break;
++    }
++    case 'toast': { const [txt, u] = arg.split('|'); toast(txt, { undo: !!u }); break; }
++    case 'gone': { const [ref, txt] = arg.split('|'); remove(ref, txt); break; }
++    case 'snooze': { const [ref, when] = arg.split('|'); S.focusNext = nextRowSel(ref); S.snoozed[ref] = when; S.undo.push(ref); if (S.panel === ref) S.panel = null; toast(`${ref} is in Later, ${when}`, { undo: true }); break; }
+     case 'unsnooze': delete S.snoozed[arg]; toast(`${arg} is back in Needs you`); break;
+-    case 'undo': if (S.lastGone) { S.gone.delete(S.lastGone); delete S.snoozed[S.lastGone]; } S.toast = null; S.lastGone = null; break;
++    case 'undo': { const ref = S.undo.pop(); if (ref) { S.gone.delete(ref); delete S.snoozed[ref]; S.focusNext = `.main .row[data-ref="${ref}"] .tt`; } S.toast = S.undo.length ? { text: `${S.undo.length} more to undo`, undo: true, undoLabel: 'Undo  ⌘Z' } : null; if (S.toast) armToast(); break; }
+     case 'toast-x': S.toast = null; break;
+-    case 'pickopt': { const [ref, i] = arg.split('|'); S.pick[ref] = +i; break; }
++    case 'pickopt': { const [ref, i] = arg.split('|'); S.pick[ref] = +i; delete S.drafts[ref]; break; }
+     case 'send': {
+-      if (S.pick[arg] == null && !(C.root.querySelector(`[data-answer="${arg}"]`) || {}).value) { toast('Pick an answer or type one first.', { err: true }); break; }
++      if (S.pick[arg] == null && !S.drafts[arg]) { toast('Pick an answer or type one first.', { err: true }); break; }
+       S.sending = arg; render();
+-      setTimeout(() => { S.sending = null; S.gone.add(arg); S.lastGone = arg; if (S.panel === arg) S.panel = null; toast(`Answer sent to ${arg}`, { undo: true }); render(); }, 600);
++      setTimeout(() => { S.sending = null; delete S.drafts[arg]; remove(arg, `Answer sent to ${arg}`); render(); }, 600);
+       return;
+     }
+     case 'qstep': { const [ref, n] = arg.split('|'); S.qStep[ref] = +n; break; }
+@@ -1330,6 +1380,7 @@
+     case 'kind': S.kind = arg; break;
+     case 'lens': S.lens = arg; break;
+     case 'pick': { if (S.picked.has(arg)) S.picked.delete(arg); else S.picked.add(arg); break; }
++    case 'plangrp': closeAll(); return go('plan', { page: 'plan', _picked: arg });
+     case 'pickgrp': { const refs = arg.split(','); const all = refs.every(r => S.picked.has(r)); refs.forEach(r => all ? S.picked.delete(r) : S.picked.add(r)); break; }
+     case 'fold': if (S.folded.has(arg)) S.folded.delete(arg); else S.folded.add(arg); break;
+     case 'clear': S.picked = new Set(); break;
+@@ -1391,6 +1442,10 @@
+     if (r) { e.preventDefault(); S.menu = { id: 'row:' + r.dataset.ref, anchor: 'row:' + r.dataset.ref }; S.lastAnchor = S.menu.anchor; render(); }
+     return;
+   }
++  if (mod && S.page === 'settings' && /^[1-9]$/.test(k)) { e.preventDefault(); return run('setsec', SET[+k - 1][0]); }
++  if (mod && S.page === 'settings' && k === 'w') { e.preventDefault(); return run('back'); }
++  if (S.page === 'settings' && k === 'Escape' && !S.dlg && !S.menu && !S.overlay) { e.preventDefault(); return run('back'); }
++  if (mod && (k === 'z' || k === 'Z') && !e.shiftKey && !inField && S.undo.length) { e.preventDefault(); return run('undo'); }
+   if (mod) {
+     const map = { '1': 'needs', '2': 'goals', '3': 'backlog', '4': 'ideas', '5': 'days', '6': 'releases', '7': 'projects' };
+     if (map[k]) { e.preventDefault(); return go(map[k]); }
+@@ -1405,6 +1460,13 @@
+     if (k === 'f' && S.page === 'backlog') { e.preventDefault(); const f = C.root.querySelector('.bl-find'); if (f) f.focus(); return; }
+   }
+   if (inField) return;
++  // links drawn as anchors without an address: Enter and Space activate them like buttons
++  if ((k === 'Enter' || k === ' ') && e.target.matches && e.target.matches('a[data-act], [role=link][data-act]')) { e.preventDefault(); e.target.click(); return; }
++  // ↑↓ inside the sidebar page list and the Settings section list
++  if ((k === 'ArrowDown' || k === 'ArrowUp') && e.target.closest && e.target.closest('.nav')) {
++    const all = [...e.target.closest('.nav').querySelectorAll('a[data-act]')]; const n = all[all.indexOf(e.target) + (k === 'ArrowDown' ? 1 : -1)];
++    if (n) { n.focus(); e.preventDefault(); } return;
++  }
+   // list navigation: ↑↓ move between rows of the main list, ↩ opens
+   if ((k === 'ArrowDown' || k === 'ArrowUp') && e.target.closest && e.target.closest('.main') && e.target.classList.contains('tt')) {
+     const all = [...C.root.querySelectorAll(`[data-screen="${S.screen}"] .main .tt`)];
+@@ -1446,7 +1508,7 @@
+ function pgNeeds(ds) {
+   if (ds === 'loading') return loadingCol('Needs you');
+   if (ds === 'empty') return `<div class="col"><div class="ph"><div class="t"><h1>Needs you</h1></div></div>
+-    <div class="empty">${ic('done', 'i c-done')}<b>Nothing needs you</b><span class="var">4 agents are working. You’ll hear when one needs a hand.</span>
++    <div class="empty">${ic('done', 'i c-done')}<b>Nothing needs you</b><span class="var">Nothing is running. You’ll hear when an agent needs a hand.</span>
+     <div class="btnrow" style="margin-top:8px"><button class="btn" data-act="go" data-arg="goals">See the goals</button><button class="btn plain" data-act="pop" data-arg="hours">Work hours</button></div></div>
+     ${laterBlock()}</div>`;
+   const q = TASKS.T3;
+@@ -1497,7 +1559,7 @@
+   return `<div class="opts" role="radiogroup" aria-label="Answers">${opts.map(([b, s], i) => `<button class="opt${S.sending === ref && S.pick[ref] === i ? ' sending' : ''}" role="radio" aria-checked="${S.pick[ref] === i}" aria-pressed="${S.pick[ref] === i}" data-act="pickopt" data-arg="${ref}|${i}"><span class="r"></span><b>${b}</b><span>${s}</span></button>`).join('')}</div>`;
+ }
+ function answerHtml(ref) {
+-  return `<div class="answer"><label class="field"><span>Other answer</span><textarea class="in" rows="1" data-answer="${ref}" placeholder=""></textarea></label><button class="btn pri${S.sending === ref ? ' sending' : ''}" data-act="send" data-arg="${ref}">${S.sending === ref ? 'Sending' : 'Send'} <span class="kbd">⌘↩</span></button></div>`;
++  return `<div class="answer"><label class="field"><span>Other answer</span><textarea class="in" rows="1" data-answer="${ref}" placeholder="">${esc(S.drafts[ref] || '')}</textarea></label><button class="btn pri${S.sending === ref ? ' sending' : ''}" data-act="send" data-arg="${ref}">${S.sending === ref ? 'Sending' : 'Send'} <span class="kbd">⌘↩</span></button></div>`;
+ }
+ 
+ function ideasWaiting() {
+@@ -1541,14 +1603,14 @@
+ function pgGoal(ds) {
+   const g = GOALS[S.goal] || GOALS.G2;
+   if (ds === 'loading') return loadingCol(g.name);
+-  if (g.shelf) return `<div class="col"><div class="crumb"><a data-act="go" data-arg="goals">Goals</a>›<span>${g.ref}</span></div><div class="ph"><div class="t"><h1>${g.name}</h1><p class="sum">${g.after || ''}</p></div><div class="acts"><button class="btn pri" data-act="toast" data-arg="${g.ref} started|undo">Start now</button></div></div></div>`;
++  if (g.shelf) return `<div class="col"><div class="crumb"><a role="link" tabindex="0" data-act="go" data-arg="goals">Goals</a>›<span>${g.ref}</span></div><div class="ph"><div class="t"><h1>${g.name}</h1><p class="sum">${g.after || ''}</p></div><div class="acts"><button class="btn pri" data-act="toast" data-arg="${g.ref} started|undo">Start now</button></div></div></div>`;
+   const tabs = [['waves', 'Waves'], ['notes', 'Notes', 6], ['files', 'Files', 3], ['backlog', 'Backlog', 2], ['how', 'How it runs']];
+   const band = g.stop ? `<div class="band${g.stop.kind === 'missed' ? ' n' : ''}" role="status">${ic(g.stop.kind === 'failed' ? 'failed' : 'needs', 'i ' + (g.stop.kind === 'failed' ? 'c-error' : 'c-needs'))}<div class="t"><b>${g.stop.title}</b><div class="var">${g.stop.detail}</div></div><div class="btnrow"><button class="btn pri" data-act="open" data-arg="${g.stop.primary[1].split(':')[1]}">${g.stop.primary[0]}</button>${g.stop.secondary ? `<button class="btn" data-act="toast" data-arg="${g.stop.secondary[1]}|undo">${g.stop.secondary[0]}</button>` : ''}</div></div>` : '';
+   const sp = g.split; const tot = g.total;
+   const segs = [['done', 'var(--done)'], ['working', 'var(--working)'], ['review', 'var(--review)'], ['needs', 'var(--needs)'], ['failed', 'var(--error)']].filter(([k]) => sp[k]).map(([k, c]) => `<i style="width:${sp[k] / tot * 100}%;background:${c};display:inline-block;height:100%"></i>`).join('');
+   const body = S.goalTab === 'waves' ? wavesHtml(g) : S.goalTab === 'notes' ? goalNotes(g) : S.goalTab === 'files' ? goalFiles(g) : S.goalTab === 'backlog' ? goalBacklog(g) : goalHow(g);
+   return `<div class="col${S.goalTab === 'waves' ? ' wide' : ''}" style="${S.goalTab === 'waves' ? 'max-width:1180px' : ''}">
+-  <div class="crumb"><a data-act="go" data-arg="goals">Goals</a>›<span>${g.ref} · ${g.project}</span></div>
++  <div class="crumb"><a role="link" tabindex="0" data-act="go" data-arg="goals">Goals</a>›<span>${g.ref} · ${g.project}</span></div>
+   <div class="ph"><div class="t"><h1>${g.name}</h1><p class="sum">${g.tldr}</p></div>
+     <div class="acts">${st('' + g.state, g.stateWords)}<button class="btn" data-act="toast" data-arg="Paused ${g.ref}. Running tasks finish first.|undo">${ic('pause')}Pause</button><button class="ib" data-act="menu" data-arg="goal-more" aria-haspopup="menu" aria-label="More for ${g.ref}" title="More">${ic('more')}</button></div></div>
+   <div style="display:flex;align-items:center;gap:12px;margin:-8px 0 24px;flex-wrap:wrap"><div class="bar" style="width:200px;display:flex" role="img" aria-label="${g.done} of ${tot} tasks done">${segs}</div><span class="lbl-s num">${g.done} of ${tot} done · wave ${g.wave} · ${g.now} · updated ${g.updated}</span></div>
+@@ -1603,11 +1665,12 @@
+     <button class="btn" data-act="menu" data-arg="bulk-pri" aria-haspopup="menu">Priority <span class="kbd">P</span></button>
+     <button class="btn plain sec" data-act="bulk" data-arg="Deferred 3 issues">Defer <span class="kbd">D</span></button>
+     <button class="btn plain sec" data-act="bulk" data-arg="Closed 3 issues as won’t do">Won’t do <span class="kbd">X</span></button>
++    <button class="ib cmp" data-act="menu" data-arg="bulk-more" aria-haspopup="menu" aria-label="More actions for the selection" title="More">${ic('more')}</button>
+     <button class="ib" data-act="clear" aria-label="Clear the selection" title="Clear  esc">${ic('close')}</button></div>` : '';
+   const grpHtml = Object.entries(groups).map(([name, items]) => {
+     const refs = items.map(b => b.ref); const on = refs.filter(r => S.picked.has(r)).length;
+     const folded = S.folded.has(name);
+-    return `<section class="grp bl-grp" aria-label="${name}"><div class="grp-h"><label class="check" title="Select the group"><input type="checkbox" data-act="pickgrp" data-arg="${refs.join(',')}" ${on === refs.length ? 'checked' : ''} ${on && on < refs.length ? 'data-mixed="1"' : ''} aria-label="Select all in ${name}"></label><button class="btn plain fold" data-act="fold" data-arg="${name}" aria-expanded="${!folded}">${ic(folded ? 'chev' : 'down')}<span>${name}</span></button><span class="n">${items.length}</span><span class="grow"></span>${name !== 'Not grouped yet' ? `<button class="btn plain" data-act="pickgrp" data-arg="${refs.join(',')}">Plan these</button>` : ''}</div>
++    return `<section class="grp bl-grp" aria-label="${name}"><div class="grp-h"><label class="check" title="Select the group"><input type="checkbox" data-act="pickgrp" data-arg="${refs.join(',')}" ${on === refs.length ? 'checked' : ''} ${on && on < refs.length ? 'data-mixed="1"' : ''} aria-label="Select all in ${name}"></label><button class="btn plain fold" data-act="fold" data-arg="${name}" aria-expanded="${!folded}">${ic(folded ? 'chev' : 'down')}<span>${name}</span></button><span class="n">${items.length}</span><span class="grow"></span>${name !== 'Not grouped yet' ? `<button class="btn plain" data-act="plangrp" data-arg="${refs.join(',')}">Plan these</button>` : ''}</div>
+       ${folded ? '' : `<ul class="rows">${items.map(b => blRow(b)).join('')}</ul>`}</section>`;
+   }).join('');
+   const lens = [['similar', 'Similar'], ['area', 'Area'], ['impact', 'Impact'], ['priority', 'Priority']];
+@@ -1642,7 +1705,7 @@
+ function pgPlan(ds) {
+   const w = [['Clear sign-out state', 'Both bugs touch the same sign-out handler; fix them together first.', ['B37', 'B45']], ['Prove it', 'The test needs the fixed handler.', ['B38']]];
+   return `<div class="col">
+-  <div class="crumb"><a data-act="go" data-arg="backlog">Backlog</a>›<span>Plan into waves</span></div>
++  <div class="crumb"><a role="link" tabindex="0" data-act="go" data-arg="backlog">Backlog</a>›<span>Plan into waves</span></div>
+   <div class="ph"><div class="t"><h1>Plan into waves</h1><p class="sum">3 issues · drafted 11:40 AM</p></div><div class="acts"><button class="btn plain" data-act="toast" data-arg="Re-planning · the draft updates when it’s done">Re-plan</button><button class="btn pri" data-act="toast" data-arg="Made G11. Start it when you’re ready.|undo">Create the goal</button></div></div>
+   <label class="field" style="max-width:480px;margin-bottom:24px"><span>Goal name</span><input class="in" value="Sign-out leaves nothing behind"></label>
+   ${w.map(([n, why, items], i) => `<section class="wave" aria-label="Wave ${i + 1}"><div class="wave-h"><h3>Wave ${i + 1} · ${n}</h3></div><p class="var" style="margin-bottom:8px;max-width:68ch">${why}</p><ul class="rows">${items.map(r => { const b = ISSUES[r]; return row({ ref: r, g: 'planned', title: b.title, meta: [b.kind, b.pri], main: ['Remove', 'toast', `Took ${r} out of the plan|undo`], later: false, more: false }); }).join('')}</ul></section>`).join('')}
+@@ -1669,14 +1732,14 @@
+   const qs = [['Which data stays offline?', [['The last 7 days of tasks', 'Small, covers most trips'], ['Everything the person has opened', 'Bigger, nothing surprises them'], ['Only what they pin', 'Smallest; they choose']]], ['What happens on a conflict?', [['The newest edit wins', 'Simple; can lose an edit'], ['Ask the person', 'Safe; adds a step']]]];
+   const step = S.qStep.I2 || 0; const [qt, opts] = qs[step];
+   return `<div class="col">
+-  <div class="crumb"><a data-act="go" data-arg="ideas">Ideas</a>›<span>I2 · webapp</span></div>
++  <div class="crumb"><a role="link" tabindex="0" data-act="go" data-arg="ideas">Ideas</a>›<span>I2 · webapp</span></div>
+   <div class="ph"><div class="t"><h1>Offline mode</h1><p class="sum">Fits · round 2 of digging · updated 8:15 AM</p></div>
+     <div class="acts"><button class="btn" data-act="toast" data-arg="Digging into I2 again|undo">Dig <span class="kbd">⌘D</span></button><button class="btn pri" data-act="dlg" data-arg="planq">Plan <span class="kbd">⇧⌘P</span></button><button class="ib" data-act="menu" data-arg="idea-more" aria-haspopup="menu" aria-label="More for I2" title="More">${ic('more')}</button></div></div>
+   <section class="attn" aria-label="Questions"><h3>${ic('needs', 'i c-needs')}2 questions before planning</h3>
+     <div class="q"><div class="qsteps" role="tablist" aria-label="Questions">${qs.map((q, i) => `<button role="tab" aria-selected="${i === step}" data-act="qstep" data-arg="I2|${i}">Question ${i + 1}</button>`).join('')}</div>
+     <p class="qt"><q>${qt}</q></p>
+     <div class="opts" role="radiogroup" aria-label="Answers">${opts.map(([b, s], i) => `<button class="opt" role="radio" aria-checked="${S.pick['I2-' + step] === i}" aria-pressed="${S.pick['I2-' + step] === i}" data-act="pickopt" data-arg="I2-${step}|${i}"><span class="r"></span><b>${b}</b><span>${s}</span></button>`).join('')}</div>
+-    <div class="answer"><label class="field"><span>Other answer</span><textarea class="in" rows="1" data-answer="I2"></textarea></label><button class="btn pri" data-act="${step === 0 ? 'qstep' : 'toast'}" data-arg="${step === 0 ? 'I2|1' : 'Answers sent · digging again|undo'}">${step === 0 ? 'Next' : 'Send'}</button></div></div>
++    <div class="answer"><label class="field"><span>Other answer</span><textarea class="in" rows="1" data-answer="I2">${esc(S.drafts.I2 || '')}</textarea></label><button class="btn pri" data-act="${step === 0 ? 'qstep' : 'toast'}" data-arg="${step === 0 ? 'I2|1' : 'Answers sent · digging again|undo'}">${step === 0 ? 'Next' : 'Send'}</button></div></div>
+   </section>
+   <div class="prose" style="margin-top:32px">
+     <h4>Round 2 · today, 8:15 AM</h4>
+@@ -1864,8 +1927,7 @@
+ function settingsWin(ds) {
+   const sec = S.setSec;
+   return `<div class="sw">
+-  <nav class="sw-side" aria-label="Settings sections"><h1>Settings</h1><div class="nav">${SET.map(([k, l, i, n]) => `<a role="link" tabindex="0" data-act="setsec" data-arg="${k}" ${sec === k ? 'aria-current="page"' : ''} title="${l}${n ? ', 1 needs you' : ''}">${ic(i)}<span class="lbl">${l}</span>${n ? `<span class="n hot" aria-hidden="true">${n}</span>` : ''}</a>`).join('')}</div>
+-    <span style="flex:1"></span><a class="sw-back" role="link" tabindex="0" data-act="back" title="Back to the board  ⌘[">${ic('back')}<span class="lbl">Back to the board</span></a></nav>
++  <nav class="sw-side" aria-label="Settings sections"><h1>Settings</h1><div class="nav">${SET.map(([k, l, i, n]) => `<a role="link" tabindex="0" data-act="setsec" data-arg="${k}" ${sec === k ? 'aria-current="page"' : ''} title="${l}${n ? ', 1 needs you' : ''}">${ic(i)}<span class="lbl">${l}</span>${n ? `<span class="n hot" aria-hidden="true">${n}</span>` : ''}</a>`).join('')}</div></nav>
+   <main class="sw-main" aria-label="${(SET.find(s => s[0] === sec) || [, ''])[1]}"><div class="sw-col">${ds === 'loading' ? `<h2>${(SET.find(s => s[0] === sec) || [, ''])[1]}</h2>${sk(5)}` : isDown() ? `<h2>${(SET.find(s => s[0] === sec) || [, ''])[1]}</h2><p class="err">${ic('failed')}The board didn’t answer · connection refused</p>` : setBody(sec)}</div></main>
+   <div class="layer">${overlays()}</div><div class="toasts" role="status" aria-live="polite">${toastHtml()}</div>
+ </div>`;
