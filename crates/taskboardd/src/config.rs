@@ -770,6 +770,9 @@ pub struct Config {
     /// socket's peer, so they can't go through its CLI).
     pub midna_socket: PathBuf,
     pub midna_bundle: String,
+    /// How long each look at a terminal that just ended may take (`midna::exit_detail`): the hook that
+    /// reports it waits.
+    pub midna_exit_timeout: f64,
     pub open_midna: bool,
     pub notify: bool,
     /// The day weeks start on (the Days page, its `week` array and the hours menu): Sunday unless set.
@@ -955,6 +958,7 @@ impl Config {
                 .map(|p| expand_home(&p))
                 .unwrap_or_else(|| expand_home("~/Library/Application Support/com.mrgnhnt.midna/midnad.sock")),
             midna_bundle: f.midna_bundle.clone().unwrap_or_else(|| "com.mrgnhnt.midna".into()),
+            midna_exit_timeout: 0.3,
             open_midna: f.open_midna.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
             first_weekday: f.first_weekday.as_deref().and_then(parse_weekday).unwrap_or(chrono::Weekday::Sun),
@@ -1022,6 +1026,8 @@ impl Config {
         c.notify = false;
         c.midna = data.join("no-midna");
         c.midna_socket = data.join("no-midna.sock");
+        // A test's fake Midna is a shell script, slow to start on a loaded machine.
+        c.midna_exit_timeout = 10.0;
         c.questions.screen = false;
         c.backlog.ai = false;
         c.pr.watch = false;

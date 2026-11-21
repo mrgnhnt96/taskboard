@@ -20,9 +20,25 @@ pub trait Gh: Send + Sync {
 pub struct GhCli {
     pub bin: PathBuf,
     pub env: Vec<(String, String)>,
+    /// The account its calls are limited under (`prhost::account_key`).
+    pub account: String,
 }
 
 impl GhCli {
+    /// `gh` signed in as the board's GitHub account. A sandboxed board (the tests) is an account of its
+    /// own: the limits are process-wide, and the tests sharing the process mustn't share write slots,
+    /// collapsed writes or kept reads.
+    pub fn for_board(app: &crate::app::App, bin: PathBuf) -> GhCli {
+        let env = crate::accounts::gh_env(&app.cfg);
+        let data = app.cfg.data.to_string_lossy();
+        let mut parts: Vec<&str> = env.iter().map(|(_, v)| v.as_str()).collect();
+        if app.cfg.accounts_sandbox {
+            parts.push(&data);
+        }
+        let account = super::account_key("github", &parts);
+        GhCli { bin, env, account }
+    }
+
     fn gh(&self, args: &[String]) -> HostResult<crate::proc::Output> {
         crate::proc::run_with(&self.bin, args, None, 30.0, &self.env, None).map_err(|_| "gh didn't answer in 30 seconds".to_string())
     }
@@ -38,7 +54,7 @@ impl GhCli {
 
 impl Gh for GhCli {
     fn limit_key(&self) -> Option<String> {
-        Some(super::account_key("github", &self.env.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>()))
+        Some(self.account.clone())
     }
     fn run(&self, args: &[String]) -> HostResult<String> {
         let key = self.limit_key().unwrap_or_default();

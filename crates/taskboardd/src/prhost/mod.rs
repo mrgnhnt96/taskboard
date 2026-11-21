@@ -529,9 +529,9 @@ pub fn host_for(app: &App, host: &str) -> HostResult<Arc<dyn PrHost>> {
     match host {
         "github" => {
             let gh = crate::proc::which(&app.cfg.pr.gh).ok_or_else(|| "the gh command isn't installed".to_string())?;
-            let env = crate::accounts::gh_env(&app.cfg);
-            let key = account_key("github", &env.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>());
-            Ok(Arc::new(github::GithubHost::new(Box::new(github::GhCli { bin: gh, env })).with_account(&key)))
+            let cli = github::GhCli::for_board(app, gh);
+            let key = cli.account.clone();
+            Ok(Arc::new(github::GithubHost::new(Box::new(cli)).with_account(&key)))
         }
         "bitbucket" => {
             let (email, token) = crate::accounts::board_credentials(app, crate::accounts::Provider::Bitbucket)

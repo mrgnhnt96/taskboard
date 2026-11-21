@@ -1410,15 +1410,14 @@ pub fn sync_loop(app: Arc<App>) {
     }
 }
 
-/// How long each look at a terminal that just ended may take: the hook that reports it waits.
-const EXIT_DETAIL_TIMEOUT: f64 = 0.3;
 const EXIT_LINES: usize = 3;
 
 /// What Midna can tell of a terminal that ended with no reason Claude named: how it exited, how
 /// long it ran and its last lines. Straight to its CLI, so a Midna that's down marks nothing.
 pub fn exit_detail(app: &App, sid: &str) -> Option<String> {
-    let s = call_exe(&app.cfg.midna, "session.get", &json!({"id": sid}), EXIT_DETAIL_TIMEOUT).ok();
-    let read = call_exe(&app.cfg.midna, "session.read", &json!({"id": sid, "lines": 20}), EXIT_DETAIL_TIMEOUT).ok();
+    let wait = app.cfg.midna_exit_timeout;
+    let s = call_exe(&app.cfg.midna, "session.get", &json!({"id": sid}), wait).ok();
+    let read = call_exe(&app.cfg.midna, "session.read", &json!({"id": sid, "lines": 20}), wait).ok();
     describe_exit(s.as_ref(), read.as_ref().and_then(|r| r["text"].as_str()), now_ts())
 }
 

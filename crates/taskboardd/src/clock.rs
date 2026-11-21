@@ -9,6 +9,7 @@
 //! watcher also notes each stretch with no keyboard or mouse input for `AWAY_SECS`: `away_spans`
 //! gives those with the sleeps, for the Days page's waits on the owner.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,14 +30,37 @@ const SETTING: &str = "sleeps";
 const AWAY_SECS: f64 = 15.0 * 60.0;
 const AWAY_SETTING: &str = "aways";
 
-static SLEEPS: Lazy<Mutex<Vec<(f64, f64)>>> = Lazy::new(|| Mutex::new(Vec::new()));
-static AWAYS: Lazy<Mutex<Vec<(f64, f64)>>> = Lazy::new(|| Mutex::new(Vec::new()));
-/// When the owner's current stretch away began, while it goes on.
-static AWAY_NOW: Lazy<Mutex<Option<f64>>> = Lazy::new(|| Mutex::new(None));
+#[derive(Default)]
+struct Logs {
+    sleeps: Vec<(f64, f64)>,
+    aways: Vec<(f64, f64)>,
+    /// When the owner's current stretch away began, while it goes on.
+    away_now: Option<f64>,
+}
+
+static BOARD: Lazy<Mutex<Logs>> = Lazy::new(Default::default);
+
+thread_local! {
+    static OWN: RefCell<Option<Logs>> = const { RefCell::new(None) };
+}
+
+/// This thread keeps its own sleep and away logs from now on, empty to start, apart from the board's.
+/// For tests: they share one process, and the sleeps one notes mustn't reach the tests beside it.
+pub fn own_logs() {
+    OWN.with(|o| *o.borrow_mut() = Some(Logs::default()));
+}
+
+/// This thread's own logs if it has them, else the board's.
+fn logs<R>(f: impl FnOnce(&mut Logs) -> R) -> R {
+    OWN.with(|o| match o.borrow_mut().as_mut() {
+        Some(own) => f(own),
+        None => f(&mut BOARD.lock()),
+    })
+}
 
 /// Seconds the Mac slept between `from` and `to` (board timestamps).
 pub fn slept_between(from: f64, to: f64) -> f64 {
-    SLEEPS.lock().iter().map(|&(a, b)| (b.min(to) - a.max(from)).max(0.0)).sum()
+    logs(|l| l.sleeps.iter().map(|&(a, b)| (b.min(to) - a.max(from)).max(0.0)).sum())
 }
 
 /// Seconds since `ts` that the Mac was awake.
@@ -47,43 +71,50 @@ pub fn awake_since(ts: f64) -> f64 {
 
 /// Remembers that the Mac slept from `from` to `to`, forgetting sleeps older than `KEEP_SECS`.
 pub fn note_sleep(from: f64, to: f64) {
-    let mut s = SLEEPS.lock();
-    s.push((from, to));
-    s.retain(|&(_, b)| b >= to - KEEP_SECS);
+    logs(|l| {
+        l.sleeps.push((from, to));
+        l.sleeps.retain(|&(_, b)| b >= to - KEEP_SECS);
+    })
 }
 
 pub fn forget_sleeps() {
-    SLEEPS.lock().clear();
+    logs(|l| l.sleeps.clear())
 }
 
 /// Remembers that the owner was away (no input) from `from` to `to`.
 pub fn note_away(from: f64, to: f64) {
-    let mut s = AWAYS.lock();
-    s.push((from, to));
-    s.retain(|&(_, b)| b >= to - KEEP_SECS);
+    logs(|l| {
+        l.aways.push((from, to));
+        l.aways.retain(|&(_, b)| b >= to - KEEP_SECS);
+    })
 }
 
 /// Marks the owner away since `from` until further notice, or back (`None`).
 pub fn set_away_now(from: Option<f64>) {
-    *AWAY_NOW.lock() = from;
+    logs(|l| l.away_now = from)
 }
 
 pub fn forget_aways() {
-    AWAYS.lock().clear();
-    *AWAY_NOW.lock() = None;
+    logs(|l| {
+        l.aways.clear();
+        l.away_now = None;
+    })
 }
 
 /// Whether the owner came back since `ts`: a stretch away, or a sleep, ended after it.
 pub fn back_since(ts: f64) -> bool {
-    SLEEPS.lock().iter().chain(AWAYS.lock().iter()).any(|&(_, b)| b > ts)
+    logs(|l| l.sleeps.iter().chain(l.aways.iter()).any(|&(_, b)| b > ts))
 }
 
 /// The stretches in `[from, to)` the owner was away or the Mac slept, clipped, merged and in order.
 pub fn away_spans(from: f64, to: f64) -> Vec<(f64, f64)> {
-    let mut all: Vec<(f64, f64)> = SLEEPS.lock().iter().chain(AWAYS.lock().iter()).copied().collect();
-    if let Some(a) = *AWAY_NOW.lock() {
-        all.push((a, f64::INFINITY));
-    }
+    let all = logs(|l| {
+        let mut all: Vec<(f64, f64)> = l.sleeps.iter().chain(l.aways.iter()).copied().collect();
+        if let Some(a) = l.away_now {
+            all.push((a, f64::INFINITY));
+        }
+        all
+    });
     merge(all.into_iter().map(|(a, b)| (a.max(from), b.min(to))).filter(|(a, b)| b > a).collect())
 }
 
@@ -115,14 +146,14 @@ fn load(app: &App) {
 }
 
 fn save(app: &App) {
-    let list = json!(*SLEEPS.lock()).to_string();
+    let list = logs(|l| json!(l.sleeps).to_string());
     if let Err(e) = app.db.set_setting(SETTING, Some(&list)) {
         app.info(format!("clock: couldn't save the sleep log: {e}"));
     }
 }
 
 fn save_aways(app: &App) {
-    let list = json!(*AWAYS.lock()).to_string();
+    let list = logs(|l| json!(l.aways).to_string());
     if let Err(e) = app.db.set_setting(AWAY_SETTING, Some(&list)) {
         app.info(format!("clock: couldn't save the away log: {e}"));
     }
@@ -158,7 +189,7 @@ fn away_step(away: Option<f64>, idle: f64, now: f64) -> (Option<f64>, Option<(f6
 /// Notes the start and end of each stretch away from the idle time now.
 fn check_away(app: &App) {
     let Some(idle) = idle_secs() else { return };
-    let (next, ended) = away_step(*AWAY_NOW.lock(), idle, now_ts());
+    let (next, ended) = away_step(logs(|l| l.away_now), idle, now_ts());
     set_away_now(next);
     if let Some((from, to)) = ended {
         note_away(from, to);
@@ -190,11 +221,9 @@ pub fn watch(app: Arc<App>) {
 mod tests {
     use super::*;
 
-    // One test for the process-wide logs, so nothing else reads them halfway.
     #[test]
     fn overlap_and_away_spans() {
-        forget_sleeps();
-        forget_aways();
+        own_logs();
         note_sleep(100.0, 200.0);
         note_sleep(300.0, 350.0);
         assert_eq!(slept_between(0.0, 1000.0), 150.0);
@@ -210,8 +239,6 @@ mod tests {
         assert!(back_since(320.0), "a sleep ended after it");
         assert!(back_since(240.0), "an away ended after it");
         assert!(!back_since(400.0), "a stretch still going on isn't back yet");
-        forget_sleeps();
-        forget_aways();
     }
 
     #[test]
