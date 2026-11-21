@@ -1892,6 +1892,67 @@ fn a_merge_that_hits_a_rate_limit_ends_the_visit_until_it_lifts() {
     assert_eq!(wakes(&b, id).len(), 2, "back to merge once it's over");
 }
 
+/// A board whose PR #9 is ready to merge, with merge tries that don't wait.
+fn ready_to_merge(retries: usize) -> (Board, i64, Arc<FakeHost>) {
+    let b = board_with(|c| {
+        c.pr.wake = true;
+        c.pr.agents_merge = Some(true);
+        c.pr.merge_retry_secs = vec![0.0; retries];
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    visits_done(&b, id);
+    (b, id, h)
+}
+
+fn merge_calls(h: &FakeHost) -> usize {
+    h.calls().iter().filter(|c| c.starts_with("merge ")).count()
+}
+
+#[test]
+fn a_merge_whose_base_moved_under_it_is_tried_again_by_the_board() {
+    let (b, id, h) = ready_to_merge(3);
+    *h.merge_errors.lock() = vec!["GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)".into(); 2];
+    let v = b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(v["merged"], true);
+    assert_eq!(merge_calls(&h), 3, "two refusals, then the merge");
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn a_merge_the_host_dropped_but_did_counts_as_merged() {
+    let (b, id, h) = ready_to_merge(3);
+    *h.merge_lands.lock() = true;
+    *h.merge_errors.lock() = vec!["non-200 OK status code: 502 Bad Gateway body: \"<html>\"".into()];
+    let v = b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(v["merged"], true);
+    assert_eq!(merge_calls(&h), 1, "read merged, so not merged again");
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn a_merge_still_refused_after_its_tries_fails_with_the_hosts_reason() {
+    let (b, id, h) = ready_to_merge(2);
+    *h.merge_error.lock() = Some("GraphQL: Merge already in progress (mergePullRequest)".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("Couldn't merge PR #9") && e.contains("Merge already in progress"), "{e}");
+    assert_eq!(merge_calls(&h), 3, "the first try and two more");
+    assert_eq!(b.phase(id), "merge");
+}
+
+#[test]
+fn a_merge_refused_for_good_is_not_tried_again() {
+    let (b, id, h) = ready_to_merge(3);
+    *h.merge_error.lock() = Some("X Pull request acme/webapp#9 is not mergeable: the base branch policy prohibits the merge.".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("base branch policy"), "{e}");
+    assert_eq!(merge_calls(&h), 1);
+}
+
 #[test]
 fn a_check_only_an_earlier_push_posted_holds_the_pr_only_for_the_short_wait() {
     let b = board_with(|c| c.pr.agents_merge = Some(true));

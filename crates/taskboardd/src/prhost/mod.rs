@@ -587,6 +587,10 @@ pub struct FakeHost {
     pub review_error: Mutex<Option<String>>,
     /// What `merge` answers instead of merging, while set.
     pub merge_error: Mutex<Option<String>>,
+    /// What the next `merge` calls answer instead of merging, one each, before `merge_error`.
+    pub merge_errors: Mutex<Vec<String>>,
+    /// The merge goes through even when `merge` answers one of `merge_errors`.
+    pub merge_lands: Mutex<bool>,
     /// Reviewers `remove_reviewers` answers for without taking them off.
     pub keeps: Mutex<Vec<String>>,
     /// How many times `read` was called.
@@ -609,7 +613,7 @@ pub struct FakeHost {
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), lines: Mutex::new(None), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), lines: Mutex::new(None), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), merge_errors: Mutex::new(vec![]), merge_lands: Mutex::new(false), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -707,6 +711,16 @@ impl PrHost for FakeHost {
     }
     fn merge(&self, _pr: &PrRef, opts: &MergeOpts) -> HostResult<()> {
         self.log(format!("merge close={} strategy={}", opts.close_source_branch, opts.strategy.as_deref().unwrap_or("default")));
+        let next = {
+            let mut errors = self.merge_errors.lock();
+            (!errors.is_empty()).then(|| errors.remove(0))
+        };
+        if let Some(e) = next {
+            if *self.merge_lands.lock() {
+                self.rec.lock().state = "MERGED".into();
+            }
+            return Err(e);
+        }
         if let Some(e) = self.merge_error.lock().clone() {
             return Err(e);
         }
