@@ -242,7 +242,19 @@ fn gate_el(m: &MainWindow, t: &Theme, gr: &str, g: Gate, cx: &mut Context<MainWi
         .children(inline_note(m, t, &format!("wgate:{gr}")))
 }
 
+/// A waves column narrower than this stacks each task row onto two lines (status and ref beside
+/// the title, then its latest, PR and time under the title), so titles and status words keep
+/// their room.
+pub const ROWS_STACK_BELOW: f32 = 760.;
+/// The chip's width; it borrows 6px of the gap after it.
+const CHIP_W: f32 = 92.;
+const REF_W: f32 = 44.;
+const ROW_GAP: f32 = 12.;
+/// Where a stacked row's second line starts: under the title, past the chip and ref.
+const STACK_INDENT: f32 = CHIP_W - 6. + ROW_GAP + REF_W + ROW_GAP;
+
 fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let stacked = m.goal_page.lists.stack_rows;
     let (loud, _, _) = x.row.st.colors(t);
     let (o1, o2) = (x.r.clone(), x.r.clone());
     let (hover, link) = (t.panel_2, t.accent);
@@ -255,46 +267,51 @@ fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> S
     };
     // Just words: a click here opens the task like the rest of the row; its panel links the PR.
     let pr = div().flex_none().w(px(120.)).min_w_0().truncate().text_size(px(12.)).text_color(t.muted).child(kit::clipped(SharedString::from(format!("goal-task-pr-{}", x.r)), x.pr.clone()));
+    // A tighter chip than the board's, borrowing 6px of the gap so the ref and title stay put.
+    let chip = div().flex_none().w(px(CHIP_W)).mr(px(-6.)).child(status::chip(t, x.row.st).w(px(CHIP_W)).px(px(5.)).text_size(px(11.)));
+    let r = div().flex_none().w(px(REF_W)).whitespace_nowrap().text_size(px(11.)).font_family(t.mono_font.clone()).text_color(t.muted).child(x.r.clone());
+    let words = div()
+        .id(SharedString::from(format!("goal-task-title-{o2}")))
+        .min_w_0()
+        .font_weight(FontWeight::MEDIUM)
+        .hover(move |s| s.text_color(link).underline())
+        .child(kit::clipped(SharedString::from(format!("goal-task-title-text-{}", x.r)), x.title));
+    let title = cell(
+        div()
+            .flex()
+            .child(if stacked { words.line_clamp(2) } else { words.truncate() })
+            .items_center()
+            .gap(px(8.))
+            .when(x.design, |d| d.child(kit::design_pill(t)))
+            .when(x.research, |d| d.child(kit::research_pill(t))),
+        1.,
+    );
+    let line = |grow| cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(kit::clipped(SharedString::from(format!("goal-task-line-{}", x.r)), x.row.line.clone())), grow);
+    let age = div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(x.row.age.clone());
+    let retry = x.retry.then(|| retry_btn(m, t, &x.r, cx));
     // The task open in the panel: a soft accent fill and a 2px accent edge on its left.
     let on = crate::app::open_ref(m) == Some(x.r.as_str());
-    div()
+    let base = div()
         .id(SharedString::from(format!("goal-task-{}", x.r)))
         .relative()
         .when(on, |d| d.bg(t.accent_soft).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .h(px(36.))
         .px(px(18.))
         .border_b_1()
         .border_color(t.divider)
         .text_size(px(13.))
         .when(!on, |d| d.hover(move |s| s.bg(hover)))
         .cursor_pointer()
-        .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx)))
-        // A tighter chip than the board's, borrowing 6px of the gap so the ref and title stay put.
-        .child(div().flex_none().w(px(92.)).mr(px(-6.)).child(status::chip(t, x.row.st).w(px(92.)).px(px(5.)).text_size(px(11.))))
-        .child(div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(11.)).font_family(t.mono_font.clone()).text_color(t.muted).child(x.r.clone()))
-        .child(cell(
-            div().flex().child(
-                div()
-                    .id(SharedString::from(format!("goal-task-title-{o2}")))
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::MEDIUM)
-                    .hover(move |s| s.text_color(link).underline())
-                    .child(kit::clipped(SharedString::from(format!("goal-task-title-text-{}", x.r)), x.title)),
-            )
-            .items_center()
-            .gap(px(8.))
-            .when(x.design, |d| d.child(kit::design_pill(t)))
-            .when(x.research, |d| d.child(kit::research_pill(t))),
-            1.,
-        ))
-        .child(cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(kit::clipped(SharedString::from(format!("goal-task-line-{}", x.r)), x.row.line)), 1.1))
-        .when(x.retry, |d| d.child(retry_btn(m, t, &x.r, cx)))
-        .child(pr)
-        .child(div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(x.row.age))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx)));
+    if stacked {
+        return base
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .py(px(8.))
+            .child(div().flex().items_center().gap(px(ROW_GAP)).child(chip).child(r).child(title))
+            .child(div().flex().items_center().gap(px(ROW_GAP)).pl(px(STACK_INDENT)).child(line(1.)).children(retry).child(pr).child(age));
+    }
+    base.flex().items_center().gap(px(ROW_GAP)).h(px(36.)).child(chip).child(r).child(title).child(line(1.1)).children(retry).child(pr).child(age)
 }
 
 fn retry_btn(m: &MainWindow, t: &Theme, r: &str, cx: &mut Context<MainWindow>) -> Stateful<Div> {

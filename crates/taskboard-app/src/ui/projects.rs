@@ -171,7 +171,7 @@ pub fn list_with(state: &Value, goals: &[Value], details: &HashMap<String, Value
                     continue;
                 }
                 open += 1;
-                let (st, label) = pill(g, &tally(g, details.get(&fmt::ref_of(g, "G"))));
+                let (st, label) = pill(g, &Tally::of(g, details.get(&fmt::ref_of(g, "G"))));
                 match st {
                     St::Needs => needs = true,
                     St::Working => running += 1,
@@ -313,17 +313,8 @@ fn pill(g: &Value, t: &Tally) -> (St, &'static str) {
     }
 }
 
-/// The goal's tally from its tasks and the shared tasks it counts, else from its summary (whose
-/// counts already take in the shared ones).
-fn tally(g: &Value, d: Option<&Value>) -> Tally {
-    match d.filter(|d| d["tasks"].is_array() && !arr(d, "shared").is_empty()) {
-        Some(d) => Tally::of(g, Some(&serde_json::json!({"tasks": arr(d, "tasks").iter().chain(arr(d, "shared")).collect::<Vec<_>>()}))),
-        None => Tally::of(g, d),
-    }
-}
-
 fn goal_line(g: &Value, d: Option<&Value>, project: &str) -> GoalLine {
-    let t = tally(g, d);
+    let t = Tally::of(g, d);
     let parts = t.parts();
     let done = parts.iter().find(|(s, _)| *s == St::Done).map(|(_, n)| *n).unwrap_or(0);
     let counted: i64 = parts.iter().map(|(_, n)| n).sum();

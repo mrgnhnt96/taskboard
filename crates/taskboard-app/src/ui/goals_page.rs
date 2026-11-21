@@ -161,11 +161,12 @@ impl Tally {
         }
     }
 
-    /// From the goal's tasks, else from its summary's counts.
+    /// From the goal's tasks and the shared tasks of other goals it counts, else from its
+    /// summary's counts (which already take in the shared ones).
     pub(crate) fn of(g: &Value, detail: Option<&Value>) -> Tally {
         let mut t = Tally::default();
         if let Some(d) = detail.filter(|d| d["tasks"].is_array()) {
-            for c in arr(d, "tasks") {
+            for c in arr(d, "tasks").iter().chain(arr(d, "shared")) {
                 let st = status::row(c).st;
                 t.add(st);
                 if st == St::Failed && s(c, "status") != "done" {
@@ -985,6 +986,18 @@ mod tests {
         let mut got: Vec<(&str, &str)> = sh[0].lines.iter().map(|l| (l.r.as_str(), l.about.as_str())).collect();
         got.sort();
         assert_eq!(got, [("G1", "Short"), ("G2", "Long"), ("G3", "Short"), ("G4", "")]);
+    }
+
+    #[test]
+    fn a_goal_bar_counts_the_shared_tasks_of_other_goals() {
+        // Its summary's done and total take in the shared task, so its bar does too.
+        let g = goal(1, "web", 1, 3, json!({"active": 1}));
+        let d = json!({"tasks": [task("T1", 1, "done", json!({})), task("T2", 1, "working", json!({}))], "shared": [task("T9", 1, "working", json!({}))], "waves": []});
+        let row = goal_row(&g, Some(&d));
+        let n = |st: St| row.parts.iter().find(|(s, _)| *s == st).map(|(_, n)| *n).unwrap();
+        assert_eq!((n(St::Done), n(St::Working)), (1, 2));
+        assert_eq!(row.parts.iter().map(|(_, n)| n).sum::<i64>(), row.total);
+        assert_eq!(row.now, "2 working");
     }
 
     #[test]
