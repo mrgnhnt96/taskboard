@@ -59,6 +59,8 @@ pub struct Inputs<'a> {
     pub st: &'a Value,
     /// Why `GET /state` failed, and since when ("3:05 PM").
     pub down: Option<(&'a str, Option<&'a str>)>,
+    /// The board is up but `GET /state` timed out: why, and since when.
+    pub slow: Option<(&'a str, Option<&'a str>)>,
     pub hooks: &'a Hooks,
     pub hooks_busy: bool,
     pub hooks_failed: Option<crate::hooks::Failed>,
@@ -79,6 +81,15 @@ pub fn items(i: &Inputs) -> Vec<Item> {
             Tone::Bad,
             "The board isn’t answering",
             format!("It stopped answering{since}. {why} Trying again every few seconds."),
+            vec![("Try again", Act::TryBoard), ("Copy details", Act::Copy(why.to_string()))],
+        ));
+    }
+    if let Some((why, at)) = i.slow {
+        let since = at.map(|a| format!(" since {a}")).unwrap_or_default();
+        out.push(item(
+            Tone::Act,
+            "The board is slow",
+            format!("It’s running but hasn’t answered in time{since}. What you see is held until it does."),
             vec![("Try again", Act::TryBoard), ("Copy details", Act::Copy(why.to_string()))],
         ));
     }
@@ -195,17 +206,21 @@ fn tone_colors(t: &Theme, tone: Option<Tone>) -> (Hsla, Hsla) {
     }
 }
 
-fn inputs(m: &MainWindow) -> (Value, Option<(String, Option<String>)>) {
+type Since = Option<(String, Option<String>)>;
+
+fn inputs(m: &MainWindow) -> (Value, Since, Since) {
     let st = (*m.state_rc()).clone();
-    (st, m.down.clone().map(|d| (d, m.down_at.clone())))
+    let since = |why: &Option<String>| why.clone().map(|d| (d, m.down_at.clone()));
+    (st, since(&m.down), since(&m.slow))
 }
 
 fn current(m: &MainWindow) -> (Vec<Item>, bool) {
-    let (st, down) = inputs(m);
+    let (st, down, slow) = inputs(m);
     let midna_up = st.get("midna").is_some_and(|v| v["up"] == true);
     let i = Inputs {
         st: &st,
         down: down.as_ref().map(|(d, at)| (d.as_str(), at.as_deref())),
+        slow: slow.as_ref().map(|(d, at)| (d.as_str(), at.as_deref())),
         hooks: &m.hooks,
         hooks_busy: m.hooks_busy,
         hooks_failed: crate::hooks::failed(),
@@ -451,7 +466,9 @@ fn restart_to_update(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 pub fn banners(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let mut out = Vec::new();
     if let Some(why) = m.down.clone() {
-        out.push(down_card(t, &why, m.down_at.as_deref(), m.data.state.is_some(), cx));
+        out.push(down_card(t, &why, m.down_at.as_deref(), m.data.state.is_some(), false, cx));
+    } else if let Some(why) = m.slow.clone() {
+        out.push(down_card(t, &why, m.down_at.as_deref(), m.data.state.is_some(), true, cx));
     }
     out.extend(setup_rows(t, cx));
     out
@@ -467,12 +484,25 @@ pub fn down_words(at: Option<&str>, have_state: bool) -> (String, String) {
     ("The board isn’t answering".into(), line)
 }
 
-fn down_card(t: &Theme, why: &str, at: Option<&str>, have_state: bool, cx: &mut Context<MainWindow>) -> AnyElement {
-    let (title, line) = down_words(at, have_state);
-    let detail = match at {
-        Some(at) => format!("The board stopped answering at {at}: {why}"),
-        None => format!("The board isn’t answering: {why}"),
+/// What the slow-board card says: the board is up, so actions still go; only the view waits.
+pub fn slow_words(at: Option<&str>, have_state: bool) -> (String, String) {
+    let line = match (at, have_state) {
+        (Some(at), true) => format!("It’s running but busy. What you see is from {at}, and it catches up when the board answers."),
+        (None, true) => "It’s running but busy. What you see is from before it slowed, and it catches up when the board answers.".into(),
+        (_, false) => "It’s running but busy. There’s nothing to show until it answers.".into(),
     };
+    ("The board is slow".into(), line)
+}
+
+fn down_card(t: &Theme, why: &str, at: Option<&str>, have_state: bool, slow: bool, cx: &mut Context<MainWindow>) -> AnyElement {
+    let (title, line) = if slow { slow_words(at, have_state) } else { down_words(at, have_state) };
+    let detail = match (slow, at) {
+        (true, Some(at)) => format!("The board has been slow to answer since {at}: {why}"),
+        (true, None) => format!("The board is slow to answer: {why}"),
+        (false, Some(at)) => format!("The board stopped answering at {at}: {why}"),
+        (false, None) => format!("The board isn’t answering: {why}"),
+    };
+    let (soft, fg, line_c) = if slow { (t.warn_soft, t.warn_text, t.warn_line) } else { (t.down_soft, t.down, t.down_line) };
     div()
         .flex_none()
         .mx(px(40.))
@@ -481,9 +511,9 @@ fn down_card(t: &Theme, why: &str, at: Option<&str>, have_state: bool, cx: &mut 
         .px(px(16.))
         .py(px(12.))
         .rounded(px(10.))
-        .bg(t.down_soft)
+        .bg(soft)
         .border_1()
-        .border_color(t.down_line)
+        .border_color(line_c)
         .flex()
         .items_center()
         .gap(px(12.))
@@ -494,11 +524,11 @@ fn down_card(t: &Theme, why: &str, at: Option<&str>, have_state: bool, cx: &mut 
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.down).child(title))
-                .child(div().text_size(px(12.5)).text_color(t.down).child(line)),
+                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child(title))
+                .child(div().text_size(px(12.5)).text_color(fg).child(line)),
         )
         .child(kit::btn_small(t, "down-retry", "Try again").on_click(cx.listener(|m, _, _, cx| m.refresh(cx))))
-        .child(kit::btn_small(t, "down-system", "Open System").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSystemSettings), cx)))
+        .when(!slow, |d| d.child(kit::btn_small(t, "down-system", "Open System").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSystemSettings), cx))))
         .child(kit::btn_small(t, "down-copy", "Copy details").on_click(cx.listener(move |m, _, _, cx| crate::app::copy_text(m, &detail, cx))))
         .into_any_element()
 }
@@ -568,6 +598,7 @@ mod tests {
         Inputs {
             st,
             down: None,
+            slow: None,
             hooks: &Hooks::Current,
             hooks_busy: false,
             hooks_failed: None,
@@ -602,6 +633,23 @@ mod tests {
         assert_eq!(list[1].tone, Tone::Act);
         assert_eq!(list[2].title, "Taskboard 1.2.0 is ready");
         assert_eq!(summary(&list, true).1, "The board isn’t answering · +2 more");
+    }
+
+    /// A board that's up but slow is a warning, not a failure, and says the view is held.
+    #[::core::prelude::v1::test]
+    fn a_slow_board_reads_as_slow_not_stopped() {
+        let st = json!({"midna": {"up": true}});
+        let mut i = base(&st);
+        i.slow = Some(("The board is running but slow to answer.", Some("9:44 AM")));
+        let list = items(&i);
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].tone, list[0].title.as_str()), (Tone::Act, "The board is slow"));
+        assert!(list[0].body.contains("since 9:44 AM"), "{}", list[0].body);
+        assert_eq!(list[0].acts[0], ("Try again".to_string(), Act::TryBoard));
+        assert!(!list.iter().any(|x| x.title.contains("isn’t answering")));
+        let (title, line) = slow_words(Some("9:44 AM"), true);
+        assert_eq!(title, "The board is slow");
+        assert!(line.contains("from 9:44 AM") && !line.contains("actions wait"), "{line}");
     }
 
     #[::core::prelude::v1::test]

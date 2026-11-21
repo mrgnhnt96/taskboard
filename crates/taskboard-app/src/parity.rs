@@ -71,8 +71,8 @@ pub struct Recording {
     inner: Fake,
     pub posts: Mutex<Vec<(String, Value)>>,
     pub gets: Mutex<Vec<String>>,
-    /// GET paths that fail with this (status, sentence) until cleared.
-    fail: Mutex<Vec<(String, u16, String)>>,
+    /// GET paths that fail with this error until cleared.
+    fail: Mutex<Vec<(String, crate::backend::CallError)>>,
 }
 
 impl Recording {
@@ -100,7 +100,13 @@ impl Recording {
 
     /// Make `GET <path>` fail with the board's `status` and sentence (empty `msg`: unreachable).
     pub fn fail(&self, path: &str, status: u16, msg: &str) {
-        self.fail.lock().unwrap().push((path.to_string(), status, msg.to_string()));
+        self.fail.lock().unwrap().push((path.to_string(), crate::backend::CallError { status, message: msg.to_string(), slow: false }));
+    }
+
+    /// Make `GET <path>` time out on a board that's up (it answers the quick check).
+    pub fn stall(&self, path: &str) {
+        let e = crate::backend::CallError { status: 0, message: "The board is running but slow to answer.".into(), slow: true };
+        self.fail.lock().unwrap().push((path.to_string(), e));
     }
 
     pub fn heal(&self) {
@@ -119,8 +125,8 @@ impl Backend for Recording {
     }
     fn get(&self, path: &str, query: &[(&str, String)]) -> CallResult {
         self.gets.lock().unwrap().push(path.to_string());
-        if let Some((_, status, msg)) = self.fail.lock().unwrap().iter().find(|(p, _, _)| p == path) {
-            return Err(crate::backend::CallError { status: *status, message: msg.clone() });
+        if let Some((_, e)) = self.fail.lock().unwrap().iter().find(|(p, _)| p == path) {
+            return Err(e.clone());
         }
         self.inner.get(path, query)
     }
