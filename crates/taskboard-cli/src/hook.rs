@@ -785,7 +785,8 @@ fn works_in(v: &Value, top: &Path) -> bool {
 
 /// `PreToolUse`: in a checkout tasks share, refuses a commit that takes files another task still on its
 /// terminal edited (and this one didn't), and a switch, checkout, rebase, stash or reset while such a
-/// task has uncommitted edits there. In a worktree slot this task holds, only a task whose terminal
+/// task has uncommitted edits there (not a switch that only takes the checkout back to the branch it
+/// was on: `returns_home`). In a worktree slot this task holds, only a task whose terminal
 /// works in that slot now counts (a stopped rebase or merge there isn't held up by a record left from
 /// before). No other task's edits, no board: carry on.
 fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
@@ -793,7 +794,7 @@ fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &s
         return false;
     }
     let cmd = payload["tool_input"]["command"].as_str().unwrap_or("");
-    if !SHARED_GIT_RE.is_match(&unquoted(cmd)) || ledger(&cfg.data).is_empty() {
+    if !SHARED_GIT_RE.is_match(&unquoted(cmd)) || ledger(&cfg.data).is_empty() || returns_home(cmd, cwd) {
         return false;
     }
     let Some((v, _)) = steps(cfg, session, "") else { return false };
@@ -848,15 +849,46 @@ fn branch_move(cmd: &str, cwd: &str) -> Option<(String, PathBuf)> {
     Some((verb, dir))
 }
 
+/// Whether `cmd` only takes a checkout back to the branch it was on: its one git command that moves or
+/// rewrites the checkout is a plain `git switch <branch>` or `git checkout <branch>` (or `-`), and the
+/// checkout's last move (HEAD's newest reflog entry) went from that branch to the one it's on now.
+/// Nothing was committed, reset or rebased there since, so the switch undoes that move and strands
+/// nothing; the guards that keep a shared checkout's branch put let it through.
+fn returns_home(cmd: &str, cwd: &str) -> bool {
+    let masked = unquoted(cmd);
+    if SHARED_GIT_RE.find_iter(&masked).count() != 1 || BRANCH_MOVE_RE.find_iter(&masked).count() != 1 || branch_move(cmd, cwd).is_none() {
+        return false;
+    }
+    let Some(c) = BRANCH_MOVE_RE.captures(&masked) else { return false };
+    let Some(m) = c.get(0) else { return false };
+    let rest = &masked[m.end()..];
+    let args = words_of(cmd, &rest[..rest.find([';', '&', '|', '>', '<']).unwrap_or(rest.len())], m.end());
+    let (flags, named): (Vec<&str>, Vec<&str>) = args.into_iter().partition(|a| a.starts_with('-') && *a != "-");
+    if named.len() != 1 || !flags.iter().all(|f| matches!(*f, "-q" | "--quiet" | "--progress" | "--no-progress")) {
+        return false;
+    }
+    let dir = runs_in(cmd, Some(m), cwd);
+    let Some(last) = git_text(&dir, &["reflog", "-1", "--format=%gs", "HEAD"]) else { return false };
+    let Some((from, to)) = last.trim().strip_prefix("checkout: moving from ").and_then(|s| s.split_once(" to ")) else { return false };
+    let Some(on) = git_text(&dir, &["symbolic-ref", "-q", "--short", "HEAD"]) else { return false };
+    let target = if named[0] == "-" { from } else { named[0] };
+    target == from && to == on.trim() && git_text(&dir, &["show-ref", "--verify", "-q", &format!("refs/heads/{from}")]).is_some()
+}
+
 /// `PreToolUse`: refuses a `git switch`, or a `git checkout` of a branch, in a project's main checkout
 /// while another terminal works there, on a task or not: the branch would move under it, and its next
-/// commit would land on a branch it never chose. A worktree slot has one terminal; no board: carry on.
+/// commit would land on a branch it never chose. A switch that only takes the checkout back to the
+/// branch it was on (`returns_home`) puts it back under them. A worktree slot has one terminal; no
+/// board: carry on.
 fn shared_branch_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
     if payload["tool_name"] != "Bash" {
         return false;
     }
     let cmd = payload["tool_input"]["command"].as_str().unwrap_or("");
     let Some((verb, dir)) = branch_move(cmd, cwd) else { return false };
+    if returns_home(cmd, cwd) {
+        return false;
+    }
     let Some((_, top)) = repo_of(&dir) else { return false };
     // A linked worktree's `.git` is a file; only the main checkout's is a folder.
     if !top.join(".git").is_dir() {
@@ -2179,6 +2211,38 @@ mod tests {
         let shown = branch_refusal(Some("T4"), "checkout", Path::new("/r"), &["A (T1)".into(), "B".into()], "tb");
         assert!(shown.starts_with("T4 can't git checkout in /r: A (T1), B work in"), "{shown}");
         assert!(shown.contains("tb slot claim --bring <files>"), "{shown}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_switch_back_to_the_branch_the_checkout_left_is_a_return() {
+        let (root, repo, _) = shared_checkout("return");
+        let dir = repo.to_string_lossy().to_string();
+        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+        git(&["branch", "-M", "main"]);
+        git(&["branch", "other"]);
+        let home = |cmd: &str| returns_home(cmd, &dir);
+        assert!(!home("git switch other"), "no move to undo: the last entry is the commit");
+        git(&["switch", "-q", "-c", "fix"]);
+        assert!(home("git switch main"));
+        assert!(home("git checkout main"));
+        assert!(home("git switch -q main"));
+        assert!(home("git switch -"), "`-` is the branch it left");
+        assert!(home(&format!("cd / && git -C {dir} switch main")));
+        assert!(!home("git switch other"), "not the branch it left");
+        assert!(!home("git switch -c main2 main"), "a new branch isn't a return");
+        assert!(!home("git switch --discard-changes main"), "throws edits away");
+        assert!(!home("git checkout -f main"));
+        assert!(!home("git switch main && git stash"), "the stash rides along unchecked");
+        assert!(!home("git switch main && git checkout other"));
+        assert!(!home("git checkout main -- a.rs"), "a restore isn't a move");
+        assert!(!home("git status"));
+        std::fs::write(repo.join("a.rs"), "two\n").unwrap();
+        git(&["commit", "-q", "-am", "two"]);
+        assert!(!home("git switch main"), "a commit on fix since the move would be stranded");
+        git(&["switch", "-q", "main"]);
+        git(&["switch", "-q", "--detach"]);
+        assert!(!home("git switch main"), "a detached checkout has no branch to move back from");
         let _ = std::fs::remove_dir_all(&root);
     }
 
