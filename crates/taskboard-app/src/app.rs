@@ -227,7 +227,9 @@ pub struct MainWindow {
     pub idea_toast: Option<Instant>,
     /// Why the last `GET /state` failed (the "isn't answering" banner).
     pub down: Option<String>,
-    /// When the board stopped answering ("3:05 PM"), while it hasn't since.
+    /// The board is up but the last `GET /state` timed out (the "slow" banner): what's shown is held.
+    pub slow: Option<String>,
+    /// When the board stopped answering, or turned slow ("3:05 PM"), while it hasn't answered since.
     pub down_at: Option<String>,
     pub focus: FocusHandle,
     /// The open dialog's own focus: keys go to the dialog, and Tab stays inside it.
@@ -258,6 +260,9 @@ pub struct MainWindow {
     generation: u64,
     /// The newest refresh that has answered: behind `generation` while one is still out.
     answered: u64,
+    /// `GET /state` calls still out. A poll doesn't ask again while one is: on a slow board they'd
+    /// only queue up behind each other.
+    states_out: usize,
     /// The generation when a change was last sent or answered: a refresh asked at or before it may
     /// have read the board before the change, so its answer is dropped whole.
     posted: u64,
@@ -378,6 +383,8 @@ impl MainWindow {
             daemon_busy: false,
             menus_for: None,
             down_at: None,
+            slow: None,
+            states_out: 0,
             every: pace(window),
             poller: None,
         };
@@ -1162,13 +1169,24 @@ impl MainWindow {
         self.ask(false, cx);
     }
 
-    /// A refresh. One for a `poll` redraws only when its answer differs from the one shown.
+    /// A refresh. One for a `poll` redraws only when its answer differs from the one shown, and
+    /// leaves `GET /state` out while an earlier one is still out.
     fn ask(&mut self, poll: bool, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
         let asked = Wants::of(self, cx);
+        let skip_state = poll && self.states_out > 0;
+        // Without its own state answer the refresh goes by the last one: a page's error shows only
+        // while the board is answering.
+        let known = skip_state.then_some(self.down.is_none() && self.slow.is_none());
         let (tx, rx) = async_channel::unbounded();
         for (key, call) in asked.clone().calls(self.stamps.since()) {
+            if key == "state" {
+                if skip_state {
+                    continue;
+                }
+                self.states_out += 1;
+            }
             let (backend, tx, asked) = (self.backend.clone(), tx.clone(), asked.clone());
             cx.background_executor()
                 .spawn(async move {
@@ -1182,7 +1200,7 @@ impl MainWindow {
         cx.spawn(async move |this, cx| {
             // While the board is down only the banner speaks (`S.stateErr`): a page's error waits
             // for `GET /state`, and is dropped when that failed too.
-            let (mut up, mut held) = (None, Vec::new());
+            let (mut up, mut held) = (known, Vec::new());
             while let Ok((key, got)) = rx.recv().await {
                 let failed = got.failed();
                 if let Some(s) = &got.state {
@@ -1202,6 +1220,9 @@ impl MainWindow {
                 }
                 let landed = this.update(cx, |m, cx| {
                     for (key, got) in now {
+                        if key == "state" {
+                            m.states_out = m.states_out.saturating_sub(1);
+                        }
                         m.part(generation, &asked, key, got, poll, cx);
                     }
                 });
@@ -1223,7 +1244,7 @@ impl MainWindow {
         let outdated = self.generation != generation;
         let got = if !outdated {
             got
-        } else if generation > self.answered && generation > self.posted {
+        } else if (generation > self.answered || key == "state") && generation > self.posted {
             got.still(asked, &Wants::of(self, cx))
         } else {
             return;
@@ -1698,13 +1719,18 @@ impl Got {
                     m.data.state = Some(Rc::new(v));
                 }
                 m.down = None;
+                m.slow = None;
                 m.down_at = None;
             }
             Some(Err(e)) => {
-                if m.down.is_none() {
+                if m.down.is_none() && m.slow.is_none() {
                     m.down_at = Some(chrono::Local::now().format("%-I:%M %p").to_string());
                 }
-                m.down = Some(e.message);
+                if e.slow {
+                    (m.down, m.slow) = (None, Some(e.message));
+                } else {
+                    (m.down, m.slow) = (Some(e.message), None);
+                }
             }
             None => {}
         }
@@ -2699,6 +2725,49 @@ mod tests {
             assert_eq!(m.generation, before + 1);
         })
         .unwrap();
+    }
+
+    /// A board that's up but slow keeps what's shown and says it's slow, not down; it clears once
+    /// the board answers.
+    #[gpui_kit::test]
+    fn a_slow_board_holds_the_view_and_reads_as_slow(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        settle(cx);
+        let before = w.update(cx, |m: &mut MainWindow, _, _| m.data.state.clone()).unwrap();
+        rec.stall("state");
+        w.update(cx, |m: &mut MainWindow, _, cx| m.poll(cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert!(m.slow.is_some() && m.down.is_none(), "slow, not down");
+            assert!(m.down_at.is_some());
+            assert!(std::rc::Rc::ptr_eq(m.data.state.as_ref().unwrap(), before.as_ref().unwrap()), "the view is held");
+        })
+        .unwrap();
+        rec.heal();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.poll(cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert!(m.slow.is_none() && m.down.is_none() && m.down_at.is_none())).unwrap();
+    }
+
+    /// While a `GET /state` is still out a poll asks for the rest but not the state again; a
+    /// refresh (a click, a page change) still asks.
+    #[gpui_kit::test]
+    fn a_poll_leaves_the_state_out_while_one_is_out(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        settle(cx);
+        rec.take_gets();
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.states_out, 0, "every state call came back");
+            m.states_out = 1;
+            m.poll(cx);
+        })
+        .unwrap();
+        settle(cx);
+        let gets = rec.take_gets();
+        assert!(gets.iter().any(|g| g == "goals") && !gets.iter().any(|g| g == "state"), "{gets:?}");
+        w.update(cx, |m: &mut MainWindow, _, cx| m.refresh(cx)).unwrap();
+        settle(cx);
+        assert!(rec.take_gets().iter().any(|g| g == "state"));
     }
 
     /// A poll that brings nothing new doesn't redraw; one that does, a refresh, or a poll after

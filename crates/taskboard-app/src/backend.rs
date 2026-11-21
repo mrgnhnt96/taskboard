@@ -20,6 +20,8 @@ pub struct CallError {
     #[cfg_attr(not(test), allow(dead_code))]
     pub status: u16,
     pub message: String,
+    /// The board is up (it answered a quick check) but didn't answer this call in time.
+    pub slow: bool,
 }
 
 impl std::fmt::Display for CallError {
@@ -59,12 +61,21 @@ pub struct Daemon {
     /// Why the board was last out of reach (None: it answered). Logged when it changes, not on
     /// every poll.
     down: std::sync::Mutex<Option<String>>,
+    /// For the quick check that tells a slow board from a down one (`GET /info`, no database).
+    probe: ureq::Agent,
+}
+
+/// How long the quick check waits: the board's cheapest call, so a live board answers well inside it.
+const PROBE: Duration = Duration::from_secs(3);
+
+fn probe_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout_connect(PROBE).timeout(PROBE).build()
 }
 
 impl Daemon {
     #[cfg(test)]
     pub fn at(base: &str) -> Daemon {
-        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build(), token: None, socket: None, down: Default::default() }
+        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).timeout(Duration::from_millis(500)).build(), token: None, socket: None, down: Default::default(), probe: probe_agent() }
     }
 
     pub fn new() -> Daemon {
@@ -78,6 +89,7 @@ impl Daemon {
             agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(2)).timeout(Duration::from_secs(20)).build(),
             token: cfg.as_ref().map(taskboardd::apptoken::path),
             down: Default::default(),
+            probe: probe_agent(),
         }
     }
 
@@ -90,7 +102,7 @@ impl Daemon {
             Ok(resp) => Ok(resp.into_json::<Value>().unwrap_or(Value::Null)),
             Err(ureq::Error::Status(code, resp)) => {
                 let msg = resp.into_json::<Value>().ok().and_then(|v| v["error"].as_str().map(str::to_string));
-                Err(CallError { status: code, message: msg.unwrap_or_else(|| format!("The board answered {code}.")) })
+                Err(CallError { status: code, message: msg.unwrap_or_else(|| format!("The board answered {code}.")), slow: false })
             }
             Err(ureq::Error::Transport(t)) => {
                 let mut why = t.kind().to_string();
@@ -100,9 +112,29 @@ impl Daemon {
                 if let Some(s) = std::error::Error::source(&t) {
                     why += &format!(": {s}");
                 }
-                Err(self.unreachable(path, why))
+                Err(if self.alive() { self.slow(path, why) } else { self.unreachable(path, why) })
             }
         }
+    }
+
+    /// The quick check: the board answers `GET /info` (any answer: it's serving).
+    fn alive(&self) -> bool {
+        match self.probe.get(&format!("{}/tasks/api/info", self.base)).call() {
+            Ok(_) | Err(ureq::Error::Status(..)) => true,
+            Err(ureq::Error::Transport(_)) => false,
+        }
+    }
+
+    /// The board is up but this call timed out (or its connection broke): busy, not gone, so it
+    /// isn't registered again as a down one would be.
+    fn slow(&self, path: &str, why: String) -> CallError {
+        let why = format!("slow: {why}");
+        let mut down = self.down.lock().unwrap_or_else(|e| e.into_inner());
+        if down.as_deref() != Some(why.as_str()) {
+            crate::log::info(format!("the board at {} is up but slow to answer ({path}): {why}", self.base));
+            *down = Some(why);
+        }
+        CallError { status: 0, message: "The board is running but slow to answer.".into(), slow: true }
     }
 
     /// The UI's "can't reach" error; the real reason goes to `app.log` when it's new.
@@ -113,7 +145,7 @@ impl Daemon {
             *down = Some(why);
         }
         crate::install::daemon_unreachable();
-        CallError { status: 0, message: "Can’t reach the board.".into() }
+        CallError { status: 0, message: "Can’t reach the board.".into(), slow: false }
     }
 
     fn reached(&self) {
@@ -157,7 +189,10 @@ impl Backend for Daemon {
                     return socket_answer(status, &answer);
                 }
                 Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {}
-                Err(e) => return Err(self.unreachable(path, format!("app socket {}: {e}", sock.display()))),
+                Err(e) => {
+                    let why = format!("app socket {}: {e}", sock.display());
+                    return Err(if self.alive() { self.slow(path, why) } else { self.unreachable(path, why) });
+                }
             }
         }
         let mut req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
@@ -175,7 +210,7 @@ fn socket_answer(status: u16, body: &[u8]) -> CallResult {
         return Ok(v.unwrap_or(Value::Null));
     }
     let msg = v.and_then(|v| v["error"].as_str().map(str::to_string));
-    Err(CallError { status, message: msg.unwrap_or_else(|| format!("The board answered {status}.")) })
+    Err(CallError { status, message: msg.unwrap_or_else(|| format!("The board answered {status}.")), slow: false })
 }
 
 // ------------------------------------------------------------------ fake
@@ -271,12 +306,12 @@ impl Backend for Fake {
 
     fn get(&self, path: &str, query: &[(&str, String)]) -> CallResult {
         let q: Query = query.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-        api::dispatch(&self.board, "GET", path, &q, &json!({})).map_err(|e| CallError { status: e.status, message: e.message })
+        api::dispatch(&self.board, "GET", path, &q, &json!({})).map_err(|e| CallError { status: e.status, message: e.message, slow: false })
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
         let q: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
-        api::dispatch(&self.board, "POST", path, &q, &body).map_err(|e| CallError { status: e.status, message: e.message })
+        api::dispatch(&self.board, "POST", path, &q, &body).map_err(|e| CallError { status: e.status, message: e.message, slow: false })
     }
 }
 
@@ -653,6 +688,35 @@ mod tests {
         assert_eq!(d.down.lock().unwrap().as_deref(), Some(why.as_str()));
         d.reached();
         assert!(d.down.lock().unwrap().is_none());
+    }
+
+    /// A board that takes the connection and answers the quick check but not the call in time is
+    /// slow, not down.
+    #[::core::prelude::v1::test]
+    fn a_timeout_on_a_live_board_is_slow() {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = vec![];
+            for s in l.incoming() {
+                let mut s = s.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                if String::from_utf8_lossy(&buf[..n]).starts_with("GET /tasks/api/info ") {
+                    s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}").unwrap();
+                } else {
+                    held.push(s);
+                }
+            }
+        });
+        let d = Daemon::at(&format!("http://127.0.0.1:{port}"));
+        let e = d.get("state", &[]).unwrap_err();
+        assert!(e.slow, "{e:?}");
+        assert_eq!(e.status, 0);
+        assert!(d.down.lock().unwrap().as_deref().is_some_and(|w| w.starts_with("slow:")));
+        let dead = Daemon::at("http://127.0.0.1:9").get("state", &[]).unwrap_err();
+        assert!(!dead.slow);
     }
 
     /// Posts go to the app socket when there's one, saying they're the app's and carrying the token

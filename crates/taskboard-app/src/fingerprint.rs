@@ -104,7 +104,7 @@ impl Print for usize {
 
 impl Print for crate::backend::CallError {
     fn print(&self, f: &mut Fingerprint) {
-        (self.status, &self.message).hash(&mut f.h);
+        (self.status, &self.message, self.slow).hash(&mut f.h);
     }
 }
 
