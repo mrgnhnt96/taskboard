@@ -29,8 +29,8 @@ runs the command:
 - killed with its whole process group at `timeout_mins`.
 
 Each round is recorded on the task (its head commit, the tree it read, the `git patch-id --stable` of the
-change from where the branch left its base, the result, the reviewer's name and cost, the tail of its
-stderr) and shown on the task card as `code_review`.
+change from where the branch left its base, the result, the reviewer's name and cost, the last 4,000 bytes of
+its stderr) and shown on the task card as `code_review`.
 
 ## Inputs
 
@@ -42,14 +42,14 @@ variable of the same name:
 |---|---|
 | `TASKBOARD_REVIEW_PROTOCOL` | `1`, the protocol version |
 | `TASKBOARD_REPO` | the task's worktree path (also the working directory) |
-| `TASKBOARD_BASE` | the base ref the PR goes into, with its remote: `origin/main` |
+| `TASKBOARD_BASE` | the base ref the PR goes into, with its remote: `origin/main`. For a task that shares its PR with the task before it, that task's head commit sha when it submitted, so the review sees only this task's commits |
 | `TASKBOARD_HEAD` | the head commit's sha |
 | `TASKBOARD_BRANCH` | the task's branch |
 | `TASKBOARD_TASK` | the task's ref, `T<n>` |
 | `TASKBOARD_ROUND` | this round's number, `1` up to `max_rounds` |
 | `TASKBOARD_INTENT` | path to a markdown file with the task's title and detail and its goal's done-when |
 | `TASKBOARD_PREVIOUS` | path to the previous round's result JSON, each finding with its triage `outcome` (`fix`, `backlog` or `dismiss`) and `reason` added, and `fixed` (what the task's agent says it changed, or null) on a `fix` finding. Unset on round 1 |
-| `TASKBOARD_STATE_DIR` | a directory for this task that the board keeps across rounds and deletes when the task ends |
+| `TASKBOARD_STATE_DIR` | a directory for this task that the board keeps across rounds and deletes once the task is done and out of code review. A failed task's stays |
 | `TASKBOARD_RESULT` | the path the reviewer writes its result to |
 
 Uncommitted changes in the worktree are part of what's reviewed.
@@ -79,7 +79,7 @@ JSON written to `$TASKBOARD_RESULT`, a superset of a step's result:
 }
 ```
 
-- `verdict`: `pass` (nothing worth triage), `fail` (there are findings), or `skip` (nothing to review,
+- `verdict`, in any case: `pass` (nothing worth triage), `fail` (there are findings), or `skip` (nothing to review,
   such as a docs-only change).
 - `severity`: `blocker`, `major` or `minor`.
 - `id`: keep the same id across rounds for the same finding when the reviewer can tell.
@@ -106,8 +106,8 @@ The reviewer never changes the worktree, commits, pushes or touches the PR host.
 4. On its next `tb submit`: if the worktree changed, round *n+1* runs; otherwise the task carries on.
 
 The loop stops when a round has no `fix` findings, when the code is unchanged, or at `max_rounds` (5). At the
-cap with fixes still open, the board opens the PR anyway and alerts the owner. The PR body ends with a short
-`## Code review` section: how many rounds ran, and how many findings were fixed, backlogged, dismissed or
+cap with fixes still open, the board opens the PR anyway and alerts the owner. The board adds a short
+`## Code review` section to the PR body, after the agent's description and before its attribution footer: how many rounds ran, and how many findings were fixed, backlogged, dismissed or
 left open.
 
 A submit turned back after its review (a branch that isn't pushed, say) doesn't run the reviewer again
@@ -124,7 +124,7 @@ read-only tools, and gets:
 
 - the task's intent (the same text as `TASKBOARD_INTENT`);
 - the diff from the base to the worktree (inline, or a file in the round's folder when it's long);
-- the findings, one per line, and the result JSON's path.
+- the findings, one per line, and the path to the round's `findings.json`, with each finding in full.
 
 Its one question per finding is whether this task's change caused it. It never edits code. It records each
 finding's outcome with:
@@ -132,13 +132,22 @@ finding's outcome with:
 ```
 tb finding T<n>                                # the round's findings and which are left
 tb finding T<n> F1 fix "<reason>"              # the change caused it: the task's agent fixes it
-tb finding T<n> F2 backlog "<reason>"          # real, but not from this change: a backlog item
+tb finding T<n> F2 backlog --blocks none "<reason>"   # real, but not from this change: a backlog item
 tb finding T<n> F3 dismiss "<reason>"          # not a problem, or not one worth tracking
 ```
 
 Every outcome needs a reason (one line, 300 characters at most), and a finding is marked once. `backlog`
 files a backlog item (kind `follow`) in the task's project and goal, or adds to an open one with the same
-title. The task's own terminal can't mark findings.
+title. It needs `--blocks`, saying what the item holds up:
+
+- `pr`: merging this PR leaves main worse than today (a crash, data lost, a usable security hole,
+  something that works today stops). A minor finding in a file the change doesn't touch is moved to
+  `goal`, or to `none` outside a goal.
+- `goal`: the goal's done-when isn't met without it.
+- `none`: anything else.
+
+With `pr` or `goal`, `--blocks-why "<the failure, path or done-when line>"` names it; without it, the
+reason is the why. The task's own terminal can't mark findings.
 
 The outcomes are kept on the round and go to the next round's reviewer in `TASKBOARD_PREVIOUS`. Once every
 finding has one, the board closes the triage terminal and logs the counts on the task. If the triage agent

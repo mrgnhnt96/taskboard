@@ -174,8 +174,10 @@ The event as JSON on stdin:
 
 - `from`: the task before the change, for announced task steps (`null` otherwise).
 - `task.pr`: `null` until a PR is linked.
-- `pr.*` steps add `head`, `checks`, `failed_checks` and `comments`.
+- `pr.*` steps add `head`, `checks`, `failed_checks` and `comments`. `pr.checks` and `pr.fix` fired by a feed's
+  build event (`POST /prs/event` with `kind: build`) add only `head` and `build_state` (the build's state as posted).
 - `task.finishing` adds `by` and `done: {"summary", "pr"}` (what the agent passed to `tb submit`).
+- A step the owner takes from the app (Start, Resume, Done) adds `by`.
 - Goal events have `goal` (as `GET /goals` returns it) and `task` (the task whose change finished it, else `null`).
 
 The common bits are also in the environment: `TASKBOARD_EVENT`, `TASKBOARD_TASK`, `TASKBOARD_GOAL`,
@@ -403,7 +405,7 @@ bar = "Review"        # its name in the app's PR bar
 - `tb task new … --pr|--no-pr`, `tb task set T4 --pr yes|no|auto`: whether the task ends in a PR, whatever its
   project does.
 - `tb submit "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open (the why is one short line,
-  200 characters at most, and can't be blank); `--no-evidence "<why>"` likewise for evidence. With `[jira] canceled`,
+  100 characters at most, and can't be blank); `--no-evidence "<why>"` likewise for evidence. With `[jira] canceled`,
   the ticket moves there with the reason as a comment, unless another task on the ticket already merged its PR:
   then it goes back to `[jira] merged` with the summary. A plain `tb submit` on a task that ends in a PR, whose project
   has a remote, with no PR linked is refused and asks for `--pr-body` or `--no-pr "<why>"` (or `--pr <link>`). A

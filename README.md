@@ -22,6 +22,10 @@ It's built like Midna: a daemon that owns the work, a CLI for agents, and a GPUI
 | `crates/taskboard-app` | `Taskboard.app`: the native window (GPUI via `gpui-kit`): board, goals, backlog, sessions, task and issue panels, forms, work hours. |
 | `packaging/`, `scripts/` | `build-app.sh` assembles and signs `Taskboard.app`; `install-app.sh` installs it to /Applications; `dev-app.sh` installs a separate "Taskboard Dev". |
 | `docs/API.md` | The JSON API the app (and `tb`) rely on. |
+| `docs/HOOKS.md` | Your own commands, run at each step of the board's flow (`hooks.json`): they can stop or skip a step. |
+| `docs/STREAM.md` | The work event stream a relay posts PR, build, push and Jira events to (`POST /stream/events`). |
+| `docs/REVIEW-PROTOCOL.md` | The contract between the board and a project's pre-PR code reviewer (`[code_review]`). |
+| `docs/RELEASING.md` | Cutting a release with `tb release cut`, and what to do when one fails. |
 | `docs/CUTOVER.md` | Moving over from the old Python board: stop it, `taskboardd import` its `tasks.db`, swap the plugin, start. |
 | `docs/PARITY.md` | The audit of the app against the web board it replaced, with the tests that hold each behaviour. |
 | `plugin/` | The Claude Code plugin: hooks, the `bin/tb` shim and the `task-board` skill. |

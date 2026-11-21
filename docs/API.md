@@ -22,8 +22,9 @@ reviewer (`[code_review]`) is its own page: [REVIEW-PROTOCOL.md](REVIEW-PROTOCOL
   change is credited to the body's `who` if it has one, else to that terminal by its name, else (the app, or a
   shell outside Midna) to the owner: in the task's log, a break's `verdict_by`, a bit's or QA comment's history.
 - **Booleans** must be real JSON booleans (the UI also tolerates 0/1 for `auto_close` and `run_in_order`).
-- **Polling.** The app polls every 3 s: `GET /state` and `GET /goals` always, plus the open
-  task, issue, goal, backlog list or sessions pages as below.
+- **Polling.** The app polls every 3 s while its window is in front (every 15 s while another app is, every 30 s
+  while the window is off screen): `GET /state` and `GET /goals` always, plus the open task, issue, goal, backlog
+  list or sessions pages as below.
 
 ---
 
@@ -354,10 +355,17 @@ On this detail, `pr.bar.author_review` is the `step_result` of the step with a `
 
 `{"text": str}`. Only called when `GET /tasks/:id` has no `handoff` string and the Context tab is open.
 
+### `GET /tasks/:id/log`
+
+The task's Full log, newest first, a page at a time. Query: `kind=all` or a comma list of event kinds (`status`,
+`midna`, `turn`, `commit`, …), `limit` (1–500; without it the whole log comes) and `before=<event id>`, the last
+entry of the page before. `{"log": [{"id": int, "at": iso, "who": str|null, "kind": str, "text": str, "data": any|null}],
+"more": bool}`; `more` says older entries are left.
+
 ### `GET /backlog`
 
 Query: `project=<name|all>`, `goal=all|none|<goal id number>`, `kind=all|bug|gap|follow|clean`,
-`state=open|task|ticket|drop|all`, `sort=new|old|kind` (`kind` = by type in the order bug, gap, follow, clean,
+`state=open|task|ticket|drop|defer|all`, `sort=new|old|kind` (`kind` = by type in the order bug, gap, follow, clean,
 newest first within a type).
 
 `{"issues": [issue_card + {"said", "how", "detail"}], "total": int}`. `total` is shown as "Showing N of <total>". The
@@ -401,6 +409,13 @@ The latest plan asked for: `{"state": "none"}`, or `{id, state: "planning"|"read
 waves: [{why, items: [{ref, after: [ref]}]}], name, by: "claude"|"rules", note?}`. `ids` are the issues it
 was asked for; `note` says why Claude's plan was replaced by the priority rules. Making a goal from it clears it.
 
+### `GET /backlog/closed`
+
+Backlog › Deferred and won't do, last closed first. Query: `state=defer|wont_do` (default `defer`; anything else is a
+400), `project=all|<name>`, `ids=B1,B2` (only these), `limit` (1–500) and `before=<ref>`, the `next` of the page before.
+`{"issues": [issue_card + {"closed_at": iso}], "total": int, "next": str|null, "counts": {"defer": int, "wont_do": int}}`.
+`wont_do` is a dropped issue not closed as fixed; `counts` covers the project whatever the `state`.
+
 ### `GET /backlog/:id`
 
 The full `issue`:
@@ -425,7 +440,7 @@ issue_card + {
   "goal": {"id": int, "ref": "G3", "name": str} | null,
   "goal_id": int|null,           // optional; the UI uses goal_id, else goal.id
   "project": str,
-  "state": "open"|"task"|"ticket"|"drop",   // task = made into a task; ticket = sent to Jira; drop = won't do
+  "state": "open"|"task"|"ticket"|"drop"|"defer",   // task = made into a task; ticket = sent to Jira; drop = won't do; defer = put off
   "task_id": int|null,           // the task it became (state task)
   "jira_key": str|null,          // the Jira ticket (state ticket); null while the ticket is being created
   "source": "terminal"|"you"|"answer",
@@ -434,6 +449,13 @@ issue_card + {
   "created_at": iso, "updated_at": iso
 }
 ```
+
+### `GET /backlog/:id/history`
+
+An issue's history a page at a time. Query: `limit` (1–500; without it the whole history comes), and `after=<event
+id>` for the entries after that one, oldest first, else `before=<event id>` (or none) for those before it, newest
+first. `{"history": [{"id": int, "at": iso, "who": str|null, "kind": str, "text": str, "snapshot": {…}|null}],
+"more": bool}`. The app pages oldest first with `after`.
 
 ### `GET /sessions`
 
@@ -498,7 +520,8 @@ account = {"id": "github"|"bitbucket"|"azure"|"slack", "label": str, "connected"
 ### `GET /days`
 
 Query: `date=YYYY-MM-DD` (default today; a later day is read as today), `hide=a,b` (projects left out of
-every number). Everything the Days page shows: the day, its week (Monday to Sunday) and the week before.
+every number). Everything the Days page shows: the day, its week (seven days from config.toml's
+`first_weekday`, Sunday by default) and the week before.
 A past day is worked out once from `task_states` (every status change, kept by a trigger), the task log and
 the backlog, and kept in `day_stats` (one row per project), so it outlives the cleanup of its events.
 ```
@@ -537,6 +560,11 @@ agents' whole working time on those same tasks, so hours saved is `human_min - e
 How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, "detail_choices": [30, 90, 180, 365],
 "summary_choices": [180, 365, 730, 0], "events": int, "events_bytes": int, "summaries": int, "summaries_bytes": int,
 "last_cleanup": iso|null, "oldest": "YYYY-MM-DD"|null}`. `summary_days` 0 keeps day summaries always. Sizes are estimates.
+
+### `GET /info`
+
+The running board, for Settings: `{"version": str, "uptime_secs": int, "pid": int, "launchd_label": str|null}`.
+`launchd_label` is the launchd job's label, `null` when the board wasn't started by launchd.
 
 ---
 
@@ -709,8 +737,9 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `GET /tasks/:id/code-review/triage` | | The round being triaged or fixed (`tb finding T<n>`): `{task, triaging: false}`, or `{task, triaging: true, round, findings: [{id, line, outcome: "fix"\|"backlog"\|"dismiss"\|null, reason, issue: "B<n>"\|null}], left: [id]}`, or while fixing `{task, triaging: false, fixing: true, round, findings: [{id, line, outcome: "fix", reason, fixed: str\|null}], left: [id not marked fixed]}`. |
 | `POST /tasks/:id/code-review/triage` | `{finding, outcome: "fix"\|"backlog"\|"dismiss"\|"fixed", reason, session}` | The triage agent's `tb finding T<n> F1 <outcome> "<reason>"` (see REVIEW-PROTOCOL.md, Triage). Records the finding's outcome on its round; `backlog` files a backlog item (kind `follow`) in the task's project and goal, or adds to a matching open one. The finding id is matched without case. 403 from the task's own terminal; 409 not triaging or already marked; 404 no such finding; 400 an unknown outcome, or a reason that's empty, more than one line or past 300 characters. `fixed` is the task's own agent's `tb finding T<n> F1 fixed "<what changed>"` while the task is fixing (REVIEW-PROTOCOL.md, Fixing): kept on the round as the finding's `fixed` note. 403 from a triage terminal; 409 not fixing or already marked fixed; 404 not one of the round's `fix` findings. **Response:** `{ok, task, round, finding, outcome, issue: "B<n>"\|null, left: [id], message}` (`left`: for `fixed`, the `fix` findings not yet marked fixed). |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
+| `POST /tasks/:id/talk` | `{}` | Ask about a human task on Needs you: a Claude terminal in its project's checkout (the home folder when it has none) with the task's steps in its context, brought to the front; one already open for it is reused. Claude helps with the steps, never does them or marks the task done. 409 for a task that isn't a human one, one that's done, or while Midna is down. **Response read:** `{ok, job}`. |
 | `POST /tasks/:id/pick` | `{answers: [[option index, …] per question]}` | Answer a picker ask (`ask.picker`) by pressing the chosen options in its terminal through Midna's `session.answer_question` (the `midna_socket` setting; Midna has to trust `com.mrgnhnt.taskboard.daemon` in `agents.trusted_clients`). Logs "Answered: …" and sets `answered_at`; the task stays `needs` until `hook.ask_done` closes the ask. 400 bad choices (one list per question, one option unless multi-select), 409 the picker closed / no terminal / Midna has no such picker, 403 Midna doesn't trust the board, 501 Midna too old, 503 Midna not running. |
-| `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
+| `POST /tasks/:id/resume` | `{mode?: "fresh"\|"reopen"\|"finish"\|"ask", handoff?}` | Lost terminal: `fresh` (the default) opens a new terminal with the handoff (`handoff` replaces it with the edited text); `reopen` runs `--resume` on the old conversation (fresh when it isn't known); `finish` asks a new terminal to check the work shipped and mark it done (409 unless the task lost its terminal); `ask` opens one that sums up where the task stands and asks its question again, brought to the front. Any other mode is a 400; a done task or one already starting is a 409. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
 | `POST /tasks/:id/detach` | `{}` | Take it off its terminal; back to queued. |
 | `POST /tasks/:id/done` | `{summary?}` | Mark done by hand (the app has no button; `tb submit` reports through `/report`). 409 for a human task. |
@@ -1005,6 +1034,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | `POST /goals/:id/set-aside`, `POST /goals/:id/bring-back` | `{}` | Set the goal aside (`tb needs set-aside`) and bring it back: the same as `deprioritized`, which `set_aside` on the goal mirrors. **Response read:** the goal. |
 | `POST /goals/:id/run` | `{via_session?, check?}` or `{now: true}` | The board's Run, `tb start G<n>` and `tb goal set --run`. Without `via_session` it is the app's Run only (the `X-Task-Board-From: app` header, as for `POST /tasks/:id/start`; the app's own request runs it whatever `via_session` says); any other caller gets 403, so outside a Midna terminal Run on the board is the only way to run a goal (`tb` says so before it calls). `check: true` answers the same 403, or `{ok: true, goal, would_run: true}` without running anything: `tb goal set G<n> … --run` asks first, so a refused run leaves the goal's other changes unsaved. With `via_session` it runs only on the owner's word in that terminal, read as for `POST /tasks/:id/start`: a prompt since the conversation began that asks for the run now and names the goal ("start G2", "run G2", "kick off goal G2", "G2 looks good. run it"), whichever terminal, app or API call made it, or a yes to the agent's question that names it ("G2 has one planned task. Want me to run it?"); or, for a goal that is that conversation's (the terminal's task is in it, the conversation made it or a task in it with `tb goal new`, `tb propose` or `tb task new --goal`, the board opened the terminal to plan it with `POST /goals/:id/plan`, or a `[task-board:G<n>]` prompt handed it the goal), an unnamed "start the goal" / "run the goal" / "run all the tasks" / "start everything in the goal" / "run both" (in prompts after a handoff, for the goal handed). A word is good for one run: a run on it (`session_events.kind = "ran"`, "Ran G2 on your word") spends it, so the next run needs a new one; a check spends nothing. A conversation cleared with `/clear` and nothing typed since is still the one before it; a new or resumed session with nothing typed is a new one. "Run it" means the goal only in the latest prompt, and only when the agent's message just before asked whether to run it, the prompt asked for a goal and the conversation made this one in reply ("make a goal for dark mode and run it"), or the prompt is only the ask ("run it", "ok start it", "looks good, kick it off", "let's run it", "can you run it?", "ship it", "spin it up", "get going on it", or only the word to go: "do it", "go for it", "sounds good, go") and either the prompt before (with at most a "thanks" between) asked for the goal the conversation made, or the goal is the conversation's one goal (any prompts between: "rename the second task", then "ok run it"). A prompt that's only a yes ("yes", "sure", "yep, go ahead") is the word when the agent's message just before it ends on a question about running the goal now (or an offer: "I can run G2 now if you want."; up to three later prompts that only thank leave it standing, anything else after it takes its reach; a yes may hold another goal off as it goes, "yes but leave G1 alone"): named ("Want me to run G2?"), as "the goal" when it's the conversation's, or as "it" when the message names that goal and no other goal or task, or names none and the goal is the conversation's one goal ("The plan is ready. Want me to run it?", "Want me to run it? It has 2 tasks."); "it" is what was spoken of last: the goal the message says it made ("Made G2 with T4 and T5.", "Made G2:" with a list of its tasks after it), or the goal when the nearest sentence before it in the agent's message that speaks of anything speaks of the goal or its plan ("Done — two tasks, each with tests.", "Each task opens its own PR.", "The plan has a build step and a deploy step.", "I split the work into two tasks.", "Made two tasks:", "Here's the plan:" or "Here's a summary:" with the list after it), and not when it speaks of something else, which wins over the goal in the same sentence: the agent's own work on a thing ("Wrote scripts/seed.sh.", "I set up the dev database.", "For the goal I wrote seed.sh."), a thing there or not running ("The emulator is ready.", "The docker container stopped."), or a thing the work needs ("Its first task needs a seed script.", "In the goal there's a codemod."). Only a thing that starts or runs does: a script, a migration, a job, a server, a test or the like, not a README, a ticket, a branch, the docs, the tracker or one of the goal's own tasks ("Made G2. The branch is set up.", "Colors is ready.", "I updated the description." leave "it" the goal); a message that ends on asking about something else ("The PR for the footer is green. Ready to merge?") isn't answered by "ship it". A thing is its name's last word, so a goal word before it or after it only says which ("The goal's migration looks good.", "The migration for the goal is ready.", "I wrote seed.sh for G2.", "The plan's seed script is ready." and "a goal-level smoke test" are not the goal). A sentence that only says more of what came before speaks of nothing new and is passed over ("Made G2. This touches the header and the footer.", "The changes are small.", "My guess is a day of work.", "I wrote it."); when the message speaks of nothing ("Done."), what the owner's prompt before it asked the agent to make decides ("make a goal for adding tests to login" and "plan the login tests as a goal" are the goal; "set up the emulator", "write a backfill" or "write a script that seeds the db" or "write the goal's migration", then "Done." and "run it", are not); after two goals the conversation made (and no other goal), "it" is the newer; a prompt that only changes the goal or its tasks ("make the tasks smaller", "add acceptance criteria to each task"), then "Done." and "run it", leaves it the goal; and a prompt that makes nothing but names a script, test or the like ("run the linter") is not either; "start all of them" is "the goal"; not a question with a choice ("or tweak the plan first?"), a time or a condition in it, or one followed by a statement that sets something before the run ("First the API change needs to merge.", "I'd hold until the migration merges.", "It's blocked on the API change."). A hold word holds unless it's said not to or its subject is something else: an order of the goal's own work ("Colors goes first."), a blocker it says isn't there ("Nothing blocks it now.", "Nothing needs to land first.") and "Each PR waits for your review." don't. The board reads the end of that message from the Stop hook's `last_message_end` (its last 1000 characters); a message from an older hook that filled its 2000 characters has no end the board knows, so no yes answers it. The latest prompt about the goal's run decides; a no, a time or condition, a question, pasted text and board prompts are no word; 403 otherwise, unless config.toml's `[agent_starts]` lets that terminal run it without the word: `free`, or `own_project` with the terminal's project (its task's, else its folder's) the same, for every project the goal holds work in (each project's own mode under `[agent_starts.projects]`, else `mode`). The same setting lets `POST /tasks/:id/start` and `POST /tasks/start` start a task in a project it allows, logged "Started by <terminal>". Queue the planned tasks (and re-queue `start_failed` ones), resume the goal's parked tasks (waiting for Start, or lost because their terminal closed: queued again with `pickup: "new"`, so they start from their handoff), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued), `resumed_now: int` (how many parked tasks it resumed), `waiting: [str]` (each queued task that still can't start and why, "T192 waits for you to do H197"; tasks only waiting their turn in the goal's order or waves aren't listed), `hours_wait: str\|null` ("G2 waits for work hours (…)" when the hours hold the whole goal). `tb` prints them; the app adds them to its toast. |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
+| `POST /goals/:id/restart` | `{via_session?, who?}` | Restart on a goal's Stopped line (Needs you): every task on it (closed by hand, with no alert and not put away) goes back in the queue. 409 when there are none; a goal at rest has no line (Play restarts them). Credited to the owner from the app, else to the caller. **Response read:** the `GET /goals/:id` shape plus `restarted_now: int`. |
 | `GET /goals/:id/review` | | `tb goal review G<n>`. The latest review of the goal's plan against its outcome: `{goal, review}`; `review` is null before the first one, else `{id, goal, state: "running"\|"done"\|"failed"\|"skipped", reason, source, model, sha, started_at, finished_at, skipped, error, findings: [{kind: "outcome_unproven"\|"owner_prereq"\|"past_decision"\|"overlap"\|"lesson_ignored", short, detail, tasks: [str], refs: [str]}], again: bool}` (`again`: the plan changed while it ran, so it runs once more after). The goal's detail (`GET /goals/:id`) carries the same object as `plan_review`. A review runs on its own after `tb goal new` with tasks and each `tb propose`; it's advice and holds nothing up. `skipped` says why one didn't run (`[planning] review` off, backlog AI off or no claude, usage used up). |
 | `POST /goals/:id/review` | `{who?}` | `tb goal review G<n> --again`: review the plan now. 409 when the goal has no tasks or a review can't run (the reason is the message); while one runs it answers that one. **Response read:** as `GET`. |
 | `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
@@ -1022,6 +1052,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | `POST /backlog/:id/note` | `{text, by_session?, who?}` | Add a note to its history, "Added a note: …", credited to the caller; the detail stays as it is: `tb backlog note B<n> "<text>"`. |
 | `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3", reason?, who?}` | `tb backlog task\|ticket\|drop\|reopen B4 B5 …` and `tb backlog move B4 B5 G2\|none` (one or more issues; all change or none do), the Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal's last wave as planned tasks, or queued ones while the goal is running. `who` (tb sends the terminal) is credited in each issue's history and the new tasks' origin; without it, the owner. **Response read:** `count: int`, `tasks` (the tasks made). |
 | `POST /backlog/plan` | `{ids: ["B1", …]}` | Plan waves for these open issues (Backlog page). With Claude it answers `state: "planning"` at once and plans on its own thread; poll `GET /backlog/plan`. **Response read:** the plan (below). |
+| `POST /backlog/plan/add` | `{ids: ["B1", …]}` | Open issues picked after the plan join its last wave, waiting on nothing; ones already in it stay put. 1 to 60 open issues (400 otherwise); 409 when there's no ready plan. **Response read:** the plan. |
 | `POST /backlog/goal` | `{name, waves: [{why, items: [{ref: "B1", after: ["B2"]}]}]}` | A new goal from a plan: one project's open issues, none in a goal yet. Each becomes a planned task in its wave (`tasks.wave`); `after` becomes the task's wait-for; the waves go in a pinned goal note. The goal doesn't run in order: a wave starts once every task in the waves before it is done. **Response read:** the goal detail. |
 
 ### Attachments
@@ -1034,9 +1065,11 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | Path | Body | Notes |
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in Settings › Work hours (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show on that page, with Try again. |
+| `GET /usage` | | The usage meters and the daily limit: the same `usage` object as `GET /state` (Settings reads it). |
 | `POST /usage/daily` | `{base?: "off"\|"even"\|number\|"15%", carry?: "next_day"\|"spread"}` | The daily limit (`tb usage daily`). A number is 1–100; anything else is a 400. A 7-day reset starts a fresh plan from the week's % now; a new base or carry starts one from where today began, so what today already used still counts. `off` keeps the plan, so turning the limit back on the same day keeps today's start. **Response read:** the `usage` object. |
 | `POST /usage/override` | `{off?: bool}` | Lifts today's limit until local midnight (`tb usage override`); `off: true` puts it back. **Response read:** the `usage` object. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
+| `POST /alerts/:id/act` | `{n}` | An alert's fix button: its `n`-th action (0 first) typed, not sent, into a new Claude terminal in the alert's project's folder for the owner to send. 404 for an alert that's gone or has no such action; 409 while Midna is down or the folder isn't known (the app then copies the command). **Response read:** `{ok, job}`. |
 | `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. A new alert is marked `suggest: "pending"` (unless `[alerts] suggest = false`), as an agent's question alert is: the board then asks Haiku for its card's `title`, `detail` and one to three `actions` (`{label, prompt, command: ""}`, each opening a Claude terminal with `prompt` typed in), and sets `suggest` to `"done"`, or `"failed"` with the alert left as plain text. **Response read:** `{alert}`. |
 | `POST /alerts/:id/talk` | `{}` | Talk it over on Needs you: a Claude terminal in the alert's project's checkout (the home folder when it has none) with the alert in its context. Settles nothing. 404 for an alert that's gone, 409 while Midna is down. **Response read:** `{ok, job}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
@@ -1079,13 +1112,34 @@ by the board's, and once after an upgrade every repo the board has known is swep
 | `POST /history` | `{detail_days?: 30\|90\|180\|365, summary_days?: 180\|365\|730\|0, preview?: bool}` | Answers `GET /history`. With `preview: true` nothing is saved: answers `{preview: true, detail_days, summary_days, removes: {events, status_changes, terminal_lines, day_rows, days, events_total}}`, what the next cleanup would remove under those settings (a key left out is the current setting). `days` counts the day summaries that would go; `events_total` sums the first three. |
 | `POST /history/cleanup` | `{}` | Runs the nightly cleanup now: events, status changes and terminal lines of finished tasks older than `detail_days` (each day's summary is kept first), day summaries older than `summary_days`. Answers `{"removed": {"events", "status_changes", "terminal_lines", "day_rows"}, "history": …}`. |
 
+### Buried questions
+| Path | Body | Notes |
+|---|---|---|
+| `GET /buried-questions` | | `{on: bool}`: whether a turn that ends with a question asked above its last paragraph is sent back once to ask it properly (on by default). |
+| `POST /buried-questions` | `{on: bool\|"on"\|"off"}` | Settings' switch. Anything else is a 400. Answers like `GET`. |
+
 ### Restarts
 | Path | Body | Notes |
 |---|---|---|
 | `GET /restart` | | What restarting the daemon (an update) would cut short: `{count, code_reviews: [{ref, title, project, round, since}], agents_keep_running: true}`, the tasks whose reviewer is running now, newest first. Their round runs again once the board is back; agents and triage terminals keep running. |
 
 ### Weekly reviews
+| Path | Body | Notes |
+|---|---|---|
+| `GET /reviews` | | Every kept review, newest first: `{reviews: [{id, period_start, period_end, created_at, scheduled, seen_at, headline, seconds, suggestions, fixes}], next}`. `next` is the next scheduled one (null when the schedule is off); `fixes` is the fixes run's status (`{state: "none"}` before one). |
+| `GET /reviews/now` | | This week so far without keeping it, for the page before the first review. Query: `week=this\|last\|YYYY-MM-DD` (the week holding that day, from `first_weekday`) or `since=YYYY-MM-DD\|3d\|2w`; the last 7 days without either. 400 for a `since` that isn't in the past. `{period_start, period_end, data}`. |
+| `GET /reviews/:id` | | A kept review: its list entry plus `data` and `fix_issues`. 404 for an unknown id. |
+| `POST /reviews/:id/seen` | `{}` | The owner opened it: its notification goes, and its Needs you item too unless fixes it filed are still untriaged. Answers like `GET /reviews/:id`. |
+| `POST /reviews/:id/fixes` | `{}` | File its suggested fixes in the Backlog (File fixes, File again); a run already going isn't started twice. 409 while the board can't run Claude (backlog AI off or `claude` missing). Answers like `GET /reviews/:id`. |
+
 A review's `data` (`GET /reviews/now`, `GET /reviews/:id`) has `shipped: {tasks: [{ref, title, project, goal, finished_at}], goals: [{ref, name, project, finished_at}], releases: [{project, name, cut_at}]}`: the tasks finished done (not failed), the goals that finished, and the releases cut (not failed) in its period, newest first. A review kept before this lists it too, worked out when it's read.
+
+### Recaps
+| Path | Body | Notes |
+|---|---|---|
+| `GET /recaps` | | Every kept recap, latest period first: `{recaps: [{id, kind: "weekly"\|"monthly", period_start, period_end, first_day, last_day, created_at, seen_at, writing_status: "none"\|"writing"\|"done"\|"failed", tasks, merged, prs, releases, agent_min}]}`. |
+| `GET /recaps/:id` | | One recap: its list entry plus `facts` and `writing` (the written page, null until written). 404 for an unknown id. |
+| `POST /recaps/:id/seen` | `{}` | The owner opened it: its Needs you item and notification go. Answers like `GET /recaps/:id`. |
 
 ### Accounts
 Every one answers with `GET /accounts`'s `{"accounts": […]}`.
