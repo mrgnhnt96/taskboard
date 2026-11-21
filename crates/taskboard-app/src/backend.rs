@@ -433,6 +433,8 @@ fn seed_needs(board: &Board) {
     let todo = |title: &str, goal: Option<i64>| {
         let t = post("/tasks".into(), json!({"title": title, "detail": "1. Open the account page.\n2. Copy the key.", "project": "webapp", "pickup": "new"}))["id"].as_i64()?;
         let _ = b::update_task(board, t, taskboardd::fields!["kind" => human::KIND, "status" => "queued", "goal_id" => goal]);
+        // The fake runs no runner, so it does the runner's turn that puts a to-do on Needs you.
+        let _ = human::ready(board, &b::get_task(board, t).ok()?);
         Some(t)
     };
     let replay = "Picto: every error replay shows the 30 s before it";
@@ -453,8 +455,9 @@ fn seed_needs(board: &Board) {
         let _ = b::update_task(board, t, fields!["waits_for" => json!([h]).to_string()]);
     }
     for title in ["Renew the Apple certificate", "Sign the data agreement"] {
-        if let Some(t) = todo(title, None) {
-            post(format!("/alerts/task:T{t}/snooze"), json!({"until": "next_week"}));
+        let alert = todo(title, None).and_then(|t| dispatch::alerts(board).into_iter().find(|a| a["task_id"].as_i64() == Some(t)));
+        if let Some(id) = alert.as_ref().and_then(|a| a["id"].as_str()) {
+            post(format!("/alerts/{id}/snooze"), json!({"until": "next_week"}));
         }
     }
 }
@@ -693,5 +696,24 @@ mod tests {
         // No socket: the port, which isn't there.
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(d.post("tasks/T1/start", json!({})).unwrap_err().status, 0);
+    }
+
+    /// `TASKBOARD_FAKE_NEEDS`: the owner's to-dos are on Needs you, and two of them are on Later.
+    #[::core::prelude::v1::test]
+    fn needs_seed_fills_to_dos_and_later() {
+        let f = Fake::new();
+        seed_needs(f.app());
+        let home = f.get("home", &[]).unwrap();
+        let titles = |k: &str| -> Vec<String> {
+            home[k].as_array().unwrap().iter().filter_map(|i| i["title"].as_str().or(i["text"].as_str()).map(str::to_string)).collect()
+        };
+        let (needs, later) = (titles("needs"), titles("later"));
+        for t in ["Create the Oracle Cloud account", "Send the signing key to the build machine"] {
+            assert!(needs.iter().any(|n| n.contains(t)), "{t} in {needs:?}");
+        }
+        for t in ["Renew the Apple certificate", "Sign the data agreement"] {
+            assert!(later.iter().any(|n| n.contains(t)), "{t} in {later:?}");
+            assert!(!needs.iter().any(|n| n.contains(t)), "{t} not in {needs:?}");
+        }
     }
 }
