@@ -17,6 +17,8 @@
 //! and tell me when it's done", "start T8, no rush", "start T8 but don't merge it") leaves it alone.
 //! The latest prompt that speaks of a task's start decides: "don't start T8" after "start T8" takes it
 //! back.
+//!
+//! The owner can lift this for some or all projects with `[agent_starts]` ([`crate::agent_starts`]).
 
 use once_cell::sync::Lazy;
 use regex::Regex;

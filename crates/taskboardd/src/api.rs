@@ -1698,6 +1698,10 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
                 let started = format!("{grant} via {}", board::session_name(app, Some(&via), None));
                 return with_wait_line(app, &via, &[id], launch(app, id, &mode, body["session_id"].as_str(), &started, &via)?);
             }
+            if crate::agent_starts::allowed(app, &via, t.s("project"))? {
+                let started = format!("Started by {}", board::session_name(app, Some(&via), None));
+                return with_wait_line(app, &via, &[id], launch(app, id, &mode, body["session_id"].as_str(), &started, &via)?);
+            }
             // An ask for the goal ("start the goal") is no word for each of its tasks; the goal runs them.
             let goal = board::find_goal(app, t.i("goal_id"))?
                 .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
@@ -1761,8 +1765,10 @@ fn start_many(app: &App, body: &Value) -> Result<Value> {
         let t = board::get_task(app, id)?;
         let by = if crate::startword::granted(app, &via, id, false)? || crate::startword::owners_word(app, &via, id)?.is_some() {
             Some(format!("Started by {} via {name}", app.cfg.owner))
+        } else if let Some(g) = crate::start_grants::honored(app, &via, &t)? {
+            Some(format!("{g} via {name}"))
         } else {
-            crate::start_grants::honored(app, &via, &t)?.map(|g| format!("{g} via {name}"))
+            crate::agent_starts::allowed(app, &via, t.s("project"))?.then(|| format!("Started by {name}"))
         };
         if let Some(b) = crate::waitsfor::blocker(app, &t)? {
             cant.push(format!("{} can't start yet. {b}.", rf("task", id)));
@@ -3039,8 +3045,11 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             ),
         );
     } else {
-        board::get_goal(app, id)?;
-        if !crate::startword::granted(app, &via, id, true)? && crate::startword::owners_goal_word(app, &via, id)?.is_none() {
+        let g = board::get_goal(app, id)?;
+        if !crate::startword::granted(app, &via, id, true)?
+            && crate::startword::owners_goal_word(app, &via, id)?.is_none()
+            && !crate::agent_starts::allowed_goal(app, &via, &g)?
+        {
             log_miss(app, &rf("goal", id), &via)?;
             let asked = alerts::ask_start(app, "goal", id, &via, json!({"now": now}))?;
             let how = if asked {
