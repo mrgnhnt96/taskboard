@@ -698,6 +698,53 @@ fn a_terminal_waiting_out_a_usage_limit_stays_open_after_hours() {
 }
 
 #[test]
+fn tasks_closed_idle_after_hours_start_again() {
+    let b = new_board();
+    let h = b.post("/hours", json!({"on": true, "start": "00:00", "end": "00:01", "days": "mon"}));
+    if h["open"].as_bool().unwrap() {
+        return;
+    }
+    let pushed = new_task(&b, "Add login", json!({}));
+    let asking = new_task(&b, "Add logout", json!({}));
+    let repo = b._dir.path().join("webapp");
+    let terms = |state: &str| {
+        let s = |sid: &str| json!({"id": sid, "name": format!("Term {sid}"), "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": state}});
+        midna::sync(&b.app, &[s("s1"), s("s2")], &[]).unwrap();
+    };
+    for (id, sid) in [(pushed, "s1"), (asking, "s2")] {
+        b.app.db.x("UPDATE tasks SET status = 'working', session_id = ?, started_at = '2026-01-01T00:00:00Z' WHERE id = ?", p![sid, id]).unwrap();
+    }
+    terms("working");
+    b.report("tb.question", "s2", json!({"text": "10 or 30 retries?"}));
+    assert_eq!(b.task(asking).s("needs_reason"), Some("question"));
+    terms("idle");
+    b.app.db.x("UPDATE sessions SET status_at = '2026-01-01T00:00:00Z'", p![]).unwrap();
+
+    runner::close_idle_after_hours(&b.app).unwrap();
+    assert_eq!(b.jobs("close").len(), 2);
+    b.app.db.x("UPDATE jobs SET state = 'done', updated_at = ? WHERE kind = 'close'", p![taskboardd::util::now_iso()]).unwrap();
+    board::session_gone(&b.app, "s1", "other").unwrap();
+    board::session_gone(&b.app, "s2", "other").unwrap();
+
+    let t = b.task(pushed);
+    assert_eq!((t.s("status"), t.s("session_id"), t.b("lost")), (Some("queued"), None, false));
+    assert_eq!(t.st("latest"), "Closed idle after work hours. It starts again from its handoff when the work hours open.");
+    let t = b.task(asking);
+    assert_eq!((t.s("status"), t.s("needs_reason"), t.s("session_id")), (Some("needs"), Some("question"), None), "it still waits on its answer");
+    assert_eq!(t.st("latest"), "Closed idle after work hours. It starts again once you answer.");
+    assert!(runner::start_queued(&b.app).unwrap().is_empty(), "nothing starts while the hours are closed");
+
+    b.post("/hours", json!({"on": false}));
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![pushed], "the hours open: the closed task starts again");
+
+    b.post(&format!("/tasks/{asking}/answer"), json!({"text": "10"}));
+    let t = b.task(asking);
+    assert!(board::live_start_job(&b.app, &t).unwrap().is_some(), "the answer starts it again");
+    let started = b.app.db.q1("SELECT text FROM events WHERE task_id = ? ORDER BY id DESC LIMIT 1", p![asking]).unwrap().unwrap().st("text");
+    assert_eq!(started, "Its terminal is closed, so the board started it in a new terminal with your answer in its handoff");
+}
+
+#[test]
 fn a_terminal_waiting_out_a_usage_limit_stays_open() {
     let b = new_board();
     let id = new_task(&b, "Add login", json!({}));
