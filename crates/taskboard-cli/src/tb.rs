@@ -2989,16 +2989,17 @@ impl Ctx {
         b
     }
 
-    /// Posts a report; spools it when the board can't be reached. None = spooled.
+    /// Posts a report; spools it when the board can't be reached. None = spooled. One the board took but
+    /// didn't answer in time isn't spooled: it may have applied it, so a replay could do it twice.
     fn report(&self, event: &str, fields: Value, task: Option<&str>, timeout: f64) -> Result<Option<Value>, String> {
         let body = self.body(event, fields, task);
         match client::request(&self.cfg, "POST", "/report", Some(&body), timeout) {
             Ok(v) => Ok(Some(v)),
-            Err(CallError::Refused(m)) => Err(m),
-            Err(CallError::Unreachable(_) | CallError::TimedOut(_)) => {
+            Err(CallError::Unreachable(_)) => {
                 client::spool_write(&self.cfg, &body).map_err(|e| format!("the board isn't answering and the report couldn't be saved: {e}"))?;
                 Ok(None)
             }
+            Err(e) => Err(unanswered(e, &format!("didn't answer within {timeout}s"))),
         }
     }
 
@@ -9134,6 +9135,35 @@ mod tests {
         assert!(e.contains(r#"tb search "Sign the agreement" --all --kind human"#), "says how to find it: {e}");
         assert_eq!(spooled(&c), 0);
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// Points `c` at a board that takes one request and never answers it, holding the connection open.
+    fn quiet_board(c: &mut Ctx) {
+        use std::io::Read;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        c.cfg.port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut buf = [0; 4096];
+            while matches!(s.read(&mut buf), Ok(n) if n > 0) {}
+        });
+    }
+
+    #[test]
+    fn a_report_the_board_took_but_never_answered_isnt_saved_for_a_replay() {
+        // The board may have applied it (a note, a take, a found), so replaying the saved copy would do it twice.
+        let (mut c, data) = board_down_ctx("report-quiet");
+        quiet_board(&mut c);
+        let e = c.report("tb.note", json!({"text": "half way"}), None, 0.3).unwrap_err();
+        assert!(e.starts_with("the board didn't answer within 0.3s"), "{e}");
+        assert!(e.contains("may still go through"), "says it may have landed: {e}");
+        assert_eq!(spooled(&c), 0, "not saved, so it can't be replayed");
+
+        let (c, data2) = board_down_ctx("report-down");
+        assert_eq!(c.report("tb.note", json!({"text": "half way"}), None, 0.3), Ok(None), "a board that's down still gets it later");
+        assert_eq!(spooled(&c), 1);
+        let _ = std::fs::remove_dir_all(&data);
+        let _ = std::fs::remove_dir_all(&data2);
     }
 
     #[test]
