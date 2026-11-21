@@ -379,6 +379,22 @@ fn a_taken_task_puts_its_panel_on_the_terminal_and_keeps_it_current() {
 }
 
 #[test]
+fn a_terminal_closed_by_hand_shows_stopped_not_lost() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    board::session_gone(&b.app, "s1", board::CLOSED_BY_YOU).unwrap();
+    let p = panels(&b).pop().unwrap().1;
+    assert_eq!((&p["badge"], &p["color"], &p["line"]), (&json!("Stopped"), &json!("gray"), &json!(format!("T{id} Stopped"))));
+
+    // One that ended on its own while asking stays Lost.
+    b.task_on("s2", "Signup");
+    b.report("tb.question", "s2", json!({"text": "Which signup page?"})).unwrap();
+    board::session_gone(&b.app, "s2", "other").unwrap();
+    let (sid, p) = panels(&b).pop().unwrap();
+    assert_eq!((sid.as_str(), &p["badge"], &p["color"]), ("s2", &json!("Lost"), &json!("red")));
+}
+
+#[test]
 fn a_terminal_switched_to_another_task_shows_that_task() {
     let b = new_board(true);
     let first = b.task_on("s1", "Login");

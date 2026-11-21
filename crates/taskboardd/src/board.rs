@@ -1696,6 +1696,8 @@ pub fn mark_lost_with(app: &App, t: &Row, reason: &str, detail: Option<&str>) ->
                 "latest" => format!("{closed}{saved_line}"), "looks_finished" => crate::lost_done::lost_now()],
     )?;
     log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done"))?;
+    // Whether it was closed by hand is read from that line, logged after the update queued the panel.
+    crate::midna::queue_panel(app, t.id());
     app.info(format!("task {} lost: {why}", rf("task", t.id())));
     Ok(())
 }
