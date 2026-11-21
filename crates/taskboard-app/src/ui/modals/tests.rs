@@ -364,3 +364,43 @@ fn each_confirm_says_what_it_skips() {
     assert!(super::what_it_does(Ask::Cancel).contains("cancelled by you"));
     assert!(super::what_it_does(Ask::Merge).contains("past its checks and reviews"));
 }
+
+fn drawn(cx: &mut gpui_kit::VisualTestContext) -> (gpui_kit::Bounds<gpui_kit::Pixels>, gpui_kit::Bounds<gpui_kit::Pixels>) {
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    }
+    (cx.debug_bounds("modal-box").expect("the dialog is drawn"), cx.debug_bounds("modal-body").expect("its wrapper is drawn"))
+}
+
+#[gpui_kit::test]
+fn a_short_dialog_is_as_tall_as_its_content(cx: &mut TestAppContext) {
+    use gpui_kit::{VisualTestContext, px, size};
+    let (w, _) = parity::window(cx);
+    w.update(cx, |m, _, cx| m.open_link("taskboard://task/T2?do=done", cx)).unwrap();
+    parity::settle(cx);
+    let cx = &mut VisualTestContext::from_window(w.into(), cx);
+    cx.simulate_resize(size(px(1200.), px(900.)));
+    let (dialog, body) = drawn(cx);
+    assert_eq!(dialog.size.height, body.size.height, "nothing is cut off its bottom padding");
+}
+
+#[gpui_kit::test]
+fn a_tall_dialog_stops_at_nine_tenths_of_the_window(cx: &mut TestAppContext) {
+    use gpui_kit::{VisualTestContext, px, size};
+    let (w, _) = parity::window(cx);
+    w.update(cx, |m, window, cx| {
+        let many: Vec<Value> = (0..60).map(|i| json!({"id": format!("a{i}"), "at": "2026-10-07T14:00:00Z", "text": format!("T{i} couldn't start."), "task": format!("T{i}"), "goal": null})).collect();
+        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = json!(many);
+        m.set_modal(Some(Modal::Alerts), window, cx);
+    })
+    .unwrap();
+    parity::settle(cx);
+    let cx = &mut VisualTestContext::from_window(w.into(), cx);
+    cx.simulate_resize(size(px(1200.), px(500.)));
+    let (dialog, _) = drawn(cx);
+    assert_eq!(dialog.size.height, px(450.), "the list scrolls inside a dialog capped by the window");
+}

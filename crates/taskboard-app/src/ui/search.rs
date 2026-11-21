@@ -935,8 +935,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         Some(div().id("search-results").flex_none().h(h).pb(px(8.)).child(list(state, cx.processor(list_item)).size_full()).into_any_element())
     };
 
-    // The box's own cap is a share of a parent with no height; the window's room below the top
-    // gap is what it may fill.
+    // The window's room below the top gap is what it may fill.
     let cap = window.viewport_size().height - px(96. + 48.);
     let dialog = kit::modal_box(&t, 640.)
         .max_h(cap)

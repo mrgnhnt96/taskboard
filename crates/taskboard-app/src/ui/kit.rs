@@ -320,20 +320,22 @@ pub fn scrim(t: &Theme, id: &str) -> Stateful<Div> {
     div().id(SharedString::from(id.to_string())).absolute().top_0().left_0().size_full().bg(t.backdrop).occlude()
 }
 
-/// The modal dialog box (centered by the caller's scrim).
+/// The modal dialog box (centered by the caller's scrim). Its height is its content's; the caller
+/// caps it against the window, and it shrinks to that cap so its scrolling part takes the cut.
 pub fn modal_box(t: &Theme, width: f32) -> Div {
     div()
         .flex()
         .flex_col()
         .w(px(width))
         .max_w(relative(0.94))
-        .max_h(relative(0.9))
+        .min_h_0()
         .rounded(px(radius::DIALOG))
         .border_1()
         .border_color(t.border)
         .bg(t.card)
         .shadow(t.shadow_modal())
         .overflow_hidden()
+        .debug_selector(|| "modal-box".into())
 }
 
 /// A popover menu box (anchored by the caller).

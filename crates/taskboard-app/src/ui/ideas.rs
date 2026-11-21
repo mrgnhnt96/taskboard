@@ -485,9 +485,7 @@ pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context
         .child(field(field_label(t, "Detail (optional)"), detail.into_any_element(), None))
         .children(field_error(t, &f.error))
         .child(div().flex().flex_none().items_center().justify_end().gap(px(8.)).pt(px(4.)).child(cancel).child(add));
-    // Capped by the window: the box's own cap is a share of the dialog's height, which is its own.
     kit::modal_box(t, 560.)
-        .max_h(window.viewport_size().height * 0.9)
         .child(div().px(px(20.)).pt(px(18.)).pb(px(14.)).text_size(px(16.)).font_weight(FontWeight::BOLD).child("New idea"))
         .child(body)
         .into_any_element()
