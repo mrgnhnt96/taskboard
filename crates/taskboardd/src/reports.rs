@@ -2057,8 +2057,24 @@ fn on_withdraw(r: &mut Report) -> Result<Value> {
     if t.s("status") != Some("needs") || t.s("needs_reason") != Some("question") {
         return err(409, format!("{} has no question waiting on {}, so there's nothing to withdraw.", rf("task", t.id()), app.cfg.owner));
     }
-    r.set_session_status("working")?;
-    board::set_working(app, &t, &r.name(), Some(&format!("Withdrew the question: {why}")))?;
+    let text = format!("Withdrew the question: {why}");
+    // Its terminal closed while it asked (after hours, out of usage): nothing is working on it, so it
+    // goes back in the queue to start again from its handoff, as it would have without the question.
+    if t.s("session_id").is_none() {
+        board::update_task(
+            app,
+            t.id(),
+            crate::fields!["status" => "queued", "needs_reason" => null, "question" => null, "answered_at" => null,
+                           "latest" => "Its question was withdrawn. It starts again from its handoff."],
+        )?;
+        r.log(t.id(), "status", &text, None)?;
+        crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
+        return Ok(ok(Some(&t), None));
+    }
+    if t.s("session_id") == r.sid() {
+        r.set_session_status("working")?;
+    }
+    board::set_working(app, &t, &r.name(), Some(&text))?;
     crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
     Ok(ok(Some(&t), None))
 }
