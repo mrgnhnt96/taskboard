@@ -386,7 +386,7 @@ fn ci_for(app: &App, host: &str) -> HostResult<Arc<dyn BranchCi>> {
     match host {
         "github" => {
             let gh = proc::which(&app.cfg.pr.gh).ok_or_else(|| "the gh command isn't installed".to_string())?;
-            Ok(Arc::new(GithubBranch { gh: Box::new(crate::prhost::github::GhCli { bin: gh, env: crate::accounts::gh_env(&app.cfg) }) }))
+            Ok(Arc::new(GithubBranch { gh: Box::new(crate::prhost::github::GhCli::for_board(app, gh)) }))
         }
         "bitbucket" => {
             let (email, token) = crate::accounts::board_credentials(app, crate::accounts::Provider::Bitbucket)

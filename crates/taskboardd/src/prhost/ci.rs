@@ -111,7 +111,7 @@ pub fn provider_for(app: &App, project: &PrProject, check: &Check) -> HostResult
         Some(Kind::Command) => Some(Box::new(CommandCi { cmd: project.failures_cmd.clone().unwrap_or_default() })),
         Some(Kind::GithubActions) => {
             let gh = crate::proc::which(&app.cfg.pr.gh).ok_or_else(|| "the gh command isn't installed".to_string())?;
-            Some(Box::new(GithubActions { host: GithubHost::new(Box::new(GhCli { bin: gh, env: crate::accounts::gh_env(&app.cfg) })) }))
+            Some(Box::new(GithubActions { host: GithubHost::new(Box::new(GhCli::for_board(app, gh))) }))
         }
         Some(Kind::BitbucketPipelines) => {
             let (email, token) = crate::accounts::board_credentials(app, crate::accounts::Provider::Bitbucket)

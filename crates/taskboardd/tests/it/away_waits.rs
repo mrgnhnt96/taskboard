@@ -23,6 +23,7 @@ fn set(app: &App, id: i64, status: &str, extra: Vec<(&str, Value)>) {
 #[test]
 fn a_wait_leaves_out_time_away_and_outside_work_hours() {
     reset_clock();
+    clock::own_logs();
     let dir = tempfile::tempdir().unwrap();
     let app = App::for_tests(Config::for_tests(dir.path()));
     hours::set(&app, &json!({"on": true, "start": "09:00", "end": "17:00", "days": "all"})).unwrap();
@@ -45,7 +46,6 @@ fn a_wait_leaves_out_time_away_and_outside_work_hours() {
     reset_clock();
 
     let page = api::dispatch(&app, "GET", "days", &[("date".to_string(), ds)].into_iter().collect(), &json!({})).unwrap();
-    clock::forget_aways();
     let lane = page["day"]["lanes"].as_array().unwrap().iter().find(|l| l["project"] == "webapp").unwrap().clone();
     let kinds: Vec<&str> = lane["bars"].as_array().unwrap().iter().map(|b| b["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds, vec!["away", "needs", "away", "needs", "done"], "8 to 9 is before the hours, 10 to 10:30 away");

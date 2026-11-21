@@ -1,5 +1,5 @@
-//! Time the Mac spends asleep doesn't count toward the board's waits. Its own test binary: the sleep
-//! log is process-wide, and the flows in `flow.rs` mustn't see these sleeps.
+//! Time the Mac spends asleep doesn't count toward the board's waits. The test keeps its own sleep
+//! log (`clock::own_logs`): the board's is process-wide, and the tests beside it mustn't see these sleeps.
 
 use taskboardd::app::App;
 use taskboardd::config::Config;
@@ -8,6 +8,7 @@ use taskboardd::{clock, jobs, p};
 
 #[test]
 fn a_job_running_across_a_sleep_doesnt_expire_on_wake() {
+    clock::own_logs();
     let dir = tempfile::tempdir().unwrap();
     let app = App::for_tests(Config::for_tests(dir.path()));
     let now = now_ts();
