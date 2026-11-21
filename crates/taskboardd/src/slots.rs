@@ -55,11 +55,13 @@ pub struct WorktreesConfig {
     pub idle_remove_days: i64,
     /// Free disk in GB below which idle slots are cleared sooner.
     pub low_disk_gb: i64,
+    /// Days a build unit in any slot or main checkout goes unused before the nightly sweep removes it; 0 never does.
+    pub stale_build_days: i64,
 }
 
 impl Default for WorktreesConfig {
     fn default() -> Self {
-        WorktreesConfig { min_slots: 2, max_slots: 10, idle_trim_days: 2, idle_remove_days: 7, low_disk_gb: 50 }
+        WorktreesConfig { min_slots: 2, max_slots: 10, idle_trim_days: 2, idle_remove_days: 7, low_disk_gb: 50, stale_build_days: 3 }
     }
 }
 

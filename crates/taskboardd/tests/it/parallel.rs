@@ -658,7 +658,7 @@ fn a_project_s_slot_settings_are_checked_and_go_back_to_config() {
     let b = new_board();
     let w = |out: &Value| out["worktrees"].clone();
     let out = b.get("projects")["projects"][0].clone();
-    assert_eq!(w(&out), json!({"min_slots": 2, "max_slots": 10, "idle_trim_days": 2, "idle_remove_days": 7, "low_disk_gb": 50, "set": {}}));
+    assert_eq!(w(&out), json!({"min_slots": 2, "max_slots": 10, "idle_trim_days": 2, "idle_remove_days": 7, "low_disk_gb": 50, "stale_build_days": 3, "set": {}}));
     let out = b.post("projects/webapp", json!({"min_slots": "1", "idle_trim_days": 3, "low_disk_gb": 20}));
     assert_eq!(w(&out)["set"], json!({"min_slots": 1, "idle_trim_days": 3, "low_disk_gb": 20}));
     let (code, msg) = b.post_err("projects/webapp", json!({"max_slots": 0}));
