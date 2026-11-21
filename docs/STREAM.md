@@ -2,8 +2,8 @@
 
 The board defines this format; a work relay (anything that hears Bitbucket, GitHub, git, CI or Jira) adapts
 to it. A complete event carries every field the board needs, so in stream mode the board applies it without
-calling the host. An incomplete pr event, a review or comment, or any event in board mode makes the board read
-the PR from its host instead (see Kinds and Modes).
+calling the host. An incomplete pr event without its state, title, branch and base, a review or comment,
+or a pr event in board mode makes the board read the PR from its host instead (see Kinds and Modes).
 
 ```
 POST http://127.0.0.1:8792/tasks/api/stream/events     (tb stream send '<json>'   or   … | tb stream send)

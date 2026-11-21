@@ -6,7 +6,7 @@ points its Download button at the newest release with a DMG, betas included.
 
 ## Cut a release
 
-Run it in a checkout of `main` or a `release/*` branch with nothing uncommitted:
+Run it in a checkout of `main` (a beta can also go from a `release/*` branch) with nothing uncommitted:
 
 ```sh
 tb release cut v1.1.0          # public release, from main
@@ -21,6 +21,9 @@ before running the script.
 
 You need:
 
+- the project set up for releases, once: `tb project set taskboard --releases on --release-script
+  scripts/release.sh`. Without a release script, `tb release cut` only records the release on the board: no
+  version bump, tag or CI run.
 - the release deploy key at `~/.ssh/taskboard-release` (or `TB_RELEASE_DEPLOY_KEY`), because
   `main` only takes PRs and the release commit is the one direct push. README.md, "Developing",
   says how to make it.

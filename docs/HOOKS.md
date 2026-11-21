@@ -405,7 +405,7 @@ bar = "Review"        # its name in the app's PR bar
 - `tb task new … --pr|--no-pr`, `tb task set T4 --pr yes|no|auto`: whether the task ends in a PR, whatever its
   project does.
 - `tb submit "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open (the why is one short line,
-  100 characters at most, and can't be blank); `--no-evidence "<why>"` likewise for evidence. With `[jira] canceled`,
+  100 characters at most, and can't be blank); `--no-evidence "<why>"` finishes without evidence, and says why. With `[jira] canceled`,
   the ticket moves there with the reason as a comment, unless another task on the ticket already merged its PR:
   then it goes back to `[jira] merged` with the summary. A plain `tb submit` on a task that ends in a PR, whose project
   has a remote, with no PR linked is refused and asks for `--pr-body` or `--no-pr "<why>"` (or `--pr <link>`). A
