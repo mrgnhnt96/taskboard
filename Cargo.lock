@@ -6910,7 +6910,7 @@ dependencies = [
 
 [[package]]
 name = "taskboard-app"
-version = "0.1.0-beta.91"
+version = "0.1.0-beta.92"
 dependencies = [
  "async-channel",
  "chrono",
@@ -6929,7 +6929,7 @@ dependencies = [
 
 [[package]]
 name = "taskboard-cli"
-version = "0.1.0-beta.91"
+version = "0.1.0-beta.92"
 dependencies = [
  "chrono",
  "clap",
@@ -6943,7 +6943,7 @@ dependencies = [
 
 [[package]]
 name = "taskboardd"
-version = "0.1.0-beta.91"
+version = "0.1.0-beta.92"
 dependencies = [
  "aho-corasick",
  "axum",
