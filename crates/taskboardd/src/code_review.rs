@@ -244,9 +244,17 @@ fn hold(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Value>
     }
     let dir = worktree(app, t);
     let (head, tree) = (head_of(&dir), tree_of(&dir));
-    if tree.is_some() && done.iter().rev().find(|r| r["ok"] == true).is_some_and(|r| r["tree"].as_str() == tree.as_deref()) {
-        // Reviewed as it stands: a submit that was turned back after its review needn't wait again.
-        return Ok(None);
+    if let Some(last) = done.iter().rev().find(|r| r["ok"] == true) {
+        if tree.is_some() && last["tree"].as_str() == tree.as_deref() {
+            // Reviewed as it stands: a submit that was turned back after its review needn't wait again.
+            return Ok(None);
+        }
+        let patch = tree.as_deref().and_then(|tr| patch_of(&dir, &base_ref_of(app, t), tr));
+        if patch.is_some() && last["patch"].as_str() == patch.as_deref() {
+            // Rebased onto a base that moved, with the change itself as it was reviewed (#1071).
+            app.db.tx(|| board::log_event(app, t.id(), board::BOARD, "note", "Code review kept: the rebase left the change as it was reviewed"))?;
+            return Ok(None);
+        }
     }
     let pr_body = body["pr_body"].as_str().unwrap_or("");
     if !pr_body.trim().is_empty() && !spooled {
@@ -367,7 +375,7 @@ fn round(app: &App, id: i64) -> Result<bool> {
         Some(e) => format!("Code review round {n} failed (try {tries}): {e}"),
     };
     let data = json!({
-        "name": "Code review", "round": n, "try": tries, "ok": ran.error.is_none(), "head": ran.head, "tree": ran.tree,
+        "name": "Code review", "round": n, "try": tries, "ok": ran.error.is_none(), "head": ran.head, "tree": ran.tree, "patch": ran.patch,
         "result": ran.result, "reviewer": ran.reviewer, "cost": ran.cost, "error": ran.error, "output": ran.output,
         "secs": ran.secs,
     });
@@ -430,6 +438,7 @@ pub(crate) fn carry_on(app: &App, t: &Row, stage: Value, alert: Option<String>) 
 struct Ran {
     head: Option<String>,
     tree: Option<String>,
+    patch: Option<String>,
     result: Value,
     reviewer: Option<String>,
     cost: Value,
@@ -452,7 +461,8 @@ fn review(app: &App, t: &Row, cmd: &str, n: u64) -> Ran {
     let dir = worktree(app, t);
     let head = head_of(&dir);
     let tree = tree_of(&dir);
-    let mut ran = Ran { head: head.clone(), tree, result: Value::Null, reviewer: None, cost: Value::Null, error: None, output: String::new(), secs: 0.0 };
+    let patch = tree.as_deref().and_then(|tr| patch_of(&dir, &base_ref_of(app, t), tr));
+    let mut ran = Ran { head: head.clone(), tree, patch, result: Value::Null, reviewer: None, cost: Value::Null, error: None, output: String::new(), secs: 0.0 };
     let base = task_dir(app, t.id());
     let state = base.join("state");
     let here = base.join(format!("round-{n}"));
@@ -640,6 +650,28 @@ fn tree_of(dir: &str) -> Option<String> {
         .and_then(|_| git_out(dir, &["write-tree"], &env));
     let _ = std::fs::remove_file(&index);
     tree
+}
+
+/// The ref the task's change is reviewed against: its base on the remote (a stacked task's parent).
+fn base_ref_of(app: &App, t: &Row) -> String {
+    steps::vars_at(app, t, None).get("base_ref").cloned().unwrap_or_default()
+}
+
+/// The change `tree` makes on top of where HEAD left `base_ref`, as `git patch-id --stable`: the same
+/// after a clean rebase that moved the branch onto a newer base without changing its own diff.
+fn patch_of(dir: &str, base_ref: &str, tree: &str) -> Option<String> {
+    if base_ref.is_empty() {
+        return None;
+    }
+    let from = git_out(dir, &["merge-base", base_ref, "HEAD"], &[])?;
+    let bin = crate::proc::which("git")?;
+    let args = |a: &[&str]| -> Vec<String> { ["-C", dir].iter().chain(a).map(|s| s.to_string()).collect() };
+    let diff = crate::proc::run(&bin, &args(&["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", &from, tree]), None, 60.0).ok()?;
+    if diff.code != Some(0) || diff.stdout.trim().is_empty() {
+        return None;
+    }
+    let id = crate::proc::run_with(&bin, &args(&["patch-id", "--stable"]), None, 60.0, &[], Some(diff.stdout.as_bytes())).ok()?;
+    (id.code == Some(0)).then(|| id.stdout.split_whitespace().next().map(str::to_string)).flatten()
 }
 
 /// Runs the reviewer with `sh -c` in its own process group, its stderr passed to `progress` line by

@@ -28,8 +28,9 @@ runs the command:
 - off the agent's session: the agent is told to end its turn and leave the worktree alone;
 - killed with its whole process group at `timeout_mins`.
 
-Each round is recorded on the task (its head commit, the tree it read, the result, the reviewer's name and
-cost, the tail of its stderr) and shown on the task card as `code_review`.
+Each round is recorded on the task (its head commit, the tree it read, the `git patch-id --stable` of the
+change from where the branch left its base, the result, the reviewer's name and cost, the tail of its
+stderr) and shown on the task card as `code_review`.
 
 ## Inputs
 
@@ -110,7 +111,9 @@ cap with fixes still open, the board opens the PR anyway and alerts the owner. T
 left open.
 
 A submit turned back after its review (a branch that isn't pushed, say) doesn't run the reviewer again
-while the code is as it was reviewed.
+while the code is as it was reviewed. That includes a clean rebase onto a base that moved during the
+review: the tree changes, but the change's patch-id is the same, so the review stands. A rebase that
+changes the branch's own diff runs a new round.
 
 ## Triage (board side)
 
