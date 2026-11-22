@@ -42,6 +42,7 @@ pub mod export;
 pub mod feed;
 pub mod fixes;
 pub mod gitattrs;
+pub mod goal_check;
 pub mod handoff;
 pub mod hooks;
 pub mod home;

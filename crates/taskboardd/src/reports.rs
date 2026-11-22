@@ -2391,6 +2391,9 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     }
     let fixes = crate::fixes::named(&r.body)?;
     crate::fixes::check(app, t, &fixes)?;
+    if !r.spooled {
+        crate::goal_check::refusal(app, t, &fixes)?;
+    }
     if fixes.is_empty() && !r.spooled {
         crate::fixes::ask_once(app, t, r.cwd.as_deref())?;
     }
