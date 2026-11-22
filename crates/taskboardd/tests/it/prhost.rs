@@ -512,6 +512,48 @@ fn asking_a_new_reviewer_records_no_re_review() {
 }
 
 #[test]
+fn asking_a_reviewer_who_only_commented_shows_a_re_review_until_they_comment_again() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![Reviewer { commented_at: Some("2026-10-26T15:00:00Z".into()), ..reviewer("rev", "commented") }];
+    let h = fake(&b, rec.clone());
+    poll(&b);
+    let v = b.post(&format!("/tasks/T{id}/pr/reviewers"), json!({"ask": ["rev"], "who": "The agent"}));
+    assert_eq!(v["asked"][0]["queued"], false, "{v}");
+    assert!(h.calls().contains(&"re-request rev".to_string()), "{:?}", h.calls());
+    assert_eq!(b.flow(id)["rereview_asks"]["rev"]["commented_at"], "2026-10-26T15:00:00Z", "{}", b.flow(id));
+    let r = status_reviewer(&b, id, "rev");
+    assert_eq!((r["state"].as_str(), r["rereview"]["queued"].as_bool()), (Some("commented"), Some(false)), "{r}");
+    let row = reviewer_row(&b, id, "rev");
+    assert_eq!((row["state"].as_str(), row["changes"].as_bool()), (Some("rereview"), Some(false)), "{row}");
+    // A read that still shows the comment it answered keeps the ask.
+    fake(&b, rec.clone());
+    poll(&b);
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "rereview");
+    // They comment again: that answers it.
+    rec.reviewers = vec![Reviewer { commented_at: Some("2099-01-01T00:00:00Z".into()), ..reviewer("rev", "commented") }];
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "commented");
+    assert!(status_reviewer(&b, id, "rev")["rereview"].is_null());
+    assert!(b.flow(id)["rereview_asks"].get("rev").is_none(), "{}", b.flow(id));
+}
+
+#[test]
+fn a_comment_with_no_time_on_record_answers_the_re_review() {
+    let b = board_with(|_| {});
+    let (id, h) = changes_asked(&b);
+    b.post(&format!("/tasks/T{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "rereview");
+    let mut rec = h.rec.lock().clone();
+    rec.reviewers = vec![reviewer("rev", "commented")];
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(reviewer_row(&b, id, "rev")["state"], "commented", "can't tell it from a new comment");
+}
+
+#[test]
 fn the_re_review_ask_clears_when_that_reviewer_asks_for_changes_again_or_approves() {
     let b = board_with(|_| {});
     let (id, h) = changes_asked(&b);

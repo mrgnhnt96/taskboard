@@ -39,7 +39,7 @@
 //! [`Record`] is one read of a PR. [`Record::to_value`] turns it into the JSON the PR flow keeps as
 //! `pr_flow.rec` and steps on (`prflow::phase_of`): `state`, `head`, `branch`, `base`, `base_head`,
 //! `checks` (`name`, `state` = passed / failed / running / stopped, `url`), `failed`, `running`,
-//! `comments` (comments from others), `approvals` (not the author's or the board's own account's), `review_decision`, `changes_at`, `reviewers` (`user`, `name`, `state`, `requested`, `changes_at`),
+//! `comments` (comments from others), `approvals` (not the author's or the board's own account's), `review_decision`, `changes_at`, `reviewers` (`user`, `name`, `state`, `requested`, `changes_at`, `commented_at`),
 //! `threads`, `tasks_open`, `tasks_error`, `viewer`. A thread ([`Thread`]) is open while it's unresolved
 //! and someone other than the board's own account (`viewer`, the account it posts as; the PR's author
 //! when that isn't known) had the last word; a PR task (Bitbucket) is open until it's resolved. When the
@@ -134,6 +134,10 @@ pub struct Reviewer {
     /// is for the PR's latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changes_at: Option<String>,
+    /// When their standing comment-only review was made (`state` commented), so a comment newer than
+    /// an ask to look again tells it apart from the one it answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commented_at: Option<String>,
     /// Every id the host knows them by, when it has more than one (Bitbucket's `{uuid}` and
     /// `account_id`): the board renames `user` to the one the project's roster has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -294,7 +298,8 @@ impl Record {
             .map(|r| {
                 let state = s(r, "state");
                 let changes_at = if state == "changes" { opt(r, "at") } else { None };
-                Reviewer { user: s(r, "who"), name: s(r, "who"), state, requested: true, changes_at, ids: vec![] }
+                let commented_at = if state == "commented" { opt(r, "at") } else { None };
+                Reviewer { user: s(r, "who"), name: s(r, "who"), state, requested: true, changes_at, commented_at, ids: vec![] }
             })
             .collect();
         let threads: Vec<Thread> = list(ev, "threads")

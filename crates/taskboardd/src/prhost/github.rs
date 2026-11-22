@@ -579,12 +579,20 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
             })
         });
         let mine = mine.flatten();
+        // When they left that comment-only review: this review's time, else their latest among every review.
+        let commented = (state == "commented").then(|| {
+            r["submittedAt"].as_str().map(|s| s.to_string()).or_else(|| {
+                reviews.iter().filter(|x| x["state"] == "COMMENTED" && login(x) == user).filter_map(|x| x["submittedAt"].as_str()).max().map(|s| s.to_string())
+            })
+        });
+        let commented = commented.flatten();
         match reviewers.iter_mut().find(|x| x.user == user) {
             Some(x) => {
                 x.state = state.into();
                 x.changes_at = mine;
+                x.commented_at = commented;
             }
-            None => reviewers.push(Reviewer { name: user.clone(), user, state: state.into(), requested: false, changes_at: mine, ..Default::default() }),
+            None => reviewers.push(Reviewer { name: user.clone(), user, state: state.into(), requested: false, changes_at: mine, commented_at: commented, ..Default::default() }),
         }
     }
     for u in &requested {
@@ -819,6 +827,19 @@ pub(crate) mod tests {
         assert_eq!(r.threads.iter().find(|t| t.id == "IC_2").unwrap().text, "Why?");
         let t1 = r.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
         assert_eq!(t1.replies, vec![Reply { author: "me".into(), author_name: "me".into(), text: "Done in a.rs".into(), body: "Done\nin a.rs".into(), at: "t2".into() }]);
+    }
+
+    #[test]
+    fn a_comment_only_review_keeps_when_it_was_made() {
+        let mut v = view();
+        v["reviews"] = json!([{"id": "PRR_1", "author": {"login": "rev"}, "state": "COMMENTED", "body": "a note", "submittedAt": "2026-10-01T10:00:00Z"},
+                              {"id": "PRR_2", "author": {"login": "rev"}, "state": "COMMENTED", "body": "and another", "submittedAt": "2026-10-02T10:00:00Z"}]);
+        v["latestReviews"] = json!([{"author": {"login": "rev"}, "state": "COMMENTED"}, {"author": {"login": "ok"}, "state": "APPROVED", "submittedAt": "2026-10-03T10:00:00Z"}]);
+        let r = summarize(&v, &threads());
+        let at: Vec<(&str, Option<&str>)> = r.reviewers.iter().map(|x| (x.state.as_str(), x.commented_at.as_deref())).collect();
+        assert_eq!(at[..2], [("commented", Some("2026-10-02T10:00:00Z")), ("approved", None)], "their latest comment-only review; none for an approval");
+        v["latestReviews"][0]["submittedAt"] = json!("2026-10-04T10:00:00Z");
+        assert_eq!(summarize(&v, &threads()).reviewers[0].commented_at.as_deref(), Some("2026-10-04T10:00:00Z"), "the latest review's own time first");
     }
 
     #[test]
