@@ -767,6 +767,13 @@ enum Cmd {
     Hello,
     /// Claude Code hook (used by the plugin)
     Hook { event: Option<String> },
+    /// Install the board's Claude Code hooks for this tb, and the task-board plugin, as the app's
+    /// Install hooks does (install.sh runs it; with the app, use its button instead)
+    InstallHooks {
+        /// The plugin folder to install from: the repo's plugin/
+        #[arg(long)]
+        plugin: PathBuf,
+    },
     /// git credential helper for the board's sessions (set up by the plugin's SessionStart hook)
     #[command(hide = true)]
     GitCredential {
@@ -7983,6 +7990,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Api { provider, path, method, data, fresh } => api_call(&c.cfg, &provider, &path, method, data, fresh),
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
+        Cmd::InstallHooks { plugin } => install_hooks(&plugin),
         Cmd::GitCredential { op } => Ok(crate::gitcred::run(&op)),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
     }
@@ -8758,6 +8766,22 @@ fn master_cmd(c: &Ctx, args: Vec<String>, verdict: Verdict, open_only: bool, lim
         (_, Some(w)) => return Err(format!("{w} isn't a master command: show, ours, not-ours, unsure or check")),
     }
     Ok(0)
+}
+
+/// `tb install-hooks`: the plugin from `plugin`, and hooks that run this `tb`.
+fn install_hooks(plugin: &std::path::Path) -> Result<i32, String> {
+    use taskboardd::claude_hooks::{self, Hooks, Target};
+    let plugin = plugin.canonicalize().map_err(|e| format!("couldn't find {}: {e}", plugin.display()))?;
+    let tb = std::env::current_exe().map_err(|e| format!("couldn't tell where this tb is: {e}"))?;
+    let t = Target { plugin, tb, can_install: true };
+    claude_hooks::install(&t)?;
+    match claude_hooks::check(&claude_hooks::claude_dir(), &t) {
+        Hooks::Current => {
+            out(&format!("Installed the board's hooks (running {}) and the task-board plugin. New Claude sessions report to the board.", t.tb.display()));
+            Ok(0)
+        }
+        other => Err(format!("installed, but Claude Code's config still doesn't match: {other:?}")),
+    }
 }
 
 pub fn main_with(args: Vec<String>) -> i32 {

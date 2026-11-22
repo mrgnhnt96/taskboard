@@ -21,6 +21,7 @@ pub mod breaks;
 pub mod bring;
 pub mod builds;
 pub mod chain;
+pub mod claude_hooks;
 pub mod checkin;
 pub mod clock;
 pub mod code_review;
