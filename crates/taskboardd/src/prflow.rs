@@ -1868,16 +1868,19 @@ fn waiting_since(f: &Row, rec: &Value) -> Option<Value> {
 }
 
 /// Whether `ask` (an entry of `rereview_asks`: `tb pr addressed` asked the reviewer to look again)
-/// still stands for reviewer `r` as just read: until they review again. An approval or a comment
-/// ends it, and so does a request for changes newer than the one it answered.
+/// still stands for reviewer `r` as just read: until they review again. An approval ends it, and so
+/// does a request for changes or a comment newer than the one it answered. A comment the record gives
+/// no time for (`commented_at`: Bitbucket, older reads) ends it too, as it can't be told from a new one.
 pub fn rereview_stands(ask: &Value, r: &Value) -> bool {
+    let same = |key: &str, unknown: bool| match (ask[key].as_str().and_then(parse_iso), r[key].as_str().and_then(parse_iso)) {
+        (Some(was), Some(now)) => now <= was,
+        (None, Some(now)) => ask["at"].as_str().and_then(parse_iso).is_some_and(|at| now <= at),
+        _ => unknown,
+    };
     match r["state"].as_str().unwrap_or("") {
-        "approved" | "commented" => false,
-        "changes" => match (ask["changes_at"].as_str().and_then(parse_iso), r["changes_at"].as_str().and_then(parse_iso)) {
-            (Some(was), Some(now)) => now <= was,
-            (None, Some(now)) => ask["at"].as_str().and_then(parse_iso).is_some_and(|at| now <= at),
-            _ => true,
-        },
+        "approved" => false,
+        "commented" => same("commented_at", false),
+        "changes" => same("changes_at", true),
         _ => true,
     }
 }

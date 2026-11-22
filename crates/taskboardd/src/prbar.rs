@@ -165,8 +165,8 @@ pub fn reviewer_rows(f: &Row, rec: &Value) -> Vec<Value> {
             let ask = prflow::rereview_ask(f, r);
             let state = match r["state"].as_str().unwrap_or("") {
                 "approved" => "approved",
-                "commented" => "commented",
                 _ if ask.is_some() => "rereview",
+                "commented" => "commented",
                 "changes" => "changes",
                 _ => "waiting",
             };

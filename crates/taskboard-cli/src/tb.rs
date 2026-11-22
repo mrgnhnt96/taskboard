@@ -3127,8 +3127,12 @@ impl Ctx {
 fn reviewer_state(r: &Value) -> String {
     let again = &r["rereview"];
     let st = r["state"].as_str().unwrap_or("");
-    if again.is_object() && !matches!(st, "approved" | "commented") {
-        let was = if st == "changes" { "asked for changes, " } else { "" };
+    if again.is_object() && st != "approved" {
+        let was = match st {
+            "changes" => "asked for changes, ",
+            "commented" => "commented, ",
+            _ => "",
+        };
         return match again["at"].as_str() {
             _ if again["queued"] == true => format!("{was}re-review queued (the board asks once the rate limit is over)"),
             Some(at) => format!("{was}asked to look again {}", local_when(at)),
@@ -9582,6 +9586,9 @@ mod tests {
         // Bitbucket keeps every reviewer requested: that alone isn't an ask to look again.
         assert_eq!(reviewer_state(&json!({"state": "changes", "requested": true})), "asked for changes");
         assert_eq!(reviewer_state(&json!({"state": "approved", "rereview": {"at": "2026-10-27T15:26:00Z"}})), "approved");
+        let commented = reviewer_state(&json!({"state": "commented", "rereview": {"at": "2026-10-27T15:26:00Z", "queued": false}}));
+        assert!(commented.starts_with("commented, asked to look again Oct 27, "), "{commented}");
+        assert_eq!(reviewer_state(&json!({"state": "commented"})), "commented");
     }
 
     #[test]

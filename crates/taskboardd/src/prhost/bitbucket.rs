@@ -669,7 +669,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
         if user.is_empty() || user == author {
             continue;
         }
-        reviewers.push(Reviewer { user, name: r["display_name"].as_str().unwrap_or("").to_string(), state: "pending".into(), requested: true, changes_at: None, ids: ids(&r) });
+        reviewers.push(Reviewer { user, name: r["display_name"].as_str().unwrap_or("").to_string(), state: "pending".into(), requested: true, changes_at: None, commented_at: None, ids: ids(&r) });
     }
     let mut changes_at: Option<String> = None;
     for part in p["participants"].as_array().cloned().unwrap_or_default() {
@@ -701,6 +701,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
                 state: state.into(),
                 requested: false,
                 changes_at: mine,
+                commented_at: None,
                 ids: ids(&part["user"]),
             }),
             None => {}

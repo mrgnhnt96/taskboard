@@ -347,9 +347,9 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         on_host_call("swap the reviewer", &|| h.replace_reviewer(&pr, &old.user, &new.user)).map_err(|e| fail("swap the reviewer", e))?;
         crate::progress::stage(&format!("Asked {} in place of {} on {on_host}", new.name, old.name));
     }
-    // Someone whose last word is a request for changes is asked to look again, as `tb pr addressed`
-    // does; while the host has the board rate-limited that ask is queued for the board to send.
-    let (again, fresh): (Vec<(Who, String)>, Vec<(Who, String)>) = want.into_iter().partition(|(w, _)| wants_changes(&rec, &w.user));
+    // Someone whose last word is a request for changes or a comment is asked to look again, as `tb pr
+    // addressed` does; while the host has the board rate-limited that ask is queued for the board to send.
+    let (again, fresh): (Vec<(Who, String)>, Vec<(Who, String)>) = want.into_iter().partition(|(w, _)| reviewed(&rec, &w.user));
     let mut asked: Vec<(Who, String)> = vec![];
     if !fresh.is_empty() {
         let users: Vec<String> = fresh.iter().map(|(w, _)| w.user.clone()).collect();
@@ -451,20 +451,24 @@ fn on_record<'a>(rec: &'a Value, user: &str) -> &'a Value {
     rec["reviewers"].as_array().and_then(|l| l.iter().find(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user)))).unwrap_or(&Value::Null)
 }
 
-/// Whether `user`'s standing word on the PR is a request for changes.
-fn wants_changes(rec: &Value, user: &str) -> bool {
-    on_record(rec, user)["state"] == "changes"
+/// Whether `user`'s standing word on the PR is a request for changes or a comment-only review.
+fn reviewed(rec: &Value, user: &str) -> bool {
+    matches!(on_record(rec, user)["state"].as_str(), Some("changes" | "commented"))
 }
 
 /// Keeps each of `who` in the PR's `rereview_asks` (as `tb pr addressed` does), answering their
-/// standing request for changes, so the status and the card show the ask until they review again.
-/// A `queued` one waits for the board to send it once the host's rate limit is over.
+/// standing request for changes or comment (`changes_at`, `commented_at`), so the status and the card
+/// show the ask until they review again. A `queued` one waits for the board to send it once the host's
+/// rate limit is over.
 fn record_rereviews(app: &App, t: &Row, rec: &Value, who: &[Who], queued: bool) -> Result<()> {
     let mut asks = flow(t).get("rereview_asks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     let at = now_iso();
     for w in who {
-        let changes_at = on_record(rec, &w.user)["changes_at"].clone();
-        asks.insert(w.user.to_lowercase(), json!({"user": w.user, "name": w.name, "at": at, "changes_at": changes_at, "queued": queued}));
+        let r = on_record(rec, &w.user);
+        asks.insert(
+            w.user.to_lowercase(),
+            json!({"user": w.user, "name": w.name, "at": at, "changes_at": r["changes_at"], "commented_at": r["commented_at"], "queued": queued}),
+        );
     }
     prflow::merge_flow(app, t.id(), fields!["rereview_asks" => Value::Object(asks)]).map(|_| ())
 }
