@@ -405,6 +405,10 @@ pub struct MergeOpts {
     pub strategy: Option<String>,
     /// Delete the PR's branch once it's merged.
     pub close_source_branch: bool,
+    /// The head commit the merge was judged on: a host that can pin it (GitHub) refuses the merge once
+    /// the branch has moved past it, so a push between the board's read and the merge can't land
+    /// unchecked. Bitbucket's merge API has no such pin and merges whatever the head is.
+    pub head: Option<String>,
 }
 
 /// What [`PrHost::cancel_builds`] did.
@@ -591,6 +595,8 @@ pub struct FakeHost {
     pub merge_errors: Mutex<Vec<String>>,
     /// The merge goes through even when `merge` answers one of `merge_errors`.
     pub merge_lands: Mutex<bool>,
+    /// A push that lands between the board's read and its merge: `merge` moves the head to it first.
+    pub push_before_merge: Mutex<Option<String>>,
     /// Reviewers `remove_reviewers` answers for without taking them off.
     pub keeps: Mutex<Vec<String>>,
     /// How many times `read` was called.
@@ -613,7 +619,7 @@ pub struct FakeHost {
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), lines: Mutex::new(None), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), merge_errors: Mutex::new(vec![]), merge_lands: Mutex::new(false), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), commits: Mutex::new(vec![]), lines: Mutex::new(None), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), merge_errors: Mutex::new(vec![]), merge_lands: Mutex::new(false), push_before_merge: Mutex::new(None), keeps: Mutex::new(vec![]), reads: Mutex::new(0), read_error: Mutex::new(None), read_fails: Mutex::new(vec![]), read_delay: Mutex::new(std::time::Duration::ZERO), stamp: Mutex::new(None), stamps_error: Mutex::new(None), held: Mutex::new(None), write_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -710,7 +716,15 @@ impl PrHost for FakeHost {
         Ok(())
     }
     fn merge(&self, _pr: &PrRef, opts: &MergeOpts) -> HostResult<()> {
-        self.log(format!("merge close={} strategy={}", opts.close_source_branch, opts.strategy.as_deref().unwrap_or("default")));
+        let pinned = opts.head.as_deref().map(|h| format!(" head={h}")).unwrap_or_default();
+        self.log(format!("merge close={} strategy={}{pinned}", opts.close_source_branch, opts.strategy.as_deref().unwrap_or("default")));
+        if let Some(head) = self.push_before_merge.lock().take() {
+            self.rec.lock().head = head;
+        }
+        // As GitHub answers a merge pinned to a head the branch has moved past.
+        if opts.head.as_ref().is_some_and(|h| *h != self.rec.lock().head) {
+            return Err("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)".into());
+        }
         let next = {
             let mut errors = self.merge_errors.lock();
             (!errors.is_empty()).then(|| errors.remove(0))

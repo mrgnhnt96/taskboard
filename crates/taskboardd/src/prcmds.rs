@@ -905,7 +905,9 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     // the PRs stacked on it onto its base first.
     move_stacked_off(app, &t, &rec, pr.num)?;
     let rules = crate::projects::pr_rules(app, t.s("project"));
-    let opts = MergeOpts { strategy: rules.merge_strategy.clone().filter(|s| !s.trim().is_empty()), close_source_branch: true };
+    // Pinned to the head whose checks and reviews were just judged: a push since then makes the host refuse.
+    let judged = rec["head"].as_str().filter(|h| !h.is_empty()).map(str::to_string);
+    let opts = MergeOpts { strategy: rules.merge_strategy.clone().filter(|s| !s.trim().is_empty()), close_source_branch: true, head: judged };
     let h = host(app, &pr)?;
     if let Err(e) = merge_on_host(app, &pr, h.as_ref(), &opts) {
         // The host found a conflict the record didn't show yet: send the PR to the rebase stage, not to
@@ -916,6 +918,14 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
                 prflow::step(app, &board::get_task(app, id)?, &rec).map(|_| ())
             })?;
             return err(409, format!("PR #{} can't merge: it conflicts with its base branch {}. Rebase onto it, resolve the conflicts, push with git push --force-with-lease, then run tb pr wait.{}", pr.num, rec["base"].as_str().unwrap_or("main"), prflow::KEEP_BASE));
+        }
+        // A push landed after the read: what was judged isn't what would merge. The poll reads the new
+        // head and its checks, and the board brings the agent back once they clear.
+        if head_moved_error(&e.to_string()) {
+            let short = prflow::short_sha(rec["head"].as_str().unwrap_or(""));
+            let why = format!("its branch was pushed after the board judged it at {short}, so {site} kept the merge to that head: wait for the new push's checks");
+            prflow::note_merge_refused(app, id, &rec, &why)?;
+            return err(409, format!("PR #{} can't merge yet: {why}.{WAITS_NEXT}", pr.num));
         }
         prflow::note_merge_refused(app, id, &rec, &format!("{site} wouldn't merge it: {e}"))?;
         return Err(prflow::wait_out_limit(app, id, &pr, body, "merge", ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num))));
@@ -1107,6 +1117,11 @@ pub fn review_not_needed(app: &App, id: i64) -> Result<Value> {
 
 /// The host refused a merge because the PR conflicts with its base (GitHub: "the merge commit cannot be
 /// cleanly created"; Bitbucket: "resolve all merge conflicts").
+/// The host refused a merge pinned to a head the branch has moved past (GitHub: "Head branch was modified").
+fn head_moved_error(e: &str) -> bool {
+    e.to_lowercase().contains("head branch was modified")
+}
+
 fn merge_conflict_error(e: &str) -> bool {
     let e = e.to_lowercase();
     e.contains("cleanly created") || e.contains("merge conflict")
