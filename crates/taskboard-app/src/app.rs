@@ -8,7 +8,7 @@ use crate::backend::{Backend, CallError};
 use crate::fingerprint::{self, Fingerprint, Stamped};
 use crate::fmt::{self, arr, b, opt_s, s};
 use crate::theme::Theme;
-use crate::ui::{self, kit};
+use crate::ui;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -139,40 +139,15 @@ pub struct Errs {
     pub idea: Option<String>,
 }
 
-/// The board's filters (sent with `GET /state`).
+/// The board's filter (sent with `GET /state`): the project the home page's tabs picked.
 #[derive(Clone, Debug)]
 pub struct Filters {
     pub project: String,
-    pub goal: String,
-    pub done: String,
 }
 
 impl Default for Filters {
     fn default() -> Self {
-        Filters { project: "all".into(), goal: "all".into(), done: "24h".into() }
-    }
-}
-
-impl Filters {
-    /// The saved filters (`loadFilter`): each field kept only when it's a valid value.
-    pub fn load() -> Filters {
-        let mut f = Filters::default();
-        let v = crate::prefs::get("taskboard.filter").unwrap_or(Value::Null);
-        if let Some(p) = v["project"].as_str() {
-            f.project = p.to_string();
-        }
-        if let Some(g) = v["goal"].as_str().filter(|g| *g == "all" || is_goal_ref(g)) {
-            f.goal = g.to_string();
-        }
-        if let Some(d) = v["done"].as_str().filter(|d| ["24h", "7d", "all"].contains(d)) {
-            f.done = d.to_string();
-        }
-        f
-    }
-
-    /// `saveFilter`.
-    pub fn save(&self) {
-        crate::prefs::set("taskboard.filter", json!({"project": self.project, "goal": self.goal, "done": self.done}));
+        Filters { project: "all".into() }
     }
 }
 
@@ -194,11 +169,6 @@ pub fn project_names<'a>(state: &Value, goals: impl IntoIterator<Item = &'a Valu
     }
     v.sort_by(|a, b| ui::modals::locale_cmp(a, b));
     v
-}
-
-/// `G3` (the web's `isGoalRef`: capital G and digits).
-pub fn is_goal_ref(s: &str) -> bool {
-    s.len() > 1 && s.starts_with('G') && s[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 pub struct Toast {
@@ -336,9 +306,8 @@ impl MainWindow {
         let mut m = MainWindow {
             backend,
             data: Data::default(),
-            // Nothing on screen shows or clears a project or goal filter, so a saved one would
-            // hide work silently: start unfiltered.
-            filters: Filters { project: "all".into(), goal: "all".into(), ..Filters::load() },
+            // Every launch starts on all projects, so a filter picked last time can't hide work.
+            filters: Filters::default(),
             page: Page::Board,
             back: Vec::new(),
             forward: Vec::new(),
@@ -459,22 +428,20 @@ impl MainWindow {
 
     // -------------------------------------------------------------- navigation
 
-    /// Change the board filters (saved for the next launch, as the web board did) and refetch.
+    /// Change the board filter and refetch.
     pub fn set_filters(&mut self, f: Filters, cx: &mut Context<Self>) {
-        // The web cleared the kept backlog cards on every project or goal change.
-        if f.project != self.filters.project || f.goal != self.filters.goal {
+        // The web cleared the kept backlog cards on every project change.
+        if f.project != self.filters.project {
             self.board.keep.clear();
         }
-        f.save();
         self.filters = f;
         self.refresh(cx);
     }
 
-    /// Esc on the board with a filter set (`railClear`).
+    /// Esc on the board with a project picked (`railClear`): back to all projects.
     pub fn rail_clear(&mut self, cx: &mut Context<Self>) {
-        let f = ui::goals::rail_clear(&self.filters);
         self.board.keep.clear();
-        self.set_filters(f, cx);
+        self.set_filters(Filters::default(), cx);
     }
 
     /// "Goals" (the web's `#/goals`): the Goals page.
@@ -983,7 +950,7 @@ impl MainWindow {
         if ui::backlog::escape(self, cx) {
             return;
         }
-        if self.page == Page::Board && !ui::focus::typing(window) && (self.filters.goal != "all" || self.filters.project != "all") {
+        if self.page == Page::Board && !ui::focus::typing(window) && self.filters.project != "all" {
             self.rail_clear(cx);
         }
     }
@@ -1717,9 +1684,6 @@ impl Got {
                 // An unchanged answer still sets the clock the pages' ages count from.
                 fmt::set_server_now(s(&v, "now"));
                 if Stamps::took(&mut m.stamps.state, &v) {
-                    if arr(&v, "alerts").is_empty() && matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
-                        m.modal = None;
-                    }
                     m.data.state = Some(Rc::new(v));
                 }
                 m.down = None;
@@ -2089,55 +2053,9 @@ fn releases_off_view(t: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// One banner line (`renderBanner`) or alerts-dialog row: what it says and its buttons.
-#[derive(Clone, Debug, PartialEq)]
-pub struct BannerRow {
-    /// "down" (the board isn't answering), "urgent" (an urgent alert, red, in a row of its own) or "alert".
-    pub kind: &'static str,
-    pub text: String,
-    /// The small "5m ago" after the text.
-    pub ago: Option<String>,
-    /// (action, label): `alerts-open` Show all, `alert-open` Open T4, `alert-dismiss` Dismiss.
-    pub buttons: Vec<(&'static str, String)>,
-}
-
-/// `alertStays`: a PR waiting on your review stays until you review it, and an urgent alert until it clears (the board refuses a dismiss).
-pub fn alert_stays(a: &Value) -> bool {
-    a["review"] == true || a["urgent"] == true
-}
-
-fn alert_buttons(a: &Value) -> Vec<(&'static str, String)> {
-    let mut b = Vec::new();
-    if let Some(r) = fmt::opt_s(a, "task").or(fmt::opt_s(a, "goal")) {
-        b.push(("alert-open", format!("Open {r}")));
-    }
-    if !alert_stays(a) {
-        b.push(("alert-dismiss", "Dismiss".into()));
-    }
-    b
-}
-
-fn alert_kind(a: &Value) -> &'static str {
-    if a["urgent"] == true { "urgent" } else { "alert" }
-}
-
-/// What the alert says: its title and detail line when it has them, else its text.
-pub fn alert_says(a: &Value) -> String {
-    let (title, detail) = (s(a, "title"), s(a, "detail"));
-    match (title.is_empty(), detail.is_empty()) {
-        (true, _) => s(a, "text").to_string(),
-        (false, true) => title.to_string(),
-        (false, false) => format!("{title}. {detail}"),
-    }
-}
-
 /// The alert's fixes as (label, command), one button each.
 pub fn alert_actions(a: &Value) -> Vec<(String, String)> {
     arr(a, "actions").iter().filter(|x| !s(x, "label").is_empty()).map(|x| (s(x, "label").to_string(), s(x, "command").to_string())).collect()
-}
-
-fn alert_row_view(a: &Value) -> BannerRow {
-    BannerRow { kind: alert_kind(a), text: alert_says(a), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }
 }
 
 /// An alert's fix button: the board opens a Claude terminal in Midna with the request typed in for
@@ -2158,39 +2076,6 @@ pub fn run_alert_action(m: &mut MainWindow, id: &str, n: usize, label: &str, com
             m.toast(text, !copy, cx);
         },
     );
-}
-
-/// `renderBanner`: the "isn't answering" line, a line for each urgent alert, then either one line per other
-/// alert or, with more than one, a single "N tasks need your attention." line with Show all.
-pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
-    let mut out = Vec::new();
-    if let Some(e) = down.filter(|e| !e.is_empty()) {
-        out.push(BannerRow { kind: "down", text: format!("{e} Trying again every few seconds."), ago: None, buttons: Vec::new() });
-    }
-    let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.iter().cloned().partition(|a| a["urgent"] == true);
-    for a in &urgent {
-        out.push(BannerRow { kind: "urgent", ..alert_row_view(a) });
-    }
-    if alerts.len() > 1 {
-        out.push(BannerRow {
-            kind: "alert",
-            text: format!("{} your attention.", fmt::plural(alerts.len() as i64, "task needs", "tasks need")),
-            ago: Some(fmt::ago(s(alerts.last().unwrap_or(&Value::Null), "at"))),
-            buttons: vec![("alerts-open", "Show all".into())],
-        });
-    } else {
-        for a in &alerts {
-            out.push(BannerRow { kind: "alert", ..alert_row_view(a) });
-        }
-    }
-    out
-}
-
-/// `alertsDialogHtml`: (title, rows); its foot is "Dismiss all" while any alert can be dismissed. (For the dialog in modals.rs.)
-pub fn alerts_dialog_view(alerts: &[Value]) -> (String, Vec<BannerRow>) {
-    let title = format!("{} your attention", fmt::plural(alerts.len() as i64, "task needs", "tasks need"));
-    let rows = alerts.iter().map(alert_row_view).collect();
-    (title, rows)
 }
 
 /// A status-bar pill: its class (`up`, `down`, `hours`, `hours closed`), label and tooltip.
@@ -2338,54 +2223,6 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
     out
 }
 
-/// The alert's text, then its age in `ago` (the muted color, or the row's own on a solid red one).
-fn alert_text(r: &BannerRow, ago: Hsla) -> Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_wrap()
-        .items_baseline()
-        .gap(px(4.))
-        .child(r.text.clone())
-        .children(r.ago.clone().map(|a| div().ml(px(4.)).text_size(px(10.8)).text_color(ago).child(a)))
-}
-
-/// One alert: its text and age, "Open T12" and Dismiss. Also used by the alerts dialog.
-pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
-    let id = s(a, "id").to_string();
-    let r = alert_row_view(a);
-    let (task, goal) = (fmt::opt_s(a, "task").map(str::to_string), fmt::opt_s(a, "goal").map(str::to_string));
-    let fixes = alert_actions(a).into_iter().enumerate().map(|(n, (label, command))| {
-        let aid = id.clone();
-        banner_btn(t, SharedString::from(format!("alert-act-{id}-{n}")), label.clone(), true)
-            .when(a["urgent"] == true, |d| d.text_color(t.on_accent))
-            .on_click(cx.listener(move |m, _, _, cx| run_alert_action(m, &aid, n, &label, &command, cx)))
-    });
-    let fixes: Vec<_> = fixes.collect();
-    // An urgent alert is solid red; the others are red on the soft red.
-    let urgent = r.kind == "urgent";
-    let row = if urgent { bar(t.down, t.on_accent, t.down).font_weight(FontWeight::SEMIBOLD) } else { bar(t.down_soft, t.down, t.down_line) };
-    row.child(kit::dot(if urgent { t.on_accent } else { t.down }, 8.))
-        .child(alert_text(&r, if urgent { t.on_accent } else { t.muted }))
-        .children(r.buttons.iter().filter(|(act, _)| *act == "alert-open").map(|(_, label)| {
-            let (task, goal) = (task.clone(), goal.clone());
-            banner_btn(t, SharedString::from(format!("alert-open-{id}")), label.clone(), true).on_click(cx.listener(move |m, _, window, cx| {
-                open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
-            }))
-        }))
-        .children(fixes)
-        .child({
-            let text = r.text.clone();
-            banner_btn(t, SharedString::from(format!("alert-copy-{id}")), "Copy", false)
-                .when(urgent, |d| d.text_color(t.on_accent))
-                .on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx)))
-        })
-        .when(r.buttons.iter().any(|(act, _)| *act == "alert-dismiss"), |d| {
-            d.child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
-        })
-}
-
 /// The banner's Copy: its text on the clipboard, and a toast.
 pub fn copy_text(m: &mut MainWindow, text: &str, cx: &mut Context<MainWindow>) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
@@ -2407,32 +2244,6 @@ fn copy_ref(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     m.toast(format!("Copied {r}"), false, cx);
 }
 
-/// `alert-open`: close the alerts dialog, then the task (or else the goal).
-pub fn open_alert(m: &mut MainWindow, task: Option<&str>, goal: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) {
-    if matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
-        m.set_modal(None, window, cx);
-    }
-    if let Some(t) = task {
-        m.open_task(t.to_string(), cx);
-    } else if let Some(g) = goal {
-        m.go(Page::Goal(g.to_string()), cx);
-    }
-}
-
-/// `alert-dismiss`: `POST /alerts/:id/dismiss {}` (no toast).
-pub fn dismiss_alert(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
-    m.post(format!("alerts/{id}/dismiss"), json!({}), cx, |_, _, _| {});
-}
-
-/// `alerts-dismiss-all`: dismiss every current alert; the dialog closes once none are left.
-/// (For the dialog in modals.rs.)
-pub fn dismiss_all_alerts(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let ids: Vec<String> = arr(m.state(), "alerts").iter().filter(|a| !alert_stays(a)).map(|a| s(a, "id").to_string()).collect();
-    for id in ids {
-        dismiss_alert(m, &id, cx);
-    }
-}
-
 /// `.conn`: 12.5px, 3px 10px, fully rounded, 6px gaps (line height 1.5).
 pub fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<Div> {
     let _ = t;
@@ -2441,66 +2252,11 @@ pub fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<D
 
 #[cfg(test)]
 mod tests {
-    use super::{MainWindow, Page, Panel, TaskTab, alerts_dialog_view, banner_view, conn_pill, dismiss_alert, dismiss_all_alerts, page_title, usage_view};
+    use super::{MainWindow, Page, Panel, TaskTab, conn_pill, page_title, usage_view};
     use crate::fmt::arr;
     use crate::parity::{golden, settle, window};
     use crate::ui;
     use serde_json::{Value, json};
-
-    fn rows_json(rows: &[super::BannerRow]) -> Value {
-        json!(rows.iter().map(|r| json!({"kind": r.kind, "text": r.text, "ago": r.ago,
-            "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()})).collect::<Vec<_>>())
-    }
-
-    #[::core::prelude::v1::test]
-    fn banner_and_alerts_dialog_match_web() {
-        let g = golden("chrome");
-        g.only("banner").check(|i| rows_json(&banner_view(i["down"].as_str(), arr(i, "alerts"))));
-        g.only("alertsDialog").check(|i| {
-            let (title, rows) = alerts_dialog_view(arr(i, "alerts"));
-            let rows: Vec<Value> = rows.iter().map(|r| json!({"text": r.text, "ago": r.ago,
-                "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()})).collect();
-            let foot: Vec<&str> = if arr(i, "alerts").iter().any(|a| !super::alert_stays(a)) { vec!["alerts-dismiss-all"] } else { vec![] };
-            json!({"title": title, "rows": rows, "foot": foot})
-        });
-    }
-
-    #[::core::prelude::v1::test]
-    fn urgent_alerts_get_rows_of_their_own_first() {
-        let a = |id: &str, urgent: bool| json!({"id": id, "text": format!("Alert {id}"), "at": "2026-10-08T10:00:00Z", "urgent": urgent, "task": "T3"});
-        let rows = banner_view(None, &[a("n1", false), a("u1", true), a("n2", false), a("u2", true)]);
-        let kinds: Vec<&str> = rows.iter().map(|r| r.kind).collect();
-        assert_eq!(kinds, vec!["urgent", "urgent", "alert"]);
-        assert_eq!((rows[0].text.as_str(), rows[1].text.as_str()), ("Alert u1", "Alert u2"));
-        assert!(rows[2].text.starts_with("2 tasks need"), "only the other alerts fold: {}", rows[2].text);
-        let rows = banner_view(None, &[a("u1", true), a("n1", false)]);
-        assert_eq!(rows.iter().map(|r| r.kind).collect::<Vec<_>>(), vec!["urgent", "alert"]);
-        assert_eq!(rows[1].text, "Alert n1");
-    }
-
-    #[::core::prelude::v1::test]
-    fn urgent_alerts_cant_be_dismissed() {
-        let urgent = json!({"id": "a1", "text": "Main is red", "at": "2026-10-08T10:00:00Z", "urgent": true, "task": "T3"});
-        let rows = banner_view(None, &[urgent.clone()]);
-        assert_eq!(rows[0].kind, "urgent");
-        assert!(rows[0].buttons.iter().all(|(a, _)| *a != "alert-dismiss"));
-        assert!(rows[0].buttons.iter().any(|(a, _)| *a == "alert-open"));
-        assert!(super::alert_stays(&urgent));
-        assert!(!super::alert_stays(&json!({"id": "a2"})));
-    }
-
-    #[::core::prelude::v1::test]
-    fn a_structured_alert_says_its_title_and_detail_and_offers_its_fixes() {
-        let a = json!({"id": "a1", "text": "work-deck isn't set up to finish its work: a long sentence.", "at": "2026-10-08T10:00:00Z",
-            "title": "work-deck PRs can't merge", "detail": "T117 is waiting for 2 approvals, and work-deck has no reviewers",
-            "actions": [{"label": "Turn off review for work-deck", "prompt": "Turn off…", "command": "tb project set work-deck --review off"}, {"label": "", "command": "x"}]});
-        let rows = banner_view(None, &[a.clone()]);
-        assert_eq!(rows[0].text, "work-deck PRs can't merge. T117 is waiting for 2 approvals, and work-deck has no reviewers");
-        assert_eq!(super::alert_actions(&a), vec![("Turn off review for work-deck".to_string(), "tb project set work-deck --review off".to_string())]);
-        let plain = json!({"id": "a2", "text": "Alert a2", "at": "2026-10-08T10:00:00Z"});
-        assert_eq!(banner_view(None, &[plain.clone()])[0].text, "Alert a2");
-        assert!(super::alert_actions(&plain).is_empty());
-    }
 
     #[::core::prelude::v1::test]
     fn status_bar_matches_web() {
@@ -2523,24 +2279,6 @@ mod tests {
         assert_eq!(page_title("Sign-in with passkeys", 1), "(1) Sign-in with passkeys — Task board");
     }
 
-
-    #[gpui_kit::test]
-    fn dismissing_alerts_posts_like_the_web(cx: &mut gpui_kit::TestAppContext) {
-        let (w, rec) = window(cx);
-        w.update(cx, |m: &mut MainWindow, _, cx| {
-            dismiss_alert(m, "a1", cx);
-            if let Some(st) = m.data.state.as_mut().map(std::rc::Rc::make_mut) {
-                st["alerts"] = json!([{"id": "x1"}, {"id": "x2"}]);
-            }
-            dismiss_all_alerts(m, cx);
-        })
-        .unwrap();
-        settle(cx);
-        let posts: Vec<(String, Value)> = rec.posts();
-        assert_eq!(posts[0], ("alerts/a1/dismiss".to_string(), json!({})));
-        assert!(posts.iter().any(|(p, b)| p == "alerts/x1/dismiss" && *b == json!({})));
-        assert!(posts.iter().any(|(p, b)| p == "alerts/x2/dismiss" && *b == json!({})));
-    }
 
     #[gpui_kit::test]
     fn the_task_panel_stays_open_across_pages(cx: &mut gpui_kit::TestAppContext) {
@@ -3099,9 +2837,9 @@ mod tests {
     fn escape_follows_the_web_order(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, window, cx| {
-            m.set_modal(Some(ui::modals::Modal::Alerts), window, cx);
+            m.set_modal(Some(ui::modals::Modal::Note("x".into())), window, cx);
             m.escape(window, cx);
-            assert!(m.modal.is_none(), "the alerts dialog closes");
+            assert!(m.modal.is_none(), "the dialog closes");
             // Either panel closes, on any page.
             m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
             m.escape(window, cx);
@@ -3123,11 +2861,11 @@ mod tests {
             assert!(m.backlog.picked.is_empty(), "then Esc unchecks them");
             // Then the board's filters (railClear), with the board focused.
             m.page = Page::Board;
-            m.filters = crate::app::Filters { project: "webapp".into(), goal: "G1".into(), done: "7d".into() };
+            m.filters = crate::app::Filters { project: "webapp".into() };
             m.board.keep = vec!["B1".into()];
             window.focus(&m.focus, cx);
             m.escape(window, cx);
-            assert_eq!((m.filters.project.as_str(), m.filters.goal.as_str(), m.filters.done.as_str()), ("all", "all", "7d"));
+            assert_eq!(m.filters.project, "all");
             assert!(m.board.keep.is_empty());
         })
         .unwrap();

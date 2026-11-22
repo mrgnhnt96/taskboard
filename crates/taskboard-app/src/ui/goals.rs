@@ -1,7 +1,6 @@
 //! Goal logic the app still needs now that the goals rail is gone: a goal's counts, which goals
-//! there are, which view each belongs in and what Esc on the filtered board resets to. The functions are
-//! the web board's logic one to one; the parity tests run them against its output.
-use crate::app::Filters;
+//! there are and which view each belongs in. The functions are the web board's logic one to one;
+//! the parity tests run them against its output.
 use crate::fmt::{arr, b, i, s};
 use serde_json::Value;
 
@@ -60,11 +59,6 @@ pub fn all_goals<'a>(state: Option<&'a Value>, goals: Option<&'a [Value]>) -> Ve
     list.iter().filter(|g| !b(g, "archived")).collect()
 }
 
-/// `railClear`.
-pub fn rail_clear(f: &Filters) -> Filters {
-    Filters { goal: "all".into(), project: "all".into(), done: f.done.clone() }
-}
-
 /// `gnavView`.
 pub fn nav_kind(g: &Value) -> &'static str {
     if finished(g) {
@@ -78,25 +72,16 @@ pub fn nav_kind(g: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Filters, goal_counts, rail_clear};
-    use crate::fmt::s;
+    use super::goal_counts;
     use crate::parity::golden;
-    use serde_json::{Value, json};
-
-    fn filters(v: &Value) -> Filters {
-        Filters { project: s(v, "project").into(), goal: s(v, "goal").into(), done: s(v, "done").into() }
-    }
+    use serde_json::json;
 
     #[test]
-    fn counts_and_clear_match_web() {
+    fn goal_counts_match_web() {
         let g = golden("chrome");
         g.only("goalCounts").check(|i| {
             let c = goal_counts(&i["goal"]);
             json!({"n": c.n, "done": c.done, "active": c.active, "queued": c.queued, "prs": c.prs, "finished": c.finished})
-        });
-        g.only("railClear").check(|i| {
-            let f = rail_clear(&filters(&i["filter"]));
-            json!({"filter": {"project": f.project, "goal": f.goal, "done": f.done}, "keep": []})
         });
     }
 

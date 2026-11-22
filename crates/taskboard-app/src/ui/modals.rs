@@ -1,10 +1,8 @@
-//! The dialog over the main window: the alerts list (read-only; esc or Close closes it, and it
-//! closes by itself once nothing needs you), the New idea form (`ui::ideas`), and the confirm for a
-//! link menu's Mark done / Cancel task… and the PR's Merge now (which names the holds it skips and
-//! keeps a refusal on screen). Tasks, goals and issues are made and changed through
-//! Claude (`tb`), never typed in here.
-use crate::app::{CloseOverlay, MainWindow, alert_row};
-use crate::fmt::arr;
+//! The dialog over the main window: the ⌘K search, a task's whole note for testers, the New idea
+//! form (`ui::ideas`), and the confirm for a link menu's Mark done / Cancel task… and the PR's
+//! Merge now (which names the holds it skips and keeps a refusal on screen). Tasks, goals and
+//! issues are made and changed through Claude (`tb`), never typed in here.
+use crate::app::{CloseOverlay, MainWindow};
 use crate::theme::Theme;
 use crate::ui::kit;
 use gpui_kit::prelude::*;
@@ -12,7 +10,6 @@ use gpui_kit::*;
 use std::cmp::Ordering;
 
 pub enum Modal {
-    Alerts,
     /// The ⌘K palette (`ui::search`).
     Search,
     /// A task's whole note for testers (the panel's Show all).
@@ -134,13 +131,7 @@ fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) 
 /// The dialog over a dimmed backdrop. As on the web, clicks on the backdrop do nothing.
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    // The alerts dialog closes itself once nothing needs you (renderBanner).
-    if matches!(m.modal, Some(Modal::Alerts)) && arr(m.state(), "alerts").is_empty() && m.data.state.is_some() {
-        m.set_modal(None, window, cx);
-        return div().into_any_element();
-    }
     let body = match &m.modal {
-        Some(Modal::Alerts) => alerts(m, &t, cx),
         Some(Modal::Search) => return crate::ui::search::render(m, window, cx),
         Some(Modal::Note(text)) => {
             let text = text.clone();
@@ -184,28 +175,6 @@ pub fn head(t: &Theme, title: impl Into<SharedString>, cx: &mut Context<MainWind
         .pb(px(12.))
         .child(div().flex_1().text_size(px(17.)).font_weight(FontWeight::BOLD).child(title.into()))
         .child(kit::btn_small(t, "modal-close", "Close").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))))
-}
-
-fn alerts(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
-    let list = arr(m.state(), "alerts").to_vec();
-    let (title, _) = crate::app::alerts_dialog_view(&list);
-    let mut col = div().id("alerts-list").flex().flex_col().overflow_y_scroll();
-    for a in &list {
-        col = col.child(alert_row(t, a, cx));
-    }
-    kit::modal_box(t, 560.)
-        .child(head(t, title, cx))
-        .child(col)
-        .when(list.iter().any(|a| !crate::app::alert_stays(a)), |d| {
-            d.child(
-                div().flex().justify_end().p(px(16.)).child(
-                    kit::btn_small(t, "alerts-dismiss-all", "Dismiss all")
-                        // The dialog closes by itself once the alerts are gone.
-                        .on_click(cx.listener(|m, _, _, cx| crate::app::dismiss_all_alerts(m, cx))),
-                ),
-            )
-        })
-        .into_any_element()
 }
 
 /// The whole note for testers, scrolling when it's taller than the window.

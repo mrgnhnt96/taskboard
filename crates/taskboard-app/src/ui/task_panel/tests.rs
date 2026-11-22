@@ -22,8 +22,6 @@ fn ui_from(v: &Value) -> Ui {
             .map(|o| o.iter().map(|(k, n)| (k.clone(), (n["text"].as_str().unwrap_or("").to_string(), n["err"].as_bool().unwrap_or(false)))).collect())
             .unwrap_or_default(),
         log_filter: v["log_filter"].as_str().unwrap_or("").to_string(),
-        att_menu: v["att_menu"].as_str().map(str::to_string),
-        att_edit: v["att_edit"].as_str().map(str::to_string),
         att_drop: v["att_drop"].as_bool().unwrap_or(false),
         term_menu: v["term_menu"].as_bool().unwrap_or(false),
         box_menu: v["box_menu"].as_bool().unwrap_or(false),

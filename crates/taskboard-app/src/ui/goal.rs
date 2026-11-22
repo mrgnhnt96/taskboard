@@ -132,8 +132,7 @@ fn counted(g: &Value) -> Vec<Value> {
     arr(g, "tasks").iter().chain(arr(g, "shared")).cloned().collect()
 }
 
-/// The goal's state label and its tone (the Goals list shows it; tests pin it).
-#[cfg_attr(not(test), allow(dead_code))]
+/// The goal's state label and its tone (the Backlog's move menu shows it).
 pub fn goal_state(g: &Value) -> (String, &'static str) {
     let tasks = counted(g);
     if !tasks.is_empty() && tasks.iter().all(|t| s(t, "status") == "done") {
@@ -144,7 +143,10 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
         if !open.is_empty() {
             return (if open.len() > 1 { format!("{} PRs awaiting merge", open.len()) } else { "Awaiting merge".into() }, "accent");
         }
-        if i(g, "misses") > 0 {
+        // A failed task holds it back as a miss does, unless the owner finished the goal without
+        // it (as `goals::goal_counts` counts them).
+        let failed = arr(g, "tasks").iter().filter(|t| s(t, "status") == "done" && b(t, "failed")).count() as i64;
+        if i(g, "misses") > 0 || failed > i(g, "failed_accepted") {
             return ("Outcome not met".into(), "warn");
         }
         // A backend flag not made yet holds back a finished goal.
@@ -1907,6 +1909,15 @@ mod tests {
                         .collect();
                     c["expect"]["buttons"] = json!(bs);
                 }
+                // The web called a goal with a failed task Done; the app holds it as a miss, as
+                // `goals::goal_counts` does.
+                if c["input"]["fn"] == "goalState" && c["expect"] == "Done" {
+                    let goal = &c["input"]["goal"];
+                    let failed = arr(goal, "tasks").iter().filter(|t| b(t, "failed")).count() as i64;
+                    if failed > i(goal, "failed_accepted") {
+                        c["expect"] = json!("Outcome not met");
+                    }
+                }
                 c
             })
             .collect();
@@ -2085,6 +2096,14 @@ mod tests {
         assert_eq!(outcome_not_met(&g).as_deref(), Some("Outcome not met · 2 misses"));
         assert_eq!(goal_state(&g), ("Outcome not met".to_string(), "warn"));
         assert_eq!(outcome_not_met(&json!({"tasks": [{"status": "done"}]})), None);
+    }
+
+    #[test]
+    fn a_failed_task_keeps_the_goal_from_reading_done() {
+        let failed = json!({"tasks": [{"status": "done"}, {"status": "done", "failed": true}]});
+        assert_eq!(goal_state(&failed), ("Outcome not met".to_string(), "warn"));
+        let accepted = json!({"tasks": [{"status": "done"}, {"status": "done", "failed": true}], "failed_accepted": 1});
+        assert_eq!(goal_state(&accepted), ("Done".to_string(), "up"), "the owner finished it without that task");
     }
 
     #[test]

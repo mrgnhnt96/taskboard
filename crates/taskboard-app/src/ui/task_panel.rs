@@ -614,76 +614,6 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             ui(|u| u.att_drop = !u.att_drop);
             cx.notify();
         }
-        "att-menu" => {
-            ui(|u| u.att_menu = if u.att_menu.as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) });
-            cx.notify();
-        }
-        "att-menu-close" => {
-            if let Some(a) = attachment(m, &id) {
-                if let Some(h) = view::att_href(&a) {
-                    open_target(&h, cx);
-                }
-            }
-            ui(|u| u.att_menu = None);
-            cx.notify();
-        }
-        "att-copy" => {
-            ui(|u| u.att_menu = None);
-            let url = attachment(m, &id).map(|a| s(&a, "url").to_string()).unwrap_or_default();
-            cx.write_to_clipboard(ClipboardItem::new_string(url));
-            m.toast("Copied", false, cx);
-        }
-        "att-edit" => {
-            ui(|u| {
-                u.att_menu = None;
-                u.att_edit = Some(id.clone());
-                clear_att_edit(u, &id);
-            });
-            m.task_panel.fields.retain(|k, _| !k.starts_with(&format!("attedit:{id}:")));
-            cx.notify();
-        }
-        "att-ekind" => {
-            ui(|u| u.drafts.insert(format!("attedit:{id}:kind"), a.arg.clone()));
-            cx.notify();
-        }
-        "att-ecancel" => {
-            ui(|u| {
-                u.att_edit = None;
-                clear_att_edit(u, &id);
-            });
-            cx.notify();
-        }
-        "att-esave" => {
-            let k = format!("attedit:{id}");
-            let body = ui(|u| {
-                let mut b = serde_json::Map::new();
-                for f in ["title", "url", "kind"] {
-                    if let Some(v) = u.drafts.get(&format!("{k}:{f}")) {
-                        b.insert(f.into(), json!(v));
-                    }
-                }
-                Value::Object(b)
-            });
-            let id2 = id.clone();
-            run(
-                m,
-                a,
-                format!("attachments/{id}"),
-                body,
-                move |_, _| {
-                    ui(|u| {
-                        u.att_edit = None;
-                        clear_att_edit(u, &id2);
-                    });
-                    "Saved".into()
-                },
-                cx,
-            );
-        }
-        "att-remove" => {
-            ui(|u| u.att_menu = None);
-            run(m, a, format!("attachments/{id}/remove"), json!({}), |_, _| "Removed".into(), cx);
-        }
         // A merge that went without a note for testers: the board brings the conversation back to write it.
         "write-note" => run(
             m,
@@ -701,17 +631,6 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         _ => {}
     }
-}
-
-fn clear_att_edit(u: &mut view::Ui, id: &str) {
-    for f in ["kind", "title", "url"] {
-        u.drafts.remove(&format!("attedit:{id}:{f}"));
-    }
-}
-
-fn attachment(m: &MainWindow, id: &str) -> Option<Value> {
-    let t = m.data.task.as_ref()?;
-    fmt::arr(t, "attachments").iter().chain(fmt::arr(t, "goal_attachments")).find(|a| fmt::ref_of(&a["id"], "") == id || a["id"].to_string() == id).cloned()
 }
 
 /// Follow a plain link (`<a href>`).
@@ -2393,7 +2312,7 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
         // `.btn.link.inline`
         Look::Ref => div().id(id).flex_none().cursor_pointer().text_color(t.accent_fg).underline().child(label),
         Look::Menu => kit::menu_item(t, id, label, false),
-        // Segmented buttons (the attachment kind picker).
+        // Segmented buttons (the log filters).
         Look::Tab { on } => {
             let hover = t.text;
             div()
