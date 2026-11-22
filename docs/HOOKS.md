@@ -289,6 +289,11 @@ prompt = "Sign off the screens this task changes."
   terminal, so its session id never replaces the task's conversation, and only the app token guard applies to it.
   A task or PR wake resumes a conversation only when Claude saved its transcript; otherwise it starts fresh
   from the handoff.
+- **`tb` in a plain shell.** `tb` reports and acts as its Midna terminal only when Claude Code runs it there
+  (`CLAUDECODE` or `CLAUDE_CODE_SESSION_ID` set). One typed into a shell terminal, by a human or by an agent that
+  opened the shell and types into it, speaks for no terminal: the board makes no session for that shell and gives
+  it no task, so it needs `--task T<n>`. Only `tb peek`, which Midna's status bar runs with no agent, reads
+  `MIDNA_SESSION` on its own.
 - **The app token guard.** The daemon's app token (see API.md, "The app's own requests"; only a daemon without a
   team signature writes it) sits alone in a hidden folder of its own in the board's data folder (`.app-only`). The
   plugin's `PreToolUse` hook (also on Read, Grep and Glob, and in every terminal, Midna's or not) refuses a tool call

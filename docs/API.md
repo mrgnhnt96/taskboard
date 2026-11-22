@@ -18,9 +18,9 @@ reviewer (`[code_review]`) is its own page: [REVIEW-PROTOCOL.md](REVIEW-PROTOCOL
   numbers (or `null`). Objects always carry both `id` (number) and `ref` (string) where listed.
 - **Times.** ISO 8601 strings. UTC with `Z` is fine everywhere except `work_hours.next_open` (see there). `state.now`
   is used to correct for clock skew between the server and the browser.
-- **Who did it.** `tb` adds `by_session` (the terminal it runs in, `MIDNA_SESSION`) to every change it posts. A
-  change is credited to the body's `who` if it has one, else to that terminal by its name, else (the app, or a
-  shell outside Midna) to the owner: in the task's log, a break's `verdict_by`, a bit's or QA comment's history.
+- **Who did it.** `tb` adds `by_session` (the terminal it runs in, `MIDNA_SESSION`, when Claude Code runs it) to
+  every change it posts. A change is credited to the body's `who` if it has one, else to that terminal by its name,
+  else (the app, a shell outside Midna, or a `tb` typed into a plain Midna shell) to the owner: in the task's log, a break's `verdict_by`, a bit's or QA comment's history.
 - **Booleans** must be real JSON booleans (the UI also tolerates 0/1 for `auto_close` and `run_in_order`).
 - **Polling.** The app polls every 3 s while its window is in front (every 15 s while another app is, every 30 s
   while the window is off screen): `GET /state` and `GET /goals` always, plus the open task, issue, goal, backlog
