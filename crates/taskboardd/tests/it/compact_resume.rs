@@ -146,3 +146,14 @@ fn a_cold_resume_with_slash_commands_off_opens_with_its_prompt_and_no_compact() 
     assert_eq!(open["prompt"], "[T1] continue", "{open}");
     assert!(queued(&calls).is_empty(), "/compact would only be an unknown command: {calls:?}");
 }
+
+#[test]
+fn a_terminal_opens_without_the_tools_config_denies() {
+    let b = new_board(&taskboardd::util::now_iso());
+    let (_, _, calls) = b.resume_with("--resume c1 --model opus");
+
+    let open = calls.iter().find(|(m, _)| m == "session.open").map(|(_, p)| p).unwrap();
+    let args: Vec<&str> = open["agent_args"].as_array().unwrap().iter().filter_map(|a| a.as_str()).collect();
+    assert!(args.windows(2).any(|w| w == ["--disallowedTools", "mcp__midna"]), "{open}");
+    assert!(args.windows(2).any(|w| w == ["--model", "opus"]), "its own flags stay: {open}");
+}

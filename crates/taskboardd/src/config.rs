@@ -618,7 +618,14 @@ pub struct TerminalsConfig {
     /// A task opens its terminal only while fewer than this many task terminals run across every project
     /// (`tb terminals --max` changes it on the board).
     pub global_max: i64,
+    /// Tools the board's terminals start without (`--disallowedTools`), so each turn carries less:
+    /// `mcp__<server>` drops a server's deferred tool names, `Agent(<type>)` one subagent's listing.
+    pub deny: Vec<String>,
 }
+
+/// What the board's terminals start without unless config.toml says: Midna's MCP server, whose tools
+/// do what the `midna` CLI does (about 2.4k tokens of names on every turn).
+pub const DENY: [&str; 1] = ["mcp__midna"];
 
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
 pub const GLOBAL_MAX_TERMINALS: i64 = 8;
@@ -630,7 +637,12 @@ pub const BACKGROUND: [&str; 8] = ["jira_desk", "slots", "reopen", "pr:rebase", 
 
 impl Default for TerminalsConfig {
     fn default() -> Self {
-        TerminalsConfig { background: BACKGROUND.map(String::from).to_vec(), project_max: PROJECT_MAX_TERMINALS, global_max: GLOBAL_MAX_TERMINALS }
+        TerminalsConfig {
+            background: BACKGROUND.map(String::from).to_vec(),
+            project_max: PROJECT_MAX_TERMINALS,
+            global_max: GLOBAL_MAX_TERMINALS,
+            deny: DENY.map(String::from).to_vec(),
+        }
     }
 }
 
