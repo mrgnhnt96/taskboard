@@ -51,6 +51,9 @@ const WRAPPERS: &[&str] = &["Task", "Agent"];
 const WAITS: &[&str] = &["background poll", "load wait", "ci wait"];
 
 pub fn run(app: std::sync::Arc<App>) {
+    if let Err(e) = crate::review_fixes::resume(&app) {
+        app.info(format!("review: picking up fixes a restart cut short: {}", e.message));
+    }
     while !app.stopping() {
         if let Err(e) = tick(&app, hours::now_local()) {
             app.info(format!("review: {}", e.message));

@@ -161,3 +161,65 @@ fn a_run_cut_short_by_a_restart_reads_as_failed_and_files_again() {
     // The owner is told now, as the first run would have.
     assert!(taskboardd::dispatch::alerts(&app).iter().any(|a| a["review_id"] == id), "the review's Needs you item is up");
 }
+
+fn leave_running(app: &App, id: i64, extra: Value) {
+    let mut stale = json!({"state": "running", "at": "2026-11-01T00:00:00Z", "run": "1-2026-11-01T00:00:00Z", "announce": true, "filed": [], "linked": []});
+    stale.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    app.db.x("UPDATE reviews SET fixes = ? WHERE id = ?", vec![json!(stale.to_string()), json!(id)]).unwrap();
+}
+
+fn told(app: &App, id: i64) -> bool {
+    taskboardd::dispatch::alerts(app).iter().any(|a| a["review_id"] == id)
+}
+
+#[test]
+fn a_board_start_files_again_what_a_restart_cut_short() {
+    let (_d, app, answer) = board_with_claude();
+    let id = review::save(&app, now_ts() - 7.0 * 86400.0, now_ts(), true).unwrap();
+    let done = review::save(&app, now_ts() - 14.0 * 86400.0, now_ts() - 7.0 * 86400.0, true).unwrap();
+    leave_running(&app, id, json!({}));
+    app.db.x("UPDATE reviews SET fixes = ? WHERE id = ?", vec![json!(json!({"state": "done", "filed": [], "linked": []}).to_string()), json!(done)]).unwrap();
+    answers(&answer, vec![fix("Share a build cache across worktrees")]);
+
+    review_fixes::resume(&app).unwrap();
+    let st = review_fixes::status(&app, id).unwrap();
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(review_fixes::issues(&app, id).unwrap().len(), 1);
+    assert!(told(&app, id), "the owner is told, as the cut-short run would have");
+    // A run that ended is left alone.
+    assert_eq!(review_fixes::status(&app, done).unwrap()["state"], "done");
+    assert!(!told(&app, done));
+}
+
+#[test]
+fn a_run_cut_short_too_often_is_left_for_file_again() {
+    let (_d, app, answer) = board_with_claude();
+    let id = review::save(&app, now_ts() - 7.0 * 86400.0, now_ts(), true).unwrap();
+    leave_running(&app, id, json!({"resumes": review_fixes::RESUMES, "filed": ["B7"]}));
+    answers(&answer, vec![fix("Share a build cache across worktrees")]);
+
+    review_fixes::resume(&app).unwrap();
+    let st = review_fixes::status(&app, id).unwrap();
+    assert_eq!(st["state"], "failed", "{st}");
+    assert_eq!(st["error"], "the board restarted before they were filed");
+    assert_eq!(st["filed"], json!(["B7"]), "what it filed before stays the review's");
+    assert_eq!(app.db.count("SELECT COUNT(*) FROM issues WHERE review_id = ?", vec![json!(id)]).unwrap(), 0);
+    assert!(told(&app, id), "the owner the cut-short run was going to tell is told now");
+
+    // Told once: File again doesn't tell them a second time, and a later start leaves it alone.
+    taskboardd::dispatch::clear_alert_key(&app, &format!("review:{id}")).ok();
+    review_fixes::resume(&app).unwrap();
+    let r = call(&app, "POST", &format!("/reviews/{id}/fixes")).unwrap();
+    assert_eq!(r["fixes"]["state"], "done", "{}", r["fixes"]);
+    assert!(!told(&app, id), "told once, not again");
+}
+
+#[test]
+fn without_claude_a_board_start_tells_the_owner_and_leaves_it_failed() {
+    let (_d, app) = new_board();
+    let id = review::save(&app, now_ts() - 7.0 * 86400.0, now_ts(), true).unwrap();
+    leave_running(&app, id, json!({}));
+    review_fixes::resume(&app).unwrap();
+    assert_eq!(review_fixes::status(&app, id).unwrap()["state"], "failed");
+    assert!(told(&app, id));
+}
