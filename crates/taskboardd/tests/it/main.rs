@@ -23,6 +23,7 @@ mod buried_questions;
 mod caller_needs;
 mod chain;
 mod code_review;
+mod commit_paths;
 mod comment_guard_base;
 mod comment_guard_pr;
 mod compact_resume;
