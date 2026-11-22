@@ -127,6 +127,8 @@ pub struct State {
     generation: u64,
     busy: bool,
     pub just_made: Option<(String, String)>,
+    /// The weekly review whose fixes its Plan in Backlog checked here.
+    pub from_review: Option<FromReview>,
     /// The Deferred and won't do sub-page.
     pub closed: crate::ui::backlog_closed::State,
 }
@@ -158,8 +160,27 @@ impl Default for State {
             generation: 0,
             busy: false,
             just_made: None,
+            from_review: None,
             closed: Default::default(),
         }
+    }
+}
+
+/// Where checked issues came from when a weekly review's Plan in Backlog checked them: the review,
+/// its week and the fixes it checked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FromReview {
+    pub id: i64,
+    pub period: String,
+    pub refs: Vec<String>,
+}
+
+impl FromReview {
+    /// "2 fixes from the review of Mon Nov 9 – Sun Nov 15": shown, with Back to review, while any of
+    /// the fixes it checked is still checked.
+    pub fn line(&self, picked: &[String]) -> Option<String> {
+        let n = self.refs.iter().filter(|r| picked.contains(r)).count();
+        (n > 0).then(|| format!("{} from the review of {}", fmt::plural(n as i64, "fix", "fixes"), self.period))
     }
 }
 
@@ -980,6 +1001,19 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         }))
     });
     let header = div().flex().flex_wrap().items_center().gap(px(16.)).child(title).child(div().flex_1()).children(project_btn).child(crate::ui::backlog_closed::link(&t, cx)).child(lenses);
+    let origin = m.backlog.from_review.as_ref().and_then(|f| Some((f.id, f.line(&m.backlog.picked)?))).map(|(id, line)| {
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.))
+            .mt(px(-8.))
+            .text_size(px(13.))
+            .text_color(t.muted)
+            .child(line)
+            .child("·")
+            .child(kit::link(&t, "plan-back-to-review", "Back to review").on_click(cx.listener(move |m, _, _, cx| crate::ui::review::open(m, Some(id), cx))))
+    });
 
     // ---- kinds or the selection bar, and the filter
     let left: AnyElement = if sel.is_empty() {
@@ -1110,7 +1144,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .flex_1()
         .min_w_0()
         .size_full()
-        .child(div().flex().flex_col().gap(px(16.)).flex_1().min_h_0().w_full().max_w(px(1320.)).px(px(28.)).pt(px(22.)).child(header).child(toolbar).child(body))
+        .child(div().flex().flex_col().gap(px(16.)).flex_1().min_h_0().w_full().max_w(px(1320.)).px(px(28.)).pt(px(22.)).child(header).children(origin).child(toolbar).child(body))
         .children(menus)
         .into_any_element()
 }

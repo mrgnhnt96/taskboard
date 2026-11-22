@@ -402,12 +402,14 @@ fn file_again(m: &mut MainWindow, id: i64, cx: &mut Context<MainWindow>) {
 
 /// Plan fixes in Backlog: the Backlog page with the review's open fixes checked beside anything
 /// already checked there; planning, Create and Start go on from there as for any picked issues.
-fn plan(m: &mut MainWindow, refs: Vec<String>, cx: &mut Context<MainWindow>) {
-    for r in refs {
-        if !m.backlog.picked.contains(&r) {
-            m.backlog.picked.push(r);
+/// The page names the review they came from, with Back to review, while any of them stays checked.
+fn plan(m: &mut MainWindow, id: i64, period: String, refs: Vec<String>, cx: &mut Context<MainWindow>) {
+    for r in &refs {
+        if !m.backlog.picked.contains(r) {
+            m.backlog.picked.push(r.clone());
         }
     }
+    m.backlog.from_review = Some(crate::ui::backlog::FromReview { id, period, refs });
     m.backlog.project = "all".into();
     m.backlog.kinds = [true; 4];
     m.go(Page::Backlog, cx);
@@ -500,11 +502,12 @@ fn fixes_el(t: &Theme, v: &View, cx: &mut Context<MainWindow>) -> Option<Div> {
         return None;
     }
     let refs = v.plan();
+    let (id, period) = (v.id, v.period.clone());
     let n = refs.len();
     let action = (n > 0).then(|| {
         kit::btn_primary(t, "review-plan", format!("Plan {} in Backlog", fmt::plural(n as i64, "fix", "fixes")))
             .tooltip(kit::tip("Checks them on the Backlog page, beside anything already checked there"))
-            .on_click(cx.listener(move |m, _, _, cx| plan(m, refs.clone(), cx)))
+            .on_click(cx.listener(move |m, _, _, cx| plan(m, id, period.clone(), refs.clone(), cx)))
             .into_any_element()
     });
     let tally = if v.fixes.is_empty() { (!v.suggestions.is_empty()).then(|| v.suggestions.len().to_string()) } else { Some(v.fixes_tally()) };
@@ -1054,6 +1057,28 @@ mod tests {
         let v = view(&old, &[]);
         assert!(v.shipped.is_empty());
         assert_eq!((v.kpis[0].value.as_str(), v.kpis[0].sub.as_deref()), ("0 tasks", Some("0 goals · 0 releases")));
+    }
+
+    /// Plan in Backlog checks the review's open fixes and names the review on the Backlog page while
+    /// any of them stays checked; Back to review opens that review again.
+    #[gpui_kit::test]
+    fn plan_in_backlog_names_the_review_and_leads_back(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        w.update(cx, |m, _, cx| {
+            m.backlog.picked.push("B7".into());
+            plan(m, 4, "Mon Nov 9 – Sun Nov 15".into(), vec!["B1".into(), "B2".into()], cx);
+            assert_eq!(m.page, Page::Backlog);
+            assert_eq!(m.backlog.picked, ["B7", "B1", "B2"], "beside what was already checked");
+            let from = m.backlog.from_review.clone().expect("the review it came from");
+            assert_eq!(from.line(&m.backlog.picked).as_deref(), Some("2 fixes from the review of Mon Nov 9 – Sun Nov 15"));
+            m.backlog.picked.retain(|r| r != "B1");
+            assert_eq!(from.line(&m.backlog.picked).as_deref(), Some("1 fix from the review of Mon Nov 9 – Sun Nov 15"));
+            m.backlog.picked.retain(|r| r == "B7");
+            assert_eq!(from.line(&m.backlog.picked), None, "none of its fixes checked: no line");
+            open(m, Some(from.id), cx);
+            assert_eq!((m.page.clone(), m.review.id), (Page::Review, Some(4)));
+        })
+        .unwrap();
     }
 
     /// File again asks the board to file the fixes over; when the board can't, the toast says why
