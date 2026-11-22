@@ -1950,3 +1950,31 @@ fn closing_a_failed_tasks_terminal_asks_first(cx: &mut gpui_kit::TestAppContext)
     settle(cx);
     assert_eq!(rec.last("tasks/T2/close-terminal"), Some(json!({"force": false})), "the confirm sends it");
 }
+
+#[::core::prelude::v1::test]
+fn a_shared_pr_names_the_anchor_on_a_member_and_the_members_on_the_anchor() {
+    let anchor = json!({"ref": "T3", "title": "Add the endpoint", "num": 12, "url": "https://github.com/acme/webapp/pull/12", "merged": false, "declined": false});
+    let group = json!({"anchor": anchor, "members": []});
+    // Before it starts: under what it ends in.
+    let queued = json!({"ref": "T4", "id": 4, "title": "Use the endpoint", "status": "queued", "project": "webapp", "pr_group": group});
+    let text = panel_text(queued, json!({}));
+    assert!(text.contains("Shares a PR with T3 PR #12"), "{text}");
+    // Done with its work added: the PR's steps are the anchor's, so the line says where they are.
+    let done = json!({"ref": "T4", "id": 4, "title": "Use the endpoint", "status": "done", "summary": "Used it", "project": "webapp", "pr_group": group});
+    let tree = tree(&json!({"task": done, "state": {}, "ui": {}}));
+    let text = view::text(&tree);
+    assert!(text.contains("Shares a PR with T3 PR #12"), "{text}");
+    assert!(view::acts(&tree).iter().any(|a| a == "open-task"), "the anchor opens in the panel");
+    let mut merged = anchor.clone();
+    merged["merged"] = json!(true);
+    let done = json!({"ref": "T4", "id": 4, "title": "Use the endpoint", "status": "done", "summary": "Used it", "pr_group": {"anchor": merged, "members": []}});
+    assert!(panel_text(done, json!({})).contains("PR #12 · merged"));
+    // The anchor, with its PR open: who shares it.
+    let mut task = with_bar(json!({}), json!({"phase": "review", "label": "In review"}), "pending");
+    task["pr_group"] = json!({"anchor": null, "members": [{"ref": "T5", "title": "a", "added": true}, {"ref": "T6", "title": "b", "added": false}]});
+    let text = panel_text(task, json!({}));
+    assert!(text.contains("Shared with T5 T6"), "{text}");
+    // Outside a group: nothing.
+    let text = panel_text(with_bar(json!({}), json!({"phase": "review", "label": "In review"}), "pending"), json!({}));
+    assert!(!text.contains("Shares") && !text.contains("Shared with"), "{text}");
+}

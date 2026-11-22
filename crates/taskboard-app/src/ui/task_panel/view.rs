@@ -1454,6 +1454,10 @@ fn done_node(c: &Ctx, t: &Value) -> Node {
             body.push(el(K::Line, line));
         }
     }
+    // A member that added its work to the PR it shares: that PR's steps show on its anchor.
+    if pr_of(t).is_none() {
+        body.extend(group_line(c, t));
+    }
     // Failed tasks get Try again; a done one isn't queued again from here. Closing its terminal waits
     // behind the ⋯ menu.
     let mut row = Vec::new();
@@ -2156,6 +2160,37 @@ fn stacks_line(c: &Ctx, so: &Value) -> Node {
     el(K::Row, kids)
 }
 
+/// The PR it shares with other tasks (`pr_group`): "Shares a PR with T3 · PR #12" on a member, its anchor
+/// opening in the panel and its PR on the host; "Shared with T5, T6" on the anchor, each member opening
+/// in the panel, a member that hasn't added its work yet saying so on hover.
+fn group_line(c: &Ctx, t: &Value) -> Option<Node> {
+    let g = obj(t, "pr_group")?;
+    if let Some(a) = obj(g, "anchor") {
+        let r = s(a, "ref");
+        let mut kids = vec![txt("Shares a PR with", St::Small), c.btn(r, Act::new("open-task", "", r, ""), Look::Ref, false, Some(&format!("Open {r}")))];
+        if let Some(n) = a.get("num").filter(|n| !n.is_null()) {
+            let state = if b(a, "merged") { " · merged" } else if b(a, "declined") { " · closed" } else { "" };
+            let label = format!("PR #{}{state}", or_empty(n));
+            kids.push(match opt_s(a, "url").filter(|u| is_web(u)) {
+                Some(u) => Node::Link { s: label, go: Go::Url(u.to_string()), tip: Some("Open the pull request it shares".into()), look: LinkLook::Small },
+                None => txt(label, St::Small),
+            });
+        }
+        return Some(el(K::Row, kids));
+    }
+    let members = arr(g, "members");
+    if members.is_empty() {
+        return None;
+    }
+    let mut kids = vec![txt("Shared with", St::Small)];
+    for m in members {
+        let r = s(m, "ref");
+        let tip = if b(m, "added") { format!("Open {r}") } else { format!("Open {r}; it hasn’t added its work yet") };
+        kids.push(c.btn(r, Act::new("open-task", "", r, ""), Look::Ref, false, Some(&tip)));
+    }
+    Some(el(K::Row, kids))
+}
+
 /// "2 new comments ›" by the reviewer rows while the Review step shows the review instead (changes asked,
 /// or a re-review): new comments show in every state, and matter most then.
 fn comments_line(p: &Value, bar: &Value) -> Option<Node> {
@@ -2597,7 +2632,7 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     // "Updated 4m ago": when the board last read the open PR, so a stale read shows.
     let updated = opt_s(p, "checked_at").filter(|_| pr_open(p)).map(|at| format!("Updated {}", fmt::ago(at))).unwrap_or_default();
     vec![
-        tl_node(TlSt::Done, tl_head(tl_name("Pull request"), "", ""), vec![el(K::PrHead, vec![head, txt(repo, St::Small)])], false),
+        tl_node(TlSt::Done, tl_head(tl_name("Pull request"), "", ""), [el(K::PrHead, vec![head, txt(repo, St::Small)])].into_iter().chain(group_line(c, t)).collect(), false),
         tl_node(st, tl_head(tl_name("Checks and review"), "", &updated), body, false),
         tl_node(merge_st, tl_head(tl_name(merge_name), &merge_sub, ""), merged_note_row(c, t).into_iter().collect(), false),
     ]
@@ -2614,6 +2649,7 @@ fn then_line(c: &Ctx, t: &Value) -> Vec<Node> {
     steps.extend(["Pull request", "Checks", "Review", "Merge"].map(str::to_string));
     let mut out = vec![txt(format!("Then: {}", steps.join(", ")), St::Small)];
     out.extend(obj(t, "stack_on").map(|so| stacks_line(c, so)));
+    out.extend(group_line(c, t));
     out
 }
 

@@ -123,7 +123,7 @@ fn missing(app: &App, t: &Row) -> Result<()> {
     let tb = board::tb_cmd(app);
     let text = format!(
         "{me}'s PR #{} merged with no note for testers, so {} stays where it is. Write it with {tb} task set {me} --merged-note \"<markdown>\"; the board then posts it and moves the ticket.",
-        t.i0("pr_num"),
+        crate::samepr::pr_num(t).unwrap_or(0),
         t.st("jira_key")
     );
     dispatch::add_alert_keyed(app, &text, Some(t.id()), t.i("goal_id"), &alert_key(t))?;
@@ -139,7 +139,7 @@ fn ask(app: &App, t: &Row) -> Result<()> {
     let ask = format!(
         "PR #{} merged, and its ticket {} waits for your note for testers before it moves. Read what the note covers in {tb} jira, \
          then run {tb} task set {me} --merged-note \"<markdown>\". Don't change code, take another task or run tb submit: the task is already submitted.",
-        t.i0("pr_num"),
+        crate::samepr::pr_num(t).unwrap_or(0),
         t.st("jira_key")
     );
     if crate::prflow::ask_for_note(app, t, &ask)?.is_some() {

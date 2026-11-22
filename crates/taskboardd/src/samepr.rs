@@ -16,8 +16,10 @@ use crate::app::App;
 use crate::util::*;
 use crate::{board, fields, p, stack, waitsfor};
 
-/// Copies the anchor's PR phase and state onto the members that linked its PR.
+/// Copies the anchor's PR phase and state onto the members that linked its PR. The index keeps the
+/// card's look-up of an anchor's members off a scan of every task.
 pub const SCHEMA: &str = r#"
+CREATE INDEX IF NOT EXISTS tasks_same_pr ON tasks(same_pr) WHERE same_pr IS NOT NULL;
 CREATE TRIGGER IF NOT EXISTS same_pr_mirror AFTER UPDATE OF pr_phase, pr_state ON tasks WHEN NEW.pr_num IS NOT NULL
 BEGIN
     UPDATE tasks SET pr_phase = NEW.pr_phase, pr_state = NEW.pr_state
@@ -65,6 +67,76 @@ fn predecessor(app: &App, t: &Row) -> Result<Option<Row>> {
         Some(n) => board::find_task(app, Some(n)),
         None => Ok(Some(a)),
     }
+}
+
+/// The members that added their work and link the anchor's PR: the ones the trigger keeps in step.
+fn linked(app: &App, id: i64) -> Result<Vec<Row>> {
+    app.db.q("SELECT * FROM tasks WHERE same_pr = ? AND id != ? AND pr_url IS NOT NULL AND pr_num IS NULL ORDER BY id", p![id, id])
+}
+
+/// The PR number a task links: its own, or the one in its link (a member's, which doesn't own it).
+pub fn pr_num(t: &Row) -> Option<i64> {
+    t.i("pr_num").or_else(|| t.s("pr_url").and_then(find_pr).map(|pr| pr.num))
+}
+
+/// The task whose PR this one's ticket follows: the anchor, for a member that linked its PR.
+pub fn pr_task(app: &App, t: &Row) -> Result<Row> {
+    if t.i("pr_num").is_none() && has(t.s("pr_url")) {
+        if let Some(a) = anchor(app, t)? {
+            return Ok(a);
+        }
+    }
+    Ok(t.clone())
+}
+
+/// The card's `pr_group`: for a member, the anchor whose PR it shares; for an anchor, the members that
+/// share its PR, each with whether it has added its work. Null outside a group.
+pub fn card(app: &App, t: &Row) -> Result<Value> {
+    if let Some(a) = anchor(app, t)? {
+        let anchor = json!({"ref": rf("task", a.id()), "title": a.v("title"), "num": a.v("pr_num"), "url": a.v("pr_url"),
+                            "merged": stack::merged(&a), "declined": waitsfor::pr_declined(&a)});
+        return Ok(json!({"anchor": anchor, "members": []}));
+    }
+    let members: Vec<Value> = members(app, t.id())?
+        .iter()
+        .map(|m| json!({"ref": rf("task", m.id()), "title": m.v("title"), "added": has(m.s("pr_url"))}))
+        .collect();
+    if members.is_empty() {
+        return Ok(Value::Null);
+    }
+    Ok(json!({"anchor": null, "members": members}))
+}
+
+/// The anchor's PR moved to `phase`: what runs per PR runs for each member that linked it too. Its
+/// ticket goes to in review with it and moves at merge, it logs the merge or the close, and one closed
+/// without merging holds the member's waiters as it holds the anchor's.
+pub fn follow(app: &App, a: &Row, old: &str, phase: &str) -> Result<()> {
+    if anchor_id(a).is_some() {
+        return Ok(());
+    }
+    let ra = rf("task", a.id());
+    let num = a.i0("pr_num");
+    let review = crate::prflow::IN_CODE_REVIEW;
+    for m in linked(app, a.id())? {
+        if review.contains(&phase) && !review.contains(&old) {
+            let st = app.cfg.jira.in_review.clone();
+            board::jira_keep_in_step(app, &m, Some(&st), None)?;
+        }
+        match phase {
+            "merged" => {
+                board::log_event(app, m.id(), "PR", "status", &format!("{ra}'s PR #{num}, which it shares, was merged"))?;
+                crate::dispatch::clear_alerts(app, Some(m.id()), None)?;
+                let m = board::get_task(app, m.id())?;
+                crate::merged_note::ticket_merged(app, &m, &crate::prflow::merged_comment(&m))?;
+            }
+            "declined" => {
+                board::log_event(app, m.id(), "PR", "status", &format!("{ra}'s PR #{num}, which it shares, was closed without merging"))?;
+                crate::declined::check(app, &board::get_task(app, m.id())?)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// The group's last task, leaving `except` out: the one no other comes after.

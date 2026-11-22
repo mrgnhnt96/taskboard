@@ -9,7 +9,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{PrLink, Row, RowExt};
-use taskboardd::{board, midna, prflow, reports, samepr, stack, waitsfor};
+use taskboardd::{board, dispatch, midna, prflow, reports, samepr, stack, waitsfor};
 
 struct Board {
     app: Arc<App>,
@@ -17,8 +17,13 @@ struct Board {
 }
 
 fn new_board() -> Board {
+    board_with(|_| {})
+}
+
+fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = Config::for_tests(dir.path());
+    let mut cfg = Config::for_tests(dir.path());
+    f(&mut cfg);
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
     let app = App::for_tests(cfg);
@@ -63,6 +68,16 @@ impl Board {
         let rec = json!({"state": "OPEN", "head": format!("{num:0>40}"), "branch": branch, "base": "main", "checks": [], "failed": [], "running": 0});
         prflow::merge_flow(&self.app, id, vec![("rec", rec)]).unwrap();
         board::update_task(&self.app, id, vec![("status", json!("done"))]).unwrap();
+    }
+    /// Member `m` added its work to anchor `a`'s PR, which is linked as #42.
+    fn added(&self, a: i64, m: i64) {
+        let url = self.row(a).st("pr_url");
+        board::update_task(&self.app, m, vec![("pr_url", json!(url)), ("pr_repo", json!("acme/webapp")), ("pr_host", json!("github")), ("status", json!("done"))])
+            .unwrap();
+    }
+    fn log(&self, id: i64) -> String {
+        let rows = self.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", vec![json!(id)]).unwrap();
+        rows.iter().map(|r| r.st("text")).collect::<Vec<_>>().join("\n")
     }
     fn close(&self, id: i64, state: &str, phase: &str) {
         board::update_task(&self.app, id, vec![("pr_state", json!(state)), ("pr_phase", json!(phase))]).unwrap();
@@ -212,4 +227,110 @@ fn the_plan_check_warns_when_a_shared_pr_gets_too_big_to_read() {
     assert_eq!(samepr::anchor_id(&b.row(fifth)), Some(a), "a proposed task can share a PR too");
     let want = format!("5 tasks share T{a}'s PR: more than 4 is a lot for one reader. Give some their own PR (tb task set T{fifth} --same-pr none).");
     assert!(w.contains(&want), "{w:?}");
+}
+
+#[test]
+fn a_member_s_ticket_and_log_follow_the_shared_pr_s_merge() {
+    let b = board_with(|c| {
+        c.jira.site = "acme.atlassian.net".into();
+        c.jira.project = "PROJ".into();
+        c.jira.merged = "Ready for QA".into();
+    });
+    let a = b.task("Add the endpoint", json!({}));
+    let m = b.task("Use it", json!({"same_pr": format!("T{a}")}));
+    let late = b.task("Test it", json!({"same_pr": format!("T{a}")}));
+    b.link(a, 42, "feat/endpoint");
+    b.added(a, m);
+    board::update_task(&b.app, m, vec![("jira_key", json!("PROJ-7")), ("jira_sync", json!(1))]).unwrap();
+
+    b.app.db.tx(|| prflow::mark_merged(&b.app, &b.row(a), "Pat")).unwrap();
+    assert!(b.log(m).contains(&format!("T{a}'s PR #42, which it shares, was merged")), "{}", b.log(m));
+    assert!(!b.log(late).contains("was merged"), "one that hasn't added its work isn't in the PR");
+    let jobs = b.app.db.q("SELECT args FROM jobs WHERE kind = 'jira' AND task_id = ?", vec![json!(m)]).unwrap();
+    let args: Vec<String> = jobs.iter().map(|j| j.st("args")).collect();
+    assert!(
+        args.iter().any(|a| a.contains("Ready for QA") && a.contains("PR #42 was merged: https://github.com/acme/webapp/pull/42")),
+        "the member's ticket moves with the anchor's PR #42: {args:?}"
+    );
+}
+
+#[test]
+fn a_shared_pr_closed_without_merging_holds_the_member_s_waiters() {
+    let b = new_board();
+    let a = b.task("Add the endpoint", json!({}));
+    let m = b.task("Use it", json!({"same_pr": format!("T{a}")}));
+    b.link(a, 42, "feat/endpoint");
+    b.added(a, m);
+    let w = b.task("Build on it", json!({}));
+    board::update_task(&b.app, w, vec![("waits_for", json!(format!("[{m}]")))]).unwrap();
+    let mut ctx = board::task_context(&b.row(w));
+    ctx.insert("waits_merged".into(), json!([m]));
+    board::save_context(&b.app, w, &ctx, false).unwrap();
+
+    let closed = json!({"state": "CLOSED", "head": format!("{:0>40}", 42), "branch": "feat/endpoint", "base": "main", "checks": [], "failed": [], "running": 0});
+    b.app.db.tx(|| prflow::step(&b.app, &b.row(a), &closed)).unwrap();
+    assert!(b.log(m).contains(&format!("T{a}'s PR #42, which it shares, was closed without merging")), "{}", b.log(m));
+    let alert = dispatch::alerts(&b.app).into_iter().find(|x| x["key"] == format!("declined-waits:{m}"));
+    let text = alert.as_ref().and_then(|x| x["text"].as_str()).unwrap_or_default().to_string();
+    assert!(text.starts_with(&format!("T{m}'s PR #42 was declined, so T{w} waits")), "{alert:?}");
+    taskboardd::declined::sweep(&b.app).unwrap();
+    assert!(dispatch::alerts(&b.app).iter().any(|x| x["key"] == format!("declined-waits:{m}")), "the sweep keeps it up");
+}
+
+#[test]
+fn a_member_s_ticket_goes_to_review_with_the_shared_pr_at_submit() {
+    let b = board_with(|c| {
+        c.jira.site = "acme.atlassian.net".into();
+        c.jira.project = "PROJ".into();
+        c.jira.in_review = "In Review".into();
+        c.jira.done = "Done".into();
+    });
+    let a = b.task("Add the endpoint", json!({}));
+    let m = b.task("Use it", json!({"same_pr": format!("T{a}"), "jira": {"mode": "link", "key": "PROJ-7"}}));
+    b.link(a, 42, "feat/endpoint");
+    board::update_task(&b.app, a, vec![("pr_phase", json!("review"))]).unwrap();
+    let url = b.row(a).st("pr_url");
+    board::update_task(&b.app, m, vec![("pr_url", json!(url)), ("pr_repo", json!("acme/webapp")), ("pr_host", json!("github"))]).unwrap();
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    let report = |event: &str, extra: Value| {
+        let mut body = json!({"event": event, "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        reports::handle(&b.app, body, false).unwrap_or_else(|e| panic!("{event}: {}", e.message))
+    };
+    report("tb.take", json!({"task": format!("T{m}")}));
+    b.app.db.x("DELETE FROM jobs WHERE kind = 'jira'", vec![]).unwrap();
+
+    report("tb.done", json!({"summary": "Used it", "pr": url}));
+    let jobs = b.app.db.q("SELECT args FROM jobs WHERE kind = 'jira' AND task_id = ?", vec![json!(m)]).unwrap();
+    let args: Vec<String> = jobs.iter().map(|j| j.st("args")).collect();
+    assert!(args.iter().any(|a| a.contains("In Review")), "it follows the anchor's PR into review: {args:?}");
+    assert!(!args.iter().any(|a| a.contains("\"Done\"")), "a member that linked the PR isn't done with no PR: {args:?}");
+}
+
+#[test]
+fn the_card_names_the_anchor_on_a_member_and_the_members_on_the_anchor() {
+    let b = new_board();
+    let a = b.task("Add the endpoint", json!({}));
+    let m = b.task("Use it", json!({"same_pr": format!("T{a}")}));
+    let m2 = b.task("Use it too", json!({"same_pr": format!("T{a}")}));
+    let lone = b.task("Alone", json!({}));
+    b.link(a, 42, "feat/endpoint");
+    b.added(a, m);
+
+    let card = |id| board::task_card(&b.app, &b.row(id)).unwrap()["pr_group"].clone();
+    let g = card(m);
+    assert_eq!(g["anchor"]["ref"], json!(format!("T{a}")));
+    assert_eq!(g["anchor"]["num"], json!(42));
+    assert_eq!(g["anchor"]["merged"], json!(false));
+    let g = card(a);
+    assert_eq!(g["anchor"], Value::Null);
+    let refs: Vec<(Value, Value)> = g["members"].as_array().unwrap().iter().map(|x| (x["ref"].clone(), x["added"].clone())).collect();
+    assert_eq!(refs, vec![(json!(format!("T{m}")), json!(true)), (json!(format!("T{m2}")), json!(false))]);
+    assert_eq!(card(lone), Value::Null);
+
+    b.app.db.tx(|| prflow::mark_merged(&b.app, &b.row(a), "Pat")).unwrap();
+    assert_eq!(card(m)["anchor"]["merged"], json!(true));
 }

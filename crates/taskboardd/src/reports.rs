@@ -2230,7 +2230,9 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
         }
     }
     if !failed {
-        let in_review = prflow::IN_CODE_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
+        // A member of a same-pr group follows the anchor's PR, which it links but doesn't own.
+        let pr = crate::samepr::pr_task(app, &t)?;
+        let in_review = prflow::IN_CODE_REVIEW.contains(&pr.s("pr_phase").unwrap_or("")) && board::pr_still_open(&pr);
         if let Some(why) = t.s("no_pr").filter(|w| !w.is_empty() && t.i("pr_num").is_none()) {
             // `tb submit --no-pr`: a ticket that shipped on another task goes back to QA with the summary;
             // otherwise it's withdrawn, with the reason and the summary as its comment.
@@ -2250,7 +2252,7 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
             None
         } else if in_review {
             Some(app.cfg.jira.in_review.clone())
-        } else if t.i("pr_num").is_none() && !app.cfg.jira.done.is_empty() {
+        } else if pr.i("pr_num").is_none() && !app.cfg.jira.done.is_empty() {
             Some(app.cfg.jira.done.clone())
         } else {
             None
