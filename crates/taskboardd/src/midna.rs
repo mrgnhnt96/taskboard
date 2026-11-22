@@ -283,6 +283,26 @@ pub fn claude_args(a: &Row) -> MResult<(Vec<String>, Option<String>)> {
     Ok((parts, resume))
 }
 
+/// The terminal's Claude flags with `deny` (config.toml's `[terminals] deny`) added to its
+/// `--disallowedTools`, or as one of its own when it has none.
+pub fn with_denied(mut args: Vec<String>, deny: &[String]) -> Vec<String> {
+    let deny: Vec<&str> = deny.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).collect();
+    if deny.is_empty() {
+        return args;
+    }
+    match args.iter().position(|a| a == "--disallowedTools" || a == "--disallowed-tools").filter(|i| i + 1 < args.len()) {
+        Some(i) => {
+            let have: Vec<String> = args[i + 1].split(',').map(|t| t.trim().to_string()).collect();
+            let more: Vec<&str> = deny.into_iter().filter(|d| !have.iter().any(|h| h == d)).collect();
+            if !more.is_empty() {
+                args[i + 1] = format!("{},{}", args[i + 1], more.join(","));
+            }
+        }
+        None => args.extend(["--disallowedTools".to_string(), deny.join(",")]),
+    }
+    args
+}
+
 /// Whether this job's terminal opens in Midna's Background group (config.toml's `[terminals]`): its
 /// purpose is listed, or `<purpose>:<visit>` for the kind of PR visit it is (`pr:merge`).
 pub fn opens_in_background(app: &App, j: &Row) -> bool {
@@ -377,6 +397,7 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
         }
     }
     let (agent_args, resume) = claude_args(&a)?;
+    let agent_args = with_denied(agent_args, &app.cfg.terminals.deny);
     let cold = !slash_commands_off(&agent_args) && resume.as_deref().and_then(|cid| cold_resume(app, j, &cwd, cid)).is_some();
     let prompt = a.s("prompt").filter(|p| !p.is_empty());
     // A slot's terminal is left for the board to `close`: closing itself on exit runs Midna's cleanup.
@@ -1676,6 +1697,16 @@ mod tests {
         assert_eq!(args, vec!["--model", "opus", "--append-system-prompt", "be brief"]);
         a.insert("flags".into(), json!("--x \"unclosed"));
         assert!(claude_args(&a).is_err());
+    }
+
+    #[test]
+    fn denied_tools_join_the_terminal_s_own() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let deny = s(&["mcp__midna", " Agent(flutter-doctor) ", ""]);
+        assert_eq!(with_denied(s(&["--model", "opus"]), &deny), s(&["--model", "opus", "--disallowedTools", "mcp__midna,Agent(flutter-doctor)"]));
+        let desk = s(&["--disallowedTools", "Agent,Task,mcp__midna", "--disable-slash-commands"]);
+        assert_eq!(with_denied(desk, &deny), s(&["--disallowedTools", "Agent,Task,mcp__midna,Agent(flutter-doctor)", "--disable-slash-commands"]), "one flag, nothing twice");
+        assert_eq!(with_denied(s(&["--model", "opus"]), &[]), s(&["--model", "opus"]), "[] keeps every tool");
     }
 
     #[test]
