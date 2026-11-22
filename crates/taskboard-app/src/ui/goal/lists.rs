@@ -349,9 +349,11 @@ fn load_older_notes(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 }
 
 /// The two lists side by side under the header, or the one stacked list in a narrow window.
-pub fn body(m: &MainWindow, cx: &mut Context<MainWindow>) -> Div {
+pub fn body(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) -> Div {
+    measure(m, window);
     let l = &m.goal_page.lists;
     let mut out = div().flex_1().min_h_0().flex().gap(px(ASIDE_GAP)).pt(px(16.)).px(px(BODY_X));
+    out = if l.narrow { out.debug_selector(|| "goal-body-stacked".into()) } else { out.debug_selector(|| "goal-body-beside".into()) };
     if l.narrow {
         if let Some(st) = &l.stack {
             out = out.child(list(st.state.clone(), cx.processor(stack_item)).flex_1().min_w_0().h_full());
@@ -371,36 +373,29 @@ pub fn waves_width(room: f32) -> f32 {
     if room < STACK_BELOW { w } else { w - ASIDE_GAP - ASIDE_W }
 }
 
-/// Note the window's width as the lists draw; crossing `STACK_BELOW` draws the body again the
-/// other way. The task rows' stacking follows the waves column's width; the list measures its
-/// items again when that width changes, and the item drawing this runs before reads the new flag.
-fn watch_width(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) {
+/// Lay the body out for the page's room before it draws, so the first frame after a resize or a
+/// docked panel opening or closing is already right: crossing `STACK_BELOW` stacks the lists, and
+/// the task rows' stacking follows the waves column's width. That width changes with the room, so
+/// the list measures its rows again under the new flag.
+fn measure(m: &mut MainWindow, window: &Window) {
     let room = f32::from(crate::app::room(m, window));
-    let narrow = room < STACK_BELOW;
-    let stack_rows = waves_width(room) < waves::ROWS_STACK_BELOW;
     let l = &mut m.goal_page.lists;
-    if l.narrow != narrow || l.stack_rows != stack_rows {
-        l.narrow = narrow;
-        l.stack_rows = stack_rows;
-        cx.notify();
-    }
+    l.narrow = room < STACK_BELOW;
+    l.stack_rows = waves_width(room) < waves::ROWS_STACK_BELOW;
 }
 
-fn stack_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    watch_width(m, window, cx);
+fn stack_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let waves = wave_pieces(&m.goal_page.lists);
     let el = if ix < waves { wave_el(m, ix, cx) } else { aside_el(m, ix - waves, cx) };
     // The aside's card sits apart from the last wave card, as the cards do from each other.
     div().w_full().when(ix == waves, |d| d.pt(px(16.))).child(el).into_any_element()
 }
 
-fn wave_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    watch_width(m, window, cx);
+fn wave_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     wave_el(m, ix, cx)
 }
 
-fn aside_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    watch_width(m, window, cx);
+fn aside_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     aside_el(m, ix, cx)
 }
 
@@ -613,6 +608,37 @@ mod tests {
         assert!(at(960., cx), "at 960 the rows stack so titles keep their room");
         assert!(at(1300., cx), "beside the aside the column is narrow too");
         assert!(!at(1800., cx), "wide again, one line again");
+    }
+
+    /// At the default 1360 window a docked task panel leaves the page 880 wide: the aside goes
+    /// under the waves and the task rows take two lines, so titles keep their room. The first
+    /// frame after the panel opens or closes is already laid out that way (one draw, no catch-up).
+    #[gpui_kit::test]
+    fn a_docked_task_panel_stacks_the_lists_and_the_rows(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{VisualTestContext, size};
+        let (w, _rec) = crate::parity::window(cx);
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        crate::parity::settle(cx);
+        let cx = &mut VisualTestContext::from_window(w.into(), cx);
+        // One frame: what it drew, and whether its task rows took two lines.
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let stacked = cx.debug_bounds("goal-body-stacked").is_some();
+            assert_ne!(stacked, cx.debug_bounds("goal-body-beside").is_some(), "one body or the other");
+            (stacked, w.update(cx, |m, _, _| m.goal_page.lists.stack_rows).unwrap())
+        };
+        cx.simulate_resize(size(px(1360.), px(860.)));
+        assert_eq!(draw(cx), (false, true), "no panel: the aside sits beside the waves");
+
+        w.update(cx, |m, _, cx| m.open_task("T2", cx)).unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(draw(cx), (true, true), "the docked panel stacks the aside and the rows");
+
+        w.update(cx, |m, _, _| m.panel = None).unwrap();
+        assert_eq!(draw(cx), (false, true), "closed, the aside comes back beside the waves");
     }
 
     #[gpui_kit::test]
