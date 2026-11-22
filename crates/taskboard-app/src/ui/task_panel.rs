@@ -771,6 +771,12 @@ fn handoff_stamp(t: &Value) -> String {
     format!("{}|{}|{}|{newest}", t["ctx_version"], t["updated_at"], t["status"])
 }
 
+/// `handoffWanted(t)`: the Context tab fetches the handoff when there's none to show, or when the
+/// detail doesn't carry it and `fetched_at` (the stamp of the last fetch) is from an older state.
+pub(crate) fn handoff_wanted(t: &Value, u: &view::Ui, fetched_at: Option<&str>) -> bool {
+    view::handoff_text(t, u).is_none() || (t.get("handoff").is_none() && fetched_at != Some(handoff_stamp(t).as_str()))
+}
+
 /// `loadHandoff(r)`: fetch the handoff when the Context tab needs it and the task has none, or
 /// the task changed since it was fetched (the old one shows until the new one lands).
 /// A reviewer's open asks and the week's answered ones (`GET /reviewers/asks?user=`), by host login
@@ -803,8 +809,8 @@ fn load_handoff(m: &MainWindow, cx: &mut Context<MainWindow>) {
     let Some(task) = m.data.task.as_ref() else { return };
     let r = r.clone();
     let stamp = handoff_stamp(task);
-    let fresh = ui(|u| view::handoff_text(task, u).is_some()) && (task.get("handoff").is_some() || HANDOFF_AT.with(|h| h.borrow().get(&r) == Some(&stamp)));
-    if fresh || LOADING.with(|l| !l.borrow_mut().insert(r.clone())) {
+    let wanted = HANDOFF_AT.with(|h| ui(|u| handoff_wanted(task, u, h.borrow().get(&r).map(String::as_str))));
+    if !wanted || LOADING.with(|l| !l.borrow_mut().insert(r.clone())) {
         return;
     }
     let backend = m.backend.clone();

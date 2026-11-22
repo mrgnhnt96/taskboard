@@ -80,7 +80,7 @@ const pr = (over = {}) => ({ repo: 'webapp', num: 42, url: 'https://github.com/a
 function reset(st, route) {
   w.set('S.state', st);
   w.set('S.route', route);
-  w.run(`S.drafts = {}; S.busy = new Set(); S.notes = {}; S.reveal = {}; S.metaEdit = {}; S.handoffs = {}; S.logFilter = 'all'; S.attMenu = null; S.attEdit = null; S.attDrop = false; S.termMenu = false; S.taskErr = '';`);
+  w.run(`S.drafts = {}; S.busy = new Set(); S.notes = {}; S.reveal = {}; S.metaEdit = {}; S.handoffs = {}; S.handoffAt = {}; S.logFilter = 'all'; S.attMenu = null; S.attEdit = null; S.attDrop = false; S.termMenu = false; S.taskErr = '';`);
 }
 
 const cases = [];
@@ -304,5 +304,29 @@ for (const [label, st] of [['off', STATE], ['closed tomorrow', hoursClosed], ['c
 for (const [label, st] of [['up', STATE], ['down', { ...STATE, midna: { up: false, seen_at: at(5) } }], ['unknown', { ...STATE, midna: null }]]) {
   w.set('S.state', st);
   cases.push({ name: `sentNote ${label}`, input: { fn: 'sentNote', state: st }, expect: w.run('sentNote()') });
+}
+// handoffWanted: the Context tab fetches the handoff the detail doesn't carry, and again once the
+// task moves on (B155: the web kept the first one it fetched).
+{
+  const bare = task({ handoff: undefined, ctx_version: 3, log: [{ at: at(2), who: 'T7 x', kind: 'turn', text: 'Ran it.' }] });
+  const stamp = t => w.run(`handoffStamp(${JSON.stringify(t)})`);
+  const fetched = { T7: 'Fetched handoff text.' };
+  const moved = [
+    ['new context', { ctx_version: 4 }], ['updated', { updated_at: at(1) }], ['new status', { status: 'needs' }],
+    ['new log line', { log: [{ at: at(0), who: 'T7 x', kind: 'turn', text: 'Again.' }, ...bare.log] }],
+  ];
+  const wanted = (name, t, handoffs, handoffAt) => {
+    w.run(`S.handoffs = ${JSON.stringify(handoffs)}; S.handoffAt = ${JSON.stringify(handoffAt)};`);
+    cases.push({ name: `handoffWanted ${name}`, input: { fn: 'handoffWanted', task: t, handoffs, handoff_at: handoffAt }, expect: w.run(`handoffWanted(${JSON.stringify(t)})`) });
+  };
+  wanted('none yet', bare, {}, {});
+  wanted('carried by the detail', task({}), {}, {});
+  wanted('carried as an object', task({ handoff: { text: 'Object handoff.' } }), {}, {});
+  wanted('fetched for this state', bare, fetched, { T7: stamp(bare) });
+  wanted('fetch failed for this state', bare, { T7: 'Couldn’t load the handoff: The board answered 500.' }, { T7: stamp(bare) });
+  wanted('fetched, state unknown', bare, fetched, {});
+  wanted('fetched for another task', bare, { T7: 'x', T8: 'y' }, { T8: stamp(bare) });
+  wanted('no log yet, fetched', task({ handoff: undefined, log: [] }), fetched, { T7: stamp(task({ handoff: undefined, log: [] })) });
+  for (const [label, over] of moved) wanted(`after ${label}`, { ...bare, ...over }, fetched, { T7: stamp(bare) });
 }
 writeGolden('task', cases);

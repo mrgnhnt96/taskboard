@@ -180,7 +180,7 @@ const S = {
   state: null, stateErr: '',
   filter: { project: 'all', goal: 'all' },
   goalsAll: null,
-  task: null, taskRef: null, taskErr: '', handoffs: {},
+  task: null, taskRef: null, taskErr: '', handoffs: {}, handoffAt: {},
   issue: null, issueRef: null, issueErr: '',
   keepIssues: [],
   drafts: {},
@@ -306,12 +306,17 @@ async function loadTask() {
     const t = await api('/tasks/' + encodeURIComponent(r));
     if (S.taskRef !== r) return;
     S.task = t; S.taskErr = '';
-    if (handoffText(t) == null && S.route.q.tab === 'context') loadHandoff(r);
+    if (S.route.q.tab === 'context' && handoffWanted(t)) loadHandoff(r, handoffStamp(t));
   } catch (e) { if (S.taskRef === r) S.taskErr = e.message; }
 }
-async function loadHandoff(r) {
+// Fetches the handoff the task detail doesn't carry. The old text shows until the new one lands.
+const handoffLoading = new Set();
+async function loadHandoff(r, stamp) {
+  if (handoffLoading.has(r)) return;
+  handoffLoading.add(r);
   try { const h = await api(`/tasks/${encodeURIComponent(r)}/handoff`); S.handoffs[r] = h && (h.text ?? h.handoff ?? ''); }
   catch (e) { S.handoffs[r] = `Couldn’t load the handoff: ${e.message}`; }
+  finally { handoffLoading.delete(r); S.handoffAt[r] = stamp; }
 }
 async function loadIssue() {
   const r = S.issueRef;
@@ -1421,6 +1426,19 @@ function attachRow(t) {
     ${note(a.fk)}</div>`;
 }
 
+// What a task's handoff is built from, as the polled detail shows it: a change means the fetched
+// handoff is out of date.
+function handoffStamp(t) {
+  const j = v => JSON.stringify(v ?? null);
+  const newest = Array.isArray(t.log) && t.log.length ? j(t.log[0].at) : '';
+  return `${j(t.ctx_version)}|${j(t.updated_at)}|${j(t.status)}|${newest}`;
+}
+// Whether the Context tab fetches the handoff: there's none to show, or the detail doesn't carry it
+// and the one fetched was built from an older state of the task.
+function handoffWanted(t) {
+  if (handoffText(t) == null) return true;
+  return t.handoff === undefined && S.handoffAt[ref(t, 'T')] !== handoffStamp(t);
+}
 function handoffText(t) {
   const r = ref(t, 'T');
   if (typeof t.handoff === 'string') return t.handoff;
