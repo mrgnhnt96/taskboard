@@ -1802,11 +1802,14 @@ fn prompts_of(app: &App, sid: &str, item: Option<ItemTask>) -> Result<Vec<Prompt
         }
         talked.clone()
     };
+    // The agent names an item it moves to the board by its ref ("B12: the footer cuts off"), so its
+    // reply reads that ref as the task made from it, as the owner's prompts do.
+    let named = |t: String| item.map_or_else(|| t.clone(), |i| item_as_task(&t, i));
     for r in &rows {
         match r.st("kind").as_str() {
             "reply" => {
-                reply = reply_end(r);
-                talk(named_tasks(&format!("{}\n{}", r.st("text"), r.st("full"))));
+                reply = reply_end(r).map(named);
+                talk(named_tasks(&named(format!("{}\n{}", r.st("text"), r.st("full")))));
             }
             k if k == MADE => {
                 let Some(p) = prompts.last_mut() else { continue };

@@ -218,6 +218,28 @@ fn an_ask_naming_two_backlog_items_starts_both() {
 }
 
 #[test]
+fn start_those_covers_backlog_items_the_reply_named() {
+    let b = board();
+    let item = |title: &str| api::dispatch(&b.app, "POST", "/backlog", &Query::new(), &json!({"title": title, "project": "webapp", "kind": "bug"})).unwrap()["id"].as_i64().unwrap();
+    let (i1, i2, other) = (item("Footer"), item("Header"), item("Sidebar"));
+    let t = b.new_task();
+    b.said("what's left?");
+    b.replied(&format!("**Needs you**\n- **T{t}:** waits for Start.\n- **B{i1}:** the footer cuts off.\n- **B{i2}:** the header needs a check."));
+    b.said("start all three of those tasks");
+    // The agent moves the items to the board in reply, then starts what they became.
+    let task_of = |i: i64| {
+        let v = api::dispatch(&b.app, "POST", "/backlog/bulk", &Query::new(), &json!({"action": "task", "ids": [format!("B{i}")], "where": "goal", "pickup": {"mode": "manual"}})).unwrap();
+        v["tasks"][0]["ref"].as_str().unwrap().trim_start_matches('T').parse::<i64>().unwrap()
+    };
+    let (a, c, o) = (task_of(i1), task_of(i2), task_of(other));
+    assert!(b.tb_start(t).unwrap()["starting"] == true);
+    assert!(b.tb_start(a).unwrap()["starting"] == true);
+    assert!(b.tb_start(c).unwrap()["starting"] == true);
+    // An item the reply didn't name isn't one of "those".
+    assert_eq!(b.tb_start(o).unwrap_err().0, 403);
+}
+
+#[test]
 fn a_later_prompt_that_takes_the_start_back_wins() {
     let b = board();
     let id = b.new_task();
