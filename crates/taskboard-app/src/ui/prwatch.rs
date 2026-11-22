@@ -206,8 +206,7 @@ pub fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<An
                     div().ml(px(4.)).text_size(px(10.8)).font_weight(FontWeight::NORMAL).text_color(t.muted).child(r.ago.clone()),
                 ))
                 .children(r.task.clone().map(|task| {
-                    div()
-                        .id(("master-open", i))
+                    crate::ui::focus::stop(t, div().id(("master-open", i)))
                         .flex()
                         .flex_none()
                         .items_center()

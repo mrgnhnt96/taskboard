@@ -96,7 +96,7 @@ fn row(t: &Theme, ix: usize, f: Finding, open: bool, cx: &mut Context<MainWindow
         .child(div().flex_1().min_w_0().truncate().text_color(t.text_2).child(f.short.clone()))
         .when(!f.about.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(f.about)))
         .when(has_detail, |d| {
-            d.cursor_pointer().hover(move |s| s.text_color(hover)).on_click(cx.listener(move |m, _, _, cx| {
+            focus::stop(t, d).cursor_pointer().hover(move |s| s.text_color(hover)).on_click(cx.listener(move |m, _, _, cx| {
                 let o = &mut m.goal_page.review_open;
                 if !o.remove(&ix) {
                     o.insert(ix);

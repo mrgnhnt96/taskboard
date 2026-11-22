@@ -11,7 +11,7 @@
 use crate::app::{MainWindow, Page, Panel, TaskTab};
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
-use crate::ui::kit;
+use crate::ui::{focus, kit};
 use crate::ui::modals::locale_cmp;
 use crate::ui::select::{sel, sel_styled};
 use gpui_kit::prelude::*;
@@ -1502,8 +1502,7 @@ fn web_pill(t: &Theme, fg: Hsla, bg: Hsla, text: impl Into<SharedString>, mono: 
 /// `.icon-btn` (36px, bordered) holding `ICON.x`.
 fn close_btn(t: &Theme) -> Stateful<Div> {
     let hover = t.border_2;
-    div()
-        .id("issue-close")
+    focus::stop(t, div().id("issue-close"))
         .flex()
         .flex_none()
         .items_center()

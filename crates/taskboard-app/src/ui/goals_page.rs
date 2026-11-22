@@ -9,7 +9,7 @@ use crate::ui::issue_panel as ip;
 use crate::ui::modals::locale_cmp;
 use crate::ui::status::{self, St};
 use crate::ui::stop::{self as stop_state, Step, Stop};
-use crate::ui::{goal, kit};
+use crate::ui::{focus, goal, kit};
 use chrono::{DateTime, Datelike, Duration, Utc};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -566,8 +566,7 @@ fn goal_head(t: &Theme, row: &GoalRow, open: bool, busy: bool, cx: &mut Context<
                 .items_center()
                 .gap(px(8.))
                 .child(
-                    div()
-                        .id(SharedString::from(format!("goals-ref-{r}")))
+                    focus::stop(t, div().id(SharedString::from(format!("goals-ref-{r}"))))
                         .text_size(px(12.))
                         .font_family(t.mono_font.clone())
                         .font_weight(FontWeight::SEMIBOLD)
@@ -617,8 +616,7 @@ fn goal_head(t: &Theme, row: &GoalRow, open: bool, busy: bool, cx: &mut Context<
     for (ix, a) in row.actions.iter().cloned().enumerate() {
         act = act.child(action_btn(t, &row.r, ix, a, busy, cx));
     }
-    div()
-        .id(SharedString::from(format!("goals-row-{}", row.r)))
+    focus::stop(t, div().id(SharedString::from(format!("goals-row-{}", row.r))))
         .flex()
         .items_center()
         .gap(px(20.))
@@ -675,8 +673,7 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
     }
     let hover = t.panel_2;
     let link = t.accent;
-    div()
-        .id(SharedString::from(format!("goals-task-{r}")))
+    focus::stop(t, div().id(SharedString::from(format!("goals-task-{r}"))))
         .flex()
         .items_center()
         .gap(px(12.))
@@ -799,8 +796,7 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, busy: &dyn Fn(&
             div().max_w(px(820.)).text_size(px(12.5)).line_height(relative(1.45)).text_color(t.muted).line_clamp(2).child(l.about.clone())
         });
         tile = tile.child(
-            div()
-                .id(SharedString::from(format!("goals-shelf-{}", l.r)))
+            focus::stop(t, div().id(SharedString::from(format!("goals-shelf-{}", l.r))))
                 .flex()
                 .flex_col()
                 .gap(px(3.))

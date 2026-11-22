@@ -291,8 +291,7 @@ where
 /// One underlined tab: the chosen one has a bold label over a 2px bar in the text colour.
 pub fn tab(t: &Theme, id: impl Into<ElementId>, label: &str, on: bool) -> Stateful<Div> {
     let (text, line) = (t.text, t.border_2);
-    div()
-        .id(id)
+    focus::stop(t, div().id(id))
         .flex()
         .items_center()
         .h(px(height::CONTROL))

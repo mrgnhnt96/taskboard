@@ -10,7 +10,7 @@ mod view;
 use crate::app::{MainWindow, Page, Panel, TaskTab};
 use crate::fmt::{self, s};
 use crate::theme::{Theme, ThemeMode};
-use crate::ui::kit;
+use crate::ui::{focus, kit};
 use crate::ui::select::{sel, sel_styled};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -1128,7 +1128,7 @@ impl Draw<'_> {
             kit::disabled(b)
         } else {
             let a = a.clone();
-            b.on_click(cx.listener(move |m, _, window, cx| {
+            focus::stop(self.t, b).on_click(cx.listener(move |m, _, window, cx| {
                 let had = m.modal.is_some();
                 act(m, &a, cx);
                 // A control that opened a dialog hands it the keys, so esc closes it.
@@ -1158,7 +1158,7 @@ impl Draw<'_> {
         } else {
             link(t, self.id("link"), s, look)
         };
-        let l = l.on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx)));
+        let l = focus::stop(t, l).on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx)));
         match tip {
             Some(tip) => l.tooltip(kit::tip(tip.clone())).into_any_element(),
             None => l.into_any_element(),
@@ -1377,7 +1377,7 @@ impl Draw<'_> {
                 .child(div().text_size(px(9.)).child(if open { "▼" } else { "▶" }))
                 .child(label),
         };
-        let head = head.on_click(toggle);
+        let head = focus::stop(t, head).on_click(toggle);
         let mut col = div().flex().flex_col().min_w_0().child(head);
         if open {
             let gap = 6.;
@@ -1535,7 +1535,7 @@ impl Draw<'_> {
         match href {
             Some(h) => {
                 let g = Go::Url(h);
-                row.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx))).into_any_element()
+                focus::stop(t, row).cursor_pointer().on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx))).into_any_element()
             }
             None => row.into_any_element(),
         }
@@ -1672,8 +1672,7 @@ impl Draw<'_> {
             cx.notify();
         });
         let head = self.kid(m, n, 0, boxed, cx);
-        let button = div()
-            .id(self.id("step"))
+        let button = focus::stop(t, div().id(self.id("step")))
             .flex()
             .items_center()
             .gap(px(10.))
@@ -1780,8 +1779,7 @@ impl Draw<'_> {
         let Node::El { kids, .. } = n else { return div().into_any_element() };
         let Some(Node::Btn { label, act: a, .. }) = kids.first() else { return div().into_any_element() };
         let a = a.clone();
-        let name = div()
-            .id(self.id("rev-name"))
+        let name = focus::stop(t, div().id(self.id("rev-name")))
             .px(px(6.))
             .mx(px(-6.))
             .rounded(px(6.))
@@ -1929,8 +1927,7 @@ impl Draw<'_> {
             _ => String::new(),
         };
         let tint = t.tint;
-        div()
-            .id(self.id("menu-item"))
+        focus::stop(t, div().id(self.id("menu-item")))
             .flex()
             .flex_col()
             .gap(px(2.))

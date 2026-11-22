@@ -270,7 +270,7 @@ pub fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
         .child(div().flex_1().min_w_0().truncate().child(text))
         .child(kit::anchor(MENU))
         .when(!items.is_empty(), |d| {
-            d.cursor_pointer()
+            crate::ui::focus::stop(t, d).cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .tooltip(kit::tip(tip))
                 .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
@@ -295,8 +295,7 @@ pub fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
             .gap(px(6.))
             .child(div().flex_1().min_w_0().overflow_hidden().flex().child(crate::ui::hours::readout(m, t)))
             .child(
-                div()
-                    .id("open-settings")
+                crate::ui::focus::stop(t, div().id("open-settings"))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -318,8 +317,7 @@ pub fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
 /// Settings › Usage.
 fn usage_block(t: &Theme, u: &UsageView, seen: Option<String>) -> Stateful<Div> {
     let line = t.border_2;
-    let mut b = div()
-        .id("usage-block")
+    let mut b = crate::ui::focus::stop(t, div().id("usage-block"))
         .flex()
         .flex_col()
         .gap(px(4.))

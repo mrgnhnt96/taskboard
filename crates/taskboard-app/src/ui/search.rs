@@ -1091,8 +1091,7 @@ fn scope_chip(t: &Theme, sc: &Scope, cx: &mut Context<MainWindow>) -> Stateful<D
         .child(div().flex_none().size(px(8.)).rounded(px(2.)).bg(t.goal))
         .child(div().min_w_0().truncate().child(label))
         .child(
-            div()
-                .id("search-scope-x")
+            crate::ui::focus::stop(t, div().id("search-scope-x"))
                 .flex()
                 .flex_none()
                 .items_center()

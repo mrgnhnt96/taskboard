@@ -2314,8 +2314,7 @@ pub(crate) fn bar(bg: Hsla, fg: Hsla, line: Hsla) -> Div {
 /// (semibold); otherwise `.ghost` (muted, no fill).
 pub(crate) fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, soft: bool) -> Stateful<Div> {
     let text = t.text;
-    div()
-        .id(id)
+    crate::ui::focus::stop(t, div().id(id))
         .flex()
         .flex_none()
         .items_center()

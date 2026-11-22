@@ -678,7 +678,7 @@ fn sync_fields(m: &mut MainWindow, r: &str, views: &[RoundView], cx: &mut Contex
 /// Ideas › webapp › I3: the project crumb opens the Ideas page on that project.
 fn crumbs(t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.text;
-    let link = |id: &'static str, text: String| div().id(id).cursor_pointer().hover(move |s| s.text_color(hover)).child(text);
+    let link = |id: &'static str, text: String| crate::ui::focus::stop(t, div().id(id)).cursor_pointer().hover(move |s| s.text_color(hover)).child(text);
     let sep = || div().text_color(t.faint).child("›");
     let project = s(i, "project").to_string();
     let open = project.clone();
@@ -1044,7 +1044,8 @@ fn points_el(m: &MainWindow, t: &Theme, key: &str, title: &str, items: &[Point],
             .child(div().flex_1().min_w_0().child(p.short.clone()))
             .when(more, |d| {
                 let id = id.clone();
-                d.cursor_pointer()
+                crate::ui::focus::stop(t, d)
+                    .cursor_pointer()
                     .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(if open { "Less" } else { "More" }))
                     .on_click(cx.listener(move |m, _, _, cx| {
                         if !m.idea.more.remove(&id) {
@@ -1158,7 +1159,8 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
                 match tap {
                     Some((r, round)) if !busy => {
                         let (r, round, id, c) = (r.to_string(), round.to_string(), id.clone(), c.clone());
-                        chip.cursor_pointer()
+                        crate::ui::focus::stop(t, chip)
+                            .cursor_pointer()
                             .hover(move |s| s.border_color(accent).text_color(accent))
                             .on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &round, &id, &c, cx)))
                     }
@@ -1263,8 +1265,7 @@ fn round_card(m: &MainWindow, t: &Theme, idea: &str, talk: bool, n: usize, rv: &
     let k2 = key.clone();
     let hover = t.panel_2;
     let chev = div().flex_none().size(px(14.)).child(kit::icon(if open { kit::Icon::Chev } else { kit::Icon::ChevRight }, 14., t.muted));
-    let head = div()
-        .id(SharedString::from(format!("idea-round-{key}")))
+    let head = crate::ui::focus::stop(t, div().id(SharedString::from(format!("idea-round-{key}"))))
         .flex()
         .items_center()
         .gap(px(10.))

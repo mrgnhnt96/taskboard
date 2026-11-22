@@ -524,8 +524,7 @@ fn row(t: &Theme, row: &Row, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let r = row.r.clone();
     let hover = t.panel_2;
     let cell = |w: f32| div().flex_none().w(px(w)).min_w_0().overflow_hidden();
-    div()
-        .id(SharedString::from(format!("ideas-row-{}", row.r)))
+    crate::ui::focus::stop(t, div().id(SharedString::from(format!("ideas-row-{}", row.r))))
         .flex()
         .items_center()
         .gap(px(12.))

@@ -255,8 +255,7 @@ pub fn readout(m: &MainWindow, t: &Theme) -> AnyElement {
     let closed = p.cls == "hours closed";
     let (fg, dot) = if closed { (t.warn_fg, t.warn) } else { (t.text_2, t.up) };
     let text = t.text;
-    div()
-        .id("hours-readout")
+    crate::ui::focus::stop(t, div().id("hours-readout"))
         .flex()
         .flex_none()
         .items_center()
@@ -388,7 +387,7 @@ fn time_field(s: &SettingsWindow, t: &Theme, i: usize, window: &Window, cx: &mut
             .font_weight(FontWeight::SEMIBOLD)
             .child(if pm { "pm" } else { "am" })
             .when(on, |d| {
-                d.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
+                crate::ui::focus::stop(t, d).cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
                     cx.stop_propagation();
                     flip(s, i, cx);
                 }))
@@ -486,7 +485,7 @@ fn days(s: &SettingsWindow, t: &Theme, cx: &mut Context<SettingsWindow>) -> Div 
             .tooltip(kit::tip(fmt::cap(d)))
             .child(l);
         if on {
-            item = item.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
+            item = crate::ui::focus::stop(t, item).cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
                 s.hours.toggle_day(d);
                 save(s, cx);
                 cx.notify();

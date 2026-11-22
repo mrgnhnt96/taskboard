@@ -268,8 +268,7 @@ pub fn rollup(g: &Value, filter: Filter, wave: Option<&str>) -> Rollup {
 /// A text button that opens one of the card's menus under it.
 fn menu_btn(t: &Theme, id: &'static str, menu: &'static str, label: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let tint = t.tint;
-    div()
-        .id(id)
+    focus::stop(t, div().id(id))
         .flex()
         .flex_none()
         .items_center()
@@ -293,8 +292,7 @@ fn menu_btn(t: &Theme, id: &'static str, menu: &'static str, label: String, cx: 
 /// The wave picker: the wave shown, full width, opening the wave menu.
 fn wave_btn(t: &Theme, label: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let tint = t.tint;
-    div()
-        .id("goal-att-wave-btn")
+    focus::stop(t, div().id("goal-att-wave-btn"))
         .flex()
         .items_center()
         .gap(px(6.))
@@ -344,7 +342,7 @@ fn file_row(t: &Theme, f: &File, id: String) -> Stateful<Div> {
     };
     if f.href {
         let url = f.url.clone();
-        row.cursor_pointer().on_click(move |_, _, cx| open_attachment(&url, cx))
+        focus::stop(t, row).cursor_pointer().on_click(move |_, _, cx| open_attachment(&url, cx))
     } else {
         row
     }
@@ -358,8 +356,7 @@ fn files(t: &Theme, list: &[File], key: &str) -> Div {
 fn task_group(t: &Theme, tg: &TaskGroup, cx: &mut Context<MainWindow>) -> Div {
     let tint = t.tint;
     let r = tg.r.clone();
-    let label = div()
-        .id(SharedString::from(format!("goal-att-task-{}", tg.r)))
+    let label = focus::stop(t, div().id(SharedString::from(format!("goal-att-task-{}", tg.r))))
         .flex()
         .items_center()
         .gap(px(6.))
@@ -427,8 +424,9 @@ pub(super) fn attached_piece(t: &Theme, r: &Rollup, k: usize, cx: &mut Context<M
 fn pick_row(t: &Theme, id: String, label: String, note: Option<&'static str>, n: usize, on: bool) -> Stateful<Div> {
     let hover = t.panel_2;
     let off = n == 0 && !on;
-    div()
-        .id(SharedString::from(id))
+    // Only a row with something in it is picked (the menus leave the empty ones unclickable).
+    let el = div().id(SharedString::from(id));
+    (if n == 0 { el } else { focus::stop(t, el) })
         .flex()
         .items_center()
         .gap(px(8.))

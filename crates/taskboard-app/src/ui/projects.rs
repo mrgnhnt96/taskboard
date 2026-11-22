@@ -418,8 +418,7 @@ fn project_row(t: &Theme, r: &ProjectRow, on: bool, cx: &mut Context<MainWindow>
     let hover = t.panel_2;
     let dot = if r.needs { Some(t.warn) } else if r.running > 0 { Some(t.accent) } else { None };
     let idle = r.open == 0;
-    div()
-        .id(SharedString::from(format!("projects-row-{}", r.name)))
+    crate::ui::focus::stop(t, div().id(SharedString::from(format!("projects-row-{}", r.name))))
         .flex()
         .items_center()
         .gap(px(10.))
@@ -478,8 +477,7 @@ fn project_list(t: &Theme, open: &[ProjectRow], idle: &[ProjectRow], picked: Opt
     }
     if !idle.is_empty() {
         col = col.child(
-            div()
-                .id("projects-idle-toggle")
+            crate::ui::focus::stop(t, div().id("projects-idle-toggle"))
                 .flex()
                 .items_center()
                 .px(px(12.))
@@ -532,8 +530,7 @@ fn chevron(t: &Theme, open: bool) -> Div {
 
 fn goal_ref(t: &Theme, r: &str, color: Hsla, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let gr = r.to_string();
-    div()
-        .id(SharedString::from(format!("projects-ref-{r}")))
+    crate::ui::focus::stop(t, div().id(SharedString::from(format!("projects-ref-{r}"))))
         .flex_none()
         .w(px(44.))
         .text_size(px(12.))
@@ -582,8 +579,7 @@ fn task_row(t: &Theme, c: &Value, narrow: bool, shown: Option<&str>, cx: &mut Co
         .hover(move |s| s.text_color(link).underline())
         .child(r.clone())
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx)));
-    let title = div()
-        .id(SharedString::from(format!("projects-task-{r}")))
+    let title = crate::ui::focus::stop(t, div().id(SharedString::from(format!("projects-task-{r}"))))
         .min_w_0()
         .cursor_pointer()
         .hover(move |s| s.text_color(link).underline())
@@ -664,7 +660,7 @@ fn active_row(t: &Theme, g: &GoalLine, open: bool, d: Option<&Value>, first: boo
     let bar = status::bar(t, &g.parts, 5.);
     let progress = div().text_size(px(12.)).text_color(t.muted).child(g.progress.clone());
     let pill = div().flex_none().w(px(96.)).flex().justify_end().child(goal_pill(t, g.pill));
-    let head = div().id(SharedString::from(format!("projects-goal-{}", g.r))).px(px(16.)).py(px(12.)).cursor_pointer();
+    let head = crate::ui::focus::stop(t, div().id(SharedString::from(format!("projects-goal-{}", g.r)))).px(px(16.)).py(px(12.)).cursor_pointer();
     let head = if narrow {
         head.flex()
             .flex_col()
@@ -689,7 +685,7 @@ fn done_row(t: &Theme, g: &DoneLine, open: bool, d: Option<&Value>, first: bool,
     let name = div().text_color(t.text_2).child(g.name.clone());
     let tasks = div().text_size(px(12.)).text_color(t.muted).child(g.tasks.clone());
     let when = div().flex_none().w(px(96.)).text_right().text_size(px(12.)).text_color(t.muted).child(g.when.clone());
-    let head = div().id(SharedString::from(format!("projects-done-{}", g.r))).px(px(16.)).py(px(10.)).cursor_pointer().text_size(px(14.));
+    let head = crate::ui::focus::stop(t, div().id(SharedString::from(format!("projects-done-{}", g.r)))).px(px(16.)).py(px(10.)).cursor_pointer().text_size(px(14.));
     let head = if narrow {
         head.flex()
             .flex_col()

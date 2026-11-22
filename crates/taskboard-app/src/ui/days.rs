@@ -6,7 +6,7 @@
 use crate::app::MainWindow;
 use crate::fmt::{self, arr, s};
 use crate::theme::{Theme, ThemeMode};
-use crate::ui::kit;
+use crate::ui::{focus, kit};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -919,8 +919,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let toggles = div().flex().flex_wrap().gap(px(6.)).children(v.projects.iter().map(|(p, i, on)| {
         let (p2, all2, on) = (p.clone(), all.clone(), *on);
         let c = pc(*i);
-        div()
-            .id(SharedString::from(format!("days-proj-{p}")))
+        focus::stop(&t, div().id(SharedString::from(format!("days-proj-{p}"))))
             .flex()
             .items_center()
             .gap(px(7.))
@@ -1064,8 +1063,8 @@ fn week_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<
     }));
     let tiles = div().flex().gap(px(10.)).children(v.cols.iter().map(|c| {
         let d = c.date;
-        div()
-            .id(SharedString::from(format!("days-tile-{}", c.num)))
+        let tile = div().id(SharedString::from(format!("days-tile-{}", c.num)));
+        if c.future { tile } else { focus::stop(t, tile) }
             .flex_1()
             .flex()
             .flex_col()

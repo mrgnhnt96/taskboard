@@ -181,8 +181,7 @@ fn row(m: &MainWindow, t: &Theme, b: &Value, cx: &mut Context<MainWindow>) -> St
         }))
     };
     let open = r.clone();
-    div()
-        .id(SharedString::from(format!("closed-row-{r}")))
+    crate::ui::focus::stop(t, div().id(SharedString::from(format!("closed-row-{r}"))))
         .w_full()
         .flex()
         .items_center()

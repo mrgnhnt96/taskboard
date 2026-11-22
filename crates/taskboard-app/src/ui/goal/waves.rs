@@ -293,8 +293,7 @@ fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> S
     let retry = x.retry.then(|| retry_btn(m, t, &x.r, cx));
     // The task open in the panel: a soft accent fill and a 2px accent edge on its left.
     let on = crate::app::open_ref(m) == Some(x.r.as_str());
-    let base = div()
-        .id(SharedString::from(format!("goal-task-{}", x.r)))
+    let base = focus::stop(t, div().id(SharedString::from(format!("goal-task-{}", x.r))))
         .relative()
         .when(on, |d| d.bg(t.accent_soft).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
         .px(px(18.))
