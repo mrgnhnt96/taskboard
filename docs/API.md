@@ -1409,8 +1409,10 @@ separate from bits (feature flags). Search finds ideas by their title and detail
 (with `ideas_total`), matched by ref, title, project and detail.
 
 `idea`: `{id, ref: "I4", project, title, detail, state, goal: "G9"|null, source, created_at, updated_at, notes: int,
-rounds: int, planning: bool, questions: int}`. `planning` is true while Claude plans it into a goal. `questions` is how
-many of its newest report's questions have no answer yet (0 once it's planned, shelved or dropped). Shown on its own (every response below but the list), `notes` is `[{id, text, source, at}]` oldest
+rounds: int, verdict: str|null, planning: bool, questions: int, dig_error: str|null}`. `verdict` is its newest report's.
+`planning` is true while Claude plans it into a goal. `questions` is how many of its newest report's questions have no
+answer yet (0 once it's planned, shelved or dropped). `dig_error` is its newest round's `error` when that round failed,
+null when it didn't or the owner stopped it. Shown on its own (every response below but the list), `notes` is `[{id, text, source, at}]` oldest
 first and `rounds` is `[round]` newest first. `round`: `{id, focus: str ("" for the whole idea), report: object|null,
 sha: str|null (the commit it ran at), web: bool, started_at, finished_at, error: str|null, source, behind: int|null,
 stale: bool, stopped: bool}`. `stopped` is true when the owner stopped the dig. `source` is who added it (`by_session`'s terminal, `who`, else the owner). `behind` is how many commits

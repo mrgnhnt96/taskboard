@@ -159,7 +159,8 @@ pub struct Row {
     pub r: String,
     pub title: String,
     pub project: String,
-    /// Its one pill: its state, or its newest report's verdict once reported.
+    /// Its one pill: its state, Dig failed when its newest dig did, or its newest report's
+    /// verdict once reported.
     pub pill: (&'static str, &'static str),
     /// What it waits on the owner for: "2 questions", or "Ready to plan".
     pub note: Option<String>,
@@ -167,11 +168,17 @@ pub struct Row {
     pub when: String,
 }
 
-/// The list's one pill: a plan or dig running, else planned or closed, else the newest report's
-/// verdict, else its state.
+/// The list's one pill: a plan or dig running, else planned or closed, else a red Dig failed when
+/// its newest dig failed (the board's `dig_error`), else the newest report's verdict, else its state.
 pub fn row_pill(i: &Value) -> (&'static str, &'static str) {
     let state = state_pill(i);
-    if fmt::b(i, "planning") || s(i, "state") != "reported" {
+    if fmt::b(i, "planning") || !matches!(s(i, "state"), "new" | "reported") {
+        return state;
+    }
+    if !s(i, "dig_error").is_empty() {
+        return ("Dig failed", "down");
+    }
+    if s(i, "state") != "reported" {
         return state;
     }
     verdict_pill(&i["verdict"]).unwrap_or(state)
@@ -778,6 +785,16 @@ mod tests {
         assert_eq!(row_pill(&i("reported", json!("fits"), true, 0)), ("Planning", "accent"));
         assert_eq!(row_pill(&i("planned", json!("fits"), false, 0)), ("Planned", "goal"));
         assert_eq!(row_pill(&i("new", json!(null), false, 0)), ("New", "muted"));
+        let failed = |state: &str, verdict: Value, planning: bool| {
+            let mut v = i(state, verdict, planning, 0);
+            v["dig_error"] = json!("claude timed out");
+            v
+        };
+        assert_eq!(row_pill(&failed("new", json!(null), false)), ("Dig failed", "down"));
+        assert_eq!(row_pill(&failed("reported", json!("fits"), false)), ("Dig failed", "down"), "the newest dig failed, over an older verdict");
+        assert_eq!(row_pill(&failed("reported", json!("fits"), true)), ("Planning", "accent"));
+        assert_eq!(row_pill(&failed("planned", json!("fits"), false)), ("Planned", "goal"));
+        assert_eq!(row_pill(&failed("shelved", json!(null), false)), ("Shelved", "muted"));
         assert_eq!(waiting_note(&i("reported", json!("doesnt_fit"), false, 1)).as_deref(), Some("1 question"));
         assert_eq!(waiting_note(&i("reported", json!("partly"), false, 0)), None);
         assert_eq!(waiting_note(&i("reported", json!("fits"), true, 2)), None, "not while it's planning");

@@ -68,8 +68,9 @@ const QUESTIONS: &str = "(SELECT COUNT(*) FROM idea_rounds r, json_each(r.report
        AND NOT EXISTS (SELECT 1 FROM idea_notes n WHERE n.round_id = r.id AND n.question = json_extract(b.value, '$.id')))";
 
 /// The idea as `list` shows it: its fields, the goal it became, how many notes and rounds it has,
-/// the verdict of its newest report, and how many of that report's `questions` are still open (0
-/// once the idea is planned or put aside).
+/// the verdict of its newest report, how many of that report's `questions` are still open (0
+/// once the idea is planned or put aside), and `dig_error`: why its newest round failed (null when
+/// it didn't, or the owner stopped it).
 pub fn dict(app: &App, i: &Row) -> Result<Value> {
     let questions = if OPEN.contains(&i.st("state").as_str()) {
         app.db.count(&format!("SELECT {QUESTIONS} FROM ideas WHERE id = ?"), p![i.id()])?
@@ -84,11 +85,15 @@ pub fn dict(app: &App, i: &Row) -> Result<Value> {
         .and_then(|r| r.s("report").and_then(|s| serde_json::from_str::<Value>(s).ok()))
         .map(|rep| rep["verdict"].clone())
         .unwrap_or(Value::Null);
+    let dig_error = app
+        .db
+        .q1("SELECT error FROM idea_rounds WHERE idea_id = ? ORDER BY id DESC LIMIT 1", p![i.id()])?
+        .and_then(|r| r.s("error").filter(|e| *e != crate::dig::STOPPED).map(str::to_string));
     Ok(json!({
         "id": i.id(), "ref": rf("idea", i.id()), "project": i.v("project"), "title": i.v("title"),
         "detail": i.st("detail"), "state": i.v("state"), "goal": rf_opt("goal", i.i("goal_id")),
         "source": i.v("source"), "created_at": i.v("created_at"), "updated_at": i.v("updated_at"),
-        "notes": notes, "rounds": rounds, "verdict": verdict, "questions": questions, "planning": app.shared.lock().idea_planning.contains(&i.id()),
+        "notes": notes, "rounds": rounds, "verdict": verdict, "questions": questions, "dig_error": dig_error, "planning": app.shared.lock().idea_planning.contains(&i.id()),
     }))
 }
 
