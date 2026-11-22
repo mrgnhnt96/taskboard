@@ -1,7 +1,8 @@
 //! Which lessons fit a piece of work. Two things are kept for it, in the board's own database:
 //!
-//! - `task_paths`: the files each task's PR changed, read with git from the PR's base and head as
-//!   the PR moves (`tick`), so a task's code areas outlast its branch.
+//! - `task_paths`: the files each task's commits changed, read as it commits (`add_commits`), then
+//!   replaced by its PR's, read with git from the PR's base and head as the PR moves (`tick`), so a
+//!   task's code areas outlast its branch, and a task with no PR has them too.
 //! - `search`: an FTS5 index of lessons, goal notes, task titles and details and backlog issues,
 //!   kept in step by triggers. `find` searches it for `GET /search` (`tb search`).
 //!
@@ -145,7 +146,7 @@ pub struct Scored {
 
 // ---- files each task changed ----
 
-/// The files a task's PR changed, as recorded (empty until its PR has been read).
+/// The files a task changed, as recorded from its commits and then its PR.
 pub fn paths_of(app: &App, task_id: i64) -> Result<Vec<String>> {
     Ok(app.db.q("SELECT path FROM task_paths WHERE task_id = ? ORDER BY path", p![task_id])?.iter().map(|r| r.st("path")).collect())
 }
@@ -164,6 +165,40 @@ pub fn record(app: &App, task_id: i64, head: &str, paths: &[String]) -> Result<(
              ON CONFLICT(task_id) DO UPDATE SET head = excluded.head, found = excluded.found, at = excluded.at",
             p![task_id, head, !paths.is_empty(), now_iso()],
         )?;
+        Ok(())
+    })
+}
+
+/// The commits a `git commit`'s output names on its `[branch 1a2b3c4] subject` lines.
+pub fn committed_shas(out: &str) -> Vec<String> {
+    let mut shas: Vec<String> = out
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix('[')?.split_once(']').map(|(inside, _)| inside))
+        .filter_map(|inside| inside.split_whitespace().last())
+        .filter(|s| (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .collect();
+    shas.dedup();
+    shas
+}
+
+/// Adds the files the task's commits `shas` changed in `repo` to what's recorded for it, so a task
+/// that ends with no PR (`--no-pr`, or a project that doesn't ship PRs) still has code areas. Its
+/// PR's files replace them once `tick` reads the PR. Runs git, so it's called outside a transaction.
+pub fn add_commits(app: &App, task_id: i64, repo: &str, shas: &[String]) -> Result<()> {
+    let mut files: Vec<String> = vec![];
+    for sha in shas {
+        let out = crate::picker::git(repo, &["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha]).unwrap_or_default();
+        files.extend(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
+    }
+    if files.is_empty() {
+        return Ok(());
+    }
+    app.db.tx(|| {
+        let have = app.db.count("SELECT COUNT(*) FROM task_paths WHERE task_id = ?", p![task_id])?;
+        for path in files.iter().take(PATHS_MAX.saturating_sub(have.max(0) as usize)) {
+            app.db.x("INSERT OR IGNORE INTO task_paths(task_id, path) VALUES (?, ?)", p![task_id, path])?;
+        }
         Ok(())
     })
 }
@@ -643,6 +678,13 @@ mod tests {
         assert_eq!(fts_query("Fix the lessons.rs FTS5 index for T12").as_deref(), Some("\"fix\" OR \"lessons\" OR \"fts5\" OR \"index\" OR \"t12\""));
         assert_eq!(fts_query("the and 42 a"), None);
         assert_eq!(fts_query("\"quoted\" OR NEAR(x)").as_deref(), Some("\"quoted\" OR \"near\""));
+    }
+
+    #[test]
+    fn commit_output_names_its_commits() {
+        let out = "[main 1a2b3c4] fix: one\n 2 files changed\n[feat/x (root-commit) deadbeef01] two\n[1/3] not a commit\n[main zzzzzzz] no";
+        assert_eq!(committed_shas(out), ["1a2b3c4", "deadbeef01"]);
+        assert!(committed_shas("On branch main\nnothing to commit, working tree clean").is_empty());
     }
 
     #[test]

@@ -1218,6 +1218,24 @@ fn commit_subject(r: &Report, out: &str) -> String {
         .unwrap_or_else(|| "a commit".into())
 }
 
+/// Records the files a task's `git commit` changed for lesson picking (`relevance::add_commits`): the
+/// commits its output names, else (a quiet commit) the checkout's head. A commit in another repository or another
+/// task's worktree isn't the task's. Runs git, so it's called outside a transaction.
+fn commit_paths(r: &Report, t: &Row) -> Result<()> {
+    if r.event != "hook.commit" || !r.b("command").contains("git commit") || r.away(t)? {
+        return Ok(());
+    }
+    let Some(dir) = r.place().filter(|d| std::path::Path::new(d).is_dir()) else { return Ok(()) };
+    let out = r.b("output");
+    let mut shas = crate::relevance::committed_shas(&out);
+    // A quiet commit (`-q`) prints nothing; any other output with no commit line didn't commit.
+    if shas.is_empty() && out.trim().is_empty() {
+        let git = if r.commit_elsewhere().is_some() { &r.work_git } else { &r.git };
+        shas.extend(git.s("sha").filter(|s| !s.is_empty()).map(str::to_string));
+    }
+    crate::relevance::add_commits(r.app, t.id(), &dir, &shas)
+}
+
 fn on_commit(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
@@ -3770,6 +3788,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         if let Some(t) = r.task().ok().flatten() {
             if let Err(e) = crate::areas::infer_task(app, t.id(), r.cwd.as_deref()) {
                 app.info(format!("areas: couldn't infer {}'s area: {}", rf("task", t.id()), e.message));
+            }
+            if let Err(e) = commit_paths(&r, &t) {
+                app.info(format!("lessons: couldn't record {}'s committed files: {}", rf("task", t.id()), e.message));
             }
         }
     }
