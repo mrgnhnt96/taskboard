@@ -181,7 +181,22 @@ pub fn sync(m: &mut MainWindow, g: &Rc<Value>, cx: &mut Context<MainWindow>) {
     if !l.built.as_ref().is_some_and(|(b, v)| Rc::ptr_eq(b, g) && *v == view) {
         build(m, g, total, view);
     }
+    scroll_to_wave(m);
     load_older_notes(m, cx);
+}
+
+/// The page was opened at a wave: put that wave's card at the top of the waves list, and of the
+/// stacked list too (its first items are the same wave pieces), then forget the ask. A wave the
+/// goal doesn't have leaves the lists at the top.
+fn scroll_to_wave(m: &mut MainWindow) {
+    let Some(w) = m.goal_page.at_wave.take() else { return };
+    let l = &m.goal_page.lists;
+    let key = format!("w{w}");
+    let Some(c) = l.cards.iter().position(|c| c.key == key) else { return };
+    let Some(ix) = l.wave_items.iter().position(|x| matches!(x, WItem::Piece(cc, 0) if *cc == c)) else { return };
+    for b in [&l.waves, &l.stack].into_iter().flatten() {
+        b.state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(0.) });
+    }
 }
 
 fn notes_total(g: &Value) -> usize {
@@ -522,6 +537,51 @@ mod tests {
         cx.simulate_resize(size(px(1400.), px(900.)));
         draw(cx);
         assert!(!narrow(cx), "wide again, side by side again");
+    }
+
+    /// Opened at a wave (the panel's goal chip, `?wave=`), the waves list starts at that wave's
+    /// card; opened plainly, at the top.
+    #[gpui_kit::test]
+    fn the_page_opens_scrolled_to_the_wave_asked_for(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        for wave in 1..=8 {
+            for k in 0..4 {
+                let body = json!({"title": format!("Wave {wave} work {k}"), "detail": "Sample.", "project": "webapp", "goal_id": 1, "wave": wave, "pickup": {"mode": "manual"}});
+                rec.board().post("tasks", body).unwrap();
+            }
+        }
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        let top = |cx: &mut gpui_kit::TestAppContext| {
+            w.update(cx, |m, _, _| {
+                let l = &m.goal_page.lists;
+                let ix = l.waves.as_ref().unwrap().state.logical_scroll_top().item_ix;
+                let head = l.wave_items.iter().position(|x| matches!(x, WItem::Piece(c, 0) if l.cards[*c].key == "w6")).unwrap();
+                (ix, head, m.goal_page.at_wave)
+            })
+            .unwrap()
+        };
+        w.update(cx, |m, _, cx| crate::ui::goal::open_at(m, "G1", 6, cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        let (ix, head, ask) = top(cx);
+        assert!(head > 0, "wave 6 isn't the first card");
+        assert_eq!((ix, ask), (head, None), "the list starts at wave 6's card, and the ask is used up");
+
+        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert_eq!(top(cx).0, head, "a new answer keeps the place");
+
+        w.update(cx, |m, _, cx| crate::ui::goal::open(m, "G1", false, cx)).unwrap();
+        crate::parity::settle(cx);
+        draw(cx);
+        assert_eq!(top(cx).0, 0, "opened plainly, the page starts at the top");
     }
 
     #[test]

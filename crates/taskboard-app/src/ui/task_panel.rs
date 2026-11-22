@@ -742,6 +742,7 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
         Go::Goal(r) => {
             m.go(Page::Goal(r.clone()), cx);
         }
+        Go::GoalWave(r, w) => crate::ui::goal::open_at(m, r, *w, cx),
         // The terminal itself, in Midna: the board stays where it is.
         Go::Session(id) => m.show_in_midna(id, cx),
         Go::Issue(r) => {

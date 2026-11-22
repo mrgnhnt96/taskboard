@@ -217,6 +217,12 @@ mod tests {
             assert!(m.goal_page.backlog_view);
         })
         .unwrap();
+        // `?wave=2`: the page opens asking to scroll to wave 2's card.
+        w.update(cx, |m, _, cx| {
+            m.open_link("taskboard-dev://tasks#/goals/G1?wave=2", cx);
+            assert_eq!((m.page.clone(), m.goal_page.at_wave, m.goal_page.backlog_view), (Page::Goal("G1".into()), Some(2), false));
+        })
+        .unwrap();
         w.update(cx, |m, _, cx| m.open_link("taskboard-dev://tasks#/?task=T3", cx)).unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
