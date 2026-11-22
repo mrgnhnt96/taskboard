@@ -1,5 +1,8 @@
 # Parity: the Backlog page and backlog issues
 
+> A record of the October 2026 audit. The function and test names below are as they were then; many have
+> since been renamed or removed. For what checks parity today, see [PARITY.md](../PARITY.md#how-its-tested).
+
 Web reference: `crates/taskboard-app/parity/web/` (pages.js `renderBacklogPage`, `backlogRows`, `blStateText`,
 `withKept`, `keepBacklogRow`, `refreshKept`, `loadBacklog`, `issueAside`, `blFiltersChanged`, `openNewIssue`; app.js
 `issueState`, `foundTask`, `issueFrom`, `snapRows`, `issueHow`, `issueDetail`, `issueActions`, `issuePanel`,

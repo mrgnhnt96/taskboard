@@ -1,5 +1,8 @@
 # Parity: the task side panel
 
+> A record of the October 2026 audit. The function and test names below are as they were then; many have
+> since been renamed or removed. For what checks parity today, see [PARITY.md](../PARITY.md#how-its-tested).
+
 Web reference: `crates/taskboard-app/parity/web/app.js` (`taskPanel` and friends) and `pages.js` (`noteBody`,
 the attachment actions). Native: `crates/taskboard-app/src/ui/task_panel.rs` (drawing, `act()` = the web's
 `ACTIONS`, `run()` = the web's `run()`), `task_panel/view.rs` (the panel as a node tree: one function per web

@@ -1,5 +1,8 @@
 # Parity: the goal page
 
+> A record of the October 2026 audit. The function and test names below are as they were then; many have
+> since been renamed or removed. For what checks parity today, see [PARITY.md](../PARITY.md#how-its-tested).
+
 The web board's goal page (`pages.js`: `goalMain` and everything it calls, minus the goal list `goalNavList`,
 which the chrome audit covers) against `crates/taskboard-app/src/ui/goal.rs`.
 

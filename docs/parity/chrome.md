@@ -1,5 +1,8 @@
 # Parity: chrome (sidebar, banner, status bar, work hours, toasts, title, keys, markdown)
 
+> A record of the October 2026 audit. The function and test names below are as they were then; many have
+> since been renamed or removed. For what checks parity today, see [PARITY.md](../PARITY.md#how-its-tested).
+
 Reference: the frozen web UI in `crates/taskboard-app/parity/web/` (`app.js`, `pages.js`).
 Goldens: `parity/gen/chrome.mjs` → `parity/golden/chrome.json` (221 cases, produced by the web's own
 functions with the clock frozen at 2026-10-07 15:00 UTC).

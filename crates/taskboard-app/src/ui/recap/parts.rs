@@ -93,16 +93,15 @@ pub fn active(list: &Value) -> Vec<Value> {
     ps
 }
 
-/// The project colours of the design, then grey.
+/// A project's colour by its place among the busiest: the theme's chart palette for the first
+/// four, then grey.
 pub fn palette(mode: ThemeMode, i: usize) -> Hsla {
-    const LIGHT: [u32; 5] = [0x178a77, 0xb87a00, 0x4a3aa7, 0xd4558a, 0x8a95a3];
-    const DARK: [u32; 5] = [0x2bb39c, 0xc98500, 0x9085e9, 0xd55181, 0x6f7a88];
-    let pal = if mode == ThemeMode::Dark { DARK } else { LIGHT };
-    rgb(pal[i.min(4)]).into()
+    if i < 4 { crate::theme::chart(mode, i) } else { crate::theme::chart_other(mode) }
 }
 
+/// The chart grey for "Other" and the period before.
 pub fn grey(t: &Theme) -> Hsla {
-    palette(t.mode, 4)
+    crate::theme::chart_other(t.mode)
 }
 
 /// A command category's name and colour; the waits for CI, polls and loads go together.
@@ -686,7 +685,8 @@ pub fn table(t: &Theme, head: &[&str], rows: Vec<Vec<String>>) -> Div {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute.
-    use super::{arrow, day, dur, fold, int, pl, weekday};
+    use super::{arrow, day, dur, fold, int, palette, pl, weekday};
+    use crate::theme::{self, ThemeMode};
 
     #[test]
     fn numbers_read_as_the_design_writes_them() {
@@ -708,6 +708,17 @@ mod tests {
         let rows = vec![("a".into(), 5.), ("b".into(), 3.), ("c".into(), 2.), ("d".into(), 1.)];
         assert_eq!(fold(rows.clone(), 4), rows);
         assert_eq!(fold(rows, 2), vec![("a".into(), 5.), ("b".into(), 3.), ("Other".into(), 3.)]);
+    }
+
+    #[test]
+    fn project_colours_come_from_the_theme_chart_palette() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            for i in 0..4 {
+                assert_eq!(palette(mode, i), theme::chart(mode, i));
+            }
+            assert_eq!(palette(mode, 4), theme::chart_other(mode));
+            assert_eq!(palette(mode, usize::MAX), theme::chart_other(mode));
+        }
     }
 
     #[test]
