@@ -90,6 +90,7 @@ struct Scope {
     lens: Lens,
     kinds: [bool; 4],
     project: String,
+    area: Option<String>,
     q: String,
 }
 
@@ -98,6 +99,8 @@ pub struct State {
     /// Kinds shown (bug, gap, follow, clean): all on is All, one on is that kind.
     pub kinds: [bool; 4],
     pub project: String,
+    /// The area picked, with the project it's in: it counts only while that project is picked.
+    area: Option<(String, String)>,
     /// Picked issues, in the order picked: the new goal's issues and the bar's selection.
     pub picked: Vec<String>,
     focus: Option<FocusHandle>,
@@ -139,6 +142,7 @@ impl Default for State {
             lens: Lens::Similar,
             kinds: [true; 4],
             project: "all".into(),
+            area: None,
             picked: vec![],
             focus: None,
             filter: None,
@@ -186,12 +190,20 @@ impl FromReview {
 
 impl State {
     fn scope_now(&self) -> Scope {
-        Scope { lens: self.lens, kinds: self.kinds, project: self.project.clone(), q: self.q.clone() }
+        Scope { lens: self.lens, kinds: self.kinds, project: self.project.clone(), area: self.area().map(str::to_string), q: self.q.clone() }
+    }
+
+    /// The area picked in the project picked.
+    pub fn area(&self) -> Option<&str> {
+        self.area.as_ref().filter(|(p, _)| *p == self.project && p != "all").map(|(_, a)| a.as_str())
     }
 
     /// The query every page is asked with.
     fn query(&self) -> Vec<(&'static str, String)> {
         let mut q = vec![("project", self.project.clone()), ("lens", self.lens.param().to_string())];
+        if let Some(a) = self.area() {
+            q.push(("area", a.to_string()));
+        }
         if self.kinds != [true; 4] {
             q.push(("kinds", KINDS.iter().zip(self.kinds).filter(|(_, on)| *on).map(|(k, _)| *k).collect::<Vec<_>>().join(",")));
         }
@@ -517,10 +529,16 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             let (list, plan, picks) = got;
             match list {
                 Ok(f) => {
+                    // The area picked has no issues left: show all of its project.
+                    let gone = now.area.as_ref().is_some_and(|a| !arr(f.first(), "areas").iter().any(|x| s(x, "name") == a));
                     m.backlog.data = Some(Rc::new(f.first().clone()));
                     m.backlog.data_scope = Some(now);
                     m.backlog.held.land("issues", f);
                     m.backlog.err = None;
+                    if gone {
+                        m.backlog.area = None;
+                        m.backlog.synced = None;
+                    }
                 }
                 Err(e) => m.backlog.err = Some(e),
             }
@@ -988,6 +1006,20 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             resync(m, cx);
         })
     });
+    // The picked project's areas, beside it: one narrows the list to it.
+    let areas: Vec<(String, i64)> = if m.backlog.data_scope.as_ref().is_some_and(|sc| sc.project == m.backlog.project) {
+        arr(&data, "areas").iter().map(|a| (s(a, "name").to_string(), fmt::i(a, "count"))).collect()
+    } else {
+        vec![]
+    };
+    let area_seg = (!areas.is_empty()).then(|| {
+        let all = projects.iter().find(|p| s(p, "name") == m.backlog.project).map_or(0, |p| fmt::i(p, "untriaged"));
+        ip::area_chips(&t, "plan-area", all, &areas, m.backlog.area(), cx, |m, a, cx| {
+            m.backlog.area = a.map(|a| (m.backlog.project.clone(), a));
+            m.backlog.cursor = None;
+            resync(m, cx);
+        })
+    });
     let lens_on = Lens::ALL.iter().position(|l| *l == m.backlog.lens).unwrap_or(0);
     let labels: Vec<&str> = Lens::ALL.iter().map(|l| l.label()).collect();
     let lenses = kit::seg(&t, "plan-lens", &labels, lens_on, |i, item| {
@@ -999,7 +1031,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             }
         }))
     });
-    let header = div().flex().flex_wrap().items_center().gap(px(16.)).child(title).child(div().flex_1()).children(project_btn).child(crate::ui::backlog_closed::link(&t, cx)).child(lenses);
+    let header = div().flex().flex_wrap().items_center().gap(px(16.)).child(title).child(div().flex_1()).children(project_btn).children(area_seg).child(crate::ui::backlog_closed::link(&t, cx)).child(lenses);
     let origin = m.backlog.from_review.as_ref().and_then(|f| Some((f.id, f.line(&m.backlog.picked)?))).map(|(id, line)| {
         div()
             .flex()
@@ -1626,6 +1658,19 @@ mod tests {
         assert_eq!(bulk_note("defer", &strs(&["B9"]), "", &json!({})), "Deferred B9");
         assert_eq!(bulk_note("drop", &strs(&["B9", "B20"]), "", &json!({})), "Closed B9 and B20 as won’t do");
         assert_eq!(bulk_note("priority", &strs(&["B9"]), "P1", &json!({})), "Set B9 to P1");
+    }
+
+    #[::core::prelude::v1::test]
+    fn an_area_narrows_the_list_only_in_its_project() {
+        let mut st = super::State { project: "rune".into(), area: Some(("rune".into(), "Quill".into())), ..super::State::default() };
+        assert!(st.query().contains(&("area", "Quill".into())));
+        assert_eq!(st.scope_now().area.as_deref(), Some("Quill"));
+        // Another project picked (here or from the Projects page): the area no longer counts.
+        st.project = "web".into();
+        assert_eq!(st.area(), None);
+        assert!(!st.query().iter().any(|(k, _)| *k == "area"));
+        st.project = "all".into();
+        assert_eq!(st.area(), None);
     }
 
     #[::core::prelude::v1::test]

@@ -976,6 +976,31 @@ pub fn project_filter(
     }))
 }
 
+/// The picked project's areas beside its [`project_filter`]: "All" (with `all`, the project's
+/// count), then each area with its count. `on_pick` gets the area, or None for All.
+pub fn area_chips(
+    t: &Theme,
+    id: &str,
+    all: i64,
+    areas: &[(String, i64)],
+    picked: Option<&str>,
+    cx: &mut Context<MainWindow>,
+    on_pick: impl Fn(&mut MainWindow, Option<String>, &mut Context<MainWindow>) + Clone + 'static,
+) -> Div {
+    let labels: Vec<String> = std::iter::once(format!("All {all}")).chain(areas.iter().map(|(a, n)| format!("{a} {n}"))).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let on = picked.and_then(|p| areas.iter().position(|(a, _)| a == p)).map_or(0, |i| i + 1);
+    let names: Vec<String> = areas.iter().map(|(a, _)| a.clone()).collect();
+    kit::seg(t, id, &refs, on, |i, item| {
+        let (f, pick) = (on_pick.clone(), i.checked_sub(1).map(|k| names[k].clone()));
+        item.on_click(cx.listener(move |m, _, _, cx| {
+            if i != on {
+                f(m, pick.clone(), cx);
+            }
+        }))
+    })
+}
+
 /// Opens a page's project filter at `at` (see [`project_filter`]), focusing its search field.
 #[allow(clippy::too_many_arguments)]
 pub fn open_project_filter(

@@ -30,6 +30,8 @@ pub struct State {
     pub open: HashSet<String>,
     /// "all" or one project.
     pub project: String,
+    /// The area picked, with the project it's in: it counts only while that project is picked.
+    pub area: Option<(String, String)>,
     /// Older finished goals shown under this week's.
     pub earlier: bool,
     /// `GET /goals/:id` for each goal in progress, by ref.
@@ -45,6 +47,11 @@ impl State {
         if self.project.is_empty() { "all" } else { &self.project }
     }
 
+    /// The area picked in the project picked.
+    pub fn area(&self) -> Option<&str> {
+        self.area.as_ref().filter(|(p, _)| p == self.project() && p != "all").map(|(_, a)| a.as_str())
+    }
+
     /// Goal `r` in full, as `GET /goals/:id` answered.
     pub fn land(&mut self, r: String, g: Value) {
         self.details.insert(r, g);
@@ -52,14 +59,22 @@ impl State {
     }
 }
 
-/// What the page shows of a goal list, built once per list, project picked and set of details.
+/// What the page asked for: the project and area picked, whether the goals have loaded, and the
+/// details' revision.
+type Asked = (String, Option<String>, bool, u64);
+
+/// What the page shows of a goal list, built once per list, project and area picked and set of details.
 struct Built {
     goals: Rc<Vec<Value>>,
-    asked: (String, bool, u64),
+    asked: Asked,
     /// Each project's tab and how many goals it has.
     tabs: Vec<(String, usize)>,
     /// The project shown: the one picked, or "all" when it has no goals left.
     project: String,
+    /// The project shown's areas, with how many of its goals each has; none for "all".
+    areas: Vec<(String, usize)>,
+    /// The area shown: the one picked, or None when it has no goals left.
+    area: Option<String>,
     /// No goal outside the archive, and none in the project shown.
     none: bool,
     none_shown: bool,
@@ -69,21 +84,28 @@ struct Built {
 }
 
 impl Built {
-    fn of(goals: &Rc<Vec<Value>>, details: &HashMap<String, Value>, asked: (String, bool, u64), now: DateTime<Utc>) -> Built {
+    fn of(goals: &Rc<Vec<Value>>, details: &HashMap<String, Value>, asked: Asked, now: DateTime<Utc>) -> Built {
         let all: Vec<&Value> = goals.iter().filter(|g| !fmt::b(g, "archived")).collect();
         let tabs = projects(goals);
-        let (picked, loaded, _) = &asked;
+        let (picked, picked_area, loaded, _) = &asked;
         let mut project = picked.clone();
         if project != "all" && !tabs.iter().any(|(p, _)| *p == project) && *loaded {
             project = "all".into();
         }
-        let shown: Vec<&Value> = all.iter().copied().filter(|g| in_project(g, &project)).collect();
-        let going = in_progress(goals, &project);
+        let areas = areas(goals, &project);
+        let area = picked_area.clone().filter(|a| areas.iter().any(|(x, _)| x == a) || !*loaded);
+        let shown: Vec<&Value> = all.iter().copied().filter(|g| in_project(g, &project) && area.as_ref().is_none_or(|a| in_area(g, &project, a))).collect();
+        let going: Vec<String> = in_progress(goals, &project).into_iter().filter(|r| shown.iter().any(|g| fmt::ref_of(g, "G") == *r)).collect();
         let mut rows: Vec<GoalRow> = going.iter().filter_map(|r| shown.iter().find(|g| fmt::ref_of(g, "G") == *r)).map(|g| goal_row(g, details.get(&fmt::ref_of(g, "G")))).collect();
         // Goals stopped for the owner first, the worst stop first; the rest keep their order.
         rows.sort_by_key(|r| (r.stop.is_none(), r.stop.as_ref().map(|x| x.kind)));
-        let shelves = shelves(&shown, now);
-        Built { goals: goals.clone(), asked, tabs, project, none: all.is_empty(), none_shown: shown.is_empty(), going, rows, shelves }
+        let mut shelves = shelves(&shown, now);
+        // One area picked: every goal shown is in it, so the tags would all say the same.
+        if area.is_some() {
+            rows.iter_mut().for_each(|r| r.area.clear());
+            shelves.iter_mut().flat_map(|sh| sh.lines.iter_mut().chain(sh.earlier.iter_mut())).for_each(|l| l.area.clear());
+        }
+        Built { goals: goals.clone(), asked, tabs, project, areas, area, none: all.is_empty(), none_shown: shown.is_empty(), going, rows, shelves }
     }
 }
 
@@ -121,6 +143,11 @@ pub(crate) fn goal_projects(g: &Value) -> Vec<&str> {
 
 fn in_project(g: &Value, project: &str) -> bool {
     project == "all" || goal_projects(g).contains(&project)
+}
+
+/// Whether goal `g` is in `project`'s area `area`: a goal's area is one of its own project's.
+fn in_area(g: &Value, project: &str, area: &str) -> bool {
+    s(g, "project") == project && s(g, "area") == area
 }
 
 /// The goals in progress, in the project picked: the ones the page fetches in full.
@@ -216,6 +243,8 @@ pub struct GoalRow {
     pub r: String,
     pub name: String,
     pub project: String,
+    /// Its area in its project; empty when it has none.
+    pub area: String,
     pub parts: Vec<(St, i64)>,
     /// Tasks finished; a task whose PR is still open counts in `review` until it merges.
     pub done: i64,
@@ -353,6 +382,7 @@ pub fn goal_row(g: &Value, d: Option<&Value>) -> GoalRow {
         r: fmt::ref_of(g, "G"),
         name: s(g, "name").into(),
         project: goal_projects(g).join(" + "),
+        area: s(g, "area").into(),
         parts: tally.parts(),
         done: i(g, "done"),
         review: tally.review,
@@ -404,6 +434,8 @@ fn day(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
 pub struct Line {
     pub r: String,
     pub name: String,
+    /// Its area in its project; empty when it has none.
+    pub area: String,
     pub meta: String,
     /// The goal's tl;dr, else its outcome: shown when the strip has the page to itself.
     pub about: String,
@@ -439,7 +471,7 @@ pub fn shelves(goals: &[&Value], now: DateTime<Utc>) -> Vec<Shelf> {
     let progress = |g: &Value| format!("{} of {}", i(g, "done"), i(g, "total"));
     let line = |g: &Value, meta: String| {
         let about = opt_s(g, "tldr").or_else(|| opt_s(g, "outcome")).unwrap_or_default().to_string();
-        Line { r: fmt::ref_of(g, "G"), name: s(g, "name").into(), meta, about, resume: None }
+        Line { r: fmt::ref_of(g, "G"), name: s(g, "name").into(), area: s(g, "area").into(), meta, about, resume: None }
     };
     let next_meta = |g: &Value| {
         let tasks = fmt::plural(i(g, "total"), "task", "tasks");
@@ -482,6 +514,26 @@ pub fn shelves(goals: &[&Value], now: DateTime<Utc>) -> Vec<Shelf> {
     .into_iter()
     .filter(|sh| !sh.lines.is_empty() || !sh.earlier.is_empty())
     .collect()
+}
+
+/// `project`'s areas, by name, with how many of its goals not finished are in each: none for "all".
+fn areas(goals: &[Value], project: &str) -> Vec<(String, usize)> {
+    let mut v: Vec<(String, usize)> = vec![];
+    if project == "all" {
+        return v;
+    }
+    for g in goals.iter().filter(|g| !fmt::b(g, "archived") && goal_group(g) != GoalGroup::Finished && s(g, "project") == project) {
+        let a = s(g, "area");
+        if a.is_empty() {
+            continue;
+        }
+        match v.iter_mut().find(|(x, _)| x == a) {
+            Some((_, n)) => *n += 1,
+            None => v.push((a.into(), 1)),
+        }
+    }
+    v.sort_by(|a, b| locale_cmp(&a.0, &b.0));
+    v
 }
 
 /// (project, how many goals not finished), for the project tabs.
@@ -580,7 +632,8 @@ fn goal_head(t: &Theme, row: &GoalRow, open: bool, busy: bool, cx: &mut Context<
                             goal::open(m, &r2, false, cx);
                         })),
                 )
-                .child(kit::chip(t, row.project.clone())),
+                .child(kit::chip(t, row.project.clone()))
+                .when(!row.area.is_empty(), |d| d.child(kit::chip(t, row.area.clone()))),
         )
         .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).truncate().child(row.name.clone()));
     let progress = div()
@@ -895,6 +948,7 @@ fn shelf_line(t: &Theme, key: &str, l: &Line, roomy: bool, busy: bool, cx: &mut 
         .children(dot)
         .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
         .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
+        .when(!l.area.is_empty(), |d| d.child(kit::chip(t, l.area.clone())))
         .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()))
         .when_some(l.resume.clone(), |d, (label, planned)| {
             let gr = l.r.clone();
@@ -989,6 +1043,14 @@ fn page_head(t: &Theme, b: &Built, cx: &mut Context<MainWindow>) -> Div {
                 m.refresh(cx);
             }))
         })
+        .when(!b.areas.is_empty(), |d| {
+            let all = b.tabs.iter().find(|(p, _)| *p == b.project).map_or(0, |(_, n)| *n) as i64;
+            let areas: Vec<(String, i64)> = b.areas.iter().map(|(a, n)| (a.clone(), *n as i64)).collect();
+            d.child(ip::area_chips(t, "goals-area", all, &areas, b.area.as_deref(), cx, |m, a, cx| {
+                m.goals.area = a.map(|a| (m.goals.project().to_string(), a));
+                m.refresh(cx);
+            }))
+        })
         .child(div().flex_1())
         .child(right)
 }
@@ -1062,7 +1124,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let t = cx.global::<Theme>().clone();
     let now = fmt::now();
     let goals = m.data.goals.clone();
-    let asked = (m.goals.project().to_string(), m.goals_loaded(), m.goals.rev);
+    let asked = (m.goals.project().to_string(), m.goals.area().map(str::to_string), m.goals_loaded(), m.goals.rev);
     let b = match &m.goals.built {
         Some(b) if Rc::ptr_eq(&b.goals, &goals) && b.asked == asked => b.clone(),
         _ => {
@@ -1276,13 +1338,43 @@ mod tests {
             goal(4, "web", 0, 3, json!({"stop": {"kind": "held", "wave": 1}})),
         ]);
         let now = fmt::parse(&noon(2026, 10, 13)).unwrap();
-        let b = Built::of(&gs, &HashMap::new(), ("all".into(), true, 0), now);
+        let b = Built::of(&gs, &HashMap::new(), ("all".into(), None, true, 0), now);
         let got: Vec<(&str, Option<stop_state::Kind>)> = b.rows.iter().map(|r| (r.r.as_str(), r.stop.as_ref().map(|x| x.kind))).collect();
         use stop_state::Kind::*;
         assert_eq!(got, [("G3", Some(Failed)), ("G4", Some(Held)), ("G2", Some(Review)), ("G1", None)]);
         let failed = &b.rows[0];
         assert_eq!(failed.actions, [Action::Step("Continue anyway".into(), Step::Continue(1), false), Action::Step("Open T9".into(), Step::Task("T9".into()), true)]);
         assert_eq!(failed.now_st, St::Failed);
+    }
+
+    #[test]
+    fn a_projects_areas_narrow_its_goals_and_tag_them() {
+        let gs = Rc::new(vec![
+            goal(1, "rune", 1, 3, json!({"active": 1, "area": "Quill"})),
+            goal(2, "rune", 1, 3, json!({"active": 1, "area": "Art"})),
+            goal(3, "rune", 0, 2, json!({"area": "Quill"})),
+            goal(4, "rune", 1, 3, json!({"active": 1})),
+            goal(5, "web", 1, 3, json!({"active": 1, "area": "Quill"})),
+            goal(6, "rune", 2, 2, json!({"area": "Remote", "finished_at": "2026-10-12T10:00:00Z"})),
+        ]);
+        let now = fmt::parse(&noon(2026, 10, 13)).unwrap();
+        let all = Built::of(&gs, &HashMap::new(), ("all".into(), Some("Quill".into()), true, 0), now);
+        assert!(all.areas.is_empty() && all.area.is_none(), "an area means nothing across every project");
+        assert_eq!(all.rows.iter().find(|r| r.r == "G1").unwrap().area, "Quill", "a goal row carries its area");
+
+        let rune = Built::of(&gs, &HashMap::new(), ("rune".into(), None, true, 0), now);
+        // Finished goals count toward no area, as they count toward no project tab.
+        assert_eq!(rune.areas, [("Art".to_string(), 1), ("Quill".to_string(), 2)]);
+        assert_eq!(rune.going, ["G1", "G2", "G4"]);
+
+        let quill = Built::of(&gs, &HashMap::new(), ("rune".into(), Some("Quill".into()), true, 0), now);
+        assert_eq!(quill.going, ["G1"], "web's Quill goal isn't rune's");
+        let next: Vec<&str> = quill.shelves.iter().flat_map(|sh| sh.lines.iter().map(|l| l.r.as_str())).collect();
+        assert_eq!(next, ["G3"]);
+        assert!(quill.rows.iter().all(|r| r.area.is_empty()) && quill.shelves.iter().flat_map(|sh| &sh.lines).all(|l| l.area.is_empty()), "one area picked: no tags");
+
+        let gone = Built::of(&gs, &HashMap::new(), ("rune".into(), Some("Remote".into()), true, 0), now);
+        assert_eq!((gone.area, gone.going.len()), (None, 3), "an area with no goals left shows all of the project");
     }
 
     #[test]
@@ -1308,7 +1400,7 @@ mod tests {
         let now = fmt::parse(&noon(2026, 10, 13)).unwrap();
         let tasks = [task("T1", 1, "done", json!({})), task("T2", 2, "working", json!({})), task("T3", 1, "queued", json!({"wave": null}))];
         let details = HashMap::from([("G1".to_string(), json!({"tasks": tasks, "waves": [wave(1, "done", 1, json!({})), wave(2, "running", 1, json!({}))]}))]);
-        let b = Built::of(&gs, &details, ("all".into(), true, 0), now);
+        let b = Built::of(&gs, &details, ("all".into(), None, true, 0), now);
         let open = HashSet::from(["G1".to_string(), "G2".to_string()]);
         use Item::*;
         let got = items(&b, &open, false, &details);

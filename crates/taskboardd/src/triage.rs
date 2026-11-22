@@ -129,6 +129,7 @@ fn lens_groups(lens: Lens, rows: &[&Row], with: Option<&str>) -> (Vec<Value>, Ha
 /// `GET /backlog/triage`: the untriaged issues with their grouping, and how much of the backlog is triaged.
 /// `limit` caps the page (newest first), `before` (an issue id) starts after that issue and `ids`
 /// keeps those issues only; a page says where the next starts (`next`). `untriaged` counts them all.
+/// With one `project`, `areas` counts its issues in each of its areas and `area` keeps one area's.
 /// `kinds` (comma-separated) keeps those kinds only, and `q` the issues whose ref or title holds
 /// it; `kind_counts` counts each kind among the issues `q` keeps. With `lens` (similar, area, impact or priority)
 /// the issues come in the page's order, group by group and newest first in each, and `groups` holds
@@ -138,7 +139,12 @@ pub fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     ensure_grouped(app);
     let project = crate::api::q(query, "project", "all");
     let page = crate::api::Paging::of(query);
-    let all = untriaged(app, project)?;
+    let mut all = untriaged(app, project)?;
+    // A picked project's areas, each with its untriaged issues; `area` (one of them) keeps that one's.
+    let areas = if project == "all" { vec![] } else { area_counts(&all, &crate::areas::of_project(app, project)?) };
+    if let Some(a) = query.get("area").map(|a| a.trim()).filter(|a| !a.is_empty() && project != "all") {
+        all.retain(|b| b.s("area").is_some_and(|x| x.eq_ignore_ascii_case(a)));
+    }
     let ids: Option<Vec<i64>> = query.get("ids").map(|s| s.split(',').filter_map(|x| parse_ref_str(x.trim(), "issue").ok().flatten()).collect());
     let kinds: Option<Vec<&str>> = query.get("kinds").map(|s| s.split(',').map(str::trim).filter(|k| !k.is_empty()).collect());
     let lens = query.get("lens").and_then(|l| Lens::of(l));
@@ -204,8 +210,20 @@ pub fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     Ok(json!({
         "issues": out, "untriaged": all.len(), "triaged": total - all.len() as i64, "total": total, "next": next,
         "projects": projects, "grouping": sh.grouping, "ai": ai_on(app), "groups": groups,
-        "kind_counts": kind_counts,
+        "kind_counts": kind_counts, "areas": areas,
     }))
+}
+
+/// The areas `.taskboard.toml` lists, in its order, each with how many of `issues` are in it.
+/// Areas with none are left out.
+fn area_counts(issues: &[Row], areas: &crate::areas::Areas) -> Vec<Value> {
+    areas
+        .list
+        .iter()
+        .map(|a| (a, issues.iter().filter(|b| b.s("area").is_some_and(|x| x.eq_ignore_ascii_case(&a.name))).count()))
+        .filter(|(_, n)| *n > 0)
+        .map(|(a, n)| json!({"name": a.name, "count": n}))
+        .collect()
 }
 
 /// Whether the issue's ref or title holds `words` (already lower case).
