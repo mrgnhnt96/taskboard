@@ -2374,6 +2374,16 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
         if let Some(why) = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).and_then(|pr| prflow::merged_early(app, t, &pr, r.cwd.as_deref().unwrap_or(""))) {
             return err(409, why);
         }
+        // Only a PR open before the task may be linked: the board opens the task's own. The owner may link
+        // one from elsewhere.
+        let given = find_pr(&r.b("pr")).or_else(|| find_pr(&summary));
+        if let Some(pr) = given.filter(|_| from_agent(r, t)) {
+            if projects::task_ships_pr(app, t)? {
+                if let Some(why) = prflow::opened_after_start(app, t, &pr) {
+                    return err(409, why);
+                }
+            }
+        }
     }
     if !no_pr && !r.spooled && r.b("merged_note").trim().is_empty() && !crate::merged_note::has_note(t) && crate::merged_note::needed(app, t)? {
         return err(409, crate::merged_note::refusal(app, t));

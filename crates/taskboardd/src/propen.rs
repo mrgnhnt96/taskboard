@@ -773,7 +773,7 @@ fn already_open(app: &App, t: &Row, dir: &str, branch: &str, e: &str) -> Option<
     };
     Some(format!(
         "{branch} already has an open {pr}, so the host won't open another from it. If this task's work is on another branch, \
-         run tb submit from the checkout that has it; if that PR is this task's, link it with tb submit --pr <link>."
+         run tb submit from the checkout that has it; if that PR was open before this task started, link it with tb submit --pr <link>."
     ))
 }
 

@@ -129,6 +129,7 @@ mod step_aim;
 mod steps;
 mod stream;
 mod submit_merged_early;
+mod submit_pr_predates;
 mod tab_status;
 mod talk_again;
 mod turn_waits;

@@ -253,6 +253,8 @@ pub struct Record {
     /// when the host couldn't say.
     pub viewer: String,
     pub mergeable: Value,
+    /// When the PR was opened, as the host gives it (ISO 8601); empty when it didn't say.
+    pub created_at: String,
 }
 
 impl Record {
