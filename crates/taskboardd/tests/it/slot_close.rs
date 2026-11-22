@@ -133,3 +133,16 @@ fn a_refused_settings_set_is_asked_again_on_the_next_sync() {
     assert_eq!(sets, 2, "the refused set is tried again");
     assert_eq!(std::fs::read_to_string(b.dir.path().join("set")).unwrap().contains(&b.slot), true);
 }
+
+#[test]
+fn a_slot_goes_in_cleanup_keep_as_it_is_made_before_any_midna_sync() {
+    let b = new_board(true);
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&b.plain).args(args).output().unwrap().status.success(), "git {args:?}");
+    git(&["init", "-q"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+    let id = b.app.db.insert("tasks", vec![("title", json!("Fix")), ("status", json!("active"))]).unwrap();
+    let path = taskboardd::slots::claim(&b.app, &board::get_task(&b.app, id).unwrap(), &b.plain, "HEAD").unwrap();
+    assert!(Path::new(&path).is_dir(), "the slot was made: {path}");
+    let sets: Vec<Value> = b.calls("settings.set").into_iter().filter(|c| c["key"] == "cleanup.keep").collect();
+    assert_eq!(sets, [json!({"key": "cleanup.keep", "value": ["main", path]})], "{sets:?}");
+}
