@@ -173,6 +173,46 @@ pub fn merged_early(app: &App, t: &Row, pr: &PrLink, cwd: &str) -> Option<String
     ))
 }
 
+/// Why `tb submit --pr` can't link `pr` to `t`: the host says it was opened after `t` started, so it isn't
+/// a PR that was open before the task (the only kind `--pr` takes; the board opens the task's own at
+/// `--pr-body`). None when it predates the task, another task on the board holds it (a same-PR join), the
+/// task has no start time, or the host isn't watched or can't say.
+pub fn opened_after_start(app: &App, t: &Row, pr: &PrLink) -> Option<String> {
+    if !(crate::prhost::watched(Some(&pr.host)) && app.cfg.pr.watch) {
+        return None;
+    }
+    let started = t.s("started_at").and_then(parse_iso)?;
+    let held = app.db.q1("SELECT id FROM tasks WHERE pr_repo = ? AND pr_num = ? AND id != ?", p![pr.repo, pr.num, t.id()]).ok()?;
+    if held.is_some() {
+        return None;
+    }
+    let host = crate::prhost::host_for(app, &pr.host).ok()?;
+    let refr = crate::prhost::PrRef { host: pr.host.clone(), repo: pr.repo.clone(), num: pr.num, url: pr.url.clone() };
+    let rec = host.read(&refr).map_err(|e| app.info(format!("prs: couldn't read PR #{} to check it predates the task: {e}", pr.num))).ok()?;
+    let opened = parse_iso(&rec.created_at)?;
+    if opened <= started {
+        return None;
+    }
+    let when = |ts: f64| {
+        let d = local_dt(ts);
+        format!("{} {}", d.format("%b %-d"), twelve_hour(&d.format("%H:%M").to_string()))
+    };
+    let me = rf("task", t.id());
+    let close = match pr.host.as_str() {
+        "github" => format!("gh pr close {} -R {}", pr.num, pr.repo),
+        _ => pr.url.clone(),
+    };
+    Some(format!(
+        "PR #{} was opened {}, after {me} started ({}), so it isn't a PR from before the task: tb submit --pr only links one \
+         that was open before the task started. The board opens this task's PR: close #{} ({close}), then finish with \
+         tb submit \"<summary>\" --pr-body <file>.",
+        pr.num,
+        when(opened),
+        when(started),
+        pr.num,
+    ))
+}
+
 /// Links a PR found in an agent's report to its task (only the first one sticks; never one from
 /// another repo than the task's project).
 pub fn link_pr(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {

@@ -104,7 +104,7 @@ pub struct GithubHost {
     account: String,
 }
 
-const VIEW_FIELDS: &str = "number,state,title,author,headRefOid,headRefName,baseRefName,baseRefOid,reviewDecision,statusCheckRollup,comments,reviews,latestReviews,reviewRequests,mergeable";
+const VIEW_FIELDS: &str = "number,state,title,author,headRefOid,headRefName,baseRefName,baseRefOid,reviewDecision,statusCheckRollup,comments,reviews,latestReviews,reviewRequests,mergeable,createdAt";
 
 const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){pullRequest(number:$num){reviewThreads(first:100){nodes{id isResolved isOutdated path line first:comments(first:1){nodes{id author{login} body createdAt url}} last:comments(last:1){nodes{id author{login} body createdAt url}} replies:comments(first:30){nodes{id author{login} body createdAt}}}}}}}";
 const RECENT_COMMENTS_QUERY: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequests(first:$n,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number comments(last:50){nodes{id author{login} body createdAt}} reviews(last:50){nodes{id author{login} body submittedAt comments(first:30){nodes{id author{login} body createdAt}}}}}}}}";
@@ -685,6 +685,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
         tasks_error: None,
         viewer: String::new(),
         mergeable: d["mergeable"].clone(),
+        created_at: d["createdAt"].as_str().unwrap_or("").to_string(),
     }
 }
 
@@ -777,7 +778,7 @@ pub(crate) mod tests {
     fn view() -> Value {
         json!({
             "state": "OPEN", "title": "Add x", "author": {"login": "me"}, "headRefOid": "abc", "headRefName": "feat",
-            "baseRefName": "main", "baseRefOid": "b1", "reviewDecision": "CHANGES_REQUESTED",
+            "baseRefName": "main", "baseRefOid": "b1", "reviewDecision": "CHANGES_REQUESTED", "createdAt": "2026-10-01T08:00:00Z",
             "statusCheckRollup": [
                 {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
                 {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://github.com/acme/webapp/actions/runs/77/job/1", "startedAt": "2026-10-01T09:00:00Z", "completedAt": "2026-10-01T09:05:00Z"},
@@ -812,6 +813,7 @@ pub(crate) mod tests {
         assert_eq!(v["comments"], 2);
         assert_eq!(r.approvals, 1);
         assert_eq!(r.base_head, "b1");
+        assert_eq!(r.created_at, "2026-10-01T08:00:00Z");
         assert_eq!(r.checks[1].url.as_deref(), Some("https://github.com/acme/webapp/actions/runs/77/job/1"));
         let at: Vec<Option<&str>> = r.checks.iter().map(|c| c.at.as_deref()).collect();
         assert_eq!(at, vec![None, Some("2026-10-01T09:05:00Z"), Some("2026-10-01T09:01:00Z")], "finished, else started; gh's year-1 completedAt is no time");
