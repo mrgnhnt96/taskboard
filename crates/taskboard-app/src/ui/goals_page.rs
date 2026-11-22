@@ -107,7 +107,7 @@ pub fn goal_group(g: &Value) -> GoalGroup {
         _ if fmt::b(g, "paused") => GoalGroup::Paused,
         _ if fmt::opt_s(g, "after_blocker").is_some() => GoalGroup::Next,
         _ if stop_state::of(g).is_some() => GoalGroup::Active,
-        _ if i(g, "done") == 0 && i(g, "active") == 0 && i(g, "needs") == 0 && i(g, "queued") == 0 && fmt::opt_s(g, "stopped").is_none() && fmt::arr(g, "prs_open").is_empty() => GoalGroup::Next,
+        _ if i(g, "done") == 0 && i(g, "active") == 0 && i(g, "needs") == 0 && i(g, "hand_closed") == 0 && i(g, "queued") == 0 && fmt::opt_s(g, "stopped").is_none() && fmt::arr(g, "prs_open").is_empty() => GoalGroup::Next,
         _ => GoalGroup::Active,
     }
 }
@@ -181,7 +181,7 @@ impl Tally {
             working: (i(g, "active") - i(g, "needs")).max(0),
             review,
             pending: 0,
-            stopped: 0,
+            stopped: i(g, "hand_closed"),
             queued: i(g, "queued"),
             planned: i(g, "planned"),
             done: i(g, "done"),
@@ -1017,6 +1017,18 @@ mod tests {
         assert_eq!((row.done, row.review, row.total), (14, 1, 15));
         assert_eq!(row.parts.iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 14), (St::Review, 1)]);
         assert_eq!(row.now, "1 in review");
+    }
+
+    #[test]
+    fn a_goal_summary_with_only_closed_terminals_reads_stopped_not_needs_you() {
+        // The sidebar draws its bar from the summary alone: closed terminals come as hand_closed, not needs.
+        let g = goal(1, "web", 1, 3, json!({"needs": 0, "hand_closed": 2}));
+        assert_eq!(goal_group(&g), GoalGroup::Active);
+        let row = goal_row(&g, None);
+        assert_eq!((row.now.as_str(), row.now_st), ("2 stopped", St::Stopped));
+        assert_eq!(Tally::of(&g, None).parts().iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 1), (St::Stopped, 2)]);
+        let unstarted = goal(2, "web", 0, 2, json!({"hand_closed": 2}));
+        assert_eq!(goal_group(&unstarted), GoalGroup::Active, "closed terminals mean it started");
     }
 
     #[test]

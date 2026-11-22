@@ -825,6 +825,13 @@ fn counts_in(app: &App, goal_id: i64, rows: &[Row], order: Option<&GoalOrder>) -
             held += 1;
         }
     }
+    // A terminal closed by hand on work that doesn't look finished asks nothing and runs nothing: Stopped.
+    let mut hand_closed = 0;
+    for r in rows {
+        if closed_quietly(app, r)? {
+            hand_closed += 1;
+        }
+    }
     let bits_waiting = crate::bits::goal_waiting(app, goal_id)?;
     let prs_open: Vec<i64> = rows.iter().filter(|r| in_review(r)).filter_map(|r| r.i("pr_num")).collect();
     // The PR plan: tasks that end in a PR, how many have one, and how many finished without (`--no-pr`).
@@ -846,8 +853,9 @@ fn counts_in(app: &App, goal_id: i64, rows: &[Row], order: Option<&GoalOrder>) -
     Ok(json!({
         "done": done, "total": total,
         "review": prs_open.len(),
-        "active": n(&|r| matches!(r.s("status"), Some("working") | Some("needs"))),
-        "needs": n(&|r| r.s("status") == Some("needs")),
+        "active": n(&|r| matches!(r.s("status"), Some("working") | Some("needs"))) - hand_closed,
+        "needs": n(&|r| r.s("status") == Some("needs")) - hand_closed,
+        "hand_closed": hand_closed,
         "queued": n(&|r| r.s("status") == Some("queued")),
         "starting": n(&|r| r.s("status") == Some("queued") && r.i("start_job").is_some()),
         "blocked": blocked,
@@ -1090,6 +1098,7 @@ fn goal_peek(app: &App, rows: &[Row]) -> Result<Vec<Value>> {
             Some("done") if !t.b("failed") => continue,
             Some("done") => "failed".to_string(),
             Some("planned") => continue,
+            Some("needs") if closed_quietly(app, t)? => "stopped".into(),
             Some("queued") => {
                 if t.i("start_job").is_some() {
                     "starting".into()
@@ -1639,6 +1648,12 @@ pub fn closed_by_hand(app: &App, t: &Row) -> Result<bool> {
     }
     let ended = app.db.val("SELECT text FROM events WHERE task_id = ? AND who = ? AND kind = 'status' AND text LIKE 'Terminal ended (%' ORDER BY id DESC LIMIT 1", p![t.id(), MIDNA])?;
     Ok(ended.as_str().and_then(end_reason).is_some_and(|r| DELIBERATE_EXITS.contains(&r)))
+}
+
+/// A terminal closed by hand on work that doesn't look finished: it asks nothing of the owner and
+/// waits to be restarted with its goal, so goal counts call it stopped, not needing you.
+pub fn closed_quietly(app: &App, t: &Row) -> Result<bool> {
+    Ok(closed_by_hand(app, t)? && crate::lost_done::card(t).is_null())
 }
 
 /// The reason in a `Terminal ended (<reason>: <detail>) …` event.

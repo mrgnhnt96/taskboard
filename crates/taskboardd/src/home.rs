@@ -416,7 +416,7 @@ pub fn stopped_tasks(app: &App, id: i64) -> Result<Vec<Row>> {
     for t in board::goal_tasks(app, id)? {
         let r = rf("task", t.id());
         let alone = !alerted.iter().any(|a| a["task"].as_str() == Some(r.as_str())) && !is_put_away(&away, &t);
-        if alone && board::closed_by_hand(app, &t)? && crate::lost_done::card(&t).is_null() {
+        if alone && board::closed_quietly(app, &t)? {
             out.push(t);
         }
     }
