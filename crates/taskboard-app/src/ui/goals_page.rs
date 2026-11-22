@@ -37,6 +37,7 @@ pub struct State {
     /// Counts each change to `details`.
     rev: u64,
     built: Option<Rc<Built>>,
+    rows: Option<Rows>,
 }
 
 impl State {
@@ -708,111 +709,238 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
         .child(act)
 }
 
-/// An open goal's tasks: under a header per wave, or in one list when it has no waves.
-fn goal_body(t: &Theme, d: Option<&Value>, now: DateTime<Utc>, cx: &mut Context<MainWindow>) -> Div {
-    let mut body = div().flex().flex_col();
-    let Some(d) = d.filter(|d| d["tasks"].is_array()) else {
-        return body.child(div().pl(px(INSET)).py(px(10.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).child("Loading…"));
-    };
-    let ws = waves(Some(d));
-    if ws.is_empty() {
-        let mut tasks: Vec<&Value> = arr(d, "tasks").iter().collect();
-        tasks.sort_by_key(|c| status::row(c).st.rank());
-        for c in tasks {
-            body = body.child(task_row(t, c, cx));
-        }
-        return body;
-    }
-    for w in &ws {
-        let n = i(w, "wave");
-        let tasks = tasks_in(d, n);
-        let name = s(w, "name");
-        let title = if name.is_empty() { format!("Wave {n}") } else { format!("Wave {n} · {name}") };
-        body = body.child(wave_head(t, title, wave_meta(w, &tasks, now)));
-        for c in tasks {
-            body = body.child(task_row(t, c, cx));
-        }
-    }
-    let loose: Vec<&Value> = arr(d, "tasks").iter().filter(|c| c["wave"].as_i64().is_none()).collect();
-    if !loose.is_empty() {
-        body = body.child(wave_head(t, "No wave".into(), String::new()));
-        for c in loose {
-            body = body.child(task_row(t, c, cx));
-        }
-    }
-    body
+/// The page as the list draws it, top to bottom. A goal card comes as a slice per head, wave
+/// header and task row, and the finished goals from before this week as a line each, so Expand all
+/// and a long Done shelf draw only what's in view.
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Head,
+    /// "Stopped" or "In progress", and how many goals it holds.
+    Group(&'static str, usize),
+    /// The head of row `k`'s card.
+    Goal(usize),
+    /// Row `k` is open and its tasks aren't in yet.
+    Loading(usize),
+    /// Row `k`'s header for a wave, or for the tasks in none.
+    Wave(usize, Option<i64>),
+    /// Row `k`'s task at this index of its goal's tasks.
+    Task(usize, usize),
+    /// What's next, paused, set aside and finished this week.
+    Shelves,
+    /// The finished goal from before this week at this index, under the strip's last tile.
+    Earlier(usize),
+    /// The end of that tile, with its "Only this week".
+    EarlierFoot,
+    End,
 }
 
-fn goal_card(t: &Theme, row: &GoalRow, d: Option<&Value>, open: bool, busy: bool, now: DateTime<Utc>, cx: &mut Context<MainWindow>) -> Div {
-    let line = match &row.stop {
+impl Item {
+    /// The card row `k` an item is a slice of.
+    fn card(&self) -> Option<usize> {
+        match self {
+            Item::Goal(k) | Item::Loading(k) | Item::Wave(k, _) | Item::Task(k, _) => Some(*k),
+            _ => None,
+        }
+    }
+}
+
+/// The list and the items it was built from, with a key per item that changes when the item
+/// would draw at another height.
+struct Rows {
+    state: ListState,
+    keys: Vec<String>,
+    items: Rc<Vec<Item>>,
+    /// What the items were built from: the goals as built, the goals open and the earlier ones shown.
+    from: (Rc<Built>, HashSet<String>, bool),
+}
+
+/// An open goal's items: under a header per wave, or in one run when it has no waves.
+fn body_items(k: usize, d: Option<&Value>) -> Vec<Item> {
+    let Some(d) = d.filter(|d| d["tasks"].is_array()) else { return vec![Item::Loading(k)] };
+    let tasks = arr(d, "tasks");
+    let ws = waves(Some(d));
+    if ws.is_empty() {
+        let mut ix: Vec<usize> = (0..tasks.len()).collect();
+        ix.sort_by_key(|&c| status::row(&tasks[c]).st.rank());
+        return ix.into_iter().map(|c| Item::Task(k, c)).collect();
+    }
+    let mut v = vec![];
+    let run = |wave: Option<i64>, v: &mut Vec<Item>| {
+        let ix: Vec<usize> = (0..tasks.len()).filter(|&c| tasks[c]["wave"].as_i64() == wave).collect();
+        if wave.is_some() || !ix.is_empty() {
+            v.push(Item::Wave(k, wave));
+            v.extend(ix.into_iter().map(|c| Item::Task(k, c)));
+        }
+    };
+    for w in &ws {
+        run(Some(i(w, "wave")), &mut v);
+    }
+    run(None, &mut v);
+    v
+}
+
+fn items(b: &Built, open: &HashSet<String>, earlier: bool, details: &HashMap<String, Value>) -> Vec<Item> {
+    let mut v = vec![Item::Head];
+    let stopped = b.rows.iter().filter(|r| r.stop.is_some()).count();
+    for (title, rows) in [("Stopped", 0..stopped), ("In progress", stopped..b.rows.len())] {
+        if rows.is_empty() {
+            continue;
+        }
+        v.push(Item::Group(title, rows.len()));
+        for k in rows {
+            v.push(Item::Goal(k));
+            let r = &b.rows[k].r;
+            if open.contains(r) {
+                v.extend(body_items(k, details.get(r)));
+            }
+        }
+    }
+    if let Some(done) = b.shelves.last() {
+        v.push(Item::Shelves);
+        if earlier && !done.earlier.is_empty() {
+            v.extend((0..done.earlier.len()).map(Item::Earlier));
+            v.push(Item::EarlierFoot);
+        }
+    }
+    v.push(Item::End);
+    v
+}
+
+/// The last slice of its card: the next item belongs to another card or none.
+fn card_ends(items: &[Item], ix: usize) -> bool {
+    items.get(ix + 1).and_then(Item::card) != items[ix].card()
+}
+
+fn key(b: &Built, items: &[Item], ix: usize) -> String {
+    let row = |k: usize| &b.rows[k].r;
+    let end = card_ends(items, ix);
+    match &items[ix] {
+        Item::Head => "head".into(),
+        Item::Group(title, n) => format!("group:{title}:{n}"),
+        Item::Goal(k) => format!("goal:{}:{end}", row(*k)),
+        Item::Loading(k) => format!("loading:{}", row(*k)),
+        Item::Wave(k, w) => format!("wave:{}:{w:?}", row(*k)),
+        Item::Task(k, c) => format!("task:{}:{c}:{end}", row(*k)),
+        // The strip's height follows its longest tile, and the second lines when roomy.
+        Item::Shelves => {
+            let tiles: Vec<String> = b.shelves.iter().map(|sh| sh.lines.iter().map(|l| if l.about.is_empty() { '1' } else { '2' }).collect()).collect();
+            format!("shelves:{}:{}:{}", b.going.is_empty(), tiles.join("|"), items.get(ix + 1) == Some(&Item::Earlier(0)))
+        }
+        Item::Earlier(k) => format!("earlier:{k}"),
+        Item::EarlierFoot => "earlier-foot".into(),
+        Item::End => "end".into(),
+    }
+}
+
+/// Keep the list in step with the page: what changed between the common start and end is spliced,
+/// so the place scrolled to stays put.
+fn sync(m: &mut MainWindow, b: &Rc<Built>) {
+    let st = &mut m.goals;
+    if st.rows.as_ref().is_some_and(|l| Rc::ptr_eq(&l.from.0, b) && l.from.1 == st.open && l.from.2 == st.earlier) {
+        return;
+    }
+    let items = items(b, &st.open, st.earlier, &st.details);
+    let keys: Vec<String> = (0..items.len()).map(|ix| key(b, &items, ix)).collect();
+    let from = (b.clone(), st.open.clone(), st.earlier);
+    let items = Rc::new(items);
+    let Some(l) = &mut st.rows else {
+        st.rows = Some(Rows { state: ListState::new(keys.len(), ListAlignment::Top, px(800.)), keys, items, from });
+        return;
+    };
+    let head = l.keys.iter().zip(&keys).take_while(|(a, c)| a == c).count();
+    let room = l.keys.len().min(keys.len()) - head;
+    let tail = l.keys.iter().rev().zip(keys.iter().rev()).take(room).take_while(|(a, c)| a == c).count();
+    if head + tail < l.keys.len() || keys.len() != l.keys.len() {
+        l.state.splice(head..l.keys.len() - tail, keys.len() - head - tail);
+    }
+    *l = Rows { state: l.state.clone(), keys, items, from };
+}
+
+fn card_line(t: &Theme, row: &GoalRow, open: bool) -> Hsla {
+    match &row.stop {
         _ if open => t.accent_line,
         Some(st) => st.kind.colors(t).2,
         None => t.border,
-    };
+    }
+}
+
+/// One slice of a card: its sides on each, its top on the first and its bottom on the last.
+fn card_slice(t: &Theme, line: Hsla, first: bool, last: bool, el: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_col()
-        .rounded(px(12.))
-        .border_1()
-        .border_color(line)
         .bg(t.card)
+        .border_l_1()
+        .border_r_1()
+        .border_color(line)
         .overflow_hidden()
-        .child(goal_head(t, row, open, busy, cx))
-        .when(open, |c| c.child(goal_body(t, d, now, cx)))
+        .when(first, |d| d.border_t_1().rounded_t(px(12.)))
+        .when(last, |d| d.border_b_1().rounded_b(px(12.)))
+        .child(el)
+}
+
+/// The finished goals' tile's padding and the space between its lines.
+fn tile_space(roomy: bool) -> (f32, f32) {
+    if roomy { (16., 14.) } else { (14., 8.) }
+}
+
+fn shelf_line(t: &Theme, key: &str, l: &Line, roomy: bool, busy: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let r = l.r.clone();
+    let hover = t.text;
+    let dot = (key == "done").then(|| kit::dot(t.up, 7.));
+    let head = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .children(dot)
+        .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
+        .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
+        .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()))
+        .when_some(l.resume.clone(), |d, (label, planned)| {
+            let gr = l.r.clone();
+            let id = SharedString::from(format!("goals-resume-{gr}"));
+            let b = if busy { kit::disabled(kit::btn_small(t, id, "Sending…")) } else {
+                kit::btn_small(t, id, label).on_click(cx.listener(move |m, _, _, cx| {
+                    cx.stop_propagation();
+                    goal::resume(m, &gr, planned, false, cx);
+                }))
+            };
+            d.child(div().flex_none().child(b))
+        });
+    let about = (roomy && !l.about.is_empty()).then(|| div().max_w(px(820.)).text_size(px(12.5)).line_height(relative(1.45)).text_color(t.muted).line_clamp(2).child(l.about.clone()));
+    focus::stop(t, div().id(SharedString::from(format!("goals-shelf-{}", l.r))))
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .text_size(px(13.))
+        .cursor_pointer()
+        .child(head)
+        .children(about.map(|a| a.ml(px(REF_W + 8. + if key == "done" { 15. } else { 0. }))))
+        .on_click(cx.listener(move |m, _, _, cx| goal::open(m, &r, false, cx)))
+}
+
+fn earlier_link(t: &Theme, label: String, cx: &mut Context<MainWindow>) -> Div {
+    div().flex().child(kit::link(t, "goals-earlier", label).text_size(px(12.)).on_click(cx.listener(|m, _, _, cx| {
+        m.goals.earlier = !m.goals.earlier;
+        cx.notify();
+    })))
 }
 
 /// `roomy` when the strip has the page to itself: each goal gets a second line saying what it's for.
-fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, busy: &dyn Fn(&str, bool) -> bool, cx: &mut Context<MainWindow>) -> Div {
-    let mut tile = div().flex().flex_col().gap(px(if roomy { 14. } else { 8. })).p(px(if roomy { 16. } else { 14. })).rounded(px(12.)).border_1().bg(t.card);
+/// `open_below`: the tile's earlier goals follow as items of their own, so it has no bottom here.
+fn shelf_tile(t: &Theme, sh: &Shelf, roomy: bool, open_below: bool, busy: &dyn Fn(&str, bool) -> bool, cx: &mut Context<MainWindow>) -> Div {
+    let (pad, gap) = tile_space(roomy);
+    let mut tile = div().flex().flex_col().gap(px(gap)).px(px(pad)).pt(px(pad)).bg(t.card).border_t_1().border_l_1().border_r_1().rounded_t(px(12.));
     tile = if sh.key == "next" { tile.border_dashed().border_color(t.border_2) } else { tile.border_color(t.border) };
-    let mut lines: Vec<&Line> = sh.lines.iter().collect();
-    if earlier {
-        lines.extend(sh.earlier.iter());
+    if !open_below {
+        tile = tile.pb(px(pad)).border_b_1().rounded_b(px(12.));
     }
-    for l in lines {
-        let r = l.r.clone();
-        let hover = t.text;
-        let dot = (sh.key == "done").then(|| kit::dot(t.up, 7.));
-        let head = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .children(dot)
-            .child(div().flex_none().whitespace_nowrap().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
-            .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
-            .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()))
-            .when_some(l.resume.clone(), |d, (label, planned)| {
-                let gr = l.r.clone();
-                let id = SharedString::from(format!("goals-resume-{gr}"));
-                let b = if busy(&gr, planned) { kit::disabled(kit::btn_small(t, id, "Sending…")) } else {
-                    kit::btn_small(t, id, label).on_click(cx.listener(move |m, _, _, cx| {
-                        cx.stop_propagation();
-                        goal::resume(m, &gr, planned, false, cx);
-                    }))
-                };
-                d.child(div().flex_none().child(b))
-            });
-        let about = (roomy && !l.about.is_empty()).then(|| {
-            div().max_w(px(820.)).text_size(px(12.5)).line_height(relative(1.45)).text_color(t.muted).line_clamp(2).child(l.about.clone())
-        });
-        tile = tile.child(
-            focus::stop(t, div().id(SharedString::from(format!("goals-shelf-{}", l.r))))
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .text_size(px(13.))
-                .cursor_pointer()
-                .child(head)
-                .children(about.map(|a| a.ml(px(REF_W + 8. + if sh.key == "done" { 15. } else { 0. }))))
-                .on_click(cx.listener(move |m, _, _, cx| goal::open(m, &r, false, cx))),
-        );
+    for l in &sh.lines {
+        let b = l.resume.as_ref().is_some_and(|(_, planned)| busy(&l.r, *planned));
+        tile = tile.child(shelf_line(t, sh.key, l, roomy, b, cx));
     }
-    if !sh.earlier.is_empty() {
-        let label = if earlier { "Only this week".to_string() } else { format!("{} earlier", sh.earlier.len()) };
-        tile = tile.child(div().flex().child(kit::link(t, "goals-earlier", label).text_size(px(12.)).on_click(cx.listener(|m, _, _, cx| {
-            m.goals.earlier = !m.goals.earlier;
-            cx.notify();
-        }))));
+    if !sh.earlier.is_empty() && !open_below {
+        tile = tile.child(earlier_link(t, format!("{} earlier", sh.earlier.len()), cx));
     }
     tile
 }
@@ -820,10 +948,114 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, busy: &dyn Fn(&
 fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, roomy: bool, busy: &dyn Fn(&str, bool) -> bool, cx: &mut Context<MainWindow>) -> Div {
     let mut strip = div().flex().items_start().gap(px(14.));
     for sh in list {
-        let col = div().flex().flex_col().gap(px(10.)).child(group_label(t, sh.title, sh.lines.len())).child(shelf_tile(t, sh, earlier, roomy, busy, cx));
+        let open_below = earlier && sh.key == "done" && !sh.earlier.is_empty();
+        let col = div().flex().flex_col().gap(px(10.)).child(group_label(t, sh.title, sh.lines.len())).child(shelf_tile(t, sh, roomy, open_below, busy, cx));
         strip = strip.child(fr(col, 1.));
     }
     strip
+}
+
+/// A piece of the strip's last tile, drawn under it: the columns before it stay empty.
+fn under_last_tile(shelves: usize, el: Div) -> Div {
+    let mut row = div().flex().gap(px(14.));
+    for _ in 1..shelves {
+        row = row.child(fr(div(), 1.));
+    }
+    row.child(fr(el, 1.))
+}
+
+fn page_head(t: &Theme, b: &Built, cx: &mut Context<MainWindow>) -> Div {
+    let mut right = div().flex().flex_none().gap(px(6.));
+    if !b.going.is_empty() {
+        let refs = b.going.clone();
+        right = right
+            .child(kit::btn_small(t, "goals-expand-all", "Expand all").on_click(cx.listener(move |m, _, _, cx| {
+                m.goals.open.extend(refs.iter().cloned());
+                m.refresh(cx);
+            })))
+            .child(kit::btn_small(t, "goals-collapse-all", "Collapse all").on_click(cx.listener(|m, _, _, cx| {
+                m.goals.open.clear();
+                cx.notify();
+            })));
+    }
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Goals"))
+        .when(b.tabs.len() > 1, |d| {
+            d.child(ip::project_filter(t, PROJECT_FILTER, &b.project, &b.tabs, cx, |m, p, cx| {
+                m.goals.project = p;
+                m.refresh(cx);
+            }))
+        })
+        .child(div().flex_1())
+        .child(right)
+}
+
+fn item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    let Some(l) = &m.goals.rows else { return div().into_any_element() };
+    let (b, items) = (l.from.0.clone(), l.items.clone());
+    let Some(it) = items.get(ix) else { return div().into_any_element() };
+    let now = fmt::now();
+    let open = |m: &MainWindow, k: usize| m.goals.open.contains(&b.rows[k].r);
+    let slice = |m: &MainWindow, k: usize, el: AnyElement| card_slice(&t, card_line(&t, &b.rows[k], open(m, k)), matches!(it, Item::Goal(_)), card_ends(&items, ix), el);
+    let (top, el): (f32, AnyElement) = match it {
+        Item::Head => (22., page_head(&t, &b, cx).into_any_element()),
+        Item::Group(title, n) => (20., div().mb(px(2.)).child(group_label(&t, title, *n)).into_any_element()),
+        Item::Goal(k) => {
+            let row = &b.rows[*k];
+            let busy = row.actions.iter().any(|a| matches!(a, Action::Step(_, x, _) if goal::step_busy(m, &row.r, x)));
+            let head = goal_head(&t, row, open(m, *k), busy, cx).into_any_element();
+            (8., slice(m, *k, head).into_any_element())
+        }
+        Item::Loading(k) => {
+            let el = div().pl(px(INSET)).py(px(10.)).border_t_1().border_color(t.divider).text_size(px(12.)).text_color(t.muted).child("Loading…");
+            (0., slice(m, *k, el.into_any_element()).into_any_element())
+        }
+        Item::Wave(k, w) => {
+            let d = m.goals.details.get(&b.rows[*k].r);
+            let head = match (w, d) {
+                (Some(n), Some(d)) => {
+                    let wv = waves(Some(d)).into_iter().find(|x| i(x, "wave") == *n).unwrap_or_default();
+                    let name = s(&wv, "name");
+                    let title = if name.is_empty() { format!("Wave {n}") } else { format!("Wave {n} · {name}") };
+                    wave_head(&t, title, wave_meta(&wv, &tasks_in(d, *n), now))
+                }
+                _ => wave_head(&t, "No wave".into(), String::new()),
+            };
+            (0., slice(m, *k, head.into_any_element()).into_any_element())
+        }
+        Item::Task(k, c) => {
+            let d = m.goals.details.get(&b.rows[*k].r).cloned();
+            let el = match d.as_ref().and_then(|d| arr(d, "tasks").get(*c)) {
+                Some(task) => task_row(&t, task, cx).into_any_element(),
+                None => div().into_any_element(),
+            };
+            (0., slice(m, *k, el).into_any_element())
+        }
+        Item::Shelves => {
+            let busy = |r: &str, planned: bool| goal::resume_busy(m, r, planned);
+            (20., shelf_strip(&t, &b.shelves, m.goals.earlier, b.going.is_empty(), &busy, cx).into_any_element())
+        }
+        Item::Earlier(k) => {
+            let roomy = b.going.is_empty();
+            let (pad, gap) = tile_space(roomy);
+            let Some(done) = b.shelves.last() else { return div().into_any_element() };
+            let Some(line) = done.earlier.get(*k) else { return div().into_any_element() };
+            let first_gap = *k > 0 || !done.lines.is_empty();
+            let el = div().px(px(pad)).when(first_gap, |d| d.pt(px(gap))).bg(t.card).border_l_1().border_r_1().border_color(t.border).child(shelf_line(&t, done.key, line, roomy, false, cx));
+            (0., under_last_tile(b.shelves.len(), el).into_any_element())
+        }
+        Item::EarlierFoot => {
+            let (pad, gap) = tile_space(b.going.is_empty());
+            let el = div().px(px(pad)).pt(px(gap)).pb(px(pad)).bg(t.card).border_l_1().border_r_1().border_b_1().rounded_b(px(12.)).border_color(t.border).child(earlier_link(&t, "Only this week".into(), cx));
+            (0., under_last_tile(b.shelves.len(), el).into_any_element())
+        }
+        Item::End => return div().h(px(32.)).into_any_element(),
+    };
+    div().px(px(PAGE_X)).pt(px(top)).child(el).into_any_element()
 }
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -839,64 +1071,20 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             b
         }
     };
-    let (project, going) = (b.project.clone(), &b.going);
-
-    let mut right = div().flex().flex_none().gap(px(6.));
-    if !going.is_empty() {
-        let refs = going.clone();
-        right = right
-            .child(kit::btn_small(&t, "goals-expand-all", "Expand all").on_click(cx.listener(move |m, _, _, cx| {
-                m.goals.open.extend(refs.iter().cloned());
-                m.refresh(cx);
-            })))
-            .child(kit::btn_small(&t, "goals-collapse-all", "Collapse all").on_click(cx.listener(|m, _, _, cx| {
-                m.goals.open.clear();
-                cx.notify();
-            })));
-    }
-    let head = div()
-        .flex()
-        .items_center()
-        .gap(px(16.))
-        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Goals"))
-        .when(b.tabs.len() > 1, |d| {
-            d.child(ip::project_filter(&t, PROJECT_FILTER, &project, &b.tabs, cx, |m, p, cx| {
-                m.goals.project = p;
-                m.refresh(cx);
-            }))
-        })
-        .child(div().flex_1())
-        .child(right);
-    let mut page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head);
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
-    let shell = div().id("goals-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter);
-
-    if !m.goals_loaded() && b.none {
-        let msg = if m.down.is_some() { "Can’t load the board." } else { "Loading…" };
+    let shell = div().id("goals-page").relative().flex().flex_col().flex_1().min_w_0().h_full().children(filter);
+    let empty = if !m.goals_loaded() && b.none {
+        Some(if m.down.is_some() { "Can’t load the board." } else { "Loading…" })
+    } else {
+        b.none_shown.then_some("No goals")
+    };
+    if let Some(msg) = empty {
+        let page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(page_head(&t, &b, cx));
         return shell.child(page.child(kit::empty(&t, msg))).into_any_element();
     }
-    if b.none_shown {
-        return shell.child(page.child(kit::empty(&t, "No goals"))).into_any_element();
-    }
-    // Goals stopped for the owner sit apart from the ones running, each with its next step.
-    let stopped = b.rows.iter().filter(|r| r.stop.is_some()).count();
-    for (title, rows) in [("Stopped", &b.rows[..stopped]), ("In progress", &b.rows[stopped..])] {
-        if rows.is_empty() {
-            continue;
-        }
-        let mut list = div().flex().flex_col().gap(px(8.)).child(div().mb(px(2.)).child(group_label(&t, title, rows.len())));
-        for row in rows {
-            let d = m.goals.details.get(&row.r);
-            let busy = row.actions.iter().any(|a| matches!(a, Action::Step(_, x, _) if goal::step_busy(m, &row.r, x)));
-            list = list.child(goal_card(&t, row, d, m.goals.open.contains(&row.r), busy, now, cx));
-        }
-        page = page.child(list);
-    }
-    if !b.shelves.is_empty() {
-        let busy = |r: &str, planned: bool| goal::resume_busy(m, r, planned);
-        page = page.child(shelf_strip(&t, &b.shelves, m.goals.earlier, going.is_empty(), &busy, cx));
-    }
-    shell.child(page).into_any_element()
+    sync(m, &b);
+    let Some(l) = &m.goals.rows else { return shell.into_any_element() };
+    shell.child(list(l.state.clone(), cx.processor(item)).flex_1().min_h_0().line_height(relative(1.4))).into_any_element()
 }
 
 #[cfg(test)]
@@ -1106,6 +1294,78 @@ mod tests {
         assert_eq!(wave_meta(&wave(3, "waiting", 1, json!({})), &[], now), "After wave 2");
         assert_eq!(day(fmt::parse(&noon(2026, 10, 15)).unwrap(), now), "12:00 PM");
         assert_eq!(day(fmt::parse(&noon(2026, 10, 1)).unwrap(), now), "Oct 1");
+    }
+
+    #[test]
+    fn the_page_is_a_list_of_card_slices_and_lines() {
+        let gs = Rc::new(vec![
+            goal(1, "web", 0, 3, json!({"active": 1})),
+            goal(2, "web", 0, 2, json!({"active": 1})),
+            goal(3, "api", 2, 2, json!({"finished_at": noon(2026, 10, 12)})),
+            goal(4, "api", 1, 1, json!({"finished_at": noon(2026, 9, 30)})),
+            goal(5, "api", 1, 1, json!({"finished_at": noon(2026, 9, 29)})),
+        ]);
+        let now = fmt::parse(&noon(2026, 10, 13)).unwrap();
+        let tasks = [task("T1", 1, "done", json!({})), task("T2", 2, "working", json!({})), task("T3", 1, "queued", json!({"wave": null}))];
+        let details = HashMap::from([("G1".to_string(), json!({"tasks": tasks, "waves": [wave(1, "done", 1, json!({})), wave(2, "running", 1, json!({}))]}))]);
+        let b = Built::of(&gs, &details, ("all".into(), true, 0), now);
+        let open = HashSet::from(["G1".to_string(), "G2".to_string()]);
+        use Item::*;
+        let got = items(&b, &open, false, &details);
+        assert_eq!(got, [Head, Group("In progress", 2), Goal(0), Wave(0, Some(1)), Task(0, 0), Wave(0, Some(2)), Task(0, 1), Wave(0, None), Task(0, 2), Goal(1), Loading(1), Shelves, End]);
+        let ends: Vec<usize> = (0..got.len()).filter(|&ix| got[ix].card().is_some() && card_ends(&got, ix)).collect();
+        assert_eq!(ends, [8, 10], "each card closes on its last slice");
+
+        let folded = items(&b, &HashSet::new(), true, &details);
+        assert_eq!(folded, [Head, Group("In progress", 2), Goal(0), Goal(1), Shelves, Earlier(0), Earlier(1), EarlierFoot, End], "the earlier goals come a line each");
+        assert!(card_ends(&folded, 2) && card_ends(&folded, 3));
+        let keys: Vec<String> = (0..folded.len()).map(|ix| key(&b, &folded, ix)).collect();
+        assert_eq!(keys.iter().collect::<HashSet<_>>().len(), keys.len(), "a key each: {keys:?}");
+    }
+
+    #[gpui_kit::test]
+    fn expand_all_draws_only_the_rows_in_view(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = crate::parity::window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            let _ = cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            crate::parity::settle(cx);
+        };
+        w.update(cx, |m, _, cx| m.go(crate::app::Page::Goals, cx)).unwrap();
+        crate::parity::settle(cx);
+        w.update(cx, |m, _, cx| {
+            m.data.goals = Rc::new((1..=40).map(|id| goal(id, "web", 0, 20, json!({"active": 20}))).collect());
+            for id in 1..=40 {
+                let tasks: Vec<Value> = (0..20).map(|k| task(&format!("T{}", id * 100 + k), 1, "working", json!({}))).collect();
+                m.goals.land(format!("G{id}"), json!({"tasks": tasks, "waves": [wave(1, "running", 20, json!({}))]}));
+                m.goals.open.insert(format!("G{id}"));
+            }
+            cx.notify();
+        })
+        .unwrap();
+        draw(cx);
+        let seen = |cx: &mut gpui_kit::TestAppContext| {
+            w.update(cx, |m, _, _| {
+                let l = m.goals.rows.as_ref().expect("the page is a list");
+                let n = l.items.len();
+                (n, l.state.item_count(), l.state.bounds_for_item(2).is_some(), (0..n).filter(|&ix| l.state.bounds_for_item(ix).is_some()).count())
+            })
+            .unwrap()
+        };
+        let (n, count, top, drawn) = seen(cx);
+        assert_eq!((n, count), (40 * 22 + 3, n), "every goal head, wave header and task row is an item");
+        assert!(top, "the first goal is drawn");
+        assert!(drawn < 120, "only the rows in view and a buffer are drawn: {drawn} of {n}");
+
+        w.update(cx, |m, _, cx| {
+            m.goals.open.clear();
+            cx.notify();
+        })
+        .unwrap();
+        draw(cx);
+        assert_eq!(seen(cx).0, 40 + 3, "Collapse all folds the cards back to their heads");
     }
 
     #[gpui_kit::test]
