@@ -10357,6 +10357,29 @@ mod tests {
     }
 
     #[test]
+    fn release_sh_cuts_a_beta_only_from_main_or_a_release_branch() {
+        let (tmp, origin, _seed, at) = release_sh_behind_origin("beta-branch");
+        let switch = |b: &str| {
+            let o = std::process::Command::new("git").arg("-C").arg(&at).args(["switch", "-q", "-c", b]).output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        };
+        switch("feat/t1-x");
+        let before = rev(&at);
+        let (code, err) = release_sh_in(&at);
+        assert_eq!(code, 1);
+        assert!(err.contains("A beta goes from main or a release/* branch (on feat/t1-x)"), "{err}");
+        assert_eq!(rev(&at), before, "no version commit on the feature branch");
+        let tags = std::process::Command::new("git").arg("-C").arg(&at).args(["tag", "--list"]).output().unwrap();
+        assert!(tags.stdout.is_empty(), "no tag");
+
+        switch("release/0.1");
+        let (code, err) = release_sh_in(&at);
+        assert_eq!(code, 1);
+        assert!(err.contains("No release deploy key"), "a release/* branch gets past the branch check: {err}");
+        let _ = (origin, std::fs::remove_dir_all(&tmp));
+    }
+
+    #[test]
     fn release_sh_pushes_the_branch_and_tag_atomically() {
         let script = include_str!("../../../scripts/release.sh");
         assert!(script.contains("git push --atomic "), "a rejected branch must not leave a pushed tag");

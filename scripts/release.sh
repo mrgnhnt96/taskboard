@@ -2,7 +2,7 @@
 # Cut a release: set the version, commit, tag and push.
 #
 #   ./scripts/release.sh 1.1.0          a public release, from main
-#   ./scripts/release.sh 1.2.0-beta.1   a beta, from any branch
+#   ./scripts/release.sh 1.2.0-beta.1   a beta, from main or a release/* branch
 #   ./scripts/release.sh v1.2.0-beta.1  the same; one leading v is dropped
 #
 # Pushing the v1.1.0 tag runs .github/workflows/release.yml, which builds,
@@ -50,8 +50,14 @@ fi
 tag="v$version"
 
 branch=$(git rev-parse --abbrev-ref HEAD)
+# The version commit lands on the branch it's cut from, so a feature branch (even one already merged)
+# would leave main on the old version. tb release cut and the board's pending cut refuse it too.
 if [[ "$version" != *-beta.* && "$branch" != main ]]; then
-  echo "Release from main (on $branch). Betas can go out from any branch." >&2
+  echo "Release from main (on $branch). A beta can also go from a release/* branch." >&2
+  exit 1
+fi
+if [[ "$branch" != main && "$branch" != release/* ]]; then
+  echo "A beta goes from main or a release/* branch (on $branch). Switch to one and cut again." >&2
   exit 1
 fi
 if [ -n "$(git status --porcelain)" ]; then
