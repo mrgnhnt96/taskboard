@@ -144,6 +144,26 @@ fn the_list_shows_the_newest_reports_verdict() {
 }
 
 #[test]
+fn the_list_says_why_the_newest_dig_failed() {
+    let (_d, app) = new_board();
+    let r = idea(&app, "webapp", "Offline mode", "");
+    let id: i64 = r[1..].parse().unwrap();
+    let failed = |app: &App| try_call(app, "GET", "/ideas", &[("project", "webapp")], json!({})).unwrap()["ideas"][0]["dig_error"].clone();
+    assert_eq!(failed(&app), Value::Null, "no round yet");
+    let round = |report: Option<&str>, error: Option<&str>| {
+        app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => report, "error" => error, "sha" => "abc1234"]).unwrap();
+    };
+    round(None, Some("claude timed out"));
+    assert_eq!(failed(&app), "claude timed out");
+    round(Some(r#"{"verdict":"fits"}"#), None);
+    assert_eq!(failed(&app), Value::Null, "a report after the failure clears it");
+    round(None, Some("claude exited 1"));
+    assert_eq!(failed(&app), "claude exited 1", "the newest round failed, though an older one reported");
+    round(None, Some(taskboardd::dig::STOPPED));
+    assert_eq!(failed(&app), Value::Null, "the owner stopped it: nothing failed");
+}
+
+#[test]
 fn answering_a_rounds_question_keeps_one_note_per_question() {
     let (_d, app) = new_board();
     let r = idea(&app, "webapp", "Offline mode", "");
