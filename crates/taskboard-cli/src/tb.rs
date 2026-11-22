@@ -3077,9 +3077,18 @@ impl Ctx {
     /// A long command on the board's progress stream: prints each stage as the board finishes it, and
     /// only gives up when the board goes quiet for `TB_TIMEOUT` (a stage that hangs).
     fn call_progress(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        self.call_progress_with(method, path, body, |stage| out(&format!("· {stage}")))
+    }
+
+    /// `call_progress` for a relay's command (`tb stream send`, `tb feed event`): the relay parses its
+    /// stdout, so the stages go to stderr.
+    fn call_relay(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        self.call_progress_with(method, path, body, |stage| eprintln!("· {stage}"))
+    }
+
+    fn call_progress_with(&self, method: &str, path: &str, body: Option<Value>, on_stage: impl FnMut(&str)) -> Result<Value, String> {
         let body = self.credited_here(method, body);
-        client::request_progress(&self.cfg, method, path, body.as_ref(), TB_TIMEOUT, |stage| out(&format!("· {stage}")))
-            .map_err(|e| unanswered(e, &format!("went quiet for {TB_TIMEOUT}s")))
+        client::request_progress(&self.cfg, method, path, body.as_ref(), TB_TIMEOUT, on_stage).map_err(|e| unanswered(e, &format!("went quiet for {TB_TIMEOUT}s")))
     }
 
     /// A change names this terminal (`by_session`), so the board credits it here rather than to the owner.
@@ -7746,7 +7755,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Pr { action } => match action {
             PrCmd::Check => {
-                let v = c.call("POST", "/prs/refresh", Some(json!({})))?;
+                let v = c.call_progress("POST", "/prs/refresh", Some(json!({})))?;
                 out(&pr_check_line(&v));
                 for line in pr_check_rate_lines(&v["rate_limits"]) {
                     out(&line);
@@ -8544,7 +8553,7 @@ fn stream_send(c: &Ctx, json: Option<String>) -> Result<i32, String> {
         Some(j) => j.to_string(),
     };
     let body: Value = serde_json::from_str(&text).map_err(|e| format!("That isn't JSON: {e}"))?;
-    let v = c.call("POST", "/stream/events", Some(body))?;
+    let v = c.call_relay("POST", "/stream/events", Some(body))?;
     for r in v["results"].as_array().into_iter().flatten() {
         let id = r["id"].as_str().unwrap_or("(no id)");
         match r["why"].as_str() {
@@ -8581,7 +8590,7 @@ fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
             if mine {
                 body["mine"] = json!(true);
             }
-            let v = c.call("POST", "/prs/event", Some(body))?;
+            let v = c.call_relay("POST", "/prs/event", Some(body))?;
             match v["task"].as_str() {
                 Some(t) if v["refreshed"] == true => out(&format!("Read {t}'s PR again: {}.", v["phase"].as_str().unwrap_or("no stage"))),
                 Some(t) => out(&format!("Noted for {t}.{}", v["read_error"].as_str().map(|e| format!(" Its PR couldn't be read: {e}")).unwrap_or_default())),
@@ -8756,7 +8765,7 @@ fn master_cmd(c: &Ctx, args: Vec<String>, verdict: Verdict, open_only: bool, lim
             }
         }
         (None, Some("check")) => {
-            let v = c.call("POST", "/master/check", Some(json!({})))?;
+            let v = c.call_progress("POST", "/master/check", Some(json!({})))?;
             out(&format!("Read every watched branch: {} red.", v["open"].as_array().map(|a| a.len()).unwrap_or(0)));
         }
         (Some(r), None | Some("show")) => out(&break_detail(&c.call("GET", &format!("/master/{r}"), None)?)),
@@ -9187,6 +9196,47 @@ mod tests {
         assert!(e.contains(r#"tb search "Sign the agreement" --all --kind human"#), "says how to find it: {e}");
         assert_eq!(spooled(&c), 0);
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// Runs `args` against a board that reads a PR host for longer than tb's time limit in all, saying
+    /// each stage under it, and hands back the request it sent (B43).
+    fn waits_out_a_slow_board(tag: &str, args: &[&str], result: Value) -> String {
+        let (mut c, data) = board_down_ctx(tag);
+        let still = r#"{"progress":"still waiting on GitHub"}"#;
+        let done = json!({"result": result}).to_string();
+        let gap = std::time::Duration::from_secs_f64(TB_TIMEOUT * 0.6);
+        let got = streaming_board(&mut c, &[still, &done], gap);
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(args).unwrap().cmd), Ok(0), "{args:?}");
+        let req = got.recv().unwrap();
+        assert!(req.to_ascii_lowercase().contains("x-task-board-progress: 1"), "{args:?} on the progress stream: {req}");
+        let _ = std::fs::remove_dir_all(&data);
+        req
+    }
+
+    #[test]
+    fn tb_stream_send_waits_out_a_board_slower_than_its_time_limit() {
+        let ev = r#"{"v":1,"events":[{"id":"e1","kind":"heartbeat","source":"fi","at":"2026-11-21T15:00:00Z"}]}"#;
+        let req = waits_out_a_slow_board("stream-slow", &["tb", "stream", "send", ev], json!({"results": [{"id": "e1", "status": "accepted"}], "rejected": 0}));
+        assert!(req.starts_with("POST /tasks/api/stream/events"), "{req}");
+    }
+
+    #[test]
+    fn tb_feed_event_waits_out_a_board_slower_than_its_time_limit() {
+        let args = ["tb", "feed", "event", "--repo", "acme/webapp", "--num", "3"];
+        let req = waits_out_a_slow_board("feed-slow", &args, json!({"task": "T3", "refreshed": true, "phase": "review"}));
+        assert!(req.starts_with("POST /tasks/api/prs/event"), "{req}");
+    }
+
+    #[test]
+    fn tb_master_check_waits_out_a_board_slower_than_its_time_limit() {
+        let req = waits_out_a_slow_board("master-slow", &["tb", "master", "check"], json!({"open": []}));
+        assert!(req.starts_with("POST /tasks/api/master/check"), "{req}");
+    }
+
+    #[test]
+    fn tb_pr_check_waits_out_a_board_slower_than_its_time_limit() {
+        let req = waits_out_a_slow_board("prcheck-slow", &["tb", "pr", "check"], json!({"ok": true, "changed": 0}));
+        assert!(req.starts_with("POST /tasks/api/prs/refresh"), "{req}");
     }
 
     /// Points `c` at a board that takes one request and never answers it, holding the connection open.
