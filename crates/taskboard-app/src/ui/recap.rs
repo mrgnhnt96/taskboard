@@ -55,6 +55,8 @@ fn view(id: &str) -> Option<Draw> {
         "vs" => time::vs,
         "wait" => time::wait,
         "usage" => time::usage,
+        "slow" => time::slow,
+        "heat" => time::heat,
         "days" => trends::days,
         "ba" => trends::ba,
         "trend" => trends::trend,
@@ -63,6 +65,8 @@ fn view(id: &str) -> Option<Draw> {
         "plan" => trends::plan,
         "lessons" => trends::lessons,
         "issues" => trends::issues,
+        "bump" => trends::bump,
+        "tries" => trends::tries,
         _ => return None,
     })
 }
@@ -319,7 +323,7 @@ mod tests {
             {"id": "hero", "span": "half"}, {"id": "heat", "span": "full"}, {"id": "made-up"}, {"id": "kpis", "span": "full"}, {"span": "half"}
         ]});
         let got: Vec<(String, bool)> = components(&page).iter().map(|(c, f)| (s(c, "id").to_string(), *f)).collect();
-        assert_eq!(got, vec![("hero".into(), false), ("kpis".into(), true)]);
+        assert_eq!(got, vec![("hero".into(), false), ("heat".into(), true), ("kpis".into(), true)]);
         assert!(components(&json!({"components": "nope"})).is_empty());
         assert!(components(&Value::Null).is_empty());
     }

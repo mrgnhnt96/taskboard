@@ -110,7 +110,7 @@ fn a_spec_is_rejected_for_an_unknown_component_fact_key_or_ref_or_a_number_it_wr
     assert!(reject(&|s| s["highlights"] = json!(["T4 shipped."])).contains("ref `T4` isn't in the facts"));
     assert!(reject(&|s| s["components"][2]["component"] = json!("open")).contains("twice"));
     assert!(reject(&|s| s["components"][0]["component"] = json!("gcards")).contains("doesn't fit"), "fewer than three finished goals");
-    assert!(reject(&|s| s["components"][0]["component"] = json!("slow")).contains("don't have agent time per task"));
+    assert!(reject(&|s| s["components"][0]["component"] = json!("slow")).contains("`slowest` is empty or too small"), "no task has agent time");
     assert!(reject(&|s| s["components"][3]["props"][0]["fact"] = json!("totals")).contains("empty or too small"), "a's a number");
     assert!(reject(&|s| s["components"][3]["props"] = json!([{"name": "a", "fact": "totals.tasks"}])).contains("needs its `b` prop"));
     assert!(reject(&|s| s["components"][1]["props"][0] = json!({"name": "goal", "fact": "goals"})).contains("takes a ref"));

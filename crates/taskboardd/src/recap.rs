@@ -48,10 +48,22 @@
 //!
 //! **Released** is reported apart from merged: the releases cut in the period (not failed), each with
 //! the tasks it carried. PRs and lines changed come from the merges in the period (`pr_merges`).
+//!
+//! # Slowest, busiest hours, ranks and first tries
+//!
+//! - `slowest`: the period's finished agent tasks (closed PRs left out) by their agent time ever,
+//!   every run counted, most first, with the estimate when the task has one. Each finished goal
+//!   has its own few `slowest`, and `estimated`, how many of its tasks have an estimate.
+//! - `heat`: those tasks by the local weekday (Monday first) and hour they finished, a 7 × 24 grid.
+//! - `ranks`: the top projects' rank now and in the previous period (null when there's none),
+//!   ranked by finished tasks, then agent time; `moved` counts the ones whose rank changed.
+//! - `tries`: the PRs merged in the period, and how many merged on their first try, with no review
+//!   round that found something to fix (`pr_merges.fix_rounds`). A PR merged before the rounds were
+//!   recorded is `unknown` and counts in neither.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -77,6 +89,13 @@ const LOOSE_CAP: usize = 8;
 const RELEASE_CAP: usize = 20;
 /// Tool spans that are a subagent's whole run, which the subagent's own spans already count.
 const WRAPPERS: &[&str] = &["Task", "Agent"];
+/// The slowest tasks the facts keep, for the period and for each finished goal.
+const SLOW_CAP: usize = 15;
+const GOAL_SLOW_CAP: usize = 3;
+/// The projects the rank shift compares.
+const RANK_CAP: usize = 6;
+/// The retried PRs the facts list.
+const RETRIED_CAP: usize = 20;
 
 fn kind_of(kind: &str) -> Result<&'static str> {
     KINDS.iter().find(|k| **k == kind).copied().ok_or_else(|| ApiError::new(400, "A recap is weekly or monthly."))
@@ -272,22 +291,124 @@ fn busy(stretches: impl Iterator<Item = (f64, f64)>) -> f64 {
     crate::clock::merge(stretches.collect()).iter().map(|(a, b)| b - a).sum()
 }
 
-/// Each task's working seconds, ever (for agent time against the estimate).
-fn total_work(app: &App, tasks: &[i64]) -> Result<f64> {
+/// Each task's working seconds, ever, by task (tasks that never worked are left out).
+fn work_by_task(app: &App, tasks: &[i64]) -> Result<HashMap<i64, f64>> {
+    let mut out: HashMap<i64, f64> = HashMap::new();
+    if tasks.is_empty() {
+        return Ok(out);
+    }
     let now = now_ts();
-    let mut sum = 0.0;
-    for &t in tasks {
-        let states = app.db.q("SELECT at, status FROM task_states WHERE task_id = ? ORDER BY at, id", p![t])?;
-        for (i, s) in states.iter().enumerate() {
-            if s.s("status") != Some("working") {
-                continue;
-            }
-            let a = s.s("at").and_then(parse_iso).unwrap_or(now);
-            let b = states.get(i + 1).and_then(|n| n.s("at")).and_then(parse_iso).unwrap_or(now);
-            sum += (b - a).max(0.0);
+    let list = tasks.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
+    let states = app.db.q(&format!("SELECT task_id, at, status FROM task_states WHERE task_id IN ({list}) ORDER BY task_id, at, id"), p![])?;
+    for (i, s) in states.iter().enumerate() {
+        if s.s("status") != Some("working") {
+            continue;
+        }
+        let task = s.i0("task_id");
+        let a = s.s("at").and_then(parse_iso).unwrap_or(now);
+        let b = states.get(i + 1).filter(|n| n.i0("task_id") == task).and_then(|n| n.s("at")).and_then(parse_iso).unwrap_or(now);
+        *out.entry(task).or_default() += (b - a).max(0.0);
+    }
+    Ok(out)
+}
+
+/// The tasks' working seconds, ever, added up (for agent time against the estimate).
+fn total_work(app: &App, tasks: &[i64]) -> Result<f64> {
+    Ok(work_by_task(app, tasks)?.values().sum())
+}
+
+/// `rows`' tasks by their agent time ever, most first, the first `cap` of them.
+fn slowest(app: &App, rows: &[&Row], cap: usize) -> Result<Vec<Value>> {
+    let ids: Vec<i64> = rows.iter().map(|r| r.id()).collect();
+    let work = work_by_task(app, &ids)?;
+    let mut slow: Vec<(&Row, f64)> = rows.iter().filter_map(|r| Some((*r, *work.get(&r.id()).filter(|s| **s > 0.0)?))).collect();
+    slow.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id().cmp(&b.0.id())));
+    Ok(slow
+        .into_iter()
+        .take(cap)
+        .map(|(r, secs)| {
+            json!({"task": human::task_ref(r), "title": r.st("title"), "project": project_name(r.s("project")), "goal": rf_opt("goal", r.i("goal_id")),
+                   "agent_min": mins(secs), "est_human_min": r.i("human_min").filter(|m| *m > 0)})
+        })
+        .collect())
+}
+
+/// The stretch's finished tasks (closed PRs left out) by the local weekday (Monday first) and hour
+/// they finished.
+fn heat(g: &Gathered) -> Value {
+    let mut grid = [[0u32; 24]; 7];
+    let mut n = 0;
+    for d in g.done.iter().filter(|d| d.shipped != "closed") {
+        let t = local_dt(d.at);
+        grid[t.weekday().num_days_from_monday() as usize][t.hour() as usize] += 1;
+        n += 1;
+    }
+    json!({"tasks": n, "grid": grid})
+}
+
+/// The projects ranked as `projects` ranks them: by finished tasks, then agent time.
+fn ranked(g: &Gathered) -> Vec<String> {
+    let mut by: HashMap<String, (usize, f64)> = HashMap::new();
+    for d in g.done.iter().filter(|d| d.shipped != "closed") {
+        by.entry(d.project.clone()).or_default().0 += 1;
+    }
+    for w in &g.working {
+        by.entry(w.1.clone()).or_default().1 += w.3 - w.2;
+    }
+    let mut v: Vec<(String, (usize, f64))> = by.into_iter().collect();
+    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(b.1 .1.total_cmp(&a.1 .1)).then(a.0.cmp(&b.0)));
+    v.into_iter().map(|(p, _)| p).collect()
+}
+
+/// The top projects' rank now and in the previous stretch (1 is first; `before` is null for a
+/// project that had nothing then), and how many of them moved.
+fn ranks(projects: &[Value], before: &Gathered) -> Value {
+    let then = ranked(before);
+    let top: Vec<Value> = projects
+        .iter()
+        .take(RANK_CAP)
+        .enumerate()
+        .map(|(i, p)| {
+            let name = p["name"].as_str().unwrap_or_default();
+            json!({"name": name, "tasks": p["tasks"], "now": i + 1, "before": then.iter().position(|x| x == name).map(|r| r + 1)})
+        })
+        .collect();
+    let moved = top.iter().filter(|p| p["before"] != p["now"]).count();
+    json!({"moved": moved, "projects": top})
+}
+
+/// The PRs merged in the stretch and whether each merged on its first try: no review round found
+/// something to fix (`merges::record_rounds`). PRs merged before the rounds were recorded are
+/// `unknown` and left out of the rest.
+fn tries(app: &App, from: f64, to: f64) -> Result<Value> {
+    let rows = app.db.q(
+        "SELECT m.task_id, m.pr_num, m.fix_rounds, COALESCE(NULLIF(m.project, ''), t.project) AS project, t.title FROM pr_merges m LEFT JOIN tasks t ON t.id = m.task_id
+         WHERE m.merged_at >= ? AND m.merged_at < ? ORDER BY m.merged_at, m.id",
+        p![iso(from), iso(to)],
+    )?;
+    let mut seen: BTreeSet<(String, i64)> = BTreeSet::new();
+    let (mut prs, mut first, mut unknown) = (0, 0, 0);
+    let mut retried = Vec::new();
+    for r in &rows {
+        let project = project_name(r.s("project"));
+        if !seen.insert((project.clone(), r.i0("pr_num"))) {
+            continue;
+        }
+        let Some(n) = r.i("fix_rounds") else {
+            unknown += 1;
+            continue;
+        };
+        prs += 1;
+        if n == 0 {
+            first += 1;
+        } else {
+            retried.push(json!({"pr": r.i0("pr_num"), "task": rf("task", r.i0("task_id")), "title": r.st("title"), "project": project, "rounds": n}));
         }
     }
-    Ok(sum)
+    retried.sort_by(|a, b| b["rounds"].as_i64().cmp(&a["rounds"].as_i64()));
+    let more = retried.len().saturating_sub(RETRIED_CAP);
+    retried.truncate(RETRIED_CAP);
+    Ok(json!({"prs": prs, "first_try": first, "unknown": unknown, "retried": retried, "more": more}))
 }
 
 /// The headline numbers of one stretch (or one project's share of it).
@@ -391,12 +512,15 @@ fn finished_goals(app: &App, all: &[Value], g: &Gathered) -> Result<Vec<Value>> 
             json!({"prs": r.i0("prs"), "added": r.i0("added"), "removed": r.i0("removed")})
         };
         let started = tasks.iter().filter_map(|t| t.s("started_at")).min();
+        let agents: Vec<&Row> = tasks.iter().filter(|t| !human::is(t)).collect();
         out.push(json!({
             "goal": q["goal"], "name": goal.st("name"), "tldr": goal.s("tldr").filter(|s| !s.is_empty()), "project": project_name(goal.s("project")),
             "started_at": started, "finished_at": q["finished_at"], "tasks": ids.len(),
             "human_tasks": tasks.iter().filter(|t| human::is(t)).count(),
             "prs": lines["prs"], "added": lines["added"], "removed": lines["removed"],
             "agent_min": mins(total_work(app, &ids)?), "est_human_min": q["est_min"],
+            "estimated": tasks.iter().filter(|t| t.i("human_min").is_some_and(|m| m > 0)).count(),
+            "slowest": slowest(app, &agents, GOAL_SLOW_CAP)?,
         }));
     }
     Ok(out)
@@ -544,6 +668,10 @@ fn labels() -> Value {
         "est_agent_min": "Agent time those same tasks took",
         "waiting": "Time tasks waited on you while you were at the Mac in work hours",
         "usage": "Plan usage, in percent of each limit",
+        "slowest": "The finished tasks that took the most agent time, all their runs counted",
+        "heat": "Finished tasks by weekday and hour",
+        "ranks": "Projects ranked by finished tasks, this period and the one before",
+        "first_try": "PRs merged with no review round that found something to fix",
     })
 }
 
@@ -555,7 +683,8 @@ pub fn facts(app: &App, kind: &str, first: NaiveDate) -> Result<Value> {
     let g = gather(app, from, to)?;
     let (pfirst, pend) = previous(kind, first)?;
     let (pfrom, pto) = (days::start_of(pfirst), days::start_of(pend));
-    let before = totals(app, &gather(app, pfrom, pto)?, None)?;
+    let pg = gather(app, pfrom, pto)?;
+    let before = totals(app, &pg, None)?;
     let all_goals = quality::goals(app, None)?;
     let goals = finished_goals(app, &all_goals, &g)?;
     let days = day_list(first, end);
@@ -571,6 +700,8 @@ pub fn facts(app: &App, kind: &str, first: NaiveDate) -> Result<Value> {
                    "agent_min": mins(g.working.iter().map(|w| (w.3.min(b) - w.2.max(a)).max(0.0)).sum())})
         })
         .collect();
+    let project_list = projects(app, &g)?;
+    let done_rows: Vec<&Row> = g.done.iter().filter(|d| d.shipped != "closed" && !d.human).map(|d| &d.row).collect();
     let mut f = json!({
         "version": VERSION, "kind": kind,
         "period": {"start": iso(from), "end": iso(to), "first_day": date_str(first), "last_day": date_str(end - Duration::days(1))},
@@ -583,7 +714,7 @@ pub fn facts(app: &App, kind: &str, first: NaiveDate) -> Result<Value> {
             b["last_day"] = json!(date_str(pend - Duration::days(1)));
             b
         },
-        "projects": projects(app, &g)?,
+        "projects": project_list,
         "goals": goals,
         "tasks": task_lists(app, &g)?,
         "releases": releases(app, &g)?,
@@ -592,7 +723,11 @@ pub fn facts(app: &App, kind: &str, first: NaiveDate) -> Result<Value> {
         "usage": usage(app, from, to, &days)?,
         "issues": issues(app, from, to)?,
         "days": per_day,
+        "slowest": slowest(app, &done_rows, SLOW_CAP)?,
+        "heat": heat(&g),
+        "tries": tries(app, from, to)?,
     });
+    f["ranks"] = if f["before"].is_null() { Value::Null } else { ranks(&project_list, &pg) };
     if kind == "monthly" {
         let mut weeks = Vec::new();
         let mut m = monday_of(first);
@@ -624,6 +759,7 @@ pub fn save(app: &App, kind: &str, day: NaiveDate) -> Result<i64> {
     if let Some(r) = app.db.q1("SELECT id FROM recaps WHERE kind = ? AND period_start = ?", p![kind, start])? {
         return Ok(r.id());
     }
+    crate::merges::record_rounds(app)?;
     let f = facts(app, kind, first)?;
     app.db.x(
         "INSERT INTO recaps(kind, period_start, period_end, created_at, facts) VALUES(?, ?, ?, ?, ?)",

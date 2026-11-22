@@ -83,23 +83,17 @@ pub struct Component {
     props: &'static [Prop],
     /// Left out of a month's recap.
     month_skip: bool,
-    /// What the facts don't have yet, when they can't fill it.
-    missing: Option<&'static str>,
     /// Takes a sentence of its own (`text`).
     text: bool,
 }
 
 const fn c(id: &'static str, name: &'static str, group: &'static str, span: &'static str, rule: &'static str, props: &'static [Prop]) -> Component {
-    Component { id, name, group, span, rule, props, month_skip: false, missing: None, text: false }
+    Component { id, name, group, span, rule, props, month_skip: false, text: false }
 }
 
 impl Component {
     const fn no_month(mut self) -> Self {
         self.month_skip = true;
-        self
-    }
-    const fn missing(mut self, what: &'static str) -> Self {
-        self.missing = Some(what);
         self
     }
     const fn text(mut self) -> Self {
@@ -134,12 +128,14 @@ pub static CATALOG: &[Component] = &[
       &[fact("categories", "agent.categories", Any), fact("projects", "agent.projects", Opt)]),
     c("vs", "Agent vs estimated human", "Time", "half", "Estimated developer time against agent time. Needs 10 or more estimated hours; say \"estimated\".",
       &[fact("human", "totals.est_human_min", Min(600.0)), fact("agent", "totals.est_agent_min", Opt), fact("estimated", "totals.estimated", Opt)]),
-    c("slow", "Slowest tasks", "Time", "half", "Top 5 tasks by agent time.", &[]).missing("agent time per task"),
+    c("slow", "Slowest tasks", "Time", "half", "Top 5 tasks by agent time, every run counted, against the estimate where there is one. Needs 3 or more.",
+      &[fact("tasks", "slowest", Min(3.0))]),
     c("wait", "Waiting on you", "Time", "half", "Time tasks waited on the owner. Lead a quiet period with it when the waits explain it. Needs an hour or more.",
       &[fact("minutes", "waiting.minutes", Min(60.0)), fact("reasons", "waiting.reasons", Opt), fact("tasks", "waiting.tasks", Opt)]),
     c("usage", "Usage meter", "Time", "full", "Plan usage in percent; prefers the 7-day window.",
       &[fact("seven_day", "usage.seven_day", Any), fact("five_hour", "usage.five_hour", Opt)]),
-    c("heat", "Busiest hours", "Time", "full", "Finished tasks by weekday and hour, at 50 or more tasks.", &[]).missing("finished tasks by weekday and hour"),
+    c("heat", "Busiest hours", "Time", "full", "Finished tasks by weekday and hour, at 50 or more tasks.",
+      &[fact("tasks", "heat.tasks", Min(50.0)), fact("grid", "heat.grid", Any)]),
     c("days", "Day-by-day strip", "Trends", "full", "The shape of the period day by day; leads a quiet week.",
       &[fact("days", "days", Any), fact("tasks", "totals.tasks", Any)]),
     c("ba", "Before and after", "Trends", "half", "This period's numbers against the previous one's, when both had work.",
@@ -150,8 +146,10 @@ pub static CATALOG: &[Component] = &[
       &[fact("added", "totals.added", Any), fact("removed", "totals.removed", Opt)]),
     c("board", "Project leaderboard", "Trends", "half", "Projects ranked by tasks, for 2 or more projects.",
       &[fact("projects", "projects", Min(2.0))]),
-    c("bump", "Project rank shift", "Trends", "half", "When the top project changed.", &[]).missing("the previous period's project ranks").no_month(),
-    c("tries", "Merged first try", "Quality", "half", "PRs merged without a retry.", &[]).missing("retries recorded for every PR").no_month(),
+    c("bump", "Project rank shift", "Trends", "half", "When the top projects' ranks changed since the previous period.",
+      &[fact("projects", "ranks.projects", Min(2.0)), fact("moved", "ranks.moved", Min(1.0))]).no_month(),
+    c("tries", "Merged first try", "Quality", "half", "PRs merged with no review round that found something to fix.",
+      &[fact("prs", "tries.prs", Min(1.0)), fact("first", "tries.first_try", Opt), fact("retried", "tries.retried", Opt)]).no_month(),
     c("plan", "Plan-quality scorecard", "Quality", "full", "A month's plan quality against the month before.",
       &[fact("this", "quality.this", Any), fact("before", "quality.before", Opt)]),
     c("lessons", "Lessons kept", "Quality", "half", "Lessons kept in the period, at most 5.",
@@ -299,9 +297,6 @@ fn meets(v: &Value, need: Need) -> bool {
 
 /// Why `c` can't go on a page for these facts, if it can't.
 fn unfit(c: &Component, facts: &Value) -> Option<String> {
-    if let Some(m) = c.missing {
-        return Some(format!("the facts don't have {m} yet"));
-    }
     if c.month_skip && facts["kind"] == "monthly" {
         return Some("it's left out of a month".into());
     }
@@ -573,6 +568,14 @@ fn prompt_facts(facts: &Value) -> Value {
         if let Some(o) = f["usage"][w].as_object_mut() {
             o.remove("by_day");
         }
+    }
+    for path in ["/slowest", "/tries/retried"] {
+        if let Some(a) = f.pointer_mut(path).and_then(Value::as_array_mut) {
+            a.truncate(PROMPT_TASKS);
+        }
+    }
+    if let Some(o) = f["heat"].as_object_mut() {
+        o.remove("grid");
     }
     f
 }
