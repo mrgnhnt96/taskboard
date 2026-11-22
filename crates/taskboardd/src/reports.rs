@@ -3374,16 +3374,31 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>, more: &[i64])
 fn on_attach(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let (url, title, kind, summary) = (r.b("url"), r.b("title"), r.b("kind"), r.b("summary"));
+    let copy = r.b("copy");
+    if !copy.trim().is_empty() && board::page_text(&copy).is_empty() {
+        return err(400, "The --copy file has no text in it.");
+    }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
         let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, &summary, None, Some(g.id()))?;
+        attach_copy(r, &a)?;
         return Ok(with(ok(None, None), json!({"attachment": a, "goal": rf("goal", g.id())})));
     }
     let Some(t) = r.task()? else {
         return err(400, "No task on this terminal. Name one with --task T<n>, or a goal with --goal G<n>.");
     };
     let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, &summary, Some(t.id()), None)?;
+    attach_copy(r, &a)?;
     Ok(with(ok(Some(&t), None), json!({"attachment": a})))
+}
+
+/// `tb attach --copy`: keep the text the agent read from the link, for a link the board can't open.
+/// Attaching it again without one keeps the copy it has.
+fn attach_copy(r: &Report, a: &Value) -> Result<()> {
+    match a["id"].as_i64() {
+        Some(aid) => board::set_attachment_copy(r.app, aid, &r.b("copy")),
+        None => Ok(()),
+    }
 }
 
 /// `tb unattach`: remove the task's (or, with `goal`, the goal's) attachment whose link, path or

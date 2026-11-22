@@ -5,8 +5,8 @@
 //! do with no human task for them, tasks planned past an undecided decision, overlap with other goals,
 //! and lessons the plan goes against. It never sees the planner's conversation. When the outcome points
 //! at a source the plan must match (a review, a doc, a design, a list of issues), it reads that source
-//! (the goal's attachments, with local text files inlined, the backlog issues named, links through
-//! WebFetch) and flags each of its items no task covers. Before it reports, it checks in the checkout
+//! (the goal's attachments, with local text files and the copies kept of links inlined, the backlog
+//! issues named, links through WebFetch) and flags each of its items no task covers. Before it reports, it checks in the checkout
 //! that what each task names or relies on (files, functions, commands, docs) is there and does what the
 //! plan says, within a cap on its turns and spending.
 //!
@@ -370,6 +370,11 @@ fn file_text(url: &str, room: usize) -> Option<String> {
     (!text.is_empty() && !text.contains('\0')).then(|| clip(text, SOURCE_TEXT_MAX.min(room)))
 }
 
+/// `text` as a quote under its attachment's line.
+fn quoted(text: &str) -> String {
+    text.lines().map(|l| format!("  | {l}")).collect::<Vec<_>>().join("\n")
+}
+
 fn attachment_lines(app: &App, g: &Row, tasks: &[Row]) -> Result<(Vec<String>, bool)> {
     let mut atts: Vec<Value> = board::attachments(app, None, Some(g.id()))?
         .into_iter()
@@ -392,13 +397,21 @@ fn attachment_lines(app: &App, g: &Row, tasks: &[Row]) -> Result<(Vec<String>, b
         if let Some(s) = a["summary"].as_str() {
             line.push_str(&format!(" — {s}"));
         }
-        if openable(url) {
+        let copy = match a["id"].as_i64() {
+            Some(aid) if room > 0 && url.contains("://") => board::attachment_copy(app, aid)?,
+            _ => None,
+        };
+        if let Some(copy) = copy {
+            let text = clip(&copy, SOURCE_TEXT_MAX.min(room));
+            room = room.saturating_sub(text.chars().count());
+            line.push_str(&format!("\n  Its contents, as copied when it was attached:\n{}", quoted(&text)));
+        } else if openable(url) {
             web = true;
         } else if url.contains("://") {
-            line.push_str("\n  (a claude.ai artifact the board can't open: go by its title and summary)");
+            line.push_str("\n  (a claude.ai artifact the board can't open, with no copy of its text: go by its title and summary)");
         } else if let Some(text) = file_text(url, room) {
             room = room.saturating_sub(text.chars().count());
-            line.push_str(&format!("\n  Its contents:\n{}", text.lines().map(|l| format!("  | {l}")).collect::<Vec<_>>().join("\n")));
+            line.push_str(&format!("\n  Its contents:\n{}", quoted(&text)));
         }
         lines.push(line);
     }
@@ -488,8 +501,9 @@ fn prompt(app: &App, g: &Row, sha: Option<&str>, read: bool, src: &Sources) -> R
          decision, fix, screen or issue), not only the ones the tasks name, and check each against the tasks. An \
          item no task covers, and the goal notes don't settle or set aside, is an outcome_unproven finding: name \
          the item and where it is in the source. A source you can't read (not attached, or a link or artifact that \
-         won't open) is one outcome_unproven finding naming it and asking for its items where the review can read \
-         them (attached, or in the goal notes); don't guess its items.\n\
+         won't open and has no copy) is one outcome_unproven finding naming it and asking for its items where the \
+         review can read them (attached with its text, by tb attach <link> --copy <file>, or in the goal notes); \
+         don't guess its items.\n\
          A finding's short is a glance, {SHORT_MAX} characters at most; its detail gives the evidence and what to \
          change in the plan. tasks lists this goal's task refs it's about; refs lists the other goals, backlog issues and \
          lessons it's about (only refs shown below). Don't flag what the goal notes already settle, don't restate the plan, and \

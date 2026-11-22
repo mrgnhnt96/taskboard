@@ -716,7 +716,9 @@ task whose PR is still OPEN shows "Awaiting merge" (or `stage.label`) instead of
 {"id": int, "kind": "design"|"proposal"|"doc"|"evidence"|"results"|"other", "title": str, "url": str,
  "at": iso, "task": "T12"|null, "goal": "G3"|null, "added_by": str?}
 ```
-`url` is an `https://` link or an absolute/`~` file path. For a path, the UI links to `/tasks/files/:id`, which the
+`url` is an `https://` link or an absolute/`~` file path. A link can carry a copy of its text (`tb attach --copy <file>`,
+`copy` on the `tb.attach` report): a claude.ai artifact's page with its tags taken out, kept in `attachments.copy` for
+plan review to read. It isn't part of the dict; attaching the link again without one keeps it. For a path, the UI links to `/tasks/files/:id`, which the
 server serves (the original served the file inline with a sandboxing CSP). The UI can edit and remove attachments
 but not add them (agents add them with `tb`).
 

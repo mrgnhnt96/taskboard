@@ -1173,6 +1173,76 @@ fn is_artifact_link(url: &str) -> bool {
 
 static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^https?://\S+$").unwrap());
 
+/// The most of a link's copy the board keeps, in characters.
+const COPY_MAX: usize = 60_000;
+
+static HIDDEN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<!--.*?-->|<script\b.*?</script\s*>|<style\b.*?</style\s*>|<noscript\b.*?</noscript\s*>").unwrap());
+static ITEM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<li\b[^>]*>").unwrap());
+static BREAK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)</?(?:p|div|h[1-6]|ul|ol|li|tr|br|hr|section|article|header|footer|main|nav|aside|table|pre|blockquote|dl|dt|dd|title|figure|figcaption|details|summary)\b[^>]*>").unwrap()
+});
+static ANY_TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"</?[a-zA-Z!][^<>]*>").unwrap());
+static ENTITY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);").unwrap());
+
+/// What a page says: an HTML page's text with its scripts, styles and tags taken out, a line for each
+/// block and `- ` before each list item; Markdown or plain text as it is. Blank lines collapse to one.
+pub fn page_text(raw: &str) -> String {
+    let text = if ANY_TAG_RE.is_match(raw) && raw.contains("</") {
+        let t = HIDDEN_RE.replace_all(raw, "");
+        let t = ITEM_RE.replace_all(&t, "\n- ");
+        let t = BREAK_RE.replace_all(&t, "\n");
+        let t = ANY_TAG_RE.replace_all(&t, "");
+        ENTITY_RE
+            .replace_all(&t, |c: &regex::Captures| {
+                let e = &c[1];
+                let ch = match e {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some(' '),
+                    _ if e.starts_with("#x") || e.starts_with("#X") => u32::from_str_radix(&e[2..], 16).ok().and_then(char::from_u32),
+                    _ if e.starts_with('#') => e[1..].parse().ok().and_then(char::from_u32),
+                    _ => None,
+                };
+                ch.map(String::from).unwrap_or_else(|| c[0].to_string())
+            })
+            .into_owned()
+    } else {
+        raw.to_string()
+    };
+    let mut out: Vec<String> = vec![];
+    for line in text.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() && out.last().is_none_or(|l| l.is_empty()) {
+            continue;
+        }
+        out.push(line);
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// Keep `raw` (a page or Markdown, as read by the agent who attached the link) as the attachment's copy,
+/// as text clipped to [`COPY_MAX`]. One with no text in it leaves the copy the attachment has.
+pub fn set_attachment_copy(app: &App, aid: i64, raw: &str) -> Result<()> {
+    let text = page_text(raw);
+    if text.is_empty() {
+        return Ok(());
+    }
+    app.db.x("UPDATE attachments SET copy = ? WHERE id = ?", p![clip(&text, COPY_MAX), aid])?;
+    Ok(())
+}
+
+/// The attachment's copy (see [`set_attachment_copy`]); None when it has none.
+pub fn attachment_copy(app: &App, aid: i64) -> Result<Option<String>> {
+    Ok(app.db.q1("SELECT copy FROM attachments WHERE id = ?", p![aid])?.and_then(|r| r.s("copy").map(str::to_string)).filter(|c| !c.is_empty()))
+}
+
 /// The refused extension (as configured) a file path ends with. Links aren't files, so they pass.
 pub fn refused_extension(refuse: &[String], url: &str) -> Option<String> {
     if URL_RE.is_match(url) {
@@ -1217,7 +1287,7 @@ pub fn add_attachment(
         _ => attachment_title(title, url),
     };
     if title == attachment_title("", url) && is_artifact_link(url) {
-        return err(400, "Give it --title: the artifact's own title. The board can't open a private artifact to read it.");
+        return err(400, "Give it --title: the artifact's own title. The board can't open a private artifact to read it (give its text with --copy <file>).");
     }
     let aid = if let Some(cur) = cur {
         // Attaching it again without a summary keeps the one it has.
