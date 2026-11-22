@@ -49,8 +49,10 @@ If macOS asks, switch Taskboard on in System Settings ▸ General ▸ Login Item
 Coming from the old board? Follow `docs/CUTOVER.md` first: it holds the same port, and
 `taskboardd import` brings its tasks, goals and backlog over with their numbers.
 
-Without the app: `./install.sh` builds and copies `taskboardd` and `tb` into `~/.local/bin`; run
-`taskboardd serve` yourself (or `taskboardd launchd` prints a LaunchAgent plist).
+Without the app: `./install.sh` builds and copies `taskboardd` and `tb` into `~/.local/bin` (from
+`$CARGO_TARGET_DIR` when it's set), then `tb install-hooks` installs the task-board plugin and the
+Claude Code hooks that run that `tb`; run `taskboardd serve` yourself (or `taskboardd launchd` prints
+a LaunchAgent plist).
 
 Optional: point Claude Code's status line at `~/.local/bin/tb statusline`, so the board knows when
 the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/README.md`.
