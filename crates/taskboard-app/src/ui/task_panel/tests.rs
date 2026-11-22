@@ -1074,6 +1074,105 @@ fn the_pr_plan_shows_on_a_task_without_a_pr() {
     assert!(!panel_text(t(false), json!({})).contains("Pull request"), "a task that doesn't end in a PR stops at Done");
 }
 
+/// One timeline stop: its name, its dot and the names of the PR steps it shows.
+type Stop = (String, view::TlSt, Vec<String>);
+
+/// The timeline's stops, top first.
+fn stops(task: &Value) -> Vec<Stop> {
+    fn first_text(n: &view::Node) -> Option<String> {
+        match n {
+            view::Node::Text { s, .. } | view::Node::Link { s, .. } => Some(s.clone()),
+            view::Node::El { kids, .. } => kids.iter().find_map(first_text),
+            _ => None,
+        }
+    }
+    fn steps(n: &view::Node, out: &mut Vec<String>) {
+        match n {
+            view::Node::El { k: view::K::Step(_), kids, .. } => out.extend(kids.first().and_then(first_text)),
+            view::Node::El { kids, .. } => kids.iter().for_each(|k| steps(k, out)),
+            _ => {}
+        }
+    }
+    fn walk(n: &view::Node, out: &mut Vec<Stop>) {
+        match n {
+            view::Node::El { k: view::K::TlNode { st, .. }, kids, .. } => {
+                let mut names = Vec::new();
+                kids.iter().skip(1).for_each(|k| steps(k, &mut names));
+                out.push((kids.first().and_then(first_text).unwrap_or_default(), *st, names));
+            }
+            view::Node::El { kids, .. } => kids.iter().for_each(|k| walk(k, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&tree(&json!({"task": task, "state": {}, "ui": {}})), &mut out);
+    out
+}
+
+/// The PR's three stops, top first: the merge, Checks and review, Pull request.
+fn pr_stops(task: &Value) -> Vec<Stop> {
+    stops(task).into_iter().take(3).collect()
+}
+
+fn stop(name: &str, st: view::TlSt, steps: &[&str]) -> Stop {
+    (name.to_string(), st, steps.iter().map(|x| x.to_string()).collect())
+}
+
+#[::core::prelude::v1::test]
+fn a_closed_pr_ends_closed_without_merging() {
+    use view::TlSt::{Done, Fail, Todo};
+    // Without the board's bar (Checks, Review) and with it (Checks, You, Review).
+    for (bar, mid) in [(Value::Null, &["Checks", "Review"][..]), (json!({"you": "reviewed"}), &["Checks", "You", "Review"][..])] {
+        let mut task = with_bar(bar.clone(), Value::Null, "approved");
+        assert_eq!(pr_stops(&task), vec![stop("Pending merge", Todo, &[]), stop("Checks and review", Done, mid), stop("Pull request", Done, &[])], "open");
+        task["pr"]["state"] = json!("MERGED");
+        assert_eq!(pr_stops(&task)[0], stop("Merged", Done, &[]));
+        task["pr"]["state"] = json!("CLOSED");
+        assert_eq!(pr_stops(&task), vec![stop("Closed without merging", Fail, &[]), stop("Checks and review", Done, mid), stop("Pull request", Done, &[])], "closed");
+        let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
+        let text = view::text(&tree);
+        assert!(!text.contains("Declined") && !text.contains("Merged") && !text.contains("Pending merge"), "named for what happened, nothing under it: {text}");
+        assert!(!view::acts(&tree).iter().any(|a| a == "pr-menu"), "nothing left to merge");
+    }
+}
+
+#[::core::prelude::v1::test]
+fn the_checks_dot_is_its_worst_step() {
+    use view::TlSt::{Done, Fail, Now, Todo, Warn};
+    let dot = |bar: Value, checks: &str, stage: Value, review: &str| {
+        let mut task = with_bar(bar, stage, review);
+        task["pr"]["checks"] = json!(checks);
+        let s = pr_stops(&task).remove(1);
+        assert_eq!(s.0, "Checks and review");
+        s.1
+    };
+    assert_eq!(dot(Value::Null, "pass", Value::Null, "approved"), Done);
+    assert_eq!(dot(Value::Null, "pending", Value::Null, "approved"), Now, "checks running");
+    assert_eq!(dot(Value::Null, "fail", json!({"phase": "fix"}), "approved"), Fail, "failing checks");
+    assert_eq!(dot(Value::Null, "fail", Value::Null, "pending"), Fail, "a failure outweighs a wait");
+    assert_eq!(dot(Value::Null, "fail", json!({"phase": "fix", "owner": {"login": "o"}}), "approved"), Warn, "only the owner can fix them");
+    assert_eq!(dot(json!({"you": "waiting"}), "pass", Value::Null, "approved"), Warn, "waiting on the owner's look");
+    assert_eq!(dot(json!({"you": "waiting"}), "fail", json!({"phase": "fix"}), "approved"), Fail, "a failure outweighs an ask");
+    assert_eq!(dot(json!({"checks": "none_yet"}), "", Value::Null, "none"), Todo, "nothing started");
+    assert_eq!(dot(json!({"checks": "none_yet", "you": "reviewed"}), "", Value::Null, "none"), Now, "some done, some not");
+}
+
+#[::core::prelude::v1::test]
+fn a_step_result_showing_the_review_bar_leaves_it_out_of_the_pr_steps() {
+    use view::TlSt::{Done, Fail};
+    // The author-side review failed: its headline names no open findings and it didn't pass.
+    let review = json!({"bar": "Critic", "headline": "Review failed", "open": 0, "passed": false});
+    let mut task = with_bar(json!({"you": "reviewed", "author_review": review}), Value::Null, "approved");
+    assert_eq!(pr_stops(&task)[1], stop("Checks and review", Fail, &["Critic", "Checks", "You", "Review"]), "no step result: the PR shows it");
+    // A step result of another step keeps it.
+    task["step_results"] = json!([{"name": "Lint", "headline": "Passed", "open": 0, "passed": true, "findings": []}]);
+    assert_eq!(pr_stops(&task)[1], stop("Checks and review", Fail, &["Critic", "Checks", "You", "Review"]));
+    // Shown by its own stop: once, there, and the PR's dot goes by what's left.
+    task["step_results"] = json!([{"name": "Author review", "bar": "Critic", "headline": "Review failed", "open": 0, "passed": false, "findings": []}]);
+    assert_eq!(pr_stops(&task)[1], stop("Checks and review", Done, &["Checks", "You", "Review"]));
+    assert!(stops(&task).iter().any(|s| s.0 == "Author review"), "{:?}", stops(&task));
+}
+
 #[::core::prelude::v1::test]
 fn a_step_opens_to_its_findings_with_their_state() {
     let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
