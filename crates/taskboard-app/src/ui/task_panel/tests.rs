@@ -1,7 +1,7 @@
 //! The task panel against the web board: every panel state from `parity/golden/task.json` (what
 //! the web showed, its controls, tooltips and fields), and every action's request.
 use super::view::{self, Ctx, Ui};
-use super::{Act, act, build, handoff_stamp, on_input, ui};
+use super::{Act, act, build, handoff_stamp, handoff_wanted, on_input, ui};
 use crate::app::{MainWindow, Panel, TaskTab};
 use crate::parity::{self, golden, settle};
 use crate::backend::Backend;
@@ -108,6 +108,12 @@ fn helpers_match_web() {
     let g = golden("task");
     g.only("hoursOpenAt").check(|i| json!(view::hours_open_at(&i["state"])));
     g.only("sentNote").check(|i| json!(view::sent_note(&i["state"])));
+    // B155: the fetched handoff is fetched again once the task moves on.
+    g.only("handoffWanted").check(|i| {
+        let u = Ui { handoffs: serde_json::from_value(i["handoffs"].clone()).unwrap(), ..Default::default() };
+        let r = i["task"]["ref"].as_str().unwrap_or("");
+        json!(handoff_wanted(&i["task"], &u, i["handoff_at"][r].as_str()))
+    });
 }
 
 #[::core::prelude::v1::test]

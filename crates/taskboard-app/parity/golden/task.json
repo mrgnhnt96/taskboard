@@ -16104,6 +16104,711 @@
         }
       },
       "expect": "Sent to Midna"
+    },
+    {
+      "name": "handoffWanted none yet",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {},
+        "handoff_at": {}
+      },
+      "expect": true
+    },
+    {
+      "name": "handoffWanted carried by the detail",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "handoffs": {},
+        "handoff_at": {}
+      },
+      "expect": false
+    },
+    {
+      "name": "handoffWanted carried as an object",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": {
+            "text": "Object handoff."
+          },
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "handoffs": {},
+        "handoff_at": {}
+      },
+      "expect": false
+    },
+    {
+      "name": "handoffWanted fetched for this state",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {
+          "T7": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": false
+    },
+    {
+      "name": "handoffWanted fetch failed for this state",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "Couldn’t load the handoff: The board answered 500."
+        },
+        "handoff_at": {
+          "T7": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": false
+    },
+    {
+      "name": "handoffWanted fetched, state unknown",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {}
+      },
+      "expect": true
+    },
+    {
+      "name": "handoffWanted fetched for another task",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "x",
+          "T8": "y"
+        },
+        "handoff_at": {
+          "T8": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "handoffWanted no log yet, fetched",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {
+          "T7": "null|\"2026-10-07T14:56:00.000Z\"|\"working\"|"
+        }
+      },
+      "expect": false
+    },
+    {
+      "name": "handoffWanted after new context",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 4
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {
+          "T7": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "handoffWanted after updated",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:59:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {
+          "T7": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "handoffWanted after new status",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "needs",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {
+          "T7": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "handoffWanted after new log line",
+      "input": {
+        "fn": "handoffWanted",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [
+            {
+              "at": "2026-10-07T15:00:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Again."
+            },
+            {
+              "at": "2026-10-07T14:58:00.000Z",
+              "who": "T7 x",
+              "kind": "turn",
+              "text": "Ran it."
+            }
+          ],
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ctx_version": 3
+        },
+        "handoffs": {
+          "T7": "Fetched handoff text."
+        },
+        "handoff_at": {
+          "T7": "3|\"2026-10-07T14:56:00.000Z\"|\"working\"|\"2026-10-07T14:58:00.000Z\""
+        }
+      },
+      "expect": true
     }
   ]
 }
