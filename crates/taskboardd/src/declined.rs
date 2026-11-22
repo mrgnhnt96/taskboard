@@ -33,7 +33,7 @@ pub fn held(app: &App, t: &Row) -> Result<Vec<Row>> {
 }
 
 fn stuck(t: &Row) -> bool {
-    t.s("status") == Some("done") && landed(t).is_none() && if t.i("pr_num").is_some() { pr_declined(t) } else { !t.b("failed") && !has(t.s("pr_url")) }
+    t.s("status") == Some("done") && landed(t).is_none() && if crate::samepr::pr_num(t).is_some() { pr_declined(t) } else { !t.b("failed") && !has(t.s("pr_url")) }
 }
 
 /// `tb submit` is refused when it would leave a task that waits for this one's merge with no PR to wait for.
@@ -64,7 +64,7 @@ fn text(t: &Row, held: &[Row]) -> String {
         _ => (who.join(", "), "wait"),
     };
     let drop = format!("To let a waiter go on without it: tb wait-for --drop {me} --task {}.", rf("task", held[0].id()));
-    match t.i("pr_num") {
+    match crate::samepr::pr_num(t) {
         Some(n) => format!("{me}'s PR #{n} was declined, so {who} {verb} for work that won't merge. If it landed another way: tb task set {me} --landed <commit>. {drop}"),
         None => format!(
             "{me} finished with no PR linked, so {who} {verb} for a merge that won't come. If its work went through another PR: tb task set {me} --pr-link <link>. \
@@ -98,7 +98,8 @@ pub fn check(app: &App, t: &Row) -> Result<bool> {
 pub fn sweep(app: &App) -> Result<()> {
     let rows = app.db.q(
         "SELECT * FROM tasks WHERE status = 'done' AND (landed IS NULL OR landed = '') \
-         AND ((pr_num IS NOT NULL AND (pr_phase = 'declined' OR UPPER(pr_state) IN ('CLOSED', 'DECLINED', 'SUPERSEDED'))) \
+         AND (((pr_num IS NOT NULL OR (same_pr IS NOT NULL AND COALESCE(pr_url, '') != '')) \
+         AND (pr_phase = 'declined' OR UPPER(pr_state) IN ('CLOSED', 'DECLINED', 'SUPERSEDED'))) \
          OR (pr_num IS NULL AND failed = 0 AND COALESCE(pr_url, '') = '' AND COALESCE(no_pr, '') = '')) \
          AND EXISTS (SELECT 1 FROM tasks w WHERE w.status != 'done' AND w.waits_for IS NOT NULL \
          AND EXISTS (SELECT 1 FROM json_each(w.waits_for) WHERE value = tasks.id))",

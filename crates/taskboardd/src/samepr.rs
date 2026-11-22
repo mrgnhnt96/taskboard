@@ -67,6 +67,58 @@ fn predecessor(app: &App, t: &Row) -> Result<Option<Row>> {
     }
 }
 
+/// The members that added their work and link the anchor's PR: the ones the trigger keeps in step.
+fn linked(app: &App, id: i64) -> Result<Vec<Row>> {
+    app.db.q("SELECT * FROM tasks WHERE same_pr = ? AND id != ? AND pr_url IS NOT NULL AND pr_num IS NULL ORDER BY id", p![id, id])
+}
+
+/// The PR number a task links: its own, or the one in its link (a member's, which doesn't own it).
+pub fn pr_num(t: &Row) -> Option<i64> {
+    t.i("pr_num").or_else(|| t.s("pr_url").and_then(find_pr).map(|pr| pr.num))
+}
+
+/// The task whose PR this one's ticket follows: the anchor, for a member that linked its PR.
+pub fn pr_task(app: &App, t: &Row) -> Result<Row> {
+    if t.i("pr_num").is_none() && has(t.s("pr_url")) {
+        if let Some(a) = anchor(app, t)? {
+            return Ok(a);
+        }
+    }
+    Ok(t.clone())
+}
+
+/// The anchor's PR moved to `phase`: what runs per PR runs for each member that linked it too. Its
+/// ticket goes to in review with it and moves at merge, it logs the merge or the close, and one closed
+/// without merging holds the member's waiters as it holds the anchor's.
+pub fn follow(app: &App, a: &Row, old: &str, phase: &str) -> Result<()> {
+    if anchor_id(a).is_some() {
+        return Ok(());
+    }
+    let ra = rf("task", a.id());
+    let num = a.i0("pr_num");
+    let review = crate::prflow::IN_CODE_REVIEW;
+    for m in linked(app, a.id())? {
+        if review.contains(&phase) && !review.contains(&old) {
+            let st = app.cfg.jira.in_review.clone();
+            board::jira_keep_in_step(app, &m, Some(&st), None)?;
+        }
+        match phase {
+            "merged" => {
+                board::log_event(app, m.id(), "PR", "status", &format!("{ra}'s PR #{num}, which it shares, was merged"))?;
+                crate::dispatch::clear_alerts(app, Some(m.id()), None)?;
+                let m = board::get_task(app, m.id())?;
+                crate::merged_note::ticket_merged(app, &m, &crate::prflow::merged_comment(&m))?;
+            }
+            "declined" => {
+                board::log_event(app, m.id(), "PR", "status", &format!("{ra}'s PR #{num}, which it shares, was closed without merging"))?;
+                crate::declined::check(app, &board::get_task(app, m.id())?)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The group's last task, leaving `except` out: the one no other comes after.
 fn tail(app: &App, a: &Row, except: i64) -> Result<Row> {
     let tasks: Vec<Row> = group(app, a)?.into_iter().filter(|g| g.id() != except).collect();

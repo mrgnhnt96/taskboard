@@ -2673,6 +2673,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     changes.extend(reread_by(&after, merge_look_at(&phase, &after)));
     board::update_task(app, t.id(), task_fields)?;
     merge_flow(app, t.id(), changes)?;
+    if phase_changed {
+        crate::samepr::follow(app, t, &old, &phase)?;
+    }
     Ok(phase_changed)
 }
 
@@ -3089,9 +3092,10 @@ impl HasPhase for Row {
 
 /// The ticket's comment when its PR merges, so whoever reads the ticket sees what merged.
 pub fn merged_comment(t: &Row) -> String {
+    let num = crate::samepr::pr_num(t).unwrap_or(0);
     match t.s("pr_url").filter(|u| !u.is_empty()) {
-        Some(url) => format!("PR #{} was merged: {url}", t.i0("pr_num")),
-        None => format!("PR #{} was merged", t.i0("pr_num")),
+        Some(url) => format!("PR #{num} was merged: {url}"),
+        None => format!("PR #{num} was merged"),
     }
 }
 
@@ -3134,7 +3138,7 @@ fn merged_now(app: &App, t: &Row, who: &str, line: &str, flow: Vec<(&str, Value)
     board::log_event(app, t.id(), who, "status", line)?;
     dispatch::clear_alerts(app, Some(t.id()), None)?;
     crate::merged_note::ticket_merged(app, &board::get_task(app, t.id())?, &merged_comment(t))?;
-    Ok(())
+    crate::samepr::follow(app, t, t.s("pr_phase").unwrap_or(""), "merged")
 }
 
 /// A PR merged while its head's checks are still running: the task stays open on `landing` until
@@ -3167,7 +3171,7 @@ pub fn mark_declined(app: &App, t: &Row, who: &str, reason: &str) -> Result<()> 
     board::log_event(app, t.id(), who, "status", &format!("Closed PR #{} without merging{why}", t.i0("pr_num")))?;
     dispatch::clear_alerts(app, Some(t.id()), None)?;
     crate::declined::check(app, &board::get_task(app, t.id())?)?;
-    Ok(())
+    crate::samepr::follow(app, t, t.s("pr_phase").unwrap_or(""), "declined")
 }
 
 #[cfg(test)]
