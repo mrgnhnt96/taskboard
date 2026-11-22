@@ -94,6 +94,8 @@ pub enum LinkLook {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Go {
     Goal(String),
+    /// The goal's page scrolled to this wave's card: the goal chip.
+    GoalWave(String, i64),
     Session(String),
     /// The board page with this issue's panel open.
     Issue(String),
@@ -734,8 +736,8 @@ fn head_chips(c: &Ctx, t: &Value) -> Option<Node> {
     (!chips.is_empty()).then(|| el(K::Head, chips))
 }
 
-/// `goalChip(t)`: "Wave 5 · 18 of 20", opening the goal.
-fn goal_chip(t: &Value) -> Option<Node> {
+/// `goalChip(t)`: "Wave 5 · 18 of 20", opening the goal at the task's wave.
+pub fn goal_chip(t: &Value) -> Option<Node> {
     let g = obj(t, "goal").filter(|g| g.get("id").is_some_and(|x| !x.is_null()) || opt_s(g, "ref").is_some())?;
     let gr = rf(g, "G");
     let wave = t["wave"].as_i64();
@@ -749,7 +751,11 @@ fn goal_chip(t: &Value) -> Option<Node> {
     let mut tip = format!("Open {gr}");
     tip.extend(wave.map(|w| format!(" at wave {w}")));
     tip.extend(opt_s(g, "next_ref").map(|n| format!(" · next up: {n}")));
-    Some(Node::Link { s: words.join(" · "), go: Go::Goal(gr), tip: Some(tip), look: LinkLook::Chip })
+    let go = match wave {
+        Some(w) => Go::GoalWave(gr, w),
+        None => Go::Goal(gr),
+    };
+    Some(Node::Link { s: words.join(" · "), go, tip: Some(tip), look: LinkLook::Chip })
 }
 
 /// `dropItem(a)`: one attachment in the Attached dropdown; its summary, when it has one, rides

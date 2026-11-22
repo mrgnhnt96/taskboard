@@ -645,6 +645,30 @@ fn page_links_keep_the_panel_beside_them(cx: &mut gpui_kit::TestAppContext) {
     .unwrap();
 }
 
+#[::core::prelude::v1::test]
+fn the_goal_chip_opens_the_goal_at_the_tasks_wave() {
+    let chip = |t: Value| match view::goal_chip(&t) {
+        Some(view::Node::Link { s, go, .. }) => Some((s, go)),
+        _ => None,
+    };
+    let goal = json!({"id": 3, "ref": "G3", "position": 4, "total": 9});
+    assert_eq!(chip(json!({"goal": goal, "wave": 2})), Some(("Wave 2 · 4 of 9".into(), view::Go::GoalWave("G3".into(), 2))));
+    assert_eq!(chip(json!({"goal": goal})), Some(("4 of 9".into(), view::Go::Goal("G3".into()))), "no wave: the goal's top");
+}
+
+#[gpui_kit::test]
+fn the_goal_chip_link_opens_the_goal_page_at_that_wave(cx: &mut gpui_kit::TestAppContext) {
+    use crate::app::Page;
+    let (w, _rec) = parity::window(cx);
+    open(cx, &w, "T2");
+    w.update(cx, |m, _, cx| super::go(m, &view::Go::GoalWave("G1".into(), 2), cx)).unwrap();
+    w.update(cx, |m, _, _| {
+        assert_eq!((m.page.clone(), m.goal_page.at_wave), (Page::Goal("G1".into()), Some(2)));
+        assert!(matches!(&m.panel, Some(Panel::Task { r, .. }) if r == "T2"), "the panel stays beside it");
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn header_chips_drop_the_attachments_and_open_the_project(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;

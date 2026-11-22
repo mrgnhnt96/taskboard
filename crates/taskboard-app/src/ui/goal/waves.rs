@@ -1,6 +1,7 @@
 //! The goal page's tasks: one card per wave (its state, when it ran or what it waits for, and the
 //! review stop after it), the tasks with no wave, then tasks of other goals that also finish this
-//! one. A wave the goal stopped at, held or failed offers its one signal: let the goal go on.
+//! one, a card for each goal they came from. A wave the goal stopped at, held or failed offers its
+//! one signal: let the goal go on.
 use super::*;
 use crate::ui::status::{self, St};
 use crate::ui::stop::Kind;
@@ -178,13 +179,14 @@ pub fn cards(g: &Value) -> Vec<Card> {
         let head = (!ws.is_empty()).then(|| Head { title: "No wave".into(), meta: String::new(), dot: St::Queued, stop: false });
         out.push(Card { key: "loose".into(), head, gate: None, rows: loose });
     }
-    let shared = arr(g, "shared");
-    if !shared.is_empty() {
+    // Shared tasks, a card for each goal they came from: "From G6 Import from CSV".
+    for (from, rows) in crate::ui::projects::shared_by_goal(g) {
+        let title = format!("From {} {}", fmt::ref_of(from, "G"), s(from, "name")).trim_end().to_string();
         out.push(Card {
-            key: "shared".into(),
-            head: Some(Head { title: "From other goals".into(), meta: String::new(), dot: St::Queued, stop: false }),
+            key: format!("shared:{}", fmt::ref_of(from, "G")),
+            head: Some(Head { title, meta: String::new(), dot: St::Queued, stop: false }),
             gate: None,
-            rows: shared.iter().map(wrow).collect(),
+            rows: rows.into_iter().map(wrow).collect(),
         });
     }
     out
@@ -420,6 +422,24 @@ mod tests {
         assert_eq!(pr_cell(&json!({"status": "queued", "ships_pr": true, "same_pr": 1666})), "Shares T1666's PR");
         assert_eq!(pr_cell(&json!({"status": "queued", "ships_pr": true, "same_pr": null})), "Ships one PR");
         assert_eq!(pr_cell(&json!({"status": "done", "ships_pr": true, "no_pr": "not needed"})), "No PR: not needed");
+    }
+
+    #[test]
+    fn shared_tasks_sit_under_the_goal_they_came_from() {
+        let g6 = json!({"id": 6, "ref": "G6", "name": "Import from CSV"});
+        let g2 = json!({"id": 2, "ref": "G2", "name": "Search filters"});
+        let g = json!({"ref": "G1", "tasks": [{"ref": "T1", "status": "queued"}], "shared": [
+            {"id": 9, "ref": "T9", "status": "queued", "goal": g6},
+            {"id": 4, "ref": "T4", "status": "done", "goal": g2},
+            {"id": 7, "ref": "T7", "status": "queued", "goal": g6},
+        ]});
+        let cs = cards(&g);
+        let shared: Vec<(&str, String, Vec<&str>)> = cs[1..].iter().map(|c| (c.key.as_str(), c.head.as_ref().unwrap().title.clone(), c.rows.iter().map(|r| r.r.as_str()).collect())).collect();
+        assert_eq!(
+            shared,
+            vec![("shared:G2", "From G2 Search filters".to_string(), vec!["T4"]), ("shared:G6", "From G6 Import from CSV".to_string(), vec!["T7", "T9"])],
+            "a card per source goal, lowest ref first, each in id order"
+        );
     }
 
     #[test]

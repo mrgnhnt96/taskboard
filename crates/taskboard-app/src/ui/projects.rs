@@ -642,7 +642,7 @@ fn goal_tasks(t: &Theme, d: Option<&Value>, narrow: bool, shown: Option<&str>, c
 }
 
 /// The shared tasks a goal counts, by the goal they came from (lowest ref first), each in id order.
-fn shared_by_goal(d: &Value) -> Vec<(&Value, Vec<&Value>)> {
+pub fn shared_by_goal(d: &Value) -> Vec<(&Value, Vec<&Value>)> {
     let mut out: Vec<(&Value, Vec<&Value>)> = vec![];
     for c in arr(d, "shared") {
         match out.iter_mut().find(|(g, _)| g["id"] == c["goal"]["id"]) {

@@ -39,6 +39,9 @@ pub struct State {
     for_goal: String,
     /// Opened from a backlog link: the Backlog section lists every open issue.
     pub backlog_view: bool,
+    /// Opened at a wave (the panel's goal chip, `#/goals/G3?wave=2`): the waves list scrolls to
+    /// that wave's card once the goal's cards are built, then this clears.
+    pub at_wave: Option<i64>,
     /// The Notes section is expanded, and the one kind it lists (`None`: every kind).
     notes_open: bool,
     /// The Devices section is expanded; folded by default.
@@ -64,6 +67,7 @@ impl State {
     pub fn reset_for(&mut self, goal: &str) {
         self.for_goal = goal.to_string();
         self.lists = lists::Lists::default();
+        self.at_wave = None;
         self.backlog_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "backlog");
         // Dev: `TASKBOARD_GOAL_NOTES=open|Decision|Finding|Reference` expands Notes, filtered to that kind (screenshots).
         let notes = std::env::var("TASKBOARD_GOAL_NOTES").unwrap_or_default();
@@ -87,6 +91,12 @@ pub fn open(m: &mut MainWindow, r: &str, backlog: bool, cx: &mut Context<MainWin
     m.goal_page.reset_for(r);
     m.goal_page.backlog_view = backlog;
     cx.notify();
+}
+
+/// Open a goal's page scrolled to wave `wave`'s card (the top when the goal has no such wave).
+pub fn open_at(m: &mut MainWindow, r: &str, wave: i64, cx: &mut Context<MainWindow>) {
+    open(m, r, false, cx);
+    m.goal_page.at_wave = Some(wave);
 }
 
 // ------------------------------------------------------------------ goal state

@@ -768,7 +768,11 @@ impl MainWindow {
                 }
             }
             ("issue", r) if !r.is_empty() => self.open_issue(r.to_uppercase(), cx),
-            ("goal" | "goals", r) if !r.is_empty() => ui::goal::open(self, &r.to_uppercase(), param("view") == Some("backlog"), cx),
+            ("goal" | "goals", r) if !r.is_empty() => {
+                ui::goal::open(self, &r.to_uppercase(), param("view") == Some("backlog"), cx);
+                // `#/goals/G3?wave=2`: opened scrolled to wave 2's card.
+                self.goal_page.at_wave = param("wave").and_then(|w| w.parse().ok());
+            }
             ("goals", _) => self.open_goals(cx),
             ("idea" | "ideas", r) if !r.is_empty() => ui::idea::open(self, &r.to_uppercase(), cx),
             ("ideas", _) => self.go(Page::Ideas, cx),
