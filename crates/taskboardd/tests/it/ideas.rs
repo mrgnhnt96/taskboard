@@ -199,7 +199,32 @@ fn the_sample_board_has_ideas_in_every_state() {
     assert_eq!(states, ["digging", "new", "planned", "reported", "reported", "shelved"], "the digging one isn't settled as lost");
     let i1 = call(&app, "GET", "/ideas/I1", json!({}));
     assert_eq!((i1["verdict"].as_str(), i1["rounds"].as_array().unwrap().len(), i1["notes"].as_array().unwrap().len()), (Some("fits"), 3, 2));
-    assert_eq!(i1["rounds"][0]["report"]["related"][0], "G1");
+    let blocks = i1["rounds"][0]["report"]["blocks"].as_array().unwrap();
+    assert!(blocks.iter().any(|b| b["type"] == "related" && b["refs"][0] == "G1"), "{blocks:?}");
+    assert_eq!(i1["rounds"][1]["report"]["open_questions"][0], "How long may a write wait?", "older rounds keep the old shape");
+}
+
+#[test]
+fn the_sample_boards_newest_report_has_questions_to_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    taskboardd::seed::seed(&app).unwrap();
+    let i1 = call(&app, "GET", "/ideas/I1", json!({}));
+    assert_eq!(i1["questions"], 2);
+    let round = i1["rounds"][0]["id"].clone();
+    let asks: Vec<(&str, usize)> = i1["rounds"][0]["report"]["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["type"] == "question")
+        .map(|b| (b["id"].as_str().unwrap(), b["choices"].as_array().unwrap().len()))
+        .collect();
+    assert_eq!(asks, [("conflicts", 2), ("wait", 0)], "one picked from chips, one typed");
+    let answer = |q: &str, a: &str| try_call(&app, "POST", "/ideas/I1/answer", &[], json!({"round": round, "question": q, "answer": a}));
+    answer("conflicts", "Keep both").unwrap();
+    let v = answer("wait", "A day").unwrap();
+    assert_eq!(v["rounds"][0]["answers"], json!({"conflicts": "Keep both", "wait": "A day"}));
+    assert_eq!(v["questions"], 0);
 }
 
 #[test]

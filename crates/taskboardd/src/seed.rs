@@ -178,18 +178,30 @@ fn seed_ideas(app: &App, gid: i64, task: i64) -> Result<()> {
         60.0 * 24.0 * 6.0,
         None,
     )?;
+    // The newest round is in today's blocks shape, made the way a dig keeps it, so its questions
+    // have ids and can be answered: one by its choices, one in words.
+    let related = [format!("G{gid}"), format!("T{task}"), "B1".to_string()];
+    let report = crate::dig::checked(
+        &json!({"blocks": [
+            {"type": "gist", "text": "A service worker can queue writes in the fetch wrapper, and the passkeys work already keeps a session across reloads, so a replay can sign itself in."},
+            {"type": "scorecard", "fit": "fits", "size": "m", "risk": "medium"},
+            {"type": "question", "id": "conflicts", "text": "Should a conflict ask the user or keep both?", "choices": ["Ask the user", "Keep both"]},
+            {"type": "question", "id": "wait", "text": "How long may a queued write wait before it's dropped?", "choices": []},
+            {"type": "code", "items": [{"what": "The fetch wrapper every write goes through", "file": "src/lib/api.ts:12"},
+                                       {"what": "The session cookie set in middleware", "file": "middleware/auth.ts:30"}]},
+            {"type": "points", "title": "Watch out", "items": [
+                {"short": "A replayed write could run after the user signed out", "tag": "security"},
+                {"short": "A long queue replays all at once on reconnect", "tag": "performance"},
+                {"short": "Two tabs replaying the same queue"}]},
+            {"type": "points", "title": "Could grow into", "items": [{"short": "Show a pending-changes count in the header"}, {"short": "Let drafts save offline too"}]},
+            {"type": "related", "refs": related}]}),
+        &related.iter().cloned().collect(),
+    )
+    .map_err(|e| ApiError::new(500, e))?;
     round(
         offline,
         "conflicts",
-        Some(json!({"verdict": "fits", "why": "A service worker can queue writes in the fetch wrapper, and the passkeys work already keeps a session across reloads, so a replay can sign itself in.",
-                    "builds_on": [{"what": "The fetch wrapper every write goes through", "files": ["src/lib/api.ts:12", "src/lib/api.ts:48"]},
-                                  {"what": "The session cookie set in middleware", "files": ["middleware/auth.ts:30"]}],
-                    "ways_to_extend": ["Show a pending-changes count in the header", "Let drafts save offline too"],
-                    "risks": [{"kind": "security", "risk": "A replayed write could run after the user signed out"},
-                              {"kind": "performance", "risk": "A long queue replays all at once on reconnect"}],
-                    "pitfalls": ["Two tabs replaying the same queue", "Clock skew when ordering edits"],
-                    "open_questions": ["Should a conflict ask the user or keep both?"],
-                    "related": [format!("G{gid}"), format!("T{task}"), "B1"]})),
+        Some(report),
         "9b0413c7e2aa",
         true,
         40.0,
