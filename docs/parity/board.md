@@ -1,5 +1,8 @@
 # Parity: Board page
 
+> A record of the October 2026 audit. The function and test names below are as they were then; many have
+> since been renamed or removed. For what checks parity today, see [PARITY.md](../PARITY.md#how-its-tested).
+
 Reference: `crates/taskboard-app/parity/web/app.js` (`renderBoard` and what it calls). Native: `crates/taskboard-app/src/ui/board.rs`.
 Goldens: `parity/gen/board.mjs` → `parity/golden/board.json` (25 cases: 11 board scenarios, 3 state queries, 3 goal-picks,
 2 done-windows, 2 keepIssue, 4 nameView). Tests are in `board.rs` (`ui::board::tests::*`).

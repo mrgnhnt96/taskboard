@@ -1,5 +1,8 @@
 # Parity: the Sessions page
 
+> A record of the October 2026 audit. The function and test names below are as they were then; many have
+> since been renamed or removed. For what checks parity today, see [PARITY.md](../PARITY.md#how-its-tested).
+
 Reference: `crates/taskboard-app/parity/web/sessions.js` (all of it) and the rename helpers in `app.js`
 (`startRename`, `endRename`, `sessionCopies`, `renameFlash`, `nameView`) as the Sessions page uses them.
 Native: `crates/taskboard-app/src/ui/sessions.rs`.
