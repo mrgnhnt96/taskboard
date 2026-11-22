@@ -79,7 +79,9 @@ rules = []                           # example: ["~/.claude/CLAUDE.md", "~/.clau
 
 # Check-ins on long turns: once a task's terminal has been working `after_mins` (and every
 # `every_mins` after), a headless `claude -p` reads its last lines and the processes under it and says
-# whether it's still getting somewhere. A stuck verdict shows amber on the task; nobody is notified.
+# whether the time fits the work, the turn is far slower than its work warrants (and what it waits on),
+# or it's stuck. A slow or stuck verdict shows amber on the task and raises an alert; with `nudge` it
+# also leaves the agent a message for its next prompt or stop, once per turn.
 [checkin]
 on = true
 after_mins = 20
@@ -88,6 +90,7 @@ model = "claude-haiku-5-5"
 budget_usd = "0.10"
 timeout_secs = 90
 lines = 60
+nudge = true
 
 # Started work with no update in `after_hours`: a task that's working, back in the queue after it
 # started, or done with its PR still open reaches Needs you as "Gone quiet". It comes down when the task

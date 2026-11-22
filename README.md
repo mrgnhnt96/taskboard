@@ -70,9 +70,11 @@ the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/REA
 - **Your answers** reach the terminal through its next hook (or Midna types them in once it's idle at its
   prompt). If its terminal is gone, the board starts a new one with the answer in the handoff.
 - **Check-ins**: once a task's turn has run 20 minutes (and every 20 after), Haiku reads its terminal's last lines
-  and the processes under it and says whether it's still getting somewhere. A stuck verdict turns the task amber
-  ("Maybe stuck", with why and the last lines) until the turn ends or a later check-in says it's moving. `[checkin]`
-  in config.toml sets the times and model.
+  and the processes under it and says whether the time fits the work, the turn is far slower than its work
+  warrants (and what it waits on: a lock, a queue, Midna's busy hold, a hung command), or it's stuck. A slow or
+  stuck verdict turns the task amber ("Slow" or "Maybe stuck", with why and the last lines) and raises an alert
+  ("Slow: waiting on …") until the turn ends or a later check-in says it's moving, and leaves the agent a message
+  for its next prompt or stop, once per turn. `[checkin]` in config.toml sets the times, model and nudge.
 - **Lost terminals**: a task whose terminal closes goes back in the queue and restarts from its handoff
   (twice an hour at most), then waits for you.
 - **Pull requests**: any GitHub, GitLab or Bitbucket PR link an agent reports is linked to its task. GitHub

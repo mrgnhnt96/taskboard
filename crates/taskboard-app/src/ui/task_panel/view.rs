@@ -1742,7 +1742,7 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
     } else if let Some(st) = obj(t, "stuck").filter(|_| status == "working") {
         let why = opt_s(st, "why").filter(|w| !w.is_empty()).unwrap_or("Its terminal hasn’t moved on");
         let grp = format!("manage:{r}");
-        let mut bx = vec![txt(stamp("May be stuck", opt_s(st, "at")), St::BoxLabel), txt(why, St::BannerText)];
+        let mut bx = vec![txt(stamp(if st["slow"] == true { "Slow" } else { "May be stuck" }, opt_s(st, "at")), St::BoxLabel), txt(why, St::BannerText)];
         if let Some(tail) = opt_s(st, "tail").filter(|x| !x.is_empty()) {
             bx.push(fold(Fold::Tail, c.fold_open(Fold::Tail, false), txt("Last lines", St::Small), vec![txt(tail, St::Code)]));
         }
