@@ -31,7 +31,8 @@ You need:
 
 Don't run `scripts/release.sh` yourself: without `TB_RELEASE` (which `tb release cut` sets) it
 stops and tells you to run `tb release cut`. `--force` runs it without the board, for when the
-board is down; record the release afterwards with `tb release cut <name> --no-script`.
+board is down, on the same branches (`main`, or `release/*` for a beta); record the release
+afterwards with `tb release cut <name> --no-script`.
 
 `release.sh` checks the version is newer than the last one (`scripts/newest-version.py`): a public
 release than the last public one, a beta than every tag. It writes the version into
