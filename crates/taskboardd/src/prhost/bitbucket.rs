@@ -441,6 +441,7 @@ impl PrHost for BitbucketHost {
         self.put_reviewers(pr, &p, list)
     }
 
+    // Bitbucket's merge endpoint takes no head commit, so `opts.head` can't be pinned here.
     fn merge(&self, pr: &PrRef, opts: &MergeOpts) -> HostResult<()> {
         let mut b = json!({"type": "pullrequest", "close_source_branch": opts.close_source_branch});
         if let Some(s) = &opts.strategy {
@@ -1156,7 +1157,7 @@ pub(crate) mod tests {
         h.request_reviews(&pr(), &["557058:abc".to_string()]).unwrap();
         h.retarget(&pr(), "develop").unwrap();
         h.set_description(&pr(), "## Summary").unwrap();
-        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true }).unwrap();
+        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true, head: None }).unwrap();
         h.re_request_reviews(&pr(), &[REV.to_string()]).unwrap();
         let pr7 = "https://api/repositories/ws/repo/pullrequests/7";
         let marks = marks.lock().clone();
@@ -1184,7 +1185,7 @@ pub(crate) mod tests {
         h.resolve(&pr(), &task).unwrap();
         h.re_request_reviews(&pr(), &[REV.to_string()]).unwrap();
         h.request_reviews(&pr(), &["557058:abc".to_string()]).unwrap();
-        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true }).unwrap();
+        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true, head: None }).unwrap();
         h.retarget(&pr(), "develop").unwrap();
         assert_eq!(h.cancel_builds(&pr(), "abc123").unwrap(), Cancelled::Stopped(vec!["feat #41".into(), "** #42".into()]), "the head's builds and the PR's own");
         assert_eq!(h.base_failures(&pr(), "main", 5).unwrap(), vec!["Tests".to_string()]);

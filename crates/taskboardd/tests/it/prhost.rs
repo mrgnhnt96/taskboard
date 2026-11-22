@@ -695,7 +695,7 @@ fn merge_checks_everything_first_then_merges_and_closes_the_branch() {
     poll(&b);
     assert_eq!(b.phase(id), "merge", "two approvals is enough for this project");
     b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "who": "The agent"}));
-    assert!(h.calls().contains(&"merge close=true strategy=squash".to_string()));
+    assert!(h.calls().contains(&"merge close=true strategy=squash head=h1".to_string()));
     assert_eq!(b.phase(id), "merged");
 }
 
@@ -1942,6 +1942,23 @@ fn a_merge_still_refused_after_its_tries_fails_with_the_hosts_reason() {
     assert!(e.contains("Couldn't merge PR #9") && e.contains("Merge already in progress"), "{e}");
     assert_eq!(merge_calls(&h), 3, "the first try and two more");
     assert_eq!(b.phase(id), "merge");
+}
+
+#[test]
+fn a_merge_is_pinned_to_the_head_it_judged_and_a_push_after_the_read_holds_it() {
+    let (b, id, h) = ready_to_merge(3);
+    *h.push_before_merge.lock() = Some("h2".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("PR #9 can't merge yet: its branch was pushed after the board judged it at h1"), "{e}");
+    assert!(e.contains("don't run tb pr merge again"), "{e}");
+    assert_eq!(h.calls().iter().filter(|c| c.starts_with("merge ")).collect::<Vec<_>>(), ["merge close=true strategy=default head=h1"], "not tried again");
+    assert_eq!(h.rec.lock().state, "OPEN");
+    assert_eq!(b.flow(id)["merge_refused"]["head"], "h1");
+    // Once the new head is read, the merge goes through pinned to it.
+    poll(&b);
+    let v = b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(v["merged"], true);
+    assert!(h.calls().contains(&"merge close=true strategy=default head=h2".to_string()));
 }
 
 #[test]

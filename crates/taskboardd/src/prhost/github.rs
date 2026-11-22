@@ -298,6 +298,9 @@ impl PrHost for GithubHost {
         if opts.close_source_branch {
             args.push("--delete-branch".into());
         }
+        if let Some(head) = opts.head.as_deref().filter(|h| !h.is_empty()) {
+            args.extend(s(&["--match-head-commit", head]));
+        }
         self.gh(args).map(|_| ())
     }
 
@@ -847,7 +850,7 @@ pub(crate) mod tests {
         let c = rec.threads.iter().find(|t| t.id == "IC_2").unwrap();
         assert!(!h.resolve(&pr(), c).unwrap(), "a plain comment can't be resolved on GitHub");
         h.reply(&pr(), c, "Because.").unwrap();
-        h.merge(&pr(), &MergeOpts { strategy: None, close_source_branch: true }).unwrap();
+        h.merge(&pr(), &MergeOpts { strategy: None, close_source_branch: true, head: Some("abc".into()) }).unwrap();
         h.re_request_reviews(&pr(), &["rev".into()]).unwrap();
         assert_eq!(h.cancel_builds(&pr(), "abc").unwrap(), Cancelled::Stopped(vec!["CI #12".into()]));
         assert_eq!(
@@ -860,6 +863,7 @@ pub(crate) mod tests {
         let calls = calls.lock().clone();
         let has = |want: &[&str]| calls.iter().any(|c| want.iter().all(|w| c.iter().any(|a| a.contains(w))));
         assert!(has(&["pr", "merge", "--squash", "--delete-branch"]), "merges with the repo's default and closes the branch");
+        assert!(calls.iter().any(|c| c.windows(2).any(|w| w == ["--match-head-commit", "abc"])), "only the head it judged");
         assert!(has(&["comment", "> @rev: Why?\n\nBecause."]));
         assert!(has(&["POST", "repos/acme/webapp/pulls/9/requested_reviewers", "reviewers[]=rev"]));
         assert!(has(&["run", "cancel", "5"]));
@@ -885,7 +889,7 @@ pub(crate) mod tests {
         h.retarget(&pr(), "develop").unwrap();
         h.set_description(&pr(), "## Summary").unwrap();
         h.request_reviews(&pr(), &["rev".into()]).unwrap();
-        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: false }).unwrap();
+        h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: false, head: None }).unwrap();
         let marks = marks.lock().clone();
         let mark = |want: &str| marks.iter().find(|(c, _)| c.contains(want)).map(|(_, k)| k.clone()).unwrap_or_else(|| panic!("no call with {want}: {marks:?}"));
         assert_eq!(mark("--base develop"), Some("acme/webapp#9 base".into()));
