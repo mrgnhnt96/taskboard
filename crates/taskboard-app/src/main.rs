@@ -128,7 +128,7 @@ fn main() {
         });
         menu_bar::bind_keys(cx);
         menu_bar::on_app_actions(backend.label() == "fake", cx);
-        cx.set_menus(menu_bar::menus(backend.label() == "fake", &app::Page::Board, "Needs you"));
+        cx.set_menus(menu_bar::menus(backend.label() == "fake", &app::Page::Board, "Needs you", true));
         // Installed: register the daemon's LaunchAgent and link `tb` (off the UI thread).
         install::start(backend.label());
         // Installed release builds: check GitHub for a newer release now and then.

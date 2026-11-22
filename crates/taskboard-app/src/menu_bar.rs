@@ -100,23 +100,28 @@ fn about() {
 #[cfg(not(all(target_os = "macos", not(test))))]
 fn about() {}
 
-/// The pages in the sidebar's order, with the action that opens each.
-fn page_items(here: &Page) -> Vec<MenuItem> {
+/// The pages in the sidebar's order, with the action that opens each. Releases is left out
+/// while the sidebar hides it (no project has releases on).
+fn page_items(here: &Page, releases: bool) -> Vec<MenuItem> {
     let on = |p: &[Page]| p.iter().any(|x| std::mem::discriminant(x) == std::mem::discriminant(here));
-    vec![
+    let mut items = vec![
         MenuItem::action("Needs you", app::GoBoard).checked(on(&[Page::Board])),
         MenuItem::action("Projects", app::GoProjects).checked(on(&[Page::Projects])),
         MenuItem::action("Goals", app::GoGoals).checked(on(&[Page::Goals, Page::Goal(String::new())])),
         MenuItem::action("Backlog", app::GoBacklog).checked(on(&[Page::Backlog])),
         MenuItem::action("Ideas", app::GoIdeas).checked(on(&[Page::Ideas, Page::Idea(String::new())])),
         MenuItem::action("Days", app::GoDays).checked(on(&[Page::Days, Page::Review, Page::Recap])),
-        MenuItem::action("Releases", app::GoReleases).checked(on(&[Page::Releases, Page::ReleasesOf(String::new())])),
-    ]
+    ];
+    if releases {
+        items.push(MenuItem::action("Releases", app::GoReleases).checked(on(&[Page::Releases, Page::ReleasesOf(String::new())])));
+    }
+    items
 }
 
-/// The whole menu bar. `here` checks its page in View; `name` is the window's line in Window.
-pub fn menus(fake: bool, here: &Page, name: &str) -> Vec<Menu> {
-    let mut view = page_items(here);
+/// The whole menu bar. `here` checks its page in View; `name` is the window's line in Window;
+/// `releases` whether View lists Releases.
+pub fn menus(fake: bool, here: &Page, name: &str, releases: bool) -> Vec<Menu> {
+    let mut view = page_items(here, releases);
     view.extend([
         MenuItem::separator(),
         MenuItem::action("Search…", app::Search),
@@ -274,12 +279,24 @@ pub fn on_actions(m: &MainWindow, d: Stateful<Div>, cx: &mut Context<MainWindow>
                 .on_action(cx.listener(move |m, a: &app::GoBacklog, w, cx| page(a, m, w, cx)))
                 .on_action(cx.listener(move |m, a: &app::GoIdeas, w, cx| page(a, m, w, cx)))
                 .on_action(cx.listener(move |m, a: &app::GoDays, w, cx| page(a, m, w, cx)))
-                .on_action(cx.listener(move |m, a: &app::GoReleases, w, cx| page(a, m, w, cx)))
                 .on_action(cx.listener(move |m, a: &app::Search, w, cx| page(a, m, w, cx)))
                 .on_action(cx.listener(move |m, a: &app::NewIdea, w, cx| page(a, m, w, cx)))
         })
-        // ⌘N with New idea already open keeps the draft and puts focus back in Title.
-        .when(!keys && matches!(m.modal, Some(ui::modals::Modal::NewIdea)), |d| d.on_action(cx.listener(|m, _: &app::NewIdea, w, cx| m.new_idea(w, cx))))
+        // [ and ]: Days steps a week from the day shown, Week to the review before or after.
+        .when(keys && matches!(m.page, Page::Days | Page::Review), |d| {
+            d.on_action(cx.listener(|m, _: &app::EarlierWeek, _, cx| step_week(m, false, cx)))
+                .on_action(cx.listener(|m, _: &app::LaterWeek, _, cx| step_week(m, true, cx)))
+        })
+        // ⌘7 and View › Releases sleep while the sidebar hides Releases.
+        .when(keys && !m.releases_off(), |d| d.on_action(cx.listener(move |m, a: &app::GoReleases, w, cx| page(a, m, w, cx))))
+        // Over New idea, ⌘N keeps the draft and puts focus back in Title; ⌘K puts the dialog
+        // away, keeping the draft as a link does, and opens search.
+        .when(!keys && matches!(m.modal, Some(ui::modals::Modal::NewIdea)), |d| {
+            d.on_action(cx.listener(|m, _: &app::NewIdea, w, cx| m.new_idea(w, cx))).on_action(cx.listener(|m, _: &app::Search, w, cx| {
+                ui::ideas::put_away(m, w, cx);
+                ui::search::open(m, w, cx);
+            }))
+        })
         .when(keys && m.can_go_back(), |d| d.on_action(cx.listener(move |m, a: &app::NavBack, w, cx| page(a, m, w, cx))))
         .when(keys && m.can_go_forward(), |d| d.on_action(cx.listener(move |m, a: &app::NavForward, w, cx| page(a, m, w, cx))))
         // Edit › Undo: live while a toast has an Undo.
@@ -336,4 +353,12 @@ pub fn on_actions(m: &MainWindow, d: Stateful<Div>, cx: &mut Context<MainWindow>
         })
         .when(hooks, |d| d.on_action(cx.listener(|m, _: &InstallHooks, _, cx| m.install_hooks(cx))))
         .when(restart, |d| d.on_action(cx.listener(|m, _: &RestartDaemon, _, cx| m.restart_daemon(cx))))
+}
+
+fn step_week(m: &mut MainWindow, later: bool, cx: &mut Context<MainWindow>) {
+    match m.page {
+        Page::Days => ui::days::step_week(m, later, cx),
+        Page::Review => ui::review::step_week(m, later, cx),
+        _ => {}
+    }
 }

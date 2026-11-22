@@ -354,6 +354,19 @@ pub fn draft_left(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
+/// A link or ⌘K takes the dialog's place: it closes, and a typed draft is kept for ⌘N with a
+/// toast that offers it back.
+pub fn put_away(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let was_open = matches!(m.modal, Some(Modal::NewIdea));
+    m.set_modal(None, window, cx);
+    let Some(f) = m.ideas.form.as_mut().filter(|_| was_open) else { return };
+    // Said here, so the next draw of Ideas doesn't say it again.
+    f.shown = false;
+    if !f.busy && has_text(f, cx) {
+        m.idea_draft_toast(cx);
+    }
+}
+
 /// Add the idea, then open its page. Each missing field says so under itself; a refusal shows
 /// over the buttons.
 fn submit(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {

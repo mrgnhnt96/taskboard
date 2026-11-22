@@ -363,6 +363,17 @@ fn pick(m: &mut MainWindow, id: i64, cx: &mut Context<MainWindow>) {
     m.refresh(cx);
 }
 
+/// [ and ]: the review a week before or after the one shown.
+pub fn step_week(m: &mut MainWindow, later: bool, cx: &mut Context<MainWindow>) {
+    let Some(list) = m.data.reviews.as_ref().map(|l| arr(l, "reviews").to_vec()) else { return };
+    let Some(at) = current(m).and_then(|id| list.iter().position(|x| x["id"].as_i64() == Some(id))) else { return };
+    // Newest first: later is up the list.
+    let to = if later { at.checked_sub(1) } else { Some(at + 1) };
+    if let Some(id) = to.and_then(|i| list.get(i)).and_then(|x| x["id"].as_i64()) {
+        pick(m, id, cx);
+    }
+}
+
 /// Opening an unseen review withdraws its notification. Its Needs you item goes too, unless fixes it
 /// filed still wait in the Backlog: the board keeps it until they're planned, deferred or dropped.
 fn mark_seen(m: &mut MainWindow, r: &Value, cx: &mut Context<MainWindow>) {

@@ -40,7 +40,7 @@ impl Default for State {
 
 impl State {
     /// The view of answer `v`, built once per answer.
-    fn view(&mut self, v: &Rc<Value>) -> Option<Rc<View>> {
+    pub(crate) fn view(&mut self, v: &Rc<Value>) -> Option<Rc<View>> {
         match &self.built {
             Some((b, view)) if Rc::ptr_eq(b, v) => view.clone(),
             _ => {
@@ -776,6 +776,25 @@ fn set_date(m: &mut MainWindow, d: Option<NaiveDate>, cx: &mut Context<MainWindo
         m.days.finished_all = false;
         m.data.days = None;
         m.refresh(cx);
+    }
+}
+
+/// The same weekday a week earlier or later, kept between the oldest day the board has and today.
+fn week_from(date: NaiveDate, today: NaiveDate, oldest: Option<NaiveDate>, later: bool) -> NaiveDate {
+    if later {
+        (date + Duration::days(7)).min(today).max(date)
+    } else {
+        let d = date - Duration::days(7);
+        oldest.map_or(d, |o| d.max(o)).min(date)
+    }
+}
+
+/// [ and ]: a week earlier or later than the day shown.
+pub fn step_week(m: &mut MainWindow, later: bool, cx: &mut Context<MainWindow>) {
+    let Some(v) = m.data.days.clone().and_then(|d| m.days.view(&d)) else { return };
+    let to = week_from(v.date, v.today, v.oldest, later);
+    if to != v.date {
+        set_date(m, Some(to), cx);
     }
 }
 
@@ -1677,8 +1696,19 @@ fn planning_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute.
-    use super::{View, dur, estimate_sum, hour_label, saved_title, week_names};
+    use super::{View, dur, estimate_sum, hour_label, saved_title, week_from, week_names};
     use serde_json::{Value, json};
+
+    #[test]
+    fn a_week_step_stays_between_the_oldest_day_and_today() {
+        let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let (today, oldest) = (d("2026-11-20"), Some(d("2026-11-01")));
+        assert_eq!(week_from(d("2026-11-18"), today, oldest, false), d("2026-11-11"));
+        assert_eq!(week_from(d("2026-11-11"), today, oldest, true), d("2026-11-18"));
+        assert_eq!(week_from(d("2026-11-18"), today, oldest, true), today, "not past today");
+        assert_eq!(week_from(d("2026-11-05"), today, oldest, false), d("2026-11-01"), "not before the oldest");
+        assert_eq!(week_from(d("2026-11-05"), today, None, false), d("2026-10-29"));
+    }
 
     fn sample() -> Value {
         let day = |d: &str, agent: f64, done: f64, human: f64, est: f64, future: bool| {

@@ -86,6 +86,10 @@ pub struct State {
     remeasure: bool,
     later_open: bool,
     notes: HashMap<String, Composer>,
+    /// The row ↑ and ↓ are on, by its key.
+    cursor: Option<String>,
+    /// The page's own focus, so its keys reach it once it's clicked.
+    focus: Option<FocusHandle>,
 }
 
 fn has_body(a: &Ask) -> bool {
@@ -168,7 +172,22 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     prepare(m);
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
     let menu = m.home.view.clone().and_then(|v| row_menu(m, &t, &v, cx));
-    let page = div().id("home-page").flex().flex_1().min_w_0().h_full().bg(t.bg);
+    let focus = m.home.focus.get_or_insert_with(|| cx.focus_handle()).clone();
+    let page = div()
+        .id("home-page")
+        .track_focus(&focus)
+        // A click that gives nothing inside focus gives it to the page, for ↑ and ↓.
+        .on_mouse_down(MouseButton::Left, cx.listener(|m, _, window, cx| {
+            if let Some(f) = m.home.focus.clone().filter(|f| !f.contains_focused(window, cx)) {
+                window.focus(&f, cx);
+            }
+        }))
+        .on_key_down(cx.listener(on_key))
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .bg(t.bg);
     let Some(list) = m.home.list.clone() else { return page.into_any_element() };
     page.child(gpui_kit::list(list, cx.processor(line_item)).flex_1().min_w_0().h_full()).children(filter).children(menu).into_any_element()
 }
@@ -192,6 +211,89 @@ fn line_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Contex
         Line::End => div().h(px(32.)),
     };
     div().px(px(PAGE_X)).line_height(relative(1.4)).child(inner).into_any_element()
+}
+
+// ------------------------------------------------------------------ keys
+
+/// Each row's head on the page in order, a goal's open items among them: (line, key).
+fn heads(m: &MainWindow) -> Vec<(usize, String)> {
+    let Some(v) = &m.home.view else { return vec![] };
+    let key = |line: &Line| match *line {
+        Line::Row(gi, ri, _) => Some(v.groups[gi].rows[ri].key()),
+        Line::Kid(gi, ri, ki, _) => match &v.groups[gi].rows[ri] {
+            Row::Goal(x) => x.kids.get(ki).map(Ask::key),
+            Row::One(_) => None,
+        },
+        _ => None,
+    };
+    m.home.lines.iter().enumerate().filter_map(|(ix, l)| key(l).map(|k| (ix, k))).collect()
+}
+
+/// ↑ or ↓: the row before or after the one marked; the first when none is.
+fn step(m: &mut MainWindow, down: bool, cx: &mut Context<MainWindow>) {
+    let rows = heads(m);
+    if rows.is_empty() {
+        return;
+    }
+    let at = m.home.cursor.as_ref().and_then(|c| rows.iter().position(|(_, k)| k == c));
+    let next = match at {
+        None => 0,
+        Some(i) if down => (i + 1).min(rows.len() - 1),
+        Some(i) => i.saturating_sub(1),
+    };
+    let (ix, key) = rows[next].clone();
+    m.home.cursor = Some(key);
+    if let Some(l) = &m.home.list {
+        l.scroll_to_reveal_item(ix);
+    }
+    cx.notify();
+}
+
+/// The marked row's head, as drawn.
+fn marked_head(m: &MainWindow, t: &Theme) -> Option<Head> {
+    let (v, key) = (m.home.view.as_ref()?, m.home.cursor.as_ref()?);
+    m.home.lines.iter().find_map(|line| {
+        let h = match *line {
+            Line::Row(gi, ri, open) => match &v.groups[gi].rows[ri] {
+                Row::One(a) => ask_head(t, a, v.groups[gi].kind, false),
+                Row::Goal(x) => goal_head(t, x, v.groups[gi].kind, open),
+            },
+            Line::Kid(gi, ri, ki, _) => match &v.groups[gi].rows[ri] {
+                Row::Goal(x) => ask_head(t, x.kids.get(ki)?, v.groups[gi].kind, true),
+                Row::One(_) => return None,
+            },
+            _ => return None,
+        };
+        (h.key == *key).then_some(h)
+    })
+}
+
+/// ↩ on the marked row: a row that opens opens or shuts, as a click does; any other follows its link.
+fn press(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let t = cx.global::<Theme>().clone();
+    let Some(h) = marked_head(m, &t) else { return };
+    if h.opens {
+        open_head(m, h.key, h.note, window, cx);
+    } else if let Some(act) = h.link {
+        run_act(m, &act, cx);
+    }
+}
+
+/// The page's keys, once it has focus (a click, or Tab onto a row): ↑ ↓ move between the rows,
+/// a goal's open items among them, and ↩ opens the marked one.
+fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let ks = &ev.keystroke;
+    if m.modal.is_some() || m.menu.is_some() || crate::ui::focus::typing(window) || ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
+        return;
+    }
+    let on_page = m.home.focus.as_ref().is_some_and(|f| f.is_focused(window));
+    match ks.key.as_str() {
+        "down" => step(m, true, cx),
+        "up" => step(m, false, cx),
+        "enter" if on_page && m.home.cursor.is_some() => press(m, window, cx),
+        _ => return,
+    }
+    cx.stop_propagation();
 }
 
 // ------------------------------------------------------------------ the page's top
@@ -288,6 +390,8 @@ struct Head {
     paused: bool,
     /// Another form than Done's note is open on the row, so Done waits.
     form_open: bool,
+    /// ↑ and ↓ are on it.
+    marked: bool,
 }
 
 /// The tag's color: what's gone wrong in the failed color, an agent's in the Needs you color.
@@ -336,6 +440,7 @@ fn ask_head(t: &Theme, a: &Ask, kind: Kind, nested: bool) -> Head {
         note: a.human,
         paused: false,
         form_open: false,
+        marked: false,
     }
 }
 
@@ -358,6 +463,7 @@ fn goal_head(t: &Theme, g: &GoalRow, kind: Kind, open: bool) -> Head {
         note: false,
         paused: false,
         form_open: false,
+        marked: false,
     }
 }
 
@@ -370,6 +476,7 @@ fn make_all(g: &GoalRow) -> Option<(String, Do)> {
 /// A head with what the page knows now: whether the board answers and which form is open.
 fn live_head(m: &MainWindow, mut h: Head, a: Option<&Ask>) -> Head {
     h.paused = paused(m);
+    h.marked = m.home.cursor.as_deref() == Some(h.key.as_str());
     h.form_open = a.is_some_and(|a| is_open(a) && m.home.notes.get(&a.key()).is_some_and(|c| c.kind != Note::Done));
     h
 }
@@ -456,16 +563,11 @@ fn head_el(t: &Theme, h: Head, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .gap(px(10.))
         .px(px(14.))
         .py(px(9.))
+        .when(h.marked, |d| d.bg(t.accent_soft))
         .when(h.opens, |d| {
             d.cursor_pointer().on_click(cx.listener(move |m, _, window, cx| {
-                flip(flip_key.clone());
-                if note && flipped(&flip_key) {
-                    let c = m.home.notes.entry(flip_key.clone()).or_insert_with(|| Composer::new(cx));
-                    let focus = c.input.focus.clone();
-                    window.focus(&focus, cx);
-                }
-                m.home.remeasure = true;
-                cx.notify();
+                m.home.cursor = Some(flip_key.clone());
+                open_head(m, flip_key.clone(), note, window, cx);
             }))
         })
         .child(mark)
@@ -477,6 +579,18 @@ fn head_el(t: &Theme, h: Head, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .when(!h.holds.is_empty(), |d| d.child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(h.holds.clone())))
         .child(div().flex_none().flex().items_center().gap(px(6.)).children(buttons).children(later).child(more))
         .when(!h.time.is_empty(), |d| d.child(div().flex_none().w(px(36.)).flex().justify_end().text_size(px(12.)).text_color(t.muted).child(h.time.clone())))
+}
+
+/// A row that opens opens or shuts; a to-do's note box gets the cursor as it opens.
+fn open_head(m: &mut MainWindow, key: String, note: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
+    flip(key.clone());
+    if note && flipped(&key) {
+        let c = m.home.notes.entry(key).or_insert_with(|| Composer::new(cx));
+        let focus = c.input.focus.clone();
+        window.focus(&focus, cx);
+    }
+    m.home.remeasure = true;
+    cx.notify();
 }
 
 /// A row's card; an agent waiting's is tinted, the loudest on the page.
@@ -1157,6 +1271,58 @@ mod tests {
         assert_eq!(make_all(g), Some(("Make all 3 into tasks".to_string(), Do::MakeAll(vec!["B6".into(), "B5".into(), "B4".into()]))));
         let one = GoalRow { kids: vec![g.kids[0].clone()], ..g.clone() };
         assert_eq!(make_all(&one), None, "one miss has its own Make it a task");
+    }
+
+    #[gpui_kit::test]
+    fn arrows_move_through_a_goals_misses_and_enter_opens_them(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        let (w, _rec) = window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        };
+        let miss = |n: i64| json!({"id": format!("a{n}"), "key": format!("miss:{n}"), "text": format!("Miss {n}"), "title": format!("Miss {n}"), "goal": "G1", "goal_name": "Picto", "project": "p",
+            "at": format!("2026-11-0{n}T10:00:00Z"), "card": null, "waiting": false, "holds": {"tasks": [], "goal": "G1"}});
+        w.update(cx, |m, _, cx| {
+            m.go(Page::Board, cx);
+            m.filters.project = "all".into();
+            m.data.home = Some(Rc::new(json!({"needs": [miss(4), miss(5)], "goals": []})));
+        })
+        .unwrap();
+        draw(cx);
+        w.update(cx, |m, window, cx| window.focus(m.home.focus.as_ref().unwrap(), cx)).unwrap();
+        draw(cx);
+        cx.simulate_keystrokes(w.into(), "down");
+        let goal = w.update(cx, |m, _, _| {
+            let rows = heads(m);
+            assert_eq!(rows.len(), 1, "the misses fold into their goal's row, shut");
+            assert_eq!(m.home.cursor.as_ref(), Some(&rows[0].1), "↓ marks the first row");
+            rows[0].1.clone()
+        })
+        .unwrap();
+        cx.simulate_keystrokes(w.into(), "enter");
+        draw(cx);
+        cx.simulate_keystrokes(w.into(), "down");
+        w.update(cx, |m, _, _| {
+            let keys: Vec<String> = heads(m).into_iter().map(|(_, k)| k).collect();
+            assert_eq!(keys.len(), 3, "↩ opened the goal: its misses are rows now: {keys:?}");
+            assert_eq!(m.home.cursor.as_ref(), Some(&keys[1]), "↓ goes into the misses");
+        })
+        .unwrap();
+        cx.simulate_keystrokes(w.into(), "down down");
+        w.update(cx, |m, _, _| assert_eq!(m.home.cursor.as_deref(), heads(m).last().map(|(_, k)| k.as_str()), "↓ stops at the last")).unwrap();
+        cx.simulate_keystrokes(w.into(), "enter");
+        w.update(cx, |m, _, _| {
+            let last = m.home.cursor.clone().unwrap();
+            assert!(flipped(&last), "↩ on a miss opens it, as a click does");
+        })
+        .unwrap();
+        draw(cx);
+        cx.simulate_keystrokes(w.into(), "up up up");
+        w.update(cx, |m, _, _| assert_eq!(m.home.cursor.as_ref(), Some(&goal), "↑ goes back up to the goal")).unwrap();
     }
 
     #[gpui_kit::test]
