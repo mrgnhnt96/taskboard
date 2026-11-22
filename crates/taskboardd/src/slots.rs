@@ -640,6 +640,12 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     };
     let text = if at == start { format!("Made worktree slot-{n} from {start} at {path}") } else { format!("Made worktree slot-{n} at {path}, on its branch {at}") };
     take(app, t, id, &path, &text, start)?;
+    // Into Midna's cleanup.keep now, before its terminal can close. Not while holding the database
+    // (Midna's answer can take seconds): the next Midna sync puts it there then.
+    drop(_one);
+    if !app.db.held_here() {
+        crate::slot_keep::sync(app);
+    }
     Ok(path)
 }
 

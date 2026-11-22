@@ -6,7 +6,8 @@
 //! the owner closes.
 //!
 //! Every slot's path goes in Midna's `cleanup.keep`, and comes out once the slot leaves the pool. Only
-//! the paths the board put there are taken out.
+//! the paths the board put there are taken out. A new slot goes in as it's made (`slots.rs`), not at
+//! the next Midna sync: a terminal closed in between would take it.
 
 use serde_json::{json, Value};
 
@@ -22,6 +23,8 @@ const KEPT_KEY: &str = "midna_cleanup_kept_slots";
 /// The slot paths the board itself put in `cleanup.keep`, so a removed slot's path is taken out only
 /// when it was the board's, never an entry the owner listed.
 const ADDED_KEY: &str = "midna_cleanup_added_slots";
+/// One sync at a time: a slot's claim and the Midna sync loop each read Midna's list and set it back.
+static SYNCS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// `keep` with `slots` added and the paths in `added` that aren't slots any more taken out, and the
 /// paths the board has in `keep` now. None if `keep` has that already.
@@ -50,12 +53,13 @@ pub fn sync(app: &App) {
     if !app.cfg.runner || std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {
         return;
     }
+    let _one = SYNCS.lock();
     let Ok(rows) = app.db.q("SELECT path FROM worktree_slots ORDER BY repo, n", p![]) else { return };
     let slots: Vec<String> = rows.iter().map(|r| r.st("path")).collect();
     if saved(app, KEPT_KEY).as_ref() == Some(&slots) {
         return;
     }
-    let keep = match midna::call(app, "settings.get", json!({"key": KEY})) {
+    let keep = match midna::call_timeout(app, "settings.get", json!({"key": KEY}), 10.0) {
         Ok(v) => match strings(&v["value"]) {
             Some(keep) => keep,
             None => return,
@@ -65,7 +69,7 @@ pub fn sync(app: &App) {
     let added = saved(app, ADDED_KEY).unwrap_or_default();
     if let Some((next, mine)) = with_slots(&keep, &added, &slots) {
         // Recorded only once Midna took it, so a refused set is asked again on the next sync.
-        match midna::call(app, "settings.set", json!({"key": KEY, "value": next})) {
+        match midna::call_timeout(app, "settings.set", json!({"key": KEY, "value": next}), 10.0) {
             Ok(_) => app.info(format!("midna: cleanup.keep spares the {} worktree slots", slots.len())),
             Err(e) => {
                 app.info(format!("midna: couldn't ask cleanup.keep to spare the worktree slots, will retry ({e})"));
