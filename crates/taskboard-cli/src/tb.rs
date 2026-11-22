@@ -2923,6 +2923,22 @@ fn issue_ref(v: &str) -> Result<String, String> {
     Ok(format!("B{digits}"))
 }
 
+/// The Midna terminal tb runs in, whoever runs it: Midna's status bar runs `tb peek` there with no agent.
+fn midna_terminal() -> String {
+    std::env::var("MIDNA_SESSION").unwrap_or_default()
+}
+
+fn run_by_claude() -> bool {
+    ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"].iter().any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
+}
+
+/// The terminal tb reports and acts as: its Midna terminal, but only when Claude Code runs it there. A tb
+/// typed into a plain shell (one an agent opened and types into, or a human's) speaks for no terminal, so
+/// the board doesn't take that shell for a Claude terminal or give it a task.
+fn own_terminal(midna: String, by_claude: bool) -> String {
+    if by_claude { midna } else { String::new() }
+}
+
 struct Ctx {
     cfg: Config,
     session: String,
@@ -2935,7 +2951,7 @@ struct Ctx {
 
 impl Ctx {
     fn new() -> Ctx {
-        let session = std::env::var("MIDNA_SESSION").unwrap_or_default();
+        let session = own_terminal(midna_terminal(), run_by_claude());
         Ctx {
             cfg: client::config(),
             midna: if session.is_empty() { None } else { client::midna_path() },
@@ -6472,14 +6488,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Peek { midna } => {
             // whoami, not a tb.status report: a report marks the terminal active and hands it deliveries.
-            if c.session.is_empty() {
+            let terminal = midna_terminal();
+            if terminal.is_empty() {
                 if midna {
                     out("[]");
                     return Ok(0);
                 }
                 return Err("tb peek only works inside a Midna terminal.".into());
             }
-            match c.call("GET", &format!("/whoami?session={}", c.session), None) {
+            match c.call("GET", &format!("/whoami?session={terminal}"), None) {
                 Ok(v) if midna => {
                     let o = taskboardd::statusbar::Options::from_whoami(&v);
                     out(&taskboardd::statusbar::segments(&v, o).to_string())
@@ -8779,6 +8796,13 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_speaks_for_its_terminal_only_when_claude_runs_it() {
+        assert_eq!(own_terminal("429902dc".into(), true), "429902dc");
+        assert_eq!(own_terminal("429902dc".into(), false), "", "a tb typed into a plain Midna shell");
+        assert_eq!(own_terminal(String::new(), true), "", "Claude outside Midna");
+    }
 
     #[test]
     fn pr_status_says_since_when_the_board_watches_the_pr() {
