@@ -108,6 +108,8 @@ pub enum Act {
     OpenGoal(String),
     /// A backlog item: its page, where it's made a task, ticketed or closed.
     OpenIssue(String),
+    /// An idea: its page, with its notes and report rounds.
+    OpenIdea(String),
     /// A weekly review is ready: its Review page, which marks it seen.
     OpenReview(i64),
     /// A weekly review opened with fixes still to deal with: the Backlog, where they're planned or dropped.
@@ -129,6 +131,7 @@ impl Act {
             Act::OpenTask(_) => "Open task",
             Act::OpenGoal(_) => "Open goal",
             Act::OpenIssue(_) => "Open issue",
+            Act::OpenIdea(_) => "Open idea",
             Act::OpenReview(_) => "Open review",
             Act::OpenBacklog => "Open Backlog",
         }
@@ -136,7 +139,7 @@ impl Act {
 
     /// Whether it changes something on the board, rather than opening a page.
     pub fn posts(&self) -> bool {
-        !matches!(self, Act::OpenPr(_) | Act::OpenTask(_) | Act::OpenGoal(_) | Act::OpenIssue(_) | Act::OpenReview(_) | Act::OpenBacklog)
+        !matches!(self, Act::OpenPr(_) | Act::OpenTask(_) | Act::OpenGoal(_) | Act::OpenIssue(_) | Act::OpenIdea(_) | Act::OpenReview(_) | Act::OpenBacklog)
     }
 }
 
@@ -683,6 +686,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::OpenTask(r) => m.open_task(r, cx),
         Act::OpenGoal(g) => m.go(Page::Goal(g), cx),
         Act::OpenIssue(r) => m.open_issue(r, cx),
+        Act::OpenIdea(r) => crate::ui::idea::open(m, &r, cx),
         Act::OpenReview(id) => crate::ui::review::open(m, Some(id), cx),
         Act::OpenBacklog => m.go(Page::Backlog, cx),
     }
@@ -856,7 +860,7 @@ fn body_focus(a: &Ask) -> Option<Act> {
     Some(Act::Focus(a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default()))
 }
 
-/// The byte ranges of the task, goal and backlog refs (`T12`, `G3`, `B219`) in `text`, each with
+/// The byte ranges of the task, goal, backlog and idea refs (`T12`, `G3`, `B219`, `I4`) in `text`, each with
 /// what opening it does.
 pub fn ref_spans(text: &str) -> Vec<(std::ops::Range<usize>, Act)> {
     let mut out = Vec::new();
@@ -877,6 +881,7 @@ pub fn ref_spans(text: &str) -> Vec<(std::ops::Range<usize>, Act)> {
             "T" if digits => Some(Act::OpenTask(w.into())),
             "G" if digits => Some(Act::OpenGoal(w.into())),
             "B" if digits => Some(Act::OpenIssue(w.into())),
+            "I" if digits => Some(Act::OpenIdea(w.into())),
             _ => None,
         };
         out.extend(act.map(|act| (start..i, act)));
@@ -1244,14 +1249,15 @@ mod tests {
     }
 
     #[test]
-    fn refs_in_text_open_their_task_goal_or_backlog_item() {
-        let text = "Core Teardown (G3) misses: B169, T12 and B219. Not BT4, B, T1a or 12.";
+    fn refs_in_text_open_their_task_goal_backlog_item_or_idea() {
+        let text = "Core Teardown (G3) misses: B169, T12 and B219, from I7. Not BT4, B, I, T1a, I2b or 12.";
         let got: Vec<(&str, Act)> = ref_spans(text).into_iter().map(|(r, a)| (&text[r], a)).collect();
         assert_eq!(got, vec![
             ("G3", Act::OpenGoal("G3".into())),
             ("B169", Act::OpenIssue("B169".into())),
             ("T12", Act::OpenTask("T12".into())),
             ("B219", Act::OpenIssue("B219".into())),
+            ("I7", Act::OpenIdea("I7".into())),
         ]);
     }
 
@@ -1373,6 +1379,16 @@ mod tests {
         assert_eq!(sending("T52"), None, "nothing waits on a send that never went");
     }
 
+    #[gpui_kit::test]
+    fn an_idea_ref_opens_the_idea_page(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _) = crate::parity::window(cx);
+        let text = "Came from I4.";
+        let (_, act) = ref_spans(text).pop().unwrap();
+        w.update(cx, |m, _, cx| run_act(m, &act, cx)).unwrap();
+        crate::parity::settle(cx);
+        assert_eq!(w.update(cx, |m, _, _| m.page.clone()).unwrap(), Page::Idea("I4".into()));
+    }
+
     #[test]
     fn a_failed_fix_gives_the_boards_reason_and_copies_only_with_midna_down() {
         let reason = "The board doesn't know the folder for the project “web”.";
@@ -1386,7 +1402,7 @@ mod tests {
     #[test]
     fn opening_a_page_never_waits_for_the_board() {
         assert!(Act::Restart("T1".into()).posts() && Act::Continue("G1".into(), 2).posts());
-        assert!(!Act::OpenGoal("G1".into()).posts() && !Act::OpenPr("https://x".into()).posts() && !Act::OpenReview(3).posts());
+        assert!(!Act::OpenGoal("G1".into()).posts() && !Act::OpenPr("https://x".into()).posts() && !Act::OpenReview(3).posts() && !Act::OpenIdea("I1".into()).posts());
     }
 
     fn closed(by_hand: bool) -> Value {
