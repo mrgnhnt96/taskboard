@@ -53,7 +53,8 @@
 //! read takes the next free turn in line (failing at once when that's over [`PRIORITY_WAIT_SECS`]
 //! away), while a background read keeps a fifth of the minute free for them, and doesn't start while
 //! a priority read or a queued write waits on the account. A background read that can't go within
-//! [`BACKGROUND_WAIT_SECS`] is skipped with an error; the next poll asks again.
+//! [`BACKGROUND_WAIT_SECS`] is skipped with an error; the next poll asks again. One the minute's cap
+//! holds past that is skipped at once rather than waiting it out.
 //!
 //! # Sharing reads
 //!
@@ -702,6 +703,16 @@ impl Limits {
         }
         a.reads.push_back(now);
         Turn::Now
+    }
+
+    /// When the minute's cap next leaves a background read on `key` a turn: once enough of the
+    /// minute's reads age out to fall under its stop ([`background_stop`]); now without a cap.
+    pub fn background_free_at(&self, key: &str, host: &str, now: f64) -> f64 {
+        let Some(cap) = self.reads_per_minute(host) else { return now };
+        let mut all = self.accounts.lock();
+        let Some(a) = all.get_mut(key) else { return now };
+        a.forget_old(now);
+        a.read_free_at(background_stop(cap), now)
     }
 
     /// Whether a call on `key` may go out now; counts it when it does. `priority`: a read that still
@@ -1503,7 +1514,9 @@ impl Gate {
     }
 
     /// How long a read waits for its turn ([`Limits::read_turn`]); a background read asks again until
-    /// `patience` seconds ([`BACKGROUND_WAIT_SECS`]) have gone by, then is skipped.
+    /// `patience` seconds ([`BACKGROUND_WAIT_SECS`]) have gone by, then is skipped. One the minute's
+    /// cap holds past that ([`Limits::background_free_at`]) is skipped at once, so a poll over many
+    /// PRs on a capped account doesn't sit out its patience on each of them.
     fn read_wait(&self, l: &Limits, priority: bool, patience: f64) -> std::result::Result<f64, String> {
         let give_up = now_ts() + patience;
         loop {
@@ -1512,7 +1525,9 @@ impl Gate {
                 Turn::Now => return Ok(0.0),
                 Turn::At(at) => return Ok(at - now),
                 Turn::Refused(e) => return Err(e),
-                Turn::Later if now < give_up => std::thread::sleep(std::time::Duration::from_secs_f64(RETRY_SECS.min(give_up - now))),
+                Turn::Later if now < give_up && l.background_free_at(&self.key, &self.host, now) <= give_up => {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(RETRY_SECS.min(give_up - now)))
+                }
                 Turn::Later => return Err(skip_text(&self.host, l.reads_per_minute(&self.host))),
             }
         }
@@ -2098,8 +2113,38 @@ mod tests {
             .unwrap_err();
         let waited = now_ts() - start;
         assert!(e.starts_with("skipped this Bitbucket read") && e.contains("the next poll asks again"), "{e}");
-        assert!(waited >= 0.5, "it asked for its turn for {waited}s before giving up");
+        assert!(waited < 0.3, "the cap holds it for a minute, past its patience, so it's skipped at once, not after {waited}s");
         assert_eq!(reached, 1, "the skipped read never went out");
+    }
+
+    #[test]
+    fn a_background_read_waits_for_a_turn_the_cap_frees_within_its_patience() {
+        let l = Limits::default();
+        l.set_hosts(reads_a_minute("bitbucket", 1));
+        let gate = Gate::new("bitbucket", "bb:frees".into());
+        let start = now_ts();
+        assert_eq!(l.read_turn("bb:frees", "bitbucket", false, start - READ_WINDOW_SECS + 0.5), Turn::Now);
+        assert!(l.background_free_at("bb:frees", "bitbucket", start) > start, "the minute's one read is taken");
+        let mut reached = 0;
+        gate.call_on(&l, 5.0, false, || {
+            reached += 1;
+            Ok(((), None))
+        })
+        .unwrap();
+        assert!(now_ts() - start >= 0.4, "it asked again until the old read aged out");
+        assert_eq!(reached, 1);
+    }
+
+    #[test]
+    fn background_free_at_is_now_without_a_cap_or_any_reads() {
+        let l = Limits::default();
+        assert_eq!(l.background_free_at("gh:none", "github", T0), T0, "GitHub has no read cap by default");
+        l.set_hosts(reads_a_minute("bitbucket", 10));
+        assert_eq!(l.background_free_at("bb:new", "bitbucket", T0), T0, "an account with no reads yet");
+        for i in 0..8 {
+            assert_eq!(l.read_turn("bb:new", "bitbucket", false, T0 + i as f64), Turn::Now);
+        }
+        assert_eq!(l.background_free_at("bb:new", "bitbucket", T0 + 8.0), T0 + READ_WINDOW_SECS, "free once the oldest read ages out");
     }
 
     #[test]

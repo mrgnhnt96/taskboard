@@ -467,8 +467,15 @@ pub fn relay_back_at(app: &App, host: &str, repo: &str) -> Option<f64> {
 /// catches what they missed. A relay that goes stuck or silent stops covering, so its PRs are polled
 /// again from the next round. Stream mode has no reconcile ([`timed_poll_why`]).
 pub fn pr_poll_skips(app: &App, t: &Row) -> bool {
-    let back = relay_back_at(app, t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or(""));
-    let (Some(back), Some(read)) = (back, ts(&jloads_obj(t.s("pr_flow")), "read_at")) else { return false };
+    covered_read_rests(app, t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or(""), ts(&jloads_obj(t.s("pr_flow")), "read_at"))
+}
+
+/// Whether a timed read of this provider and repo, last made at `read`, rests this round: a healthy,
+/// active stream relay covers the repo ([`pr_poll_rests`]) and the read came since that relay last
+/// came back or connected, less than `reconcile_secs` ago. The PR poll ([`pr_poll_skips`]) and the
+/// owner-PR read ([`crate::prbuilds::read_owner_prs`]) both go by it.
+pub fn covered_read_rests(app: &App, host: &str, repo: &str, read: Option<f64>) -> bool {
+    let (Some(back), Some(read)) = (relay_back_at(app, host, repo), read) else { return false };
     let every = app.cfg.feed.reconcile_secs;
     read >= back && (every <= 0.0 || now_ts() - read < every)
 }

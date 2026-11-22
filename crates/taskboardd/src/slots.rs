@@ -580,6 +580,8 @@ fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -
     if let Some(text) = crate::default_sync::freshen(repo, start, !app.db.held_here()) {
         app.info(format!("worktrees: before {} took a slot: {text}", rf("task", t.id())));
     }
+    let start = live_start(app, t, repo, start);
+    let start = start.as_str();
     let mut slots = rows(app, repo)?;
     // A conversation resumes only in the folder it ran in.
     if let Some(before) = board::task_context(t).s("worktree_slot") {
@@ -793,6 +795,22 @@ fn at_text(at: &str, start: &str) -> String {
 
 /// Puts a slot on `branch` (a task's pushed branch, which every worktree of the repo shares), else
 /// detached at `start`. Where it is.
+/// The ref a slot starts from: `start` while it names a commit, else origin's default branch, else
+/// the repo's HEAD. A goal's base branch is often merged and deleted while its tasks' PRs still get
+/// review fixes; starting from it would fail every claim, and every wake would try again. The slot
+/// records the one it used as the task's base, so later claims start there.
+fn live_start(app: &App, t: &Row, repo: &str, start: &str) -> String {
+    let names = |r: &str| git(repo, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")], GIT_SECS).code == 0;
+    if names(start) {
+        return start.to_string();
+    }
+    let default = git(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], GIT_SECS);
+    let default = (default.code == 0).then(|| default.out.trim().to_string()).filter(|d| !d.is_empty());
+    let Some(alt) = default.into_iter().chain(["HEAD".to_string()]).find(|r| r != start && names(r)) else { return start.to_string() };
+    app.info(format!("worktrees: {}'s base {start} is gone, so its slot starts from {alt}", rf("task", t.id())));
+    alt
+}
+
 fn check_out(path: &str, start: &str, branch: Option<&str>) -> Result<String> {
     if let Some(b) = branch.filter(|b| !b.is_empty()) {
         let local = git(path, &["switch", b], GIT_SECS);
@@ -1273,6 +1291,27 @@ mod tests {
         app.db.x("UPDATE jobs SET updated_at = '2000-01-01T00:00:00Z'", p![]).unwrap();
         app.db.x("UPDATE tasks SET pr_flow = '{}'", p![]).unwrap();
         assert!(holder(&app, &slot_at(&app, &slot).unwrap().unwrap()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_pr_claim_whose_base_branch_is_gone_starts_from_head_and_keeps_its_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(Config::for_tests(dir.path()));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap().to_string();
+        let run = |args: &[&str]| assert_eq!(git(&repo, args, GIT_SECS).code, 0, "git {args:?}");
+        run(&["init", "-q"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        run(&["branch", "feat/a"]);
+        // It worked in slot-1, since removed, on a goal based on a branch that was merged and deleted.
+        let ctx = json!({"worktree_slot": slot_path(&repo, 1), "worktree_base": "origin/gone", "worktree_branch": "feat/a"}).to_string();
+        let t = board::get_task(&app, app.db.insert("tasks", crate::fields!["title" => "A", "status" => "done", "context" => ctx]).unwrap()).unwrap();
+        let path = reclaim(&app, &t).expect("the claim works from HEAD instead").unwrap();
+        assert_eq!(branch_of(&path).as_deref(), Some("feat/a"), "its PR branch is checked out");
+        let ctx = board::task_context(&board::get_task(&app, t.id()).unwrap());
+        assert_eq!(ctx.s("worktree_base"), Some("HEAD"), "later claims start from the base that worked");
+        assert_eq!(live_start(&app, &t, &repo, "HEAD"), "HEAD", "a base that names a commit stays");
     }
 
     #[test]
