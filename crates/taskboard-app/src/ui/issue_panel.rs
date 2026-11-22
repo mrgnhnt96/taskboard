@@ -1,12 +1,11 @@
-//! A backlog issue, as the web board showed it: the side panel on the Board (`issuePanel`), and
-//! the issue column beside the Backlog page's list (`issueAside`). Both share the detail
+//! A backlog issue, as the web board showed it: the side panel (`issuePanel`) with its detail
 //! (`issueDetail`: move to a goal, how it was reported, what was happening, history, notes).
 //!
 //! Also here, shared with the Backlog page: the issue labels (`issueState`, `issueFrom`, …), the
 //! issue actions (`promote`, `ticket`, `drop`, `issue-move`, `issue-note`) with the web board's
 //! inline notes and "Sending…" busy buttons, and the searchable project / goal picker.
 //!
-//! What is drawn comes from the pure view models (`PanelView`, `AsideView`, `DetailView`); their
+//! What is drawn comes from the pure view models (`PanelView`, `DetailView`); their
 //! visible text and offered actions are checked against the web board in `parity/golden/backlog.json`.
 use crate::app::{MainWindow, Page, Panel, TaskTab};
 use crate::fmt::{self, arr, s};
@@ -161,7 +160,7 @@ fn hist_list_item(m: &mut MainWindow, ix: usize, _: &mut Window, cx: &mut Contex
     }
     let row = div().px(px(24.)).line_height(relative(1.5));
     match rows.get(ix - 1) {
-        Some(h) => row.pt(px(8.)).child(hist_row(&t, &fmt::ref_of(&b, "B"), ix - 1, &hist_row_of(h), false)).into_any_element(),
+        Some(h) => row.pt(px(8.)).child(hist_row(&t, &fmt::ref_of(&b, "B"), ix - 1, &hist_row_of(h))).into_any_element(),
         None => row.pb(px(32.)).when(more, |d| d.pt(px(8.)).child(kit::help(&t, "Loading…"))).into_any_element(),
     }
 }
@@ -378,7 +377,8 @@ pub struct HistRow {
     pub time: String,
     pub full: String,
     pub kind: String,
-    /// "who · text" (as the web joins them).
+    /// "who · text" (as the web joins them), for the parity tests.
+    #[cfg(test)]
     pub text: String,
     /// Who did it (bold in the panel), and the rest after " · ".
     pub who: Option<String>,
@@ -394,9 +394,13 @@ pub struct DetailView {
     pub snap: Vec<(String, String)>,
     /// (task ref, "Open T4’s log at 3:05 PM").
     pub found_log: Option<(String, String)>,
+    /// Only the parity tests read it whole; the panel's list draws a row at a time.
+    #[cfg(test)]
     pub history: Vec<HistRow>,
 }
 
+/// The detail with its history, as the parity tests read it.
+#[cfg(test)]
 pub fn detail_view(b: &Value) -> DetailView {
     let mut hist: Vec<&Value> = arr(b, "history").iter().collect();
     let at = |h: &Value| h.get("at").map(|a| a.as_str().map(str::to_string).unwrap_or_else(|| a.to_string())).unwrap_or_else(|| "undefined".into());
@@ -416,6 +420,7 @@ fn detail_head(b: &Value) -> DetailView {
             let at = fmt::opt_s(b, "created_at").map(|c| format!(" at {}", fmt::hhmm(c))).unwrap_or_default();
             (fr.clone(), format!("Open {fr}’s log{at}"))
         }),
+        #[cfg(test)]
         history: Vec::new(),
         r,
     }
@@ -428,6 +433,7 @@ fn hist_row_of(h: &Value) -> HistRow {
         kind: s(h, "kind").to_string(),
         who: fmt::opt_s(h, "who").map(str::to_string),
         what: s(h, "text").to_string(),
+        #[cfg(test)]
         text: match fmt::opt_s(h, "who") {
             Some(w) => format!("{w} · {}", s(h, "text")),
             None => s(h, "text").to_string(),
@@ -608,40 +614,6 @@ impl PanelView {
         out.extend(self.note.as_ref().map(|n| n.0.clone()));
         self.detail.parts(&mut out);
         (flat(&out), acts)
-    }
-}
-
-/// `issueAside` (beside the Backlog page's list): no actions box, the move picker, compact.
-pub struct AsideView {
-    pub r: String,
-    pub kind: String,
-    /// The state, or "Open · reported at …".
-    pub help: String,
-    pub title: String,
-    /// "Open task T7".
-    pub open_task: Option<String>,
-    pub detail: DetailView,
-}
-
-pub fn aside_view(b: &Value) -> AsideView {
-    AsideView {
-        r: fmt::ref_of(b, "B"),
-        kind: kind_label(s(b, "kind")),
-        help: issue_state(b).map(|x| x.1).unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at")))),
-        title: s(b, "title").to_string(),
-        open_task: issue_task(b),
-        detail: detail_view(b),
-    }
-}
-
-impl AsideView {
-    #[cfg(test)]
-    pub fn text_and_acts(&self, err: Option<&str>) -> (String, Vec<&'static str>) {
-        let mut out = vec![self.kind.clone(), self.help.clone(), self.r.clone(), self.title.clone()];
-        out.extend(self.open_task.as_ref().map(|t| format!("Open task {t}")));
-        out.extend(err.map(str::to_string));
-        self.detail.parts(&mut out);
-        (flat(&out), vec![])
     }
 }
 
@@ -934,29 +906,6 @@ pub fn picker_label(goal: bool, value: &str, specials: &[(String, String)], goal
     if value.is_empty() { "Choose a project".into() } else { value.to_string() }
 }
 
-/// Open a picker under the click. `on_pick` runs only when the choice changes (`pickItem`).
-#[allow(clippy::too_many_arguments)]
-pub fn open_picker(
-    m: &mut MainWindow,
-    key: &str,
-    goal: bool,
-    value: String,
-    specials: Vec<(String, String)>,
-    proj: String,
-    at: Point<Pixels>,
-    window: &mut Window,
-    cx: &mut Context<MainWindow>,
-    on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + 'static,
-) {
-    let q = kit::Input::new(cx, if goal { "Search goals by name, project or epic" } else { "Search projects" }, false);
-    window.focus(&q.focus, cx);
-    let items = picker_items(goal, &value, &specials, &proj, "", m.state(), &m.data.goals);
-    let active = items.iter().position(|it| it.v == value).unwrap_or(0);
-    m.issue_panel.picker = Some(Picker { key: key.to_string(), goal, value, specials, proj, q, active, fixed: None, restore: None, on_pick: std::rc::Rc::new(on_pick) });
-    m.menu = Some((key.to_string(), at));
-    cx.notify();
-}
-
 /// A page's project filter: the picked project ("All projects" for `all`) and a ▾. A click opens
 /// a searchable picker of `projects` (each with its count); `on_pick` gets `all` or a name.
 pub fn project_filter(
@@ -1247,10 +1196,6 @@ fn act_el(t: &Theme, r: &str, a: &Act, style: &str, small: bool, id: &str, cx: &
     }))
 }
 
-fn section(t: &Theme, title: &str) -> Div {
-    div().flex().flex_col().gap(px(8.)).child(kit::h3(t, title.to_string()))
-}
-
 /// The panel's `.stack` (gap 6px) under a 13px `.h3`.
 fn panel_section(t: &Theme, title: &str, gap: f32) -> Div {
     div()
@@ -1272,21 +1217,11 @@ fn hist_color(t: &Theme, kind: &str) -> Hsla {
     }
 }
 
-/// `issueDetail`, drawn. `compact` is the aside's smaller text.
-pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
-    let mut history = history_head(t, compact, v.history.is_empty());
-    for (n, h) in v.history.iter().enumerate() {
-        history = history.child(hist_row(t, &v.r, n, h, compact));
-    }
-    detail_sections(t, v, compact, cx).child(history)
-}
-
 /// The detail above the history.
-fn detail_sections(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
+fn detail_sections(t: &Theme, v: &DetailView, cx: &mut Context<MainWindow>) -> Div {
     let r = v.r.clone();
     let mut col = div().flex().flex_col().gap(px(18.));
-    let sec = |title: &str, gap: f32| if compact { section(t, title) } else { panel_section(t, title, gap) };
-    let mut how = sec("How it was reported", 6.).child(div().text_size(px(if compact { 13. } else { 14. })).child(sel(t, "issue-how", v.how.clone())));
+    let mut how = panel_section(t, "How it was reported", 6.).child(div().text_size(px(14.)).child(sel(t, "issue-how", v.how.clone())));
     if let Some(said) = &v.said {
         how = how.child(div().text_size(px(14.)).text_color(t.text_2).bg(t.bg).border_l(px(3.)).border_color(t.border_2).rounded_r(px(8.)).px(px(12.)).py(px(8.)).child(sel(t, "issue-said", said.clone())));
     }
@@ -1300,66 +1235,54 @@ fn detail_sections(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<Ma
     }
     col = col.child(how);
 
-    let mut happening = sec("What was happening", 6.);
+    let mut happening = panel_section(t, "What was happening", 6.);
     if v.snap.is_empty() {
         happening = happening.child(kit::help(t, "No snapshot was saved with this issue."));
     } else {
-        let mut kv = div().flex().flex_col().rounded(px(if compact { 10. } else { 12. })).border_1().border_color(t.border);
+        let mut kv = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border);
         for (i, (k, val)) in v.snap.iter().enumerate() {
             kv = kv.child(
                 div()
                     .flex()
-                    .gap(px(if compact { 10. } else { 12. }))
-                    .px(px(if compact { 12. } else { 16. }))
-                    .py(px(if compact { 7. } else { 9. }))
+                    .gap(px(12.))
+                    .px(px(16.))
+                    .py(px(9.))
                     .when(i > 0, |d| d.border_t_1().border_color(t.divider))
-                    .child(div().flex_none().w(px(if compact { 96. } else { 110. })).text_size(px(if compact { 12. } else { 12.5 })).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(sel(t, SharedString::from(format!("issue-snap-k-{i}")), k.clone())))
-                    .child(div().flex_1().min_w_0().text_size(px(if compact { 12.5 } else { 13. })).child(sel(t, SharedString::from(format!("issue-snap-v-{i}")), val.clone()))),
+                    .child(div().flex_none().w(px(110.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(sel(t, SharedString::from(format!("issue-snap-k-{i}")), k.clone())))
+                    .child(div().flex_1().min_w_0().text_size(px(13.)).child(sel(t, SharedString::from(format!("issue-snap-v-{i}")), val.clone()))),
             );
         }
         happening = happening.child(kv);
     }
     if let Some((fr, label)) = v.found_log.clone() {
-        happening = happening.child(div().flex().text_size(px(13.)).child(kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label).when(!compact, |d| d.underline()).on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx)))));
+        happening = happening.child(div().flex().text_size(px(13.)).child(kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label).underline().on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx)))));
     }
     col.child(happening)
 }
 
 /// The History heading, and "Nothing yet." when there's none.
-fn history_head(t: &Theme, compact: bool, empty: bool) -> Div {
-    let history = if compact { section(t, "History") } else { panel_section(t, "History", 8.) };
-    history.when(empty, |d| d.child(kit::help(t, "Nothing yet.")))
+fn history_head(t: &Theme, empty: bool) -> Div {
+    panel_section(t, "History", 8.).when(empty, |d| d.child(kit::help(t, "Nothing yet.")))
 }
 
-/// One history event: time · dot · text.
-fn hist_row(t: &Theme, r: &str, n: usize, h: &HistRow, compact: bool) -> Div {
-    if !compact {
-        // `.hist li`: 52px time · 10px dot · text, gap 8px.
-        let text = match &h.who {
-            Some(w) => div().flex_1().min_w_0().text_size(px(13.5)).child(sel_styled(
-                t,
-                SharedString::from(format!("issue-hist-text-{n}")),
-                format!("{w} · {}", h.what),
-                vec![(0..w.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })],
-            )),
-            None => div().flex_1().min_w_0().text_size(px(13.5)).child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.what.clone())),
-        };
-        return div()
-            .flex()
-            .items_start()
-            .gap(px(8.))
-            .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(52.)).whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
-            .child(div().flex_none().w(px(10.)).pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 8.)))
-            .child(text);
-    }
+/// One history event (`.hist li`): 52px time · 10px dot · text, gap 8px.
+fn hist_row(t: &Theme, r: &str, n: usize, h: &HistRow) -> Div {
+    let text = match &h.who {
+        Some(w) => div().flex_1().min_w_0().text_size(px(13.5)).child(sel_styled(
+            t,
+            SharedString::from(format!("issue-hist-text-{n}")),
+            format!("{w} · {}", h.what),
+            vec![(0..w.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })],
+        )),
+        None => div().flex_1().min_w_0().text_size(px(13.5)).child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.what.clone())),
+    };
     div()
         .flex()
         .items_start()
-        .gap(px(10.))
-        .text_size(px(13.))
-        .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(64.)).text_color(t.muted).text_size(px(12.)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
-        .child(div().flex_none().pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 7.)))
-        .child(div().flex_1().min_w_0().child(sel(t, SharedString::from(format!("issue-hist-text-{n}")), h.text.clone())))
+        .gap(px(8.))
+        .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(52.)).whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
+        .child(div().flex_none().w(px(10.)).pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 8.)))
+        .child(text)
 }
 
 /// The issue panel. `docked`: it sits beside the page, which stays usable, so clicking another
@@ -1492,7 +1415,7 @@ fn panel_sheet(m: &mut MainWindow, t: &Theme, b: &Value, empty: bool, cx: &mut C
         col = col.child(action_row(t, &r, &v.acts, false, "issue", cx));
     }
     col = col.children(note_el(t, &v.note));
-    col.child(detail_sections(t, &v.detail, false, cx)).child(history_head(t, false, empty))
+    col.child(detail_sections(t, &v.detail, cx)).child(history_head(t, empty))
 }
 
 /// "Blocks PR" or "Blocks goal" and its why, for an item that holds its task's PR or its goal.
@@ -1541,42 +1464,6 @@ fn close_btn(t: &Theme) -> Stateful<Div> {
         .hover(move |d| d.border_color(hover))
         .tooltip(kit::tip("Close"))
         .child(kit::glyph(kit::Glyph::X, 16., t.muted))
-}
-
-/// `issueAside`: the issue (and its view) beside the Backlog page's list. None = still loading
-/// (or `err`).
-pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<&str>, cx: &mut Context<MainWindow>) -> AnyElement {
-    let card = div().flex().flex_col().gap(px(16.)).p(px(18.)).rounded(px(14.)).border_1().border_color(t.border).bg(t.card);
-    let Some((b, v)) = issue else {
-        return card.child(div().text_size(px(13.)).text_color(if err.is_some() { t.down } else { t.muted }).child(err.unwrap_or("Loading…").to_string())).into_any_element();
-    };
-    let head = div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child({
-                    let (fg, bg) = kind_colors(t, s(b, "kind"));
-                    kit::pill(fg, bg, v.kind.clone())
-                })
-                .when_some(blocks_label(b), |d, (pill, _)| d.child(kit::pill(t.warn_text, t.warn_soft, pill)))
-                .child(div().flex_1().min_w_0().text_size(px(12.5)).text_color(t.muted).child(v.help.clone()))
-                .child(kit::chip(t, v.r.clone())),
-        )
-        .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).line_height(px(23.)).child(sel(t, "aside-title", v.title.clone())))
-        .when_some(blocks_label(b).and_then(|(_, why)| why), |d, why| d.child(div().text_size(px(12.5)).text_color(t.warn_text).child(sel(t, "aside-blocks-why", why))))
-        .when_some(v.open_task.clone(), |d, tr| {
-            let label = format!("Open task {tr}");
-            d.child(div().flex().text_size(px(12.5)).child(kit::link(t, "aside-open-task", label).on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx)))))
-        });
-    card.child(head)
-        .children(err.map(|e| div().text_size(px(12.5)).text_color(t.down).child(e.to_string())))
-        .child(render_detail(t, &v.detail, true, cx))
-        .into_any_element()
 }
 
 #[cfg(test)]

@@ -318,24 +318,6 @@ mod tests {
         .unwrap();
     }
 
-    #[gpui_kit::test]
-    fn filters_persist_like_the_web(cx: &mut gpui_kit::TestAppContext) {
-        let (w, _rec) = window(cx);
-        w.update(cx, |m, _, cx| {
-            let f = crate::app::Filters { project: "webapp".into(), goal: "G1".into(), done: "7d".into() };
-            m.set_filters(f, cx);
-        })
-        .unwrap();
-        let saved = crate::prefs::get("taskboard.filter").unwrap();
-        assert_eq!(saved, json!({"project": "webapp", "goal": "G1", "done": "7d"}));
-        let f = crate::app::Filters::load();
-        assert_eq!((f.project.as_str(), f.goal.as_str(), f.done.as_str()), ("webapp", "G1", "7d"));
-        // Invalid saved values fall back field by field (loadFilter).
-        crate::prefs::set("taskboard.filter", json!({"project": 3, "goal": "nope", "done": "1y"}));
-        let f = crate::app::Filters::load();
-        assert_eq!((f.project.as_str(), f.goal.as_str(), f.done.as_str()), ("all", "all", "24h"));
-    }
-
     /// The task panel's "N open in the goal’s backlog" opens that goal on its Backlog tab.
     #[gpui_kit::test]
     fn goal_backlog_link_opens_the_backlog_tab(cx: &mut gpui_kit::TestAppContext) {

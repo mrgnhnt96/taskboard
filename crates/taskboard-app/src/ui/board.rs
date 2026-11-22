@@ -1,11 +1,8 @@
 //! The board's filters (the web board's `loadState` query and `keepIssue`). The page they
 //! filter is the home page (`ui::home`).
 //!
-//! `state_query` and `keep_issue` are tested one-to-one against the web board's own
-//! output (`parity/gen/board.mjs`).
+//! `keep_issue` is tested one-to-one against the web board's own output (`parity/gen/board.mjs`).
 use crate::app::{Filters, MainWindow, Page};
-use gpui_kit::*;
-use serde_json::Value;
 
 #[derive(Default)]
 pub struct State {
@@ -13,14 +10,10 @@ pub struct State {
     pub keep: Vec<String>,
 }
 
-/// `loadState`'s query: the goal goes as its number. (For `app.rs`'s refresh to call.)
+/// `loadState`'s query: the project, and the issues to keep. The board's own defaults stand for
+/// the rest (every goal, tasks done in the last 24h). (For `app.rs`'s refresh to call.)
 pub fn state_query(f: &Filters, keep: &[String]) -> Vec<(&'static str, String)> {
-    let goal = if f.goal == "all" { "all".to_string() } else { f.goal.trim_start_matches(|c: char| c.is_ascii_alphabetic()).to_string() };
-    let mut q = vec![
-        ("project", if f.project.is_empty() { "all".to_string() } else { f.project.clone() }),
-        ("goal", goal),
-        ("done", if f.done.is_empty() { "24h".to_string() } else { f.done.clone() }),
-    ];
+    let mut q = vec![("project", if f.project.is_empty() { "all".to_string() } else { f.project.clone() })];
     if !keep.is_empty() {
         q.push(("keep", keep.join(",")));
     }
@@ -40,26 +33,16 @@ pub fn keep_issue(m: &mut MainWindow, r: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Beats the glob's `gpui_kit::test`, which `#[gpui_kit::test]`'s own `#[test]` would hit.
-    use ::core::prelude::v1::test;
     use crate::parity::{golden, window};
+    use gpui_kit::TestAppContext;
     use serde_json::json;
 
-    fn filters(v: &Value) -> Filters {
-        Filters {
-            project: v["project"].as_str().unwrap_or("all").into(),
-            goal: v["goal"].as_str().unwrap_or("all").into(),
-            done: v["done"].as_str().unwrap_or("").into(),
-        }
-    }
-
     #[test]
-    fn state_query_matches_web() {
-        golden("board").only("state_query").check(|i| {
-            let keep: Vec<String> = i["keep"].as_array().unwrap().iter().map(|k| k.as_str().unwrap().to_string()).collect();
-            let q: serde_json::Map<String, Value> = state_query(&filters(&i["filter"]), &keep).into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-            Value::Object(q)
-        });
+    fn state_query_sends_the_project_and_the_kept_issues() {
+        let q = |project: &str, keep: &[&str]| state_query(&Filters { project: project.into() }, &keep.iter().map(|k| k.to_string()).collect::<Vec<_>>());
+        assert_eq!(q("all", &[]), [("project", "all".to_string())]);
+        assert_eq!(q("", &[]), [("project", "all".to_string())], "no project is all of them");
+        assert_eq!(q("webapp", &["B3", "B4"]), [("project", "webapp".to_string()), ("keep", "B3,B4".to_string())]);
     }
 
     #[gpui_kit::test]

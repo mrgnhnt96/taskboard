@@ -367,8 +367,6 @@ pub struct Ui {
     pub handoffs: HashMap<String, String>,
     /// "" means "all".
     pub log_filter: String,
-    pub att_menu: Option<String>,
-    pub att_edit: Option<String>,
     /// The header's Attached dropdown is open.
     pub att_drop: bool,
     /// The now stop's ⋯ terminal menu is open.

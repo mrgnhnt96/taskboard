@@ -1,6 +1,6 @@
 //! The reader's own UI state that outlives a launch: the web board kept it in `localStorage`
-//! under the same keys (`taskboard.filter`, `tb.rail.w`, `tb.rail.shut`, `tb.rail.recent`,
-//! `tb.linked`, `tb.fold.<k>`, `tb.draft.<k>`, `tb.sessCollapsed`), and so do we.
+//! under the same keys (`tb.rail.w`, `tb.rail.shut`, `tb.rail.recent`, `tb.linked`, `tb.fold.<k>`,
+//! `tb.draft.<k>`, `tb.sessCollapsed`), and so do we.
 //!
 //! Stored as one JSON object in `app-state.json`: under `$TASKBOARD_DATA` when set (Taskboard Dev
 //! sets it), else `~/Library/Application Support/com.mrgnhnt.taskboard/`. Values are JSON.

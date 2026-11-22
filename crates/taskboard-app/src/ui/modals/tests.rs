@@ -1,5 +1,5 @@
 //! The name sort against the web board (`localeSort` cases in `parity/golden/forms.json`), and
-//! the alerts dialog in a headless window.
+//! the dialogs in a headless window.
 use super::*;
 // An explicit import beats the glob above, which would bring in GPUI's own `test` attribute
 // (and `#[gpui_kit::test]` expands to a plain `#[test]`).
@@ -22,7 +22,7 @@ fn names_sort_like_the_web() {
 
 type W = WindowHandle<MainWindow>;
 
-/// Draw the window once (the dialog checks its alerts while it renders).
+/// Draw the window once.
 fn redraw(w: W, cx: &mut TestAppContext) {
     cx.update_window(w.into(), |_, window, cx| {
         window.refresh();
@@ -32,42 +32,14 @@ fn redraw(w: W, cx: &mut TestAppContext) {
     parity::settle(cx);
 }
 
-fn one_alert() -> Value {
-    json!([{"id": "a1", "at": "2026-10-07T14:00:00Z", "text": "T3 couldn't start.", "task": "T3", "goal": null}])
-}
-
 #[gpui_kit::test]
-fn escape_closes_the_alerts_dialog(cx: &mut TestAppContext) {
+fn escape_closes_the_dialog(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
-    w.update(cx, |m, window, cx| {
-        // An alert, so the dialog doesn't close by itself.
-        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = one_alert();
-        m.set_modal(Some(Modal::Alerts), window, cx);
-    })
-    .unwrap();
-    redraw(w, cx);
-    w.update(cx, |m, _, _| assert!(matches!(m.modal, Some(Modal::Alerts)), "the dialog stays while there are alerts")).unwrap();
+    open_note(w, cx);
+    w.update(cx, |m, _, _| assert!(matches!(m.modal, Some(Modal::Note(_))), "the dialog is open")).unwrap();
     cx.simulate_keystrokes(w.into(), "escape");
     parity::settle(cx);
-    w.update(cx, |m, _, _| assert!(m.modal.is_none(), "esc closes the alerts dialog")).unwrap();
-}
-
-#[gpui_kit::test]
-fn the_alerts_dialog_closes_itself_when_none_are_left(cx: &mut TestAppContext) {
-    let (w, _) = parity::window(cx);
-    w.update(cx, |m, window, cx| {
-        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = one_alert();
-        m.set_modal(Some(Modal::Alerts), window, cx);
-    })
-    .unwrap();
-    redraw(w, cx);
-    w.update(cx, |m, _, _| {
-        assert!(matches!(m.modal, Some(Modal::Alerts)));
-        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = json!([]);
-    })
-    .unwrap();
-    redraw(w, cx);
-    w.update(cx, |m, _, _| assert!(m.modal.is_none())).unwrap();
+    w.update(cx, |m, _, _| assert!(m.modal.is_none(), "esc closes the dialog")).unwrap();
 }
 
 fn finish_note(m: &MainWindow) -> Option<String> {
@@ -175,12 +147,9 @@ fn other_do_words_just_open_the_task(cx: &mut TestAppContext) {
     assert!(rec.posts().is_empty());
 }
 
-/// Opens the alerts dialog (with an alert, so it stays) and draws it.
-fn open_alerts(w: W, cx: &mut TestAppContext) {
-    w.update(cx, |m, window, cx| {
-        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = one_alert();
-        m.set_modal(Some(Modal::Alerts), window, cx);
-    })
+/// Opens a task's note for testers and draws it.
+fn open_note(w: W, cx: &mut TestAppContext) {
+    w.update(cx, |m, window, cx| m.set_modal(Some(Modal::Note("Log in, then open Settings.".into())), window, cx))
     .unwrap();
     redraw(w, cx);
 }
@@ -197,7 +166,7 @@ fn a_dialog_takes_focus_and_gives_it_back(cx: &mut TestAppContext) {
             window.focused(cx).filter(|f| *f != m.focus).expect("the page has a tab stop")
         })
         .unwrap();
-    open_alerts(w, cx);
+    open_note(w, cx);
     w.update(cx, |m, window, cx| assert!(m.modal_focus.contains_focused(window, cx), "the dialog has focus")).unwrap();
     cx.simulate_keystrokes(w.into(), "escape");
     redraw(w, cx);
@@ -211,7 +180,7 @@ fn a_dialog_takes_focus_and_gives_it_back(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn tab_stays_inside_an_open_dialog(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
-    open_alerts(w, cx);
+    open_note(w, cx);
     for keys in ["tab", "tab", "tab", "tab", "tab", "shift-tab", "shift-tab", "shift-tab"] {
         cx.simulate_keystrokes(w.into(), keys);
         redraw(w, cx);
@@ -226,14 +195,14 @@ fn tab_stays_inside_an_open_dialog(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn page_keys_pause_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let (w, _) = parity::window(cx);
-    open_alerts(w, cx);
+    open_note(w, cx);
     cx.simulate_keystrokes(w.into(), "cmd-4");
     parity::settle(cx);
     cx.simulate_keystrokes(w.into(), "cmd-k");
     parity::settle(cx);
     w.update(cx, |m, _, _| {
         assert!(m.page == Page::Board, "the page behind stays put");
-        assert!(matches!(m.modal, Some(Modal::Alerts)), "search doesn't open over the dialog");
+        assert!(matches!(m.modal, Some(Modal::Note(_))), "search doesn't open over the dialog");
     })
     .unwrap();
     cx.simulate_keystrokes(w.into(), "escape");
@@ -393,9 +362,8 @@ fn a_tall_dialog_stops_at_nine_tenths_of_the_window(cx: &mut TestAppContext) {
     use gpui_kit::{VisualTestContext, px, size};
     let (w, _) = parity::window(cx);
     w.update(cx, |m, window, cx| {
-        let many: Vec<Value> = (0..60).map(|i| json!({"id": format!("a{i}"), "at": "2026-10-07T14:00:00Z", "text": format!("T{i} couldn't start."), "task": format!("T{i}"), "goal": null})).collect();
-        std::rc::Rc::make_mut(m.data.state.as_mut().unwrap())["alerts"] = json!(many);
-        m.set_modal(Some(Modal::Alerts), window, cx);
+        let long: Vec<String> = (0..60).map(|i| format!("{i}. Open T{i} and check it starts.")).collect();
+        m.set_modal(Some(Modal::Note(long.join("\n\n"))), window, cx);
     })
     .unwrap();
     parity::settle(cx);
