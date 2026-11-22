@@ -990,6 +990,50 @@ fn an_agent_on_a_done_tasks_pr_closes_it_when_the_owner_answers_its_question() {
 }
 
 #[test]
+fn an_agent_on_a_done_tasks_pr_merges_it_when_the_owner_answers_its_question() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("ok", "approved")];
+    rec.approvals = 1;
+    let h = fake(&b, rec);
+    poll(&b);
+    let merge = || b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "via_session": "s2"}));
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s2", "name": "Term s2", "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    prflow::picked_up(&b.app, &b.task(id), "s2", "Term s2").unwrap();
+    board::session_event(&b.app, "s2", "reply", "PR #9 is still open; #12 merged already.", None).unwrap();
+    b.report("hook.prompt", "s2", json!({"prompt": "merge the PR"}));
+    assert!(merge().unwrap_err().contains("hasn't told you to merge this one"), "the reply names two PRs");
+    b.report("tb.question", "s2", json!({"text": "Should I merge PR #9 now?"}));
+    board::session_event(&b.app, "s2", "reply", "Asked whether to merge it; #12 is merged.", None).unwrap();
+    b.report("hook.prompt", "s2", json!({"prompt": "yeah, merge the PR."}));
+    merge().unwrap();
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn an_agent_on_a_done_tasks_pr_marks_it_reviewed_when_the_owner_answers_its_question() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    fake(&b, green());
+    poll(&b);
+    let mark = || b.try_post(&format!("/tasks/T{id}/pr/reviewed"), json!({"agent": true, "via_session": "s2"}));
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s2", "name": "Term s2", "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    prflow::picked_up(&b.app, &b.task(id), "s2", "Term s2").unwrap();
+    board::session_event(&b.app, "s2", "reply", "PR #9 is still open; #12 merged already.", None).unwrap();
+    b.report("hook.prompt", "s2", json!({"prompt": "I've reviewed the PR"}));
+    assert!(mark().unwrap_err().contains("haven't told you"), "the reply names two PRs");
+    b.report("tb.question", "s2", json!({"text": "Have you reviewed PR #9?"}));
+    board::session_event(&b.app, "s2", "reply", "Asked whether you've reviewed it; #12 is merged.", None).unwrap();
+    b.report("hook.prompt", "s2", json!({"prompt": "yeah, I've reviewed the PR."}));
+    let v = mark().unwrap();
+    assert_eq!(v["pr"]["bar"]["you"], "reviewed", "{v}");
+}
+
+#[test]
 fn the_owner_closes_a_pr_from_their_own_shell_but_not_a_merged_one() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
