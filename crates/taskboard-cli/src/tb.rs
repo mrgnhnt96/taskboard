@@ -548,6 +548,10 @@ enum Cmd {
         /// A line on what it is, shown under its title on the board
         #[arg(long)]
         summary: Option<String>,
+        /// A file with the link's text, for a link the board can't open (a claude.ai artifact: the page its
+        /// Artifact read saved). The board keeps the text so plan reviews can read it
+        #[arg(long, value_name = "FILE")]
+        copy: Option<String>,
         /// Attach it to this goal instead of the task
         #[arg(long)]
         goal: Option<String>,
@@ -5226,6 +5230,30 @@ fn attach_target(url: &str, cwd: &str) -> Result<String, String> {
     Ok(std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().to_string())
 }
 
+/// The most `tb attach --copy` reads; a page past it is refused rather than cut.
+const ATTACH_COPY_BYTES: u64 = 2 * 1024 * 1024;
+
+/// What `tb attach --copy <file>` sends: the file's text, for a link only.
+fn attach_copy(url: &str, file: &str, cwd: &str) -> Result<String, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("--copy is for a link: the board reads an attached file itself".into());
+    }
+    let path = match file.strip_prefix("~/") {
+        Some(rest) => std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(rest),
+        None => std::path::Path::new(cwd).join(file),
+    };
+    let meta = std::fs::metadata(&path).map_err(|_| format!("no such file: {}", path.display()))?;
+    if meta.len() > ATTACH_COPY_BYTES {
+        return Err(format!("{} is over 2 MB: give a copy of its text", path.display()));
+    }
+    let text = std::fs::read(&path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
+    let text = String::from_utf8(text).map_err(|_| format!("{} isn't text", path.display()))?;
+    if text.trim().is_empty() {
+        return Err(format!("{} is empty", path.display()));
+    }
+    Ok(text)
+}
+
 fn close_done_line(n: i64) -> String {
     match n {
         0 => "No finished task has a terminal to close.".into(),
@@ -7574,11 +7602,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 format!("Removed {} from {}.", v["removed"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
-        Cmd::Attach { url, kind, title, summary, goal, t } => {
+        Cmd::Attach { url, kind, title, summary, copy, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let url = attach_target(&url, &c.cwd)?;
+            let copy = copy.map(|f| attach_copy(&url, &f, &c.cwd)).transpose()?;
             let needs = goal.is_none();
-            c.run_report("tb.attach", json!({"url": url, "kind": kind, "title": title, "summary": summary, "goal": goal}), t.task, needs, |v| {
+            c.run_report("tb.attach", json!({"url": url, "kind": kind, "title": title, "summary": summary, "copy": copy, "goal": goal}), t.task, needs, |v| {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
@@ -9332,6 +9361,14 @@ mod tests {
         assert_eq!(attach_target("https://x.test/a", &cwd).unwrap(), "https://x.test/a");
         assert_eq!(attach_target("/no/such/missing.png", &cwd).unwrap_err(), "no such file: /no/such/missing.png");
         assert_eq!(attach_target("missing.png", &cwd).unwrap_err(), format!("no such file: {cwd}/missing.png"));
+
+        std::fs::write(dir.join("page.html"), "<h1>Review</h1>").unwrap();
+        std::fs::write(dir.join("blank.html"), "  \n").unwrap();
+        let link = "https://claude.ai/artifact/abc";
+        assert_eq!(attach_copy(link, "page.html", &cwd).unwrap(), "<h1>Review</h1>", "the copy is sent as it is");
+        assert!(attach_copy(&full, "page.html", &cwd).unwrap_err().starts_with("--copy is for a link"));
+        assert!(attach_copy(link, "blank.html", &cwd).unwrap_err().ends_with("is empty"));
+        assert!(attach_copy(link, "nope.html", &cwd).unwrap_err().starts_with("no such file"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -288,6 +288,39 @@ fn a_linked_source_lets_claude_open_it() {
     assert!(args.contains("design: Screens https://claude.ai/artifact/abc") && args.contains("the board can't open"), "an artifact is judged by its title: {args}");
 }
 
+#[test]
+fn an_artifacts_copy_is_read_in_place_of_its_title() {
+    let b = board();
+    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in the attached review is fixed"}))
+        ["goal"].as_str().unwrap().to_string();
+    let page = "<html><head><title>Nov 1 review</title><style>li { color: red }</style></head><body>\
+        <h1>Points</h1><ol><li>Tithing comes first</li><li>Link X Money &amp; Venmo once</li></ol>\
+        <script>console.log('hidden')</script></body></html>";
+    b.report("tb.attach", json!({"goal": g, "url": "https://claude.ai/artifact/abc", "title": "Nov 1 review", "kind": "doc", "copy": page}));
+    // Attaching it again without a copy keeps the one it has.
+    b.report("tb.attach", json!({"goal": g, "url": "https://claude.ai/artifact/abc", "title": "Nov 1 review", "kind": "doc"}));
+    b.calls();
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay::pay tithing first"]}));
+    let args = b.calls();
+    assert!(args.contains("--tools\nRead,Grep,Glob\n"), "an artifact with a copy needs no WebFetch: {args}");
+    assert!(args.contains("Its contents, as copied when it was attached:") && args.contains("| - Tithing comes first")
+        && args.contains("| - Link X Money & Venmo once"), "the copy's items are inlined: {args}");
+    assert!(!args.contains("color: red") && !args.contains("hidden") && !args.contains("<li>"), "styles, scripts and tags are left out: {args}");
+    assert!(!args.contains("the board can't open"), "{args}");
+}
+
+#[test]
+fn a_copy_with_no_text_is_refused() {
+    let b = board();
+    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in the attached review is fixed"}))
+        ["goal"].as_str().unwrap().to_string();
+    let body = json!({"event": "tb.attach", "session": "s1", "claude_session": "c-s1", "cwd": "", "goal": g,
+                      "url": "https://claude.ai/artifact/abc", "title": "Review", "copy": "<html><script>x()</script></html>"});
+    let e = reports::handle(&b.app, body, false).unwrap_err();
+    assert_eq!(e.status, 400, "{}", e.message);
+    assert!(b.get(&format!("/goals/{g}"))["attachments"].as_array().is_none_or(|a| a.is_empty()), "nothing is attached");
+}
+
 // ------------------------------------------------------------------ reviewing a running goal again
 
 impl Board {
