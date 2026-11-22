@@ -170,8 +170,7 @@ pub fn spot(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<AnyEl
         let rows: Vec<AnyElement> = list.iter().take(5).enumerate().map(|(i, x)| trow(c, &format!("spot{i}"), i, s(x, "task"), s(x, "title"), String::new(), cx)).collect();
         let more = (n > 5).then(|| {
             let (hover, fg) = (t.panel_2, t.text);
-            div()
-                .id(c.id("spot-more"))
+            crate::ui::focus::stop(t, div().id(c.id("spot-more")))
                 .flex()
                 .items_center()
                 .gap(px(4.))
@@ -237,8 +236,7 @@ pub fn timeline(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<A
             let tip = format!("{} {}\n{} · {}", s(r, "project"), s(r, "name"), when(s(r, "cut_at")), pl(num(&r["count"]), "task", "tasks"));
             let dot = div().size(px(14.)).flex().items_center().justify_center().rounded_full().bg(t.card).child(motion::pop(c.id(format!("pin{k}")), 100 + (x * 900.) as u64, 10., color));
             k += 1;
-            div()
-                .id(c.id(format!("pin{k}-hit")))
+            crate::ui::focus::stop(t, div().id(c.id(format!("pin{k}-hit"))))
                 .absolute()
                 .top_0()
                 .left(relative(x as f32))

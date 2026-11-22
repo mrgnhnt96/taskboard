@@ -258,8 +258,7 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                 .gap(px(14.))
                 .child(x.text.clone())
                 .children(x.undo.is_some().then(|| {
-                    div()
-                        .id("toast-undo")
+                    crate::ui::focus::stop(t, div().id("toast-undo"))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.accent_soft)
                         .cursor_pointer()
@@ -271,16 +270,14 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                 // Edit › Undo's key: on the newest toast with an Undo, the one ⌘Z takes back.
                 .children((x.undo.is_some() && m.toasts.iter().rposition(|y| y.undo.is_some()) == Some(i)).then(|| div().text_size(px(11.5)).opacity(0.6).child("⌘Z")))
                 .children(x.undo.is_some().then(|| {
-                    div()
-                        .id(("toast-close", i))
+                    crate::ui::focus::stop(t, div().id(("toast-close", i)))
                         .opacity(0.6)
                         .cursor_pointer()
                         .child("✕")
                         .on_click(cx.listener(move |m, _, _, cx| m.dismiss_toast(at, cx)))
                 }))
                 .children(m.backlog.open_toast.clone().filter(|(when, _)| *when == at).map(|(_, task)| {
-                    div()
-                        .id("toast-open")
+                    crate::ui::focus::stop(t, div().id("toast-open"))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.accent_soft)
                         .cursor_pointer()
@@ -291,8 +288,7 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                         }))
                 }))
                 .children((m.idea_toast == Some(at)).then(|| {
-                    div()
-                        .id("toast-reopen")
+                    crate::ui::focus::stop(t, div().id("toast-reopen"))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.accent_soft)
                         .cursor_pointer()
@@ -303,8 +299,7 @@ pub fn toasts(m: &crate::app::MainWindow, t: &Theme, cx: &mut Context<crate::app
                         }))
                 }))
                 .children(x.err.then(|| {
-                    div()
-                        .id(("toast-dismiss", i))
+                    crate::ui::focus::stop(t, div().id(("toast-dismiss", i)))
                         .font_weight(FontWeight::SEMIBOLD)
                         .cursor_pointer()
                         .child("Dismiss")

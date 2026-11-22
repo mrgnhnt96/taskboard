@@ -404,3 +404,24 @@ fn a_tall_dialog_stops_at_nine_tenths_of_the_window(cx: &mut TestAppContext) {
     let (dialog, _) = drawn(cx);
     assert_eq!(dialog.size.height, px(450.), "the list scrolls inside a dialog capped by the window");
 }
+
+#[gpui_kit::test]
+fn tab_and_return_open_a_page_from_the_sidebar(cx: &mut TestAppContext) {
+    let (w, _) = parity::window(cx);
+    redraw(w, cx);
+    w.update(cx, |m, window, cx| window.focus(&m.focus, cx)).unwrap();
+    // The sidebar's search box, Needs you, then Projects.
+    for _ in 0..3 {
+        cx.simulate_keystrokes(w.into(), "tab");
+        redraw(w, cx);
+    }
+    // GPUI clicks the focused element when Return comes back up, and simulated keystrokes only go down.
+    let key = gpui_kit::Keystroke::parse("enter").unwrap();
+    cx.update_window(w.into(), |_, window, cx| {
+        window.dispatch_event(gpui_kit::KeyDownEvent { keystroke: key.clone(), is_held: false, prefer_character_input: false }.to_platform_input(), cx);
+        window.dispatch_event(gpui_kit::KeyUpEvent { keystroke: key }.to_platform_input(), cx);
+    })
+    .unwrap();
+    parity::settle(cx);
+    w.update(cx, |m, _, _| assert!(m.page == Page::Projects, "return opens the sidebar row Tab reached, not {:?}", m.page)).unwrap();
+}

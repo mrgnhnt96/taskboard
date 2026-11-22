@@ -10,7 +10,7 @@
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, s};
 use crate::theme::Theme;
-use crate::ui::kit;
+use crate::ui::{focus, kit};
 use crate::ui::select::sel;
 use crate::ui::status::{self, St};
 use gpui_kit::prelude::*;
@@ -1018,7 +1018,7 @@ pub(super) fn side_head(t: &Theme, title: &str, count: Option<String>) -> Div {
 /// Goals › haymay › G31: the project crumb opens the Goals page on that project, Goals on all.
 fn crumbs(t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.text;
-    let link = |id: &'static str, text: String| div().id(id).cursor_pointer().hover(move |s| s.text_color(hover)).child(text);
+    let link = |id: &'static str, text: String| focus::stop(t, div().id(id)).cursor_pointer().hover(move |s| s.text_color(hover)).child(text);
     let sep = || div().text_color(t.faint).child("›");
     div()
         .flex()
@@ -1139,8 +1139,7 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
         let hover = t.panel_2;
         let gr = gr.clone();
         menu = menu.child(
-            div()
-                .id(act)
+            focus::stop(t, div().id(act))
                 .flex()
                 .flex_col()
                 .gap(px(2.))
@@ -1174,8 +1173,7 @@ fn wait_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
         let hover = t.panel_2;
         let gr = gr.clone();
         menu = menu.child(
-            div()
-                .id(act)
+            focus::stop(t, div().id(act))
                 .flex()
                 .flex_col()
                 .gap(px(2.))
@@ -1313,8 +1311,7 @@ fn sched_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
         let hover = t.panel_2;
         let gr = gr.clone();
         menu = menu.child(
-            div()
-                .id(act)
+            focus::stop(t, div().id(act))
                 .flex()
                 .flex_col()
                 .gap(px(2.))
@@ -1346,8 +1343,7 @@ fn misses_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         let hover = t.panel_2;
         let target = r.clone();
         menu = menu.child(
-            div()
-                .id(SharedString::from(format!("goal-miss-{r}")))
+            focus::stop(t, div().id(SharedString::from(format!("goal-miss-{r}"))))
                 .flex()
                 .items_center()
                 .gap(px(8.))
@@ -1382,8 +1378,7 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, loaded: bool, cx: &mut Context<M
     let project = project_of(g).map(|p| {
         let hover = t.text;
         let open = p.clone();
-        div()
-            .id("goal-project")
+        focus::stop(t, div().id("goal-project"))
             .cursor_pointer()
             .hover(move |s| s.text_color(hover))
             .on_click(cx.listener(move |m, _, _, cx| open_project(m, &open, cx)))
@@ -1447,8 +1442,7 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, loaded: bool, cx: &mut Context<M
                         .child(tail)
                         .when_some(not_met, |d, why| {
                             d.child(
-                                div()
-                                    .id("goal-not-met")
+                                focus::stop(t, div().id("goal-not-met"))
                                     .pl(px(10.))
                                     .text_color(t.warn_text)
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -1568,8 +1562,7 @@ fn stop_review_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainW
         let target = r.clone();
         let pr = has_pr(x);
         menu = menu.child(
-            div()
-                .id(SharedString::from(format!("goal-stop-review-{r}")))
+            focus::stop(t, div().id(SharedString::from(format!("goal-stop-review-{r}"))))
                 .flex()
                 .items_center()
                 .gap(px(8.))
@@ -1621,8 +1614,7 @@ fn jira_row(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
 /// An aside head's Show or Hide, flipping the section's open flag.
 fn fold_toggle(t: &Theme, id: &'static str, open: bool, cx: &mut Context<MainWindow>, flag: fn(&mut MainWindow) -> &mut bool) -> Stateful<Div> {
     let hover = t.accent;
-    div()
-        .id(id)
+    focus::stop(t, div().id(id))
         .text_size(px(12.))
         .font_weight(FontWeight::NORMAL)
         .text_color(t.accent)
@@ -1704,8 +1696,7 @@ fn issue_piece(t: &Theme, Issue { r, title, misses_goal, blocks }: Issue, ix: us
         .when(misses_goal, |d| d.child(kit::pill(t.warn_text, t.warn_soft, "Misses goal")))
         .when_some(blocks.as_ref().map(|(pill, _)| *pill), |d, pill| d.child(kit::pill(t.warn_text, t.warn_soft, pill)));
     let why = blocks.map(|(_, why)| why).filter(|w| !w.is_empty());
-    let piece = div()
-        .id(SharedString::from(format!("goal-issue-{target}")))
+    let piece = focus::stop(t, div().id(SharedString::from(format!("goal-issue-{target}"))))
         .flex()
         .flex_col()
         .gap(px(2.))

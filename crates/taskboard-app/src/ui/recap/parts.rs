@@ -304,7 +304,7 @@ pub fn none(t: &Theme, text: impl Into<SharedString>) -> AnyElement {
 /// A row that highlights under the pointer.
 pub fn hit(t: &Theme, id: SharedString) -> Stateful<Div> {
     let (hover, press) = (t.panel_2, t.seg);
-    div().id(id).rounded(px(8.)).cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(press))
+    crate::ui::focus::stop(t, div().id(id)).rounded(px(8.)).cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(press))
 }
 
 /// A bar row: label and value, with a bar under them for the share. `key` names it.
@@ -374,7 +374,7 @@ pub fn brow(c: &Ctx, key: &str, i: usize, b: Brow, click: Option<Click>) -> AnyE
     let row = match (click, b.tip) {
         (Some(f), tip) => {
             let (hover, press) = (t.panel_2, t.seg);
-            row.cursor_pointer().when(!open, |d| d.hover(move |s| s.bg(hover))).active(move |s| s.bg(press)).on_click(f).when_some(tip, |d, s| d.tooltip(kit::tip(s)))
+            crate::ui::focus::stop(t, row).cursor_pointer().when(!open, |d| d.hover(move |s| s.bg(hover))).active(move |s| s.bg(press)).on_click(f).when_some(tip, |d, s| d.tooltip(kit::tip(s)))
         }
         (None, Some(tip)) => {
             let hover = t.panel_2;
@@ -443,7 +443,7 @@ pub fn lrow(t: &Theme, id: SharedString, label: impl IntoElement, value: impl In
     match click {
         Some(f) => {
             let (hover, press) = (t.panel_2, t.seg);
-            row.cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(press)).on_click(f)
+            crate::ui::focus::stop(t, row).cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(press)).on_click(f)
         }
         None => row,
     }
@@ -525,8 +525,7 @@ pub fn disc(c: &Ctx, key: &str, label: impl Into<SharedString>, cx: &mut Context
     let open = c.is_open(key);
     let (hover, press, fg) = (t.panel_2, t.seg, t.text);
     let k = key.to_string();
-    div()
-        .id(c.id(format!("{key}-disc")))
+    crate::ui::focus::stop(t, div().id(c.id(format!("{key}-disc"))))
         .flex()
         .flex_none()
         .items_center()
@@ -651,7 +650,7 @@ pub fn cols(c: &Ctx, key: &str, h: f32, step: u64, top: f64, list: &[Col], on: O
             .child(bar)
             .tooltip(kit::tip(x.tip.clone()));
         match click.next() {
-            Some(f) => col.cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(press)).on_click(f),
+            Some(f) => crate::ui::focus::stop(t, col).cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(press)).on_click(f),
             None => col.hover(move |s| s.bg(hover)),
         }
     }))

@@ -178,8 +178,7 @@ pub fn kpis(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<AnyEl
         let open = on == Some(i);
         let (hover, press, accent, soft) = (t.panel_2, t.seg, t.accent, t.accent_soft);
         let label = div().flex().items_center().text_size(px(12.)).text_color(t.muted).child(k.name).child(div().ml(px(4.)).child(chev(t, open)));
-        let tile = div()
-            .id(c.id(format!("kpi{i}")))
+        let tile = crate::ui::focus::stop(t, div().id(c.id(format!("kpi{i}"))))
             .flex()
             .flex_col()
             .flex_1()

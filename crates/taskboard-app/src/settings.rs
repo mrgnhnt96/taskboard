@@ -928,8 +928,7 @@ impl SettingsWindow {
             };
             let hover = t.panel_2;
             list = list.child(
-                div()
-                    .id(SharedString::from(format!("sec-{}", sec.label().to_lowercase())))
+                crate::ui::focus::stop(t, div().id(SharedString::from(format!("sec-{}", sec.label().to_lowercase()))))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -1008,8 +1007,7 @@ impl SettingsWindow {
                     .child(div().text_size(px(12.5)).line_height(px(17.)).text_color(t.muted).child(self.view.about())),
             )
             .when(self.view == Sec::Accounts, |d| d.child(
-                div()
-                    .id("agent-commands")
+                crate::ui::focus::stop(t, div().id("agent-commands"))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -1398,8 +1396,7 @@ impl SettingsWindow {
         }
         let flashed = self.copied.as_ref().is_some_and(|(c, _)| *c == code);
         let c = code.clone();
-        let chip = div()
-            .id("gh-code-chip")
+        let chip = crate::ui::focus::stop(t, div().id("gh-code-chip"))
             .px(px(14.))
             .py(px(6.))
             .rounded(px(9.))
@@ -1469,8 +1466,7 @@ impl SettingsWindow {
                 .child(div().flex_none().text_color(t.accent).child("$"))
                 .child(div().flex_1().min_w_0().truncate().child(cli.to_string()))
                 .child(
-                    div()
-                        .id(SharedString::from(format!("copy-{id}")))
+                    crate::ui::focus::stop(t, div().id(SharedString::from(format!("copy-{id}"))))
                         .flex_none()
                         .h(px(20.))
                         .px(px(6.))
@@ -2050,7 +2046,7 @@ impl SettingsWindow {
             return kit::disabled(b);
         }
         let p = project.to_string();
-        b = b.cursor_pointer().hover(move |d| d.border_color(hover)).on_click(cx.listener(move |s, _, _, cx| {
+        b = crate::ui::focus::stop(t, b).cursor_pointer().hover(move |d| d.border_color(hover)).on_click(cx.listener(move |s, _, _, cx| {
             let just_shut = s.pool_menu_shut.as_ref().is_some_and(|(sp, sk, at)| *sp == p && *sk == key && at.elapsed() < Duration::from_millis(300));
             s.pool_menu = if open || just_shut { None } else { Some((p.clone(), key)) };
             cx.notify();

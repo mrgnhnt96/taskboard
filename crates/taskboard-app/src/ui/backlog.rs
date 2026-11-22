@@ -854,8 +854,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
 
 fn check_box(t: &Theme, id: SharedString, c: Check) -> Stateful<Div> {
     let on = c != Check::None;
-    div()
-        .id(id)
+    focus::stop(t, div().id(id))
         .flex()
         .flex_none()
         .items_center()

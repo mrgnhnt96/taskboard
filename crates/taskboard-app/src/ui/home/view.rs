@@ -532,7 +532,7 @@ fn head_el(t: &Theme, h: Head, cx: &mut Context<MainWindow>) -> Stateful<Div> {
         .text_color(color)
         .child(h.title.clone())
         .when_some(h.link.clone(), |d, act| {
-            d.cursor_pointer().hover(|s| s.underline()).on_click(cx.listener(move |m, _, _, cx| {
+            crate::ui::focus::stop(t, d).cursor_pointer().hover(|s| s.underline()).on_click(cx.listener(move |m, _, _, cx| {
                 cx.stop_propagation();
                 run_act(m, &act, cx);
             }))
@@ -850,8 +850,7 @@ fn chevron(open: bool, color: Hsla) -> impl IntoElement {
 fn later_line(t: &Theme, v: &View, open: bool, cx: &mut Context<MainWindow>) -> Div {
     let Some(l) = &v.later else { return div() };
     div().pt(px(12.)).pb(px(4.)).child(
-        div()
-            .id("home-later-line")
+        crate::ui::focus::stop(t, div().id("home-later-line"))
             .flex()
             .items_center()
             .gap(px(4.))
@@ -882,7 +881,7 @@ fn later_item(t: &Theme, v: &View, i: usize, cx: &mut Context<MainWindow>) -> Di
         .child(div().flex_1().min_w_0().truncate().child(x.title.clone()))
         .child(div().flex_none().child(x.when.clone()))
         .when_some(open, |d, act| {
-            d.cursor_pointer().hover(|s| s.underline()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)))
+            crate::ui::focus::stop(t, d).cursor_pointer().hover(|s| s.underline()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)))
         });
     div().child(row)
 }
@@ -891,8 +890,7 @@ fn later_item(t: &Theme, v: &View, i: usize, cx: &mut Context<MainWindow>) -> Di
 fn idea_line(t: &Theme, v: &View, i: usize, cx: &mut Context<MainWindow>) -> Div {
     let Some(x) = v.ideas.get(i) else { return div() };
     let r = x.r.clone();
-    let head = div()
-        .id(SharedString::from(format!("home-idea-{}", x.r)))
+    let head = crate::ui::focus::stop(t, div().id(SharedString::from(format!("home-idea-{}", x.r))))
         .flex()
         .items_center()
         .gap(px(10.))

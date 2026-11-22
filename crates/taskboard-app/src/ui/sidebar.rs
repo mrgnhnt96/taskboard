@@ -72,8 +72,7 @@ pub fn bg(t: &Theme) -> Hsla {
 /// `aside`: a quiet orange word beside the count, "2 stopped".
 fn nav_item(t: &Theme, id: &'static str, label: &'static str, mark: Div, count: Option<(String, bool)>, aside: Option<String>, on: bool) -> Stateful<Div> {
     let (text, muted) = (t.text, t.text_2);
-    div()
-        .id(id)
+    crate::ui::focus::stop(t, div().id(id))
         .flex()
         .items_center()
         .gap(px(10.))
@@ -172,8 +171,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
                     .child(fmt::ago(at))
             });
             list = list.child(
-                div()
-                    .id(SharedString::from(format!("side-goal-{r}")))
+                crate::ui::focus::stop(t, div().id(SharedString::from(format!("side-goal-{r}"))))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -215,8 +213,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
 
 fn search_box(t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let line = t.border_2;
-    div()
-        .id("sidebar-search")
+    crate::ui::focus::stop(t, div().id("sidebar-search"))
         .flex()
         .flex_none()
         .items_center()
