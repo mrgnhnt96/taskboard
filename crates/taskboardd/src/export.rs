@@ -22,7 +22,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -33,6 +32,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Map, Value};
 
 use crate::config::Config;
+use crate::machine::{output, uptime};
 
 /// The bundle's layout version, in the manifest.
 const FORMAT: u32 = 1;
@@ -149,16 +149,6 @@ fn hostname() -> String {
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).to_string()
-}
-
-fn output(cmd: &str, args: &[&str]) -> String {
-    Command::new(cmd)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ redactor
@@ -670,34 +660,17 @@ fn walk(dir: &Path, prefix: &str, depth: usize, r: &mut Redactor, out: &mut Vec<
 
 /// macOS, hardware, architecture and how this binary was installed.
 fn facts(home: &str) -> Value {
-    let sysctl = |k: &str| output("sysctl", &["-n", k]);
-    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-    let memory_gb = sysctl("hw.memsize").parse::<u64>().ok().map(|b| b >> 30);
+    let m = crate::machine::gather(home);
     json!({
-        "macos": output("sw_vers", &["-productVersion"]),
-        "macos_build": output("sw_vers", &["-buildVersion"]),
-        "model": sysctl("hw.model"),
-        "cpu": sysctl("machdep.cpu.brand_string"),
-        "memory_gb": memory_gb,
+        "macos": m.macos,
+        "macos_build": m.macos_build,
+        "model": m.model,
+        "cpu": m.cpu,
+        "memory_gb": m.memory_gb,
         "arch": std::env::consts::ARCH,
-        "rosetta": sysctl("sysctl.proc_translated") == "1",
-        "install": install_kind(&exe, home),
+        "rosetta": m.rosetta,
+        "install": m.install,
     })
-}
-
-/// Where the binary runs from, without the home folder's name.
-fn install_kind(exe: &str, home: &str) -> String {
-    if exe.starts_with("/Applications/") {
-        "/Applications".into()
-    } else if !home.is_empty() && exe.starts_with(&format!("{home}/Applications/")) {
-        "~/Applications".into()
-    } else if exe.contains("/target/debug/") || exe.contains("/target/release/") {
-        "dev build (cargo)".into()
-    } else if exe.contains(".app/") {
-        "app bundle elsewhere".into()
-    } else {
-        "other".into()
-    }
 }
 
 fn readme(m: &Value, now: chrono::DateTime<chrono::Local>) -> String {
@@ -744,15 +717,6 @@ fn readme(m: &Value, now: chrono::DateTime<chrono::Local>) -> String {
          transcripts aren't included.\n",
     );
     out
-}
-
-fn uptime(secs: u64) -> String {
-    let (d, h, m) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
-    match (d, h) {
-        (0, 0) => format!("{m}m"),
-        (0, _) => format!("{h}h {m}m"),
-        _ => format!("{d}d {h}h"),
-    }
 }
 
 // ------------------------------------------------------------------ zip
@@ -994,12 +958,5 @@ mod tests {
         let mut b = Redactor::new([3, 4], &Sources::default(), &cfg);
         assert_eq!(a.hide("zebra-quartz"), a.hide("zebra-quartz"));
         assert_ne!(a.hide("zebra-quartz"), b.hide("zebra-quartz"));
-    }
-
-    #[test]
-    fn install_kind_hides_the_home_folder() {
-        assert_eq!(install_kind("/Applications/Taskboard.app/Contents/MacOS/taskboard", "/Users/x"), "/Applications");
-        assert_eq!(install_kind("/Users/x/Applications/Taskboard.app/Contents/MacOS/taskboard", "/Users/x"), "~/Applications");
-        assert_eq!(install_kind("/Users/x/dev/taskboard/target/debug/tb", "/Users/x"), "dev build (cargo)");
     }
 }

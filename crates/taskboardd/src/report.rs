@@ -4,13 +4,13 @@
 //! export`) is where the reporter can share more, when they choose.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
 use crate::config::Config;
+use crate::machine::{output, uptime};
 
 pub const REPO: &str = "mrgnhnt96/taskboard";
 
@@ -55,12 +55,9 @@ pub fn gather(cfg: &Config, made_by: &str) -> Facts {
     let home = std::env::var("HOME").unwrap_or_default();
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
     let own = env!("CARGO_PKG_VERSION").to_string();
-    let sysctl = |k: &str| output("/usr/sbin/sysctl", &["-n", k]);
-    let version = output("/usr/bin/sw_vers", &["-productVersion"]);
-    let build = output("/usr/bin/sw_vers", &["-buildVersion"]);
-    let memory = sysctl("hw.memsize").parse::<u64>().map(|b| format!("{} GB", b >> 30)).unwrap_or_default();
-    let hardware = [sysctl("hw.model"), sysctl("machdep.cpu.brand_string"), memory].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-    let rosetta = sysctl("sysctl.proc_translated") == "1";
+    let m = crate::machine::gather(&home);
+    let memory = m.memory_gb.map(|g| format!("{g} GB")).unwrap_or_default();
+    let hardware = [m.model, m.cpu, memory].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     let bundle = app_bundle(&exe);
     let app = output("/usr/bin/plutil", &["-extract", "CFBundleShortVersionString", "raw", "-o", "-", &bundle.join("Contents/Info.plist").to_string_lossy()]);
     let tb = output(&Path::new(&home).join(".local/bin/tb").to_string_lossy(), &["--version"]);
@@ -76,24 +73,14 @@ pub fn gather(cfg: &Config, made_by: &str) -> Facts {
         daemon,
         daemon_uptime,
         channel: if own.contains("beta") { "beta" } else { "stable" }.into(),
-        install: install_kind(&exe, &home),
-        macos: if build.is_empty() { version } else { format!("{version} ({build})") },
+        install: m.install,
+        macos: if m.macos_build.is_empty() { m.macos } else { format!("{} ({})", m.macos, m.macos_build) },
         hardware,
-        arch: format!("{}{}", if std::env::consts::ARCH == "aarch64" { "arm64" } else { std::env::consts::ARCH }, if rosetta { " (Rosetta)" } else { "" }),
+        arch: format!("{}{}", if std::env::consts::ARCH == "aarch64" { "arm64" } else { std::env::consts::ARCH }, if m.rosetta { " (Rosetta)" } else { "" }),
         shell: std::env::var("SHELL").ok().and_then(|s| s.rsplit('/').next().map(str::to_string)).unwrap_or_default(),
         board: counts(&cfg.db_path()),
         agents: agents(&crate::midna::call_exe(&cfg.midna, "session.list", &json!({}), 5.0).unwrap_or(Value::Null)),
     }
-}
-
-fn output(cmd: &str, args: &[&str]) -> String {
-    Command::new(cmd)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
 }
 
 /// The Taskboard.app this binary runs from, else the installed one.
@@ -128,21 +115,6 @@ fn daemon(cfg: &Config) -> (Option<String>, Option<u64>) {
     match answer {
         Some(v) if v["board"] == "taskboardd" => (Some(v["version"].as_str().map(clean).unwrap_or_default()), v["uptime_secs"].as_u64()),
         _ => (None, None),
-    }
-}
-
-/// Where the binary runs from, without the home folder's name.
-fn install_kind(exe: &str, home: &str) -> String {
-    if exe.starts_with("/Applications/") {
-        "/Applications".into()
-    } else if !home.is_empty() && exe.starts_with(&format!("{home}/Applications/")) {
-        "~/Applications".into()
-    } else if exe.contains("/target/debug/") || exe.contains("/target/release/") {
-        "dev build (cargo)".into()
-    } else if exe.contains(".app/") {
-        "app bundle elsewhere".into()
-    } else {
-        "other".into()
     }
 }
 
@@ -214,15 +186,6 @@ fn clean(s: &str) -> String {
         return "unknown".into();
     }
     s.to_string()
-}
-
-fn uptime(secs: u64) -> String {
-    let (d, h, m) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
-    match (d, h) {
-        (0, 0) => format!("{m}m"),
-        (0, _) => format!("{h}h {m}m"),
-        _ => format!("{d}d {h}h"),
-    }
 }
 
 fn plural(n: usize, one: &str) -> String {
@@ -345,11 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn install_kind_hides_the_home_folder() {
-        assert_eq!(install_kind("/Applications/Taskboard.app/Contents/MacOS/tb", "/Users/x"), "/Applications");
-        assert_eq!(install_kind("/Users/x/Applications/Taskboard.app/Contents/MacOS/tb", "/Users/x"), "~/Applications");
-        assert_eq!(install_kind("/Users/x/dev/taskboard/target/debug/tb", "/Users/x"), "dev build (cargo)");
-        assert_eq!(install_kind("/Volumes/T/Taskboard.app/Contents/MacOS/tb", "/Users/x"), "app bundle elsewhere");
+    fn the_app_bundle_is_the_one_this_binary_runs_from() {
         assert_eq!(app_bundle("/Volumes/T/Taskboard.app/Contents/MacOS/tb"), PathBuf::from("/Volumes/T/Taskboard.app"));
     }
 
