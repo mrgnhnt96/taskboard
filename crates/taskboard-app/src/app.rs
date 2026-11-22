@@ -1972,7 +1972,7 @@ impl Render for MainWindow {
             Page::Board => ui::home::render(self, window, cx),
             Page::Goals => ui::goals_page::render(self, window, cx),
             Page::Projects => ui::projects::render(self, window, cx),
-            Page::Goal(_) => ui::goal::render(self, cx),
+            Page::Goal(_) => ui::goal::render(self, window, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),

@@ -1716,7 +1716,7 @@ fn backlog_more(t: &Theme, more: usize, cx: &mut Context<MainWindow>) -> Div {
     side_piece(t, false, true, 6., link)
 }
 
-pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let want = match &m.page {
         Page::Goal(r) => r.clone(),
@@ -1733,7 +1733,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     };
     let body = if loaded {
         lists::sync(m, &g, cx);
-        lists::body(m, cx)
+        lists::body(m, window, cx)
     } else {
         div().pt(px(20.)).px(px(36.)).child(loading(m, &t))
     };
