@@ -35,10 +35,10 @@ const STALE_RUNNING_MINS: i64 = 30;
 const STALE_WAITING_MINS: i64 = 120;
 
 /// The goal hasn't moved for longer than its work should take to show something. A goal waiting
-/// on you is never stale: it's yours to move.
+/// on you, or stopped with terminals you closed, is never stale: it's yours to move.
 pub fn stale(g: &Value) -> bool {
     let Some(mins) = fmt::opt_s(g, "last_update").and_then(fmt::minutes_since) else { return false };
-    if i(g, "needs") > 0 || stop::of(g).is_some() {
+    if i(g, "needs") > 0 || i(g, "hand_closed") > 0 || stop::of(g).is_some() {
         return false;
     }
     mins > if i(g, "active") > 0 { STALE_RUNNING_MINS } else { STALE_WAITING_MINS }
@@ -298,5 +298,6 @@ mod tests {
     fn a_goal_waiting_on_you_or_with_no_update_is_never_stale() {
         assert!(!stale(&json!({"active": 1, "needs": 1, "last_update": ago(600)})));
         assert!(!stale(&json!({"active": 1, "needs": 0})));
+        assert!(!stale(&json!({"active": 0, "needs": 0, "hand_closed": 1, "last_update": ago(600)})), "closed terminals are yours to restart");
     }
 }

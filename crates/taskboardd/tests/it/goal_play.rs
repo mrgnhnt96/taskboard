@@ -194,6 +194,27 @@ fn terminals_closed_by_hand_are_one_quiet_line_for_their_goal() {
 }
 
 #[test]
+fn a_goal_counts_closed_terminals_as_stopped_not_needing_you() {
+    let b = new_board();
+    let gid = goal(&b, false);
+    let closed = closed_task(&b, gid, "Move the database", "s1");
+    closed_task(&b, gid, "Move the jobs", "s2");
+    let asking = b.task("Move the docs", json!({"goal_id": gid}));
+    board::update_task(&b.app, asking, vec![("status", json!("needs")), ("needs_reason", json!("question")), ("question", json!("Which schema?"))]).unwrap();
+
+    let c = board::goal_counts(&b.app, gid).unwrap();
+    assert_eq!((c["needs"].as_i64(), c["active"].as_i64(), c["hand_closed"].as_i64()), (Some(1), Some(1), Some(2)), "{c}");
+
+    let goals = api::dispatch(&b.app, "GET", "goals", &Query::new(), &json!({})).unwrap();
+    let g = goals["goals"].as_array().unwrap().iter().find(|g| g["id"] == gid).unwrap_or_else(|| panic!("{goals}"));
+    assert_eq!((g["needs"].as_i64(), g["hand_closed"].as_i64()), (Some(1), Some(2)), "the summary the sidebar reads: {g}");
+    assert!(g["stopped"].is_null(), "the wave stop line keeps its own key: {g}");
+    let peek = |r: &str| g["peek"].as_array().unwrap().iter().find(|p| p["ref"] == r).unwrap()["status"].clone();
+    assert_eq!(peek(&format!("T{closed}")), "stopped");
+    assert_eq!(peek(&format!("T{asking}")), "needs");
+}
+
+#[test]
 fn a_terminal_that_ended_on_its_own_stays_a_row_of_its_own() {
     let b = new_board();
     let gid = goal(&b, false);

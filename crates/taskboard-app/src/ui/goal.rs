@@ -207,6 +207,7 @@ pub fn progress(g: &Value) -> (Vec<(St, i64)>, String, String) {
             (St::Needs, i(g, "needs")),
             (St::Review, i(g, "review")),
             (St::Failed, i(g, "failed")),
+            (St::Stopped, i(g, "hand_closed")),
             (St::Queued, i(g, "queued")),
             (St::Planned, i(g, "planned")),
         ];
@@ -552,7 +553,10 @@ pub fn how_runs(g: &Value) -> Vec<(&'static str, String)> {
         _ => 0,
     };
     let max = if max <= 0 { 2 } else { max };
-    let in_use = arr(g, "tasks").iter().filter(|t| matches!(s(t, "status"), "working" | "needs")).count();
+    // A lost terminal, or one closed by hand, isn't in use, though it holds its slot until it's restarted.
+    let open = |t: &&Value| matches!(s(t, "status"), "working" | "needs");
+    let in_use = arr(g, "tasks").iter().filter(open).filter(|t| !b(t, "lost")).count();
+    let closed = arr(g, "tasks").iter().filter(open).filter(|t| b(t, "lost")).count();
     let on = |k: &str| !matches!(g.get(k), Some(Value::Bool(false))) && !matches!(g.get(k), Some(Value::Number(x)) if x.as_f64() == Some(0.));
     let waved = !arr(g, "waves").is_empty();
     let order = match (on("run_in_order"), waved) {
@@ -561,7 +565,7 @@ pub fn how_runs(g: &Value) -> Vec<(&'static str, String)> {
         (false, _) => "Side by side",
     };
     let mut out = vec![
-        ("Terminals", format!("{max} at most · {in_use} in use")),
+        ("Terminals", format!("{max} at most · {in_use} in use{}", if closed > 0 { format!(" · {closed} closed") } else { String::new() })),
         ("Order", order.to_string()),
         ("When done", if on("auto_close") { "Terminals close" } else { "Terminals stay open" }.to_string()),
     ];
@@ -1966,6 +1970,20 @@ mod tests {
             run_now_toast(&json!({"queued_now": 1, "resumed_now": 2})),
             "Started now: 1 task queued, 2 parked tasks resumed. The goal runs until work hours open."
         );
+    }
+
+    #[test]
+    fn a_summary_counts_closed_terminals_as_stopped() {
+        let (parts, lead, tail) = progress(&json!({"total": 3, "done": 1, "active": 0, "needs": 0, "hand_closed": 2}));
+        assert_eq!(parts, vec![(St::Done, 1), (St::Stopped, 2)]);
+        assert_eq!((lead.as_str(), tail.as_str()), ("1 of 3", " done · 2 stopped"));
+    }
+
+    #[test]
+    fn closed_terminals_hold_their_slot_but_arent_in_use() {
+        let closed = json!({"status": "needs", "needs_reason": "lost", "lost": true, "closed_by_hand": true});
+        let g = json!({"max_terminals": 2, "tasks": [closed.clone(), closed, {"status": "working"}]});
+        assert_eq!(how_runs(&g)[0].1, "2 at most · 1 in use · 2 closed");
     }
 
     #[test]

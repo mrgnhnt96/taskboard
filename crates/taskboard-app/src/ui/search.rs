@@ -298,6 +298,7 @@ fn goal_status(g: &Value) -> (String, Tone) {
         GoalGroup::Paused => ("Paused", Tone::Named("warn")),
         _ if i(g, "needs") > 0 => ("Needs you", Tone::St(St::Needs)),
         _ if i(g, "active") > 0 => ("Working", Tone::St(St::Working)),
+        _ if i(g, "hand_closed") > 0 => ("Stopped", Tone::St(St::Stopped)),
         GoalGroup::Next => ("Up next", Tone::Named("goal")),
         GoalGroup::Active if i(g, "queued") > 0 => ("Queued", Tone::St(St::Queued)),
         GoalGroup::Active => ("In progress", Tone::Named("muted")),
