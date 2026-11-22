@@ -2060,13 +2060,16 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
     None
 }
 
-/// The owner's word in terminal `sid` to merge task `id`'s PR #`num`, if there's one ([`merge_word_in`]).
+/// The owner's word in terminal `sid` to merge task `id`'s PR #`num`, if there's one ([`merge_word_in`]),
+/// read with the `tb question`s asked on the task and with a visited or last handed-in done task as the
+/// terminal's own, as [`owners_close_word`] reads a close.
 pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<MergeWord>> {
     if sid.is_empty() {
         return Ok(None);
     }
-    let prompts = prompts_of(app, sid, None)?;
-    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    let mut prompts = prompts_of(app, sid, None)?;
+    note_questions(app, id, &mut prompts)?;
+    let own = owns_done_or_open(app, sid, id)?;
     Ok(merge_word_in(&prompts, id, num, own).map(|i| {
         let text = &prompts[i].text;
         MergeWord { text: text.clone(), approved: approves(text), overrides: overrides(text) }
@@ -2156,14 +2159,15 @@ pub fn owners_move_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
     Ok(move_word_in(&prompts, id, own).map(|i| prompts[i].text.clone()))
 }
 
-/// The owner's word in terminal `sid` that they've reviewed task `id`'s PR #`num` ([`reviewed_word_in`]):
-/// the prompt.
+/// The owner's word in terminal `sid` that they've reviewed task `id`'s PR #`num` ([`reviewed_word_in`]),
+/// read as [`owners_merge_word`] reads a merge: the prompt.
 pub fn owners_reviewed_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
     }
-    let prompts = prompts_of(app, sid, None)?;
-    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    let mut prompts = prompts_of(app, sid, None)?;
+    note_questions(app, id, &mut prompts)?;
+    let own = owns_done_or_open(app, sid, id)?;
     let goal = crate::board::get_task(app, id)?.i("goal_id");
     Ok(reviewed_word_in(&prompts, id, num, own, goal).map(|i| prompts[i].text.clone()))
 }
@@ -4603,6 +4607,28 @@ mod tests {
         assert_eq!(close_word_in(&answering("Asked you on PR #194: Should I close it?", mixed, "don't close the PR"), 95, 194, false), None);
         assert_eq!(close_word_in(&answering("Asked you on PR #194: Should I close it?", mixed, "yeah"), 95, 194, false), None, "a bare yes isn't the word");
         assert_eq!(close_word_in(&prompts(&["yeah, close the PR."], None), 95, 194, true), Some(0), "the terminal's own PR");
+    }
+
+    #[test]
+    fn an_answer_to_the_agents_question_merges_or_marks_the_pr_reviewed() {
+        let answering = |asked: &str, reply: &str, text: &str| {
+            vec![Prompt { asked: Some(asked.into()), reply: Some(reply.into()), ..Prompt::new(text) }]
+        };
+        let mixed = "PR #194 is open and #190 merged.";
+        assert_eq!(merge_word_in(&after_reply(mixed, "yeah, merge the PR."), 95, 194, true), None, "the reply names two PRs");
+        for yes in ["yeah, merge the PR.", "yes, merge the PR", "ok merge the pull request"] {
+            assert_eq!(merge_word_in(&answering("Asked you on PR #194: Should I merge it?", mixed, yes), 95, 194, false), Some(0), "{yes}");
+            assert_eq!(merge_word_in(&answering("Asked: Merge the PR now?", mixed, yes), 95, 194, false), Some(0), "{yes}");
+        }
+        assert_eq!(merge_word_in(&answering("Asked you on PR #190: Should I merge it?", mixed, "yeah, merge the PR."), 95, 194, false), None);
+        assert_eq!(merge_word_in(&answering("Asked you on PR #194: Should I merge it?", mixed, "don't merge the PR"), 95, 194, false), None);
+        assert_eq!(merge_word_in(&answering("Asked you on PR #194: Should I merge it?", mixed, "yeah"), 95, 194, false), None, "a bare yes isn't the word");
+
+        assert_eq!(reviewed_word_in(&after_reply(mixed, "yeah, I've reviewed the PR."), 95, 194, true, None), None, "the reply names two PRs");
+        let asked = "Asked you on PR #194: Have you reviewed it?";
+        assert_eq!(reviewed_word_in(&answering(asked, mixed, "yeah, I've reviewed the PR."), 95, 194, false, None), Some(0));
+        assert_eq!(reviewed_word_in(&answering("Asked you on PR #190: Have you reviewed it?", mixed, "yeah, I've reviewed the PR."), 95, 194, false, None), None);
+        assert_eq!(reviewed_word_in(&answering(asked, mixed, "I haven't reviewed the PR"), 95, 194, false, None), None);
     }
 
     fn after_reply(reply: &str, text: &str) -> Vec<Prompt> {
