@@ -289,7 +289,7 @@ pub struct MainWindow {
     /// A Restart Daemon from the menu is running.
     pub daemon_busy: bool,
     /// The page and name the menu bar was last built for.
-    menus_for: Option<(Page, String)>,
+    menus_for: Option<(Page, String, bool)>,
     /// How often the poll asks now ([`pace`]), and its loop.
     every: Duration,
     poller: Option<Task<()>>,
@@ -717,19 +717,19 @@ impl MainWindow {
         self.refresh(cx);
     }
 
+    /// "Idea draft kept" with Reopen ⌘N on it.
+    pub fn idea_draft_toast(&mut self, cx: &mut Context<Self>) {
+        let at = Instant::now();
+        self.idea_toast = Some(at);
+        self.show_toast(Toast { text: "Idea draft kept".into(), err: false, at, undo: None }, cx);
+    }
+
     /// A link from outside (a notification, `tb`): a dialog closes first, keeping a New idea
     /// draft for ⌘N, then the window comes up showing what the link names.
     pub fn arrive(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal.is_some() {
-            let draft = matches!(self.modal, Some(ui::modals::Modal::NewIdea))
-                && self.ideas.form.as_ref().is_some_and(|f| !f.title.text(cx).trim().is_empty() || !f.detail.text(cx).trim().is_empty());
             self.menu = None;
-            self.set_modal(None, window, cx);
-            if draft {
-                let at = Instant::now();
-                self.idea_toast = Some(at);
-                self.show_toast(Toast { text: "Idea draft kept".into(), err: false, at, undo: None }, cx);
-            }
+            ui::ideas::put_away(self, window, cx);
         }
         // A hidden run (Slate) never comes to the front.
         if !crate::hidden::enabled() {
@@ -815,13 +815,13 @@ impl MainWindow {
     /// Rebuilds the menu bar when the page or its name changes: View checks the page and Window
     /// names it. Greyed items need no rebuild; macOS asks the window each time a menu opens.
     fn sync_menus(&mut self, cx: &mut Context<Self>) {
-        let now = (self.page.clone(), self.page_name());
+        let now = (self.page.clone(), self.page_name(), !self.releases_off());
         if self.menus_for.as_ref() == Some(&now) {
             return;
         }
         let fake = self.backend.label() == "fake";
         self.menus_for = Some(now.clone());
-        cx.defer(move |cx| cx.set_menus(crate::menu_bar::menus(fake, &now.0, &now.1)));
+        cx.defer(move |cx| cx.set_menus(crate::menu_bar::menus(fake, &now.0, &now.1, now.2)));
     }
 
     /// Moves focus into a dialog that just opened, or back out of one that just closed.
@@ -1856,7 +1856,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, GoIdeas, GoReleases, NewIdea, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward, FocusNext, FocusPrev]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoProjects, GoDays, GoGoals, GoIdeas, GoReleases, NewIdea, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward, FocusNext, FocusPrev, EarlierWeek, LaterWeek]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -1881,6 +1881,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-]", NavForward, Some("MainWindow")),
         KeyBinding::new("cmd-left", NavBack, Some("MainWindow")),
         KeyBinding::new("cmd-right", NavForward, Some("MainWindow")),
+        // Days and Week: a week earlier or later.
+        KeyBinding::new("[", EarlierWeek, Some("MainWindow")),
+        KeyBinding::new("]", LaterWeek, Some("MainWindow")),
+        // A text field types them.
+        KeyBinding::new("[", NoAction, Some(ui::text_input::CTX)),
+        KeyBinding::new("]", NoAction, Some(ui::text_input::CTX)),
+        KeyBinding::new("[", NoAction, Some(ui::text_input::CTX_WRAP)),
+        KeyBinding::new("]", NoAction, Some(ui::text_input::CTX_WRAP)),
         // In a text field ⌘← and ⌘→ move the cursor to the line's ends instead.
         KeyBinding::new("cmd-left", NoAction, Some(ui::text_input::CTX)),
         KeyBinding::new("cmd-right", NoAction, Some(ui::text_input::CTX)),
@@ -3318,10 +3326,10 @@ mod tests {
     fn the_number_keys_follow_the_sidebar(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, window, cx| window.focus(&m.focus, cx)).unwrap();
-        for (key, page) in [("cmd-4", Page::Backlog), ("cmd-5", Page::Ideas), ("cmd-6", Page::Days), ("cmd-7", Page::Releases), ("cmd-2", Page::Projects)] {
+        for (key, page) in [("cmd-4", Page::Backlog), ("cmd-5", Page::Ideas), ("cmd-6", Page::Days), ("cmd-7", Page::Days), ("cmd-2", Page::Projects)] {
             cx.simulate_keystrokes(w.into(), key);
             settle(cx);
-            w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.page, page, "{key}")).unwrap();
+            w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.page, page, "{key}; ⌘7 sleeps while the sidebar hides Releases")).unwrap();
         }
         cx.simulate_keystrokes(w.into(), "cmd-[");
         settle(cx);
@@ -3387,6 +3395,57 @@ mod tests {
             assert_eq!(m.page, Page::Releases, "with releases off it lands where it says why");
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn cmd_k_over_new_idea_keeps_the_draft_and_opens_search(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            ui::ideas::open_form(m, window, cx);
+            let f = m.ideas.form.as_ref().unwrap();
+            f.title.set_text("Dark mode", cx);
+            window.focus(&f.title.focus, cx);
+        })
+        .unwrap();
+        {
+            use gpui_kit::AppContext as _;
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+        cx.simulate_keystrokes(w.into(), "cmd-k");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            assert!(matches!(m.modal, Some(ui::modals::Modal::Search)), "⌘K opens search in the dialog's place");
+            assert!(m.idea_toast.is_some_and(|at| m.toasts.iter().any(|t| t.at == at)), "a toast offers the draft back");
+            assert_eq!(m.toasts.iter().filter(|t| t.text == "Idea draft kept").count(), 1, "said once");
+            m.new_idea(window, cx);
+            assert_eq!(m.ideas.form.as_ref().unwrap().title.text(cx), "Dark mode", "the draft is kept");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn brackets_step_days_a_week(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.go(Page::Days, cx);
+            window.focus(&m.focus, cx);
+        })
+        .unwrap();
+        settle(cx);
+        let today = w.update(cx, |m: &mut MainWindow, _, _| m.data.days.clone().and_then(|d| m.days.view(&d)).map(|v| v.today)).unwrap().expect("Days loaded");
+        cx.simulate_keystrokes(w.into(), "[");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.days.date, Some(today - chrono::Duration::days(7)), "[ is a week earlier")).unwrap();
+        cx.simulate_keystrokes(w.into(), "]");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.days.date, None, "] is back to today")).unwrap();
+        cx.simulate_keystrokes(w.into(), "]");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.days.date, None, "nothing after today")).unwrap();
     }
 
     #[gpui_kit::test]
