@@ -7,7 +7,12 @@ T/G/B number, so refs in notes, commits and PRs stay valid.
 
 Taskboard.app checks for what's in the way each time it starts (another program on the board's port,
 another `tb` first on the PATH, another task-board plugin in Claude Code) and says so in its banner.
-`taskboardd check` prints the same from a terminal.
+`taskboardd check` prints the same from a terminal. `taskboardd` ships inside the app and isn't on the
+PATH (only `tb` is linked, to `~/.local/bin/tb`), so run it by its full path:
+
+```sh
+/Applications/Taskboard.app/Contents/MacOS/taskboardd check
+```
 
 ## 1. Stop the old board
 
@@ -98,21 +103,26 @@ It reads the old file's own tables and columns, so an older or newer old schema 
 columns match by name (or a known older name, like `conversation_id`), and tables by name (or
 `backlog` for `issues`).
 
-## 3. Swap the plugin and `tb`
+## 3. Remove the old plugin
 
 ```sh
 claude plugin list                                # an old task-board plugin?
 claude plugin uninstall <its name>
-which -a tb                                       # the first should be ~/.local/bin/tb (Taskboard's)
 ```
-
-Then open Taskboard.app: it links `~/.local/bin/tb` and its status bar offers to install the hooks
-(the `task-board@taskboard` plugin).
 
 ## 4. Start
 
-Opening Taskboard.app registers its LaunchAgent, which starts `taskboardd serve` on the port. Run
-`taskboardd check` to confirm nothing is in the way, and the board shows the imported work.
+Open Taskboard.app. It registers its LaunchAgent, which starts `taskboardd serve` on the port, links
+`~/.local/bin/tb` to its own `tb`, and its status bar offers to install the hooks (the
+`task-board@taskboard` plugin). Then confirm nothing is in the way:
+
+```sh
+/Applications/Taskboard.app/Contents/MacOS/taskboardd check
+which -a tb                                       # the first should be ~/.local/bin/tb (Taskboard's)
+```
+
+If another `tb` comes first, remove it or put `~/.local/bin` first on the PATH. The board shows the
+imported work.
 
 ## Rolling back to the old board
 
