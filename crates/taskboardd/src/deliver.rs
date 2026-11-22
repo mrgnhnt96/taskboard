@@ -26,6 +26,7 @@ fn what(purpose: &str) -> &'static str {
         "line_next" => "the next task in its line",
         "code_review" => "the code review's word",
         "code_review_fix" => "the code review's fix list",
+        "checkin" => "the check-in on its slow turn",
         _ => "the board's message",
     }
 }
@@ -41,6 +42,7 @@ fn done_text(purpose: &str, to: &str) -> String {
         "line_next" => format!("Moved {to} on to the next task in its line"),
         "code_review" => format!("Told {to} its tb submit was turned back after its code review"),
         "code_review_fix" => format!("Sent {to} its code review's findings to fix"),
+        "checkin" => format!("Told {to} its turn looked slow or stuck"),
         _ => format!("Delivered a message to {to}"),
     }
 }

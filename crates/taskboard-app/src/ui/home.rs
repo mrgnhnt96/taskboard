@@ -594,6 +594,7 @@ pub fn tile_vm(c: &Value) -> Tile {
         "needs" if s(c, "needs_reason") == "question" => ("Question", "needs", since("Asked")),
         "needs" => ("Needs you", "needs", since("Updated")),
         "working" if c["compacting"].is_string() => ("Compacting", "working", fmt::compacting(c).unwrap_or_default()),
+        "working" if c["stuck"]["slow"] == true => ("Slow", "needs", fmt::stuck(c).unwrap_or_default()),
         "working" if c["stuck"].is_object() => ("Maybe stuck", "needs", fmt::stuck(c).unwrap_or_default()),
         "working" => ("Working", "working", busy(c)),
         "queued" if c["compacting"].is_string() => ("Compacting", "working", fmt::compacting(c).unwrap_or_default()),
