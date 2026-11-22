@@ -161,6 +161,12 @@ fn reads(h: &FakeHost) -> usize {
     *h.reads.lock()
 }
 
+/// Starts the read count over after `pr_task`: linking a PR with `tb submit --pr` reads it once, to check
+/// it predates the task.
+fn forget_link_reads(h: &FakeHost) {
+    *h.reads.lock() = 0;
+}
+
 /// Ages the board's copy of the PR past `pr thread`'s TTL.
 fn age_copy(b: &Board, id: i64) {
     prflow::merge_flow(&b.app, id, vec![("checked_at", json!(iso(now_ts() - prcmds::HELD_SECS - 5.0)))]).unwrap();
@@ -2128,6 +2134,7 @@ fn full_reads_only_due_by_age_are_spread_over_polls_oldest_first() {
     let h = fake(&b, green());
     *h.stamp.lock() = Some("s1".into());
     let ids: Vec<i64> = (1..=5).map(|n| b.pr_task(&format!("https://bitbucket.org/acme/webapp/pull-requests/{n}"))).collect();
+    forget_link_reads(&h);
     poll(&b);
     assert_eq!(reads(&h), 5, "a PR never read is read at once");
     for (i, id) in ids.iter().enumerate() {
@@ -2161,6 +2168,7 @@ fn a_pr_whose_full_read_keeps_failing_doesnt_hold_its_turn() {
     let h = fake(&b, green());
     *h.stamp.lock() = Some("s1".into());
     let ids: Vec<i64> = (1..=5).map(|n| b.pr_task(&format!("https://bitbucket.org/acme/webapp/pull-requests/{n}"))).collect();
+    forget_link_reads(&h);
     poll(&b);
     for (i, id) in ids.iter().enumerate() {
         prflow::merge_flow(&b.app, *id, vec![("full_at", json!(iso(now_ts() - 7200.0 - i as f64 * 60.0)))]).unwrap();
@@ -2182,6 +2190,7 @@ fn when_the_host_cant_say_what_changed_the_timed_poll_leaves_prs_read_lately() {
     let h = fake(&b, green());
     *h.stamp.lock() = Some("s1".into());
     let ids: Vec<i64> = (1..=3).map(|n| b.pr_task(&format!("https://bitbucket.org/acme/webapp/pull-requests/{n}"))).collect();
+    forget_link_reads(&h);
     poll(&b);
     assert_eq!(reads(&h), 3);
     prflow::merge_flow(&b.app, ids[2], vec![("full_at", json!(iso(now_ts() - 1200.0)))]).unwrap();
@@ -2201,6 +2210,7 @@ fn when_the_host_cant_say_what_changed_a_limited_account_waits_and_the_rest_are_
     let h = fake(&b, green());
     *h.stamp.lock() = Some("s1".into());
     let ids: Vec<i64> = (1..=5).map(|n| b.pr_task(&format!("https://bitbucket.org/acme/webapp/pull-requests/{n}"))).collect();
+    forget_link_reads(&h);
     poll(&b);
     assert_eq!(reads(&h), 5);
     for (i, id) in ids.iter().enumerate() {
