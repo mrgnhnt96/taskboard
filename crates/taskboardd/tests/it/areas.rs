@@ -111,6 +111,34 @@ fn the_tasks_page_counts_a_projects_cards_by_area() {
 }
 
 #[test]
+fn the_backlog_counts_a_projects_issues_by_area_and_keeps_one() {
+    let b = new_board();
+    for (title, area) in [("Brush", "Art"), ("Pen", "quill"), ("Ink", "Quill"), ("Plain", "none")] {
+        b.post("backlog", json!({"title": title, "kind": "bug", "project": "rune", "area": area}));
+    }
+    b.post("backlog", json!({"title": "Elsewhere", "kind": "bug", "project": "plain"}));
+    let triage = |q: &[(&str, &str)]| {
+        let q: Query = q.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        api::dispatch(&b.app, "GET", "backlog/triage", &q, &json!({})).unwrap()
+    };
+    let titles = |v: &Value| v["issues"].as_array().unwrap().iter().map(|i| i["title"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    let rune = triage(&[("project", "rune")]);
+    assert_eq!(rune["untriaged"], 4);
+    // In the file's order (Quill, then Art); the one with no area counts only toward the project.
+    assert_eq!(rune["areas"], json!([{"name": "Quill", "count": 2}, {"name": "Art", "count": 1}]));
+
+    let quill = triage(&[("project", "rune"), ("area", "quill")]);
+    assert_eq!(quill["untriaged"], 2, "the header counts the area's issues");
+    assert_eq!(titles(&quill), ["Ink", "Pen"]);
+    assert_eq!(quill["areas"], rune["areas"], "the chips keep every area's count");
+
+    let all = triage(&[("project", "all"), ("area", "Quill")]);
+    assert_eq!(all["untriaged"], 5, "an area means nothing across every project");
+    assert_eq!(all["areas"], json!([]));
+}
+
+#[test]
 fn an_old_boards_areas_come_over() {
     let old_dir = tempfile::tempdir().unwrap();
     let old_path = old_dir.path().join("tasks.db");
