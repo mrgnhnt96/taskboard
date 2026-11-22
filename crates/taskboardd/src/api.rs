@@ -563,7 +563,6 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["recaps", id]) => crate::recap::get(app, recap_id(id)?),
         ("POST", ["recaps", id, "seen"]) => app.db.tx(|| crate::recap::seen(app, recap_id(id)?)),
         ("GET", ["tasks", id, "spans"]) => crate::review::task_spans(app, tid(id)?),
-        ("GET", ["lanes"]) => crate::lanes::page(app, q(query, "goals", "0") == "1"),
         ("GET", ["days"]) => days::page(app, query.get("date").map(|s| s.as_str()), query.get("hide").map(|s| s.as_str())),
         ("GET", ["history"]) => days::history(app),
         ("POST", ["history"]) => days::set_history(app, body),
@@ -1458,7 +1457,6 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                     f.push(("jira_key", json!(key)));
                     f.push(("jira_status", Value::Null));
                     f.push(("jira_status_at", Value::Null));
-                f.push(("jira_status_at", Value::Null));
                     jira::request(app, "status", id, &key, None, None)?;
                     board::log_event(app, id, &who, "jira", &format!("Linked {key}"))?;
                     bump = true;

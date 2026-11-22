@@ -56,7 +56,6 @@ mod idle_review_terminals;
 mod import;
 mod jira;
 mod keep_awake;
-mod lanes;
 mod last_task_goal_check;
 mod lessons;
 mod limits;
