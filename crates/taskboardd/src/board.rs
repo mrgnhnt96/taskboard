@@ -146,9 +146,15 @@ pub fn miss_resolved(app: &App, a: &Value) -> Result<bool> {
 /// The goal's open misses on its own done-when: issues filed with `--misses-goal` still in the backlog, or
 /// made into a task that isn't done yet. One the owner sent to Jira or closed no longer holds the goal.
 pub fn open_misses(app: &App, goal_id: i64) -> Result<i64> {
-    app.db.count(
-        "SELECT COUNT(*) FROM issues i WHERE i.goal_id = ? AND i.misses_goal = 1 AND (i.state = 'open' \
-         OR (i.state = 'task' AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = i.task_id AND (t.status != 'done' OR t.failed = 1))))",
+    Ok(open_miss_rows(app, goal_id)?.len() as i64)
+}
+
+/// The issues [`open_misses`] counts, oldest first.
+pub fn open_miss_rows(app: &App, goal_id: i64) -> Result<Vec<Row>> {
+    app.db.q(
+        "SELECT i.* FROM issues i WHERE i.goal_id = ? AND i.misses_goal = 1 AND (i.state = 'open' \
+         OR (i.state = 'task' AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = i.task_id AND (t.status != 'done' OR t.failed = 1)))) \
+         ORDER BY i.id",
         p![goal_id],
     )
 }
