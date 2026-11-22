@@ -132,10 +132,11 @@ pub fn set(app: &App, body: &Value) -> Result<Value> {
     };
     app.db.set_setting(KEY, Some(&jdumps(&v)))?;
     dispatch::clear_alert_prefix(app, "pr-builds:")?;
-    // The owner's open PRs are read again on the next tick.
+    // The owner's open PRs are read again on the next tick, every repo.
     let mut known = setting(app, OWNER_PRS);
     if known.is_object() {
         known["read_at"] = Value::Null;
+        known["reads"] = Value::Null;
         app.db.set_setting(OWNER_PRS, Some(&jdumps(&known)))?;
     }
     if stop {
@@ -261,8 +262,16 @@ fn owner_prs(app: &App) -> Vec<Value> {
     setting(app, OWNER_PRS)["prs"].as_array().cloned().unwrap_or_default()
 }
 
-fn save_owner_prs(app: &App, read_at: Value, prs: Vec<Value>) -> Result<()> {
-    app.db.set_setting(OWNER_PRS, Some(&jdumps(&json!({"read_at": read_at, "prs": prs}))))
+/// Saves the owner's open PRs; `reads` (when each repo was last read, by [`repo_key`]) stays as it
+/// was when None.
+fn save_owner_prs(app: &App, read_at: Value, prs: Vec<Value>, reads: Option<Value>) -> Result<()> {
+    let reads = reads.unwrap_or_else(|| setting(app, OWNER_PRS)["reads"].clone());
+    app.db.set_setting(OWNER_PRS, Some(&jdumps(&json!({"read_at": read_at, "prs": prs, "reads": reads}))))
+}
+
+/// A tracked repo's key in the owner-PRs setting's `reads`.
+fn repo_key(host: &str, repo: &str) -> String {
+    format!("{host}:{repo}")
 }
 
 /// Two names for one repo: alike by their short names (after the last `/`), as the Python board
@@ -382,13 +391,15 @@ pub fn on_pr_event(app: &App, body: &Value) -> Result<Value> {
         let url = { let u = body_str(body, "url"); if u.is_empty() { was.as_ref().and_then(|w| w["url"].as_str()).unwrap_or("").to_string() } else { u } };
         prs.push(json!({"host": host, "repo": repo, "num": num, "branch": branch, "url": url, "from": "feed"}));
     }
-    save_owner_prs(app, setting(app, OWNER_PRS)["read_at"].clone(), prs)?;
+    save_owner_prs(app, setting(app, OWNER_PRS)["read_at"].clone(), prs, None)?;
     Ok(json!({"owners": true, "open": open}))
 }
 
 /// While PR builds are stopped: the owner's open PRs on each repo the board knows, read every
 /// `owner_prs_secs`, so builds on the ones opened by hand are cancelled too. Reads the hosts outside
-/// any database transaction. Rests while the builds stream drives and is healthy.
+/// any database transaction. Rests while the builds stream drives and is healthy. A repo a healthy PR
+/// relay covers is read only to reconcile ([`crate::feed::covered_read_rests`]): its PR events keep
+/// its owner PRs ([`on_pr_event`]).
 pub fn read_owner_prs(app: &App) -> Result<()> {
     let every = app.cfg.pr_builds.owner_prs_secs;
     if every <= 0.0 || !stopped(app) || crate::feed::poll_rests(app, "builds") {
@@ -403,9 +414,14 @@ pub fn read_owner_prs(app: &App) -> Result<()> {
         p![],
     )?;
     let mut prs = owner_prs(app);
+    let mut reads = setting(app, OWNER_PRS)["reads"].as_object().cloned().unwrap_or_default();
     let tracked: Vec<(String, String)> = repos.iter().map(|r| (r.st("pr_host"), r.st("pr_repo"))).collect();
     for r in repos {
         let (host, repo) = (r.st("pr_host"), r.st("pr_repo"));
+        let key = repo_key(&host, &repo);
+        if crate::feed::covered_read_rests(app, &host, &repo, reads.get(&key).and_then(|v| v.as_str()).and_then(parse_iso)) {
+            continue;
+        }
         // The PRs noted in this repo: the ones whose name picks it out of the repos read on this host.
         let in_repo = |p: &Value| {
             let on_this_host = tracked.iter().filter(|(h, _)| *h == host).map(|(_, r)| r.as_str());
@@ -416,11 +432,12 @@ pub fn read_owner_prs(app: &App) -> Result<()> {
                 // The host's list is the whole of them: ones the feed noted that aren't on it have closed.
                 prs.retain(|p| !in_repo(p));
                 prs.extend(list.into_iter().map(|o| json!({"host": host, "repo": repo, "num": o.num, "branch": o.branch, "url": o.url, "from": "host"})));
+                reads.insert(key, json!(now_iso()));
             }
             Err(e) => app.info(format!("pr-builds: couldn't read the owner's open PRs in {repo}: {e}")),
         }
     }
-    save_owner_prs(app, json!(now_iso()), prs)
+    save_owner_prs(app, json!(now_iso()), prs, Some(Value::Object(reads)))
 }
 
 /// A build event for no PR on the board: one of the owner's pushes (by `author` or `mine: true`, or on the branch of

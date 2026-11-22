@@ -673,6 +673,53 @@ fn in_board_mode_a_relay_covered_pr_is_read_hourly_or_when_its_relay_comes_back(
     assert!(!read_again(&b, "seven"));
 }
 
+/// B350: the owner-PR read for stopped PR builds rests per repo as the PR poll does, in board mode
+/// too: a repo a healthy relay covers is read once after it connected, then only to reconcile.
+#[test]
+fn owner_pr_reads_rest_on_a_repo_a_healthy_relay_covers_until_the_reconcile() {
+    let b = board_with(|c| c.pr_builds.owner_prs_secs = 120.0);
+    let bb = FakeHost::new("bitbucket", host_rec("h1"));
+    let gh = FakeHost::new("github", host_rec("g1"));
+    prhost::install(&b.app, bb.clone());
+    prhost::install(&b.app, gh.clone());
+    b.pr_task(BB);
+    b.pr_task("https://github.com/acme/webapp/pull/7");
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.send(bb_relay("h1", json!({})));
+    let reads = |h: &FakeHost| h.calls().iter().filter(|c| c.starts_with("open prs")).count();
+    let tick = |due: bool| {
+        if due {
+            let mut v: Value = serde_json::from_str(&b.app.db.get_setting("pr_builds_owner_prs").unwrap().unwrap()).unwrap();
+            v["read_at"] = Value::Null;
+            b.app.db.set_setting("pr_builds_owner_prs", Some(&v.to_string())).unwrap();
+        }
+        taskboardd::prbuilds::tick(&b.app).unwrap();
+    };
+    tick(false);
+    assert_eq!((reads(&bb), reads(&gh)), (1, 1), "never read since fi connected: both read");
+    tick(true);
+    assert_eq!((reads(&bb), reads(&gh)), (1, 2), "fi covers Bitbucket and it was just read; GitHub isn't covered");
+
+    let mut v: Value = serde_json::from_str(&b.app.db.get_setting("pr_builds_owner_prs").unwrap().unwrap()).unwrap();
+    v["reads"]["bitbucket:acme/webapp"] = json!(ago(4000.0));
+    b.app.db.set_setting("pr_builds_owner_prs", Some(&v.to_string())).unwrap();
+    tick(true);
+    assert_eq!(reads(&bb), 2, "an hour on, the reconcile reads it");
+    tick(true);
+    assert_eq!(reads(&bb), 2);
+
+    b.post("/prs/event", json!({"kind": "pr", "host": "bitbucket", "repo": "acme/webapp", "num": 30, "mine": true, "branch": "by-hand"}));
+    let v: Value = serde_json::from_str(&b.app.db.get_setting("pr_builds_owner_prs").unwrap().unwrap()).unwrap();
+    assert!(v["reads"]["bitbucket:acme/webapp"].is_string(), "a PR event keeps the read times: {v}");
+
+    let mut v: Value = serde_json::from_str(&b.app.db.get_setting("pr_builds_owner_prs").unwrap().unwrap()).unwrap();
+    v["reads"]["bitbucket:acme/webapp"] = json!(ago(60.0));
+    b.app.db.set_setting("pr_builds_owner_prs", Some(&v.to_string())).unwrap();
+    b.send(bb_relay("h2", json!({"connected_at": ago(10.0)})));
+    tick(true);
+    assert_eq!(reads(&bb), 3, "fi connected again since the last read");
+}
+
 // --- no timed reads of a streamed PR (#841) ---
 
 /// A Bitbucket PR read once (stamp `s1`), then covered by the fi relay, which connected long ago.

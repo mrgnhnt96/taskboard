@@ -909,7 +909,8 @@ sweep stretch (up to 30×) to fit 90% of it, reads stop a tenth short of it and 
 go out one at a time, `[hosts.<host>] write_gap_secs` apart (Bitbucket 2, GitHub 1); once 10 wait, the next fails at once
 with "write queue is full". `[hosts.<host>] max_reads_per_minute` caps the account's reads in any minute (Bitbucket 30,
 GitHub no cap; 0: no cap): `tb pr` commands and the PR poll wait for their turn (a turn over a minute away fails with
-"read queue is full"), while other background reads stop at 80% of it and are skipped after 5 seconds. After a limit the account eases
+"read queue is full"), while other background reads stop at 80% of it and are skipped after 5 seconds (at once when the cap holds them
+longer than that). After a limit the account eases
 back in for as long as it backed off: background reads wait, while the PR poll, `tb pr …` commands and writes go. A
 429's log line names the `Retry-After` / `X-RateLimit-*` headers the host sent and the board's calls in the last
 minute. The calls and holds are kept in the `prhost_limits` setting across restarts, and each stretch the board
@@ -938,7 +939,8 @@ queues a cancel (once per push). So does a build on one of the owner's open PRs 
 by its link or `repo` + `num`, or its `branch`; it's cancelled by the PR's number too (`TB_PR_NUM`; Bitbucket's
 pull-request pipelines). Those PRs are read from the host on each repo the board knows (`gh pr list --author @me`,
 Bitbucket's open PRs by the board's account) every `owner_prs_secs` (120 s; 0: never) while builds are stopped, and
-noted from the feed's PR events. After a cancel the push is swept again after each of `follow_up_secs` (10, 30, 60,
+noted from the feed's PR events; a repo a healthy prs relay covers is read only to reconcile (`[feed] reconcile_secs`,
+and once after the relay connects or comes back). After a cancel the push is swept again after each of `follow_up_secs` (10, 30, 60,
 120 s) for builds queued just after it. It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
 bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no

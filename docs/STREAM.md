@@ -222,7 +222,9 @@ for a source, the source's health is its relays':
   reconcile: once every `[feed] reconcile_secs` (default 3600, 0 never), and once more after the relay connects or
   comes back from being stuck. Other PRs are polled as before, and so are a relay's PRs again from the round after
   it goes stuck or silent. A relay that never sent a heartbeat covers nothing, so the poll keeps reading its PRs.
-  `POST /prs/refresh` still reads every PR;
+  `POST /prs/refresh` still reads every PR. The read of the owner's open PRs while PR builds are stopped
+  (`pr_builds.owner_prs_secs`) goes by the same rule for each repo: a repo a healthy, active prs relay covers is read
+  once after the relay connects or comes back, then every `reconcile_secs`, since its PR events note the owner's PRs;
 - likewise the master-break watch's `[master] every_mins` timer rests for a `[master.projects]` branch while builds
   is in stream mode and a healthy, active builds relay covers its repo: the relay's pushes and builds read the
   branch then. It still reads the branch to reconcile, every `reconcile_secs` and once after the relay connects or
