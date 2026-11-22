@@ -5,7 +5,8 @@
 //! backlog is linked instead of written twice. It changes no code and starts nothing: the owner plans
 //! a goal from them on the Backlog page. Runs once after each kept review, before the owner is told,
 //! and again with `POST /reviews/<id>/fixes` (File again on the review page, `tb review <id>
-//! --file-again`) when filing them failed.
+//! --file-again`) when filing them failed. A run a board restart cut short starts over when the board
+//! starts again (`resume`).
 
 use serde_json::{json, Value};
 
@@ -18,6 +19,10 @@ pub const MAX: usize = 5;
 const KINDS: &[&str] = &["bug", "gap", "follow", "clean"];
 /// How many open backlog issues the prompt lists for Claude to link to.
 const OPEN_LIST: i64 = 80;
+/// How many board starts in a row pick up one review's run a restart cut short. Past that it's left
+/// failed for File again, so a run that takes the board down with it isn't started over forever.
+pub const RESUMES: i64 = 2;
+const CUT_SHORT: &str = "the board restarted before they were filed";
 
 /// Review `id` was just kept: file its fixes when Claude is there to ask and `[review] suggest` is on,
 /// then tell the owner; otherwise tell the owner now.
@@ -57,13 +62,60 @@ pub fn start(app: &App, id: i64) -> Result<Value> {
 /// Whether the fixes ran for review `id`, and what they filed. A run this board process didn't start
 /// was cut short by a restart: it reads as failed, so File again can start it over.
 pub fn status(app: &App, id: i64) -> Result<Value> {
-    let r = app.db.q1("SELECT fixes FROM reviews WHERE id = ?", p![id])?;
-    let mut v = r.and_then(|r| r.s("fixes").and_then(|s| serde_json::from_str::<Value>(s).ok())).unwrap_or_else(|| json!({"state": "none"}));
-    if v["state"] == "running" && v["run"] != this_run() {
+    let mut v = stored(app, id)?;
+    if cut_short(&v) {
         v["state"] = json!("failed");
-        v["error"] = json!("the board restarted before they were filed");
+        v["error"] = json!(CUT_SHORT);
     }
     Ok(v)
+}
+
+/// The status as saved, a stale running one as it is.
+fn stored(app: &App, id: i64) -> Result<Value> {
+    let r = app.db.q1("SELECT fixes FROM reviews WHERE id = ?", p![id])?;
+    Ok(r.and_then(|r| r.s("fixes").and_then(|s| serde_json::from_str::<Value>(s).ok())).unwrap_or_else(|| json!({"state": "none"})))
+}
+
+fn cut_short(v: &Value) -> bool {
+    v["state"] == "running" && v["run"] != this_run()
+}
+
+/// The board started: each review's run an earlier board process left running is started over
+/// (telling the owner when it ends, if the cut-short run was going to), while Claude is there to ask,
+/// `[review] suggest` is on, and it hasn't been picked up `RESUMES` times already. Otherwise it's
+/// saved as failed for File again, and an owner the cut-short run was going to tell is told now.
+pub fn resume(app: &App) -> Result<()> {
+    let can_run = app.cfg.review.suggest && triage::ai_on(app);
+    for r in app.db.q("SELECT id FROM reviews WHERE fixes LIKE '%running%' ORDER BY id", p![])? {
+        let id = r.id();
+        // Checked and claimed in one transaction, as File again does.
+        let picked = app.db.tx(|| {
+            let st = stored(app, id)?;
+            if !cut_short(&st) {
+                return Ok(None);
+            }
+            let announce = st["announce"] == true;
+            let resumes = st["resumes"].as_i64().unwrap_or(0);
+            if can_run && resumes < RESUMES {
+                let mut v = running(&st, announce);
+                v["resumes"] = json!(resumes + 1);
+                save_status(app, id, &v);
+                return Ok(Some((true, announce)));
+            }
+            save_status(app, id, &json!({"state": "failed", "at": now_iso(), "error": CUT_SHORT,
+                                         "filed": str_list(st.get("filed")), "linked": str_list(st.get("linked"))}));
+            Ok(Some((false, announce)))
+        })?;
+        match picked {
+            Some((true, announce)) => {
+                app.info(format!("review fixes: review {id} was cut short by a restart; filing them again"));
+                enqueue(app, id, announce);
+            }
+            Some((false, true)) => review::announce(app, id)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// This board process, as a running status records it: a status from any other one is stale.
