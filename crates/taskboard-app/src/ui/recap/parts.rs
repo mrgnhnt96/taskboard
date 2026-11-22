@@ -81,6 +81,11 @@ impl Ctx {
     }
 }
 
+/// A value's items when it is an array, else none.
+pub fn vals(v: &Value) -> &[Value] {
+    v.as_array().map_or(&[], Vec::as_slice)
+}
+
 /// Projects (a `projects` fact) that finished tasks, busiest first.
 pub fn active(list: &Value) -> Vec<Value> {
     let mut ps: Vec<Value> = list.as_array().map_or(&[][..], Vec::as_slice).iter().filter(|p| num(&p["tasks"]) > 0.).cloned().collect();

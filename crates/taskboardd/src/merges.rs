@@ -4,6 +4,12 @@
 //! A trigger keeps `pr_merges`: whichever way a PR merges (the poll reads it merged, `tb pr merge`,
 //! the merge button), the task's `pr_phase` turns `merged` and the row is written then. The line
 //! counts come later from the PR's host, a few PRs at a time, so the read never holds a merge up.
+//!
+//! `tries` counts failed reads of those line counts. Whether the PR merged on its first try is
+//! `fix_rounds`: the review rounds that found something to fix (`quality::fix_rounds`) of its task
+//! and the tasks sharing its PR. They're worked out from the tasks' events, so they're recorded on
+//! the same pass, while the History settings still keep those events; a merge from before that
+//! stays unrecorded (`NULL`) rather than reading as a first try.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -14,6 +20,8 @@ use crate::app::App;
 use crate::prhost::{self, PrRef};
 use crate::util::*;
 use crate::p;
+
+pub const ADDED: &[(&str, &str, &str)] = &[("pr_merges", "fix_rounds", "INT")];
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS pr_merges(
@@ -84,10 +92,29 @@ pub fn fill(app: &App, n: i64) -> Result<usize> {
     Ok(counted)
 }
 
+/// Records the fix rounds of each merged PR that has none yet, if its tasks' events are still kept.
+/// How many it recorded.
+pub fn record_rounds(app: &App) -> Result<usize> {
+    let kept_from = crate::days::start_of(crate::days::today() - chrono::Duration::days(crate::days::detail_days(app)));
+    let rows = app.db.q("SELECT id, task_id FROM pr_merges WHERE fix_rounds IS NULL AND merged_at >= ? ORDER BY merged_at, id", p![iso(kept_from)])?;
+    for r in &rows {
+        let task = r.i0("task_id");
+        let mut n = crate::quality::fix_rounds(app, task)?;
+        for t in crate::samepr::members(app, task)? {
+            n += crate::quality::fix_rounds(app, t.id())?;
+        }
+        app.db.x("UPDATE pr_merges SET fix_rounds = ? WHERE id = ?", p![n, r.id()])?;
+    }
+    Ok(rows.len())
+}
+
 pub fn fill_loop(app: std::sync::Arc<App>) {
     while !app.stopping() {
         if let Err(e) = fill(&app, PER_PASS) {
             app.info(format!("counting merged PRs' lines failed: {}", e.message));
+        }
+        if let Err(e) = record_rounds(&app) {
+            app.info(format!("recording merged PRs' fix rounds failed: {}", e.message));
         }
         app.sleep(PASS_SECS);
     }

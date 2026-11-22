@@ -534,6 +534,7 @@ impl Db {
         conn.execute_batch(BACKFILL_MERGED)?;
         conn.execute_batch(crate::merges::SCHEMA)?;
         conn.execute_batch(crate::merges::BACKFILL)?;
+        add_columns(&conn, crate::merges::ADDED)?;
         conn.execute_batch(crate::samepr::SCHEMA)?;
         conn.execute_batch(crate::start_grants::SCHEMA)?;
         add_columns(&conn, crate::start_grants::ADDED)?;

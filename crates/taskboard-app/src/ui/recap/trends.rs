@@ -343,3 +343,123 @@ pub fn issues(c: &Ctx, comp: &Value, _cx: &mut Context<MainWindow>) -> Option<An
     let body = kinds.iter().enumerate().map(|(i, (n, v))| brow(c, &format!("issues{i}"), i, Brow::new(*n, int(*v), v / max), None)).collect();
     Some(card(c, "issues", Some("Found along the way"), Some(right(t, int(all))), body))
 }
+
+/// Height of one project in the rank shift.
+const RANK_H: f32 = 28.;
+
+/// The top projects' ranks before and now, joined by a line in each project's colour.
+pub fn bump(c: &Ctx, comp: &Value, _cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let t = &c.t;
+    let now: Vec<Value> = vals(c.prop(comp, "projects", "ranks.projects")).to_vec();
+    if now.is_empty() {
+        return Some(card(c, "bump", Some("Project rank"), None, vec![none(t, "0 projects")]));
+    }
+    // A project with nothing before goes below the ones that had something.
+    let mut then: Vec<usize> = (0..now.len()).collect();
+    then.sort_by_key(|&i| (now[i]["before"].as_u64().unwrap_or(u64::MAX), i));
+    let at_before: Vec<usize> = (0..now.len()).map(|i| then.iter().position(|&j| j == i).unwrap_or(i)).collect();
+    let lines: Vec<(f32, f32, Hsla)> = now.iter().enumerate().map(|(i, p)| (at_before[i] as f32, i as f32, c.pc(s(p, "name")))).collect();
+    let dot = t.card;
+    let chart = canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let w = b.size.width.as_f32();
+            let y = |k: f32| b.origin.y + px(k * RANK_H + RANK_H / 2.);
+            let (x0, x1) = (b.origin.x + px(6.), b.origin.x + px(w - 6.));
+            let mid = b.origin.x + px(w / 2.);
+            for (from, to, color) in &lines {
+                let mut p = PathBuilder::stroke(px(2.));
+                p.move_to(point(x0, y(*from)));
+                p.cubic_bezier_to(point(x1, y(*to)), point(mid, y(*from)), point(mid, y(*to)));
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, *color);
+                }
+                for at in [point(x0, y(*from)), point(x1, y(*to))] {
+                    let r = Bounds::new(point(at.x - px(5.), at.y - px(5.)), size(px(10.), px(10.)));
+                    window.paint_quad(fill(r, *color).corner_radii(px(5.)).border_widths(px(2.)).border_color(dot));
+                }
+            }
+        },
+    )
+    .flex_none()
+    .w(px(96.))
+    .h(px(RANK_H * now.len() as f32));
+    let name = |key: String, i: usize, p: &Value, rank: String, tip: String, end: bool| {
+        let el = div()
+            .id(c.id(key))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(RANK_H))
+            .min_w_0()
+            .when(end, |d| d.justify_end())
+            .child(div().min_w_0().truncate().child(s(p, "name").to_string()))
+            .child(div().flex_none().text_color(t.muted).child(rank))
+            .tooltip(kit::tip(tip));
+        motion::fade(el, c.id(format!("bump-in{i}")), motion::st(i, 40, 0))
+    };
+    let left = then.iter().enumerate().map(|(k, &i)| {
+        let p = &now[i];
+        let rank = p["before"].as_u64().map_or("new".to_string(), |r| format!("#{r}"));
+        let tip = p["before"].as_u64().map_or(format!("{}: no tasks {}", s(p, "name"), c.prev()), |r| format!("{}: #{r} {}", s(p, "name"), c.prev()));
+        name(format!("bump-l{k}"), k, p, rank, tip, true)
+    });
+    let right_col = now.iter().enumerate().map(|(i, p)| {
+        let n = num(&p["tasks"]);
+        name(format!("bump-r{i}"), i, p, int(n), format!("{}: #{}, {}", s(p, "name"), int(num(&p["now"])), pl(n, "task", "tasks")), false)
+    });
+    let head = div()
+        .flex()
+        .gap(px(8.))
+        .text_size(px(12.))
+        .text_color(t.muted)
+        .child(div().flex_1().flex().justify_end().child(cap(c.prev())))
+        .child(div().flex_none().w(px(96.)))
+        .child(div().flex_1().child(if c.month { "This month" } else { "This week" }));
+    let body = div()
+        .flex()
+        .gap(px(8.))
+        .child(div().flex_1().min_w_0().flex().flex_col().children(left))
+        .child(chart)
+        .child(div().flex_1().min_w_0().flex().flex_col().children(right_col));
+    Some(card(c, "bump", Some("Project rank"), None, vec![head.into_any_element(), body.into_any_element()]))
+}
+
+/// The PRs that merged with no review round finding something to fix, and the ones that needed one.
+pub fn tries(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let t = &c.t;
+    let total = num(c.prop(comp, "prs", "tries.prs"));
+    if total <= 0. {
+        return Some(card(c, "tries", Some("Merged first try"), None, vec![none(t, "No PRs")]));
+    }
+    let first = num(c.prop(comp, "first", "tries.first_try"));
+    let retried: Vec<Value> = vals(c.prop(comp, "retried", "tries.retried")).to_vec();
+    let miss = total - first;
+    let mut body = vec![
+        big_count(c, "tries", 80, first / total * 100., |x| format!("{}%", int(x))),
+        small(t, format!("{} of {}", int(first), pl(total, "PR", "PRs"))).into_any_element(),
+        stack(c, "tries-stack", 80, 400, 12., vec![(first, t.accent, format!("First try: {}", int(first))), (miss, grey(t), format!("Retried: {}", int(miss)))]),
+    ];
+    if miss > 0. {
+        body.push(legend(t, vec![(t.accent, "First try".into()), (grey(t), "Retried".into())]).into_any_element());
+    }
+    if !retried.is_empty() {
+        let n = retried.len();
+        body.extend(xp(c, "tries-list", &format!("{} retried", int(miss)), None, 32. * n as f32, cx, |cx| {
+            div().flex().flex_col().children(
+                retried
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| {
+                        let r = s(x, "task").to_string();
+                        let open: Click = Box::new(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)));
+                        let label = div().flex().min_w_0().gap(px(6.)).child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.muted).child(format!("#{}", int(num(&x["pr"]))))).child(div().min_w_0().truncate().child(s(x, "title").to_string()));
+                        let el = lrow(t, c.id(format!("tries-r{i}")), label, s(x, "project").to_string(), Some(open));
+                        motion::fade(el, c.id(format!("tries-in{i}")), motion::st(i, 24, 0))
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }));
+    }
+    Some(card(c, "tries", Some("Merged first try"), None, body))
+}

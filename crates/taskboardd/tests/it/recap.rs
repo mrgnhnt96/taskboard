@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::util::iso;
+use taskboardd::util::{iso, RowExt};
 use taskboardd::{days, fields, recap};
 
 fn new_board() -> (tempfile::TempDir, std::sync::Arc<App>) {
@@ -171,6 +171,84 @@ fn a_week_reports_merged_released_and_human_work_apart_and_leaves_out_closed_prs
     assert_eq!((wed_row["tasks"].clone(), wed_row["merged"].clone(), wed_row["agent_min"].clone()), (json!(4), json!(2), json!(120.0)));
 }
 
+/// The week of October 5, 2026: webapp's three tasks (one ran the week before too, one has an
+/// estimate, one shared its PR with a task that went back for a fix) and a closed PR, api's two,
+/// and the week before api led with three tasks to webapp's one.
+#[test]
+fn a_week_has_its_slowest_tasks_busiest_hours_rank_shift_and_first_tries() {
+    let (_dir, app) = new_board();
+    app.db.set_setting("history_detail_days", Some("100000")).unwrap();
+    let (wed, last_wed) = (day(2026, 10, 7), day(2026, 9, 30));
+    let g = goal(&app, "webapp", "Ship login");
+    let long = task(&app, Some(g), "webapp", "Login form");
+    let est = task(&app, Some(g), "webapp", "Session cookie");
+    let short = task(&app, None, "webapp", "Copy fix");
+    let closed = task(&app, None, "webapp", "Try another way");
+    let helper = task(&app, None, "webapp", "Login form tests");
+    finish(&app, long, &at(wed, 11, 0), vec![("pr_num", json!(5)), ("pr_state", json!("MERGED"))]);
+    finish(&app, est, &at(wed, 14, 0), vec![("pr_num", json!(6)), ("pr_state", json!("MERGED")), ("human_min", json!(120))]);
+    finish(&app, short, &at(day(2026, 10, 9), 9, 0), vec![]);
+    finish(&app, closed, &at(wed, 15, 0), vec![("pr_num", json!(7)), ("pr_state", json!("CLOSED"))]);
+    finish(&app, helper, &at(last_wed, 9, 0), vec![("same_pr", json!(long))]);
+    for (t, from, to) in [(long, at(last_wed, 9, 0), at(last_wed, 10, 0)), (long, at(wed, 8, 0), at(wed, 10, 0)), (est, at(wed, 12, 0), at(wed, 13, 0)),
+                          (short, at(day(2026, 10, 9), 8, 30), at(day(2026, 10, 9), 9, 0)), (closed, at(wed, 9, 0), at(wed, 14, 0))] {
+        state(&app, t, &from, "working", None);
+        state(&app, t, &to, "done", None);
+    }
+    for i in 0..2 {
+        let t = task(&app, None, "api", &format!("Api {i}"));
+        finish(&app, t, &at(wed, 16, i), vec![]);
+    }
+    for i in 0..3 {
+        let t = task(&app, None, "api", &format!("Old api {i}"));
+        finish(&app, t, &at(last_wed, 10, i), vec![]);
+    }
+
+    app.db.insert("events", fields!["task_id" => helper, "at" => at(wed, 10, 30), "who" => "board", "kind" => "handoff", "text" => "Brought the conversation back for PR #5: fixing checks"]).unwrap();
+    for (t, pr, h) in [(long, 5, 11), (est, 6, 14)] {
+        app.db.insert("pr_merges", fields!["task_id" => t, "pr_num" => pr, "project" => "webapp", "merged_at" => at(wed, h, 5)]).unwrap();
+    }
+    app.db.insert("pr_merges", fields!["task_id" => short, "pr_num" => 8, "project" => "webapp", "merged_at" => at(day(2026, 6, 1), 9, 0)]).unwrap();
+    let id = recap::save(&app, "weekly", wed).unwrap();
+    let f = recap::get(&app, id).unwrap()["facts"].clone();
+
+    let slow: Vec<(String, f64, Value)> = f["slowest"].as_array().unwrap().iter().map(|x| (x["task"].as_str().unwrap().to_string(), x["agent_min"].as_f64().unwrap(), x["est_human_min"].clone())).collect();
+    assert_eq!(
+        slow,
+        vec![(format!("T{long}"), 180.0, Value::Null), (format!("T{est}"), 60.0, json!(120)), (format!("T{short}"), 30.0, Value::Null)],
+        "every run counts, even the week before; the closed PR and tasks that never worked are left out"
+    );
+    let goal = &f["goals"][0];
+    assert_eq!(goal["estimated"], 1);
+    assert_eq!(goal["slowest"].as_array().unwrap().len(), 2, "the goal's own tasks only");
+    assert_eq!(goal["slowest"][0]["task"], format!("T{long}"));
+
+    let heat = &f["heat"];
+    assert_eq!(heat["tasks"], 5, "the closed PR is left out");
+    assert_eq!(heat["grid"].as_array().unwrap().len(), 7);
+    assert_eq!(heat["grid"][2][11], 1, "Wednesday, 11 AM local");
+    assert_eq!(heat["grid"][2][16], 2);
+    assert_eq!(heat["grid"][4][9], 1, "Friday, 9 AM");
+
+    let ranks = &f["ranks"];
+    assert_eq!(ranks["moved"], 2);
+    assert_eq!(ranks["projects"][0], json!({"name": "webapp", "tasks": 3, "now": 1, "before": 2}));
+    assert_eq!(ranks["projects"][1], json!({"name": "api", "tasks": 2, "now": 2, "before": 1}));
+
+    let tries = &f["tries"];
+    assert_eq!((tries["prs"].clone(), tries["first_try"].clone(), tries["unknown"].clone()), (json!(2), json!(1), json!(0)));
+    assert_eq!(tries["retried"], json!([{"pr": 5, "task": format!("T{long}"), "title": "Login form", "project": "webapp", "rounds": 1}]), "a fix round on a task sharing the PR counts");
+    let kept = |t: i64| app.db.q1("SELECT fix_rounds FROM pr_merges WHERE task_id = ?", taskboardd::p![t]).unwrap().unwrap().i("fix_rounds");
+    assert_eq!((kept(long), kept(est), kept(short)), (Some(1), Some(0), Some(0)), "recorded on each merge while its events are kept");
+
+    app.db.set_setting("history_detail_days", Some("30")).unwrap();
+    app.db.x("UPDATE pr_merges SET fix_rounds = NULL", taskboardd::p![]).unwrap();
+    taskboardd::merges::record_rounds(&app).unwrap();
+    assert_eq!(kept(long), None, "a merge whose events may be gone stays unknown rather than a first try");
+    let f = recap::facts(&app, "weekly", wed).unwrap();
+    assert_eq!((f["tries"]["prs"].clone(), f["tries"]["unknown"].clone()), (json!(0), json!(2)));
+}
+
 #[test]
 fn loose_tasks_are_capped_per_project_and_before_is_left_out_with_nothing_to_compare() {
     let (_dir, app) = new_board();
@@ -189,6 +267,8 @@ fn loose_tasks_are_capped_per_project_and_before_is_left_out_with_nothing_to_com
     let u = &f["usage"]["five_hour"];
     assert_eq!((u["peak"].clone(), u["avg"].clone(), u["samples"].clone()), (json!(80.0), json!(60.0), json!(2)));
     assert!(f.get("weeks").is_none(), "week-by-week trends are monthly only");
+    assert_eq!(f["ranks"], Value::Null, "no previous week to rank against");
+    assert_eq!(f["slowest"], json!([]), "no task worked");
 }
 
 #[test]

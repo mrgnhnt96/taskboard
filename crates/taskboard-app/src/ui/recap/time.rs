@@ -2,7 +2,7 @@
 use super::parts::*;
 use crate::app::MainWindow;
 use crate::fmt::{arr, s};
-use crate::ui::motion;
+use crate::ui::{kit, motion};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
@@ -229,4 +229,75 @@ mod tests {
         assert_eq!(say(40.), "40 estimated hours is about 5.0 eight-hour working days.");
         assert!(say(400.).starts_with("400 estimated hours is about 10 forty-hour weeks, or 2 months"));
     }
+}
+
+/// The tasks with the most agent time, against the estimate where there is one.
+pub fn slow(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let t = &c.t;
+    let top: Vec<Value> = vals(c.prop(comp, "tasks", "slowest")).to_vec();
+    if top.is_empty() {
+        return Some(card(c, "slow", Some("Slowest tasks"), None, vec![none(t, "0 tasks with agent time")]));
+    }
+    let max = num(&top[0]["agent_min"]).max(1e-9);
+    let row = |c: &Ctx, i: usize, x: &Value, cx: &mut Context<MainWindow>| {
+        let r = s(x, "task").to_string();
+        let open: Click = Box::new(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx)));
+        let agent = num(&x["agent_min"]);
+        let value = match num(&x["est_human_min"]) {
+            est if est > 0. => format!("{} of {} est.", dur(agent), dur(est)),
+            _ => dur(agent),
+        };
+        brow(c, &format!("slow-{i}"), i, Brow::new(s(x, "title"), value, agent / max).pre(s(x, "task")), Some(open))
+    };
+    let first: Vec<AnyElement> = top.iter().take(5).enumerate().map(|(i, x)| row(c, i, x, cx)).collect();
+    let mut body = vec![div().flex().flex_col().children(first).into_any_element()];
+    if top.len() > 5 {
+        let next = (top.len() - 5).min(10);
+        body.extend(xp(c, "slow-next", &format!("Next {next}"), None, 44. * next as f32, cx, |cx| {
+            div().flex().flex_col().children(top.iter().enumerate().skip(5).take(10).map(|(i, x)| row(c, i, x, cx)).collect::<Vec<_>>())
+        }));
+    }
+    Some(card(c, "slow", Some("Slowest tasks"), None, body))
+}
+
+const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/// "9 AM", "12 PM".
+fn hour(h: usize) -> String {
+    format!("{} {}", if h % 12 == 0 { 12 } else { h % 12 }, if h < 12 { "AM" } else { "PM" })
+}
+
+/// Finished tasks by weekday and hour: one hue, darker for more.
+pub fn heat(c: &Ctx, comp: &Value, _cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let t = &c.t;
+    let grid: Vec<Vec<f64>> = vals(c.prop(comp, "grid", "heat.grid")).iter().map(|row| vals(row).iter().map(num).collect()).collect();
+    let max = grid.iter().flatten().copied().fold(0., f64::max);
+    if max <= 0. {
+        return Some(card(c, "heat", Some("Busiest hours"), None, vec![none(t, "0 tasks")]));
+    }
+    let label = |text: String| div().flex_none().w(px(32.)).text_size(px(12.)).text_color(t.muted).child(text);
+    let rows = grid.iter().take(7).enumerate().map(|(d, row)| {
+        let cells = row.iter().take(24).enumerate().map(|(h, &v)| {
+            let bg = if v > 0. { t.accent.opacity((0.16 + 0.84 * v / max) as f32) } else { t.panel_2 };
+            let fg = t.text;
+            div()
+                .id(c.id(format!("heat-{d}-{h}")))
+                .flex_1()
+                .min_w_0()
+                .h(px(16.))
+                .rounded(px(2.))
+                .bg(bg)
+                .hover(move |s| s.border_1().border_color(fg))
+                .tooltip(kit::tip(format!("{} {}: {}", WEEKDAYS[d], hour(h), pl(v, "task", "tasks"))))
+        });
+        let el = div().flex().items_center().gap(px(2.)).child(label(WEEKDAYS[d].to_string())).children(cells);
+        motion::fade(el, c.id(format!("heat-r{d}")), motion::row(d))
+    });
+    let ax = div()
+        .flex()
+        .gap(px(2.))
+        .child(label(String::new()))
+        .children([0, 6, 12, 18].map(|h| div().flex_1().min_w_0().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(hour(h))));
+    let body = div().flex().flex_col().gap(px(2.)).children(rows).child(ax);
+    Some(card(c, "heat", Some("Busiest hours"), None, vec![body.into_any_element()]))
 }
