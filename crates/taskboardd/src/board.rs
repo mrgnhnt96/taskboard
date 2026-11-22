@@ -456,6 +456,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
         o.insert("same_pr".into(), json!(crate::samepr::anchor_id(t)));
+        // The anchor a member shares its PR with, or the members sharing an anchor's (`samepr.rs`).
+        o.insert("pr_group".into(), crate::samepr::card(app, t)?);
         // `human` for a task only the owner does (`human.rs`), with the note they left on Done.
         o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
         o.insert("owner_note".into(), json!(crate::human::note(t)));

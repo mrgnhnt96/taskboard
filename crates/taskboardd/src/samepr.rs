@@ -16,8 +16,10 @@ use crate::app::App;
 use crate::util::*;
 use crate::{board, fields, p, stack, waitsfor};
 
-/// Copies the anchor's PR phase and state onto the members that linked its PR.
+/// Copies the anchor's PR phase and state onto the members that linked its PR. The index keeps the
+/// card's look-up of an anchor's members off a scan of every task.
 pub const SCHEMA: &str = r#"
+CREATE INDEX IF NOT EXISTS tasks_same_pr ON tasks(same_pr) WHERE same_pr IS NOT NULL;
 CREATE TRIGGER IF NOT EXISTS same_pr_mirror AFTER UPDATE OF pr_phase, pr_state ON tasks WHEN NEW.pr_num IS NOT NULL
 BEGIN
     UPDATE tasks SET pr_phase = NEW.pr_phase, pr_state = NEW.pr_state
@@ -85,6 +87,24 @@ pub fn pr_task(app: &App, t: &Row) -> Result<Row> {
         }
     }
     Ok(t.clone())
+}
+
+/// The card's `pr_group`: for a member, the anchor whose PR it shares; for an anchor, the members that
+/// share its PR, each with whether it has added its work. Null outside a group.
+pub fn card(app: &App, t: &Row) -> Result<Value> {
+    if let Some(a) = anchor(app, t)? {
+        let anchor = json!({"ref": rf("task", a.id()), "title": a.v("title"), "num": a.v("pr_num"), "url": a.v("pr_url"),
+                            "merged": stack::merged(&a), "declined": waitsfor::pr_declined(&a)});
+        return Ok(json!({"anchor": anchor, "members": []}));
+    }
+    let members: Vec<Value> = members(app, t.id())?
+        .iter()
+        .map(|m| json!({"ref": rf("task", m.id()), "title": m.v("title"), "added": has(m.s("pr_url"))}))
+        .collect();
+    if members.is_empty() {
+        return Ok(Value::Null);
+    }
+    Ok(json!({"anchor": null, "members": members}))
 }
 
 /// The anchor's PR moved to `phase`: what runs per PR runs for each member that linked it too. Its

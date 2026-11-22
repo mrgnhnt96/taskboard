@@ -309,3 +309,28 @@ fn a_member_s_ticket_goes_to_review_with_the_shared_pr_at_submit() {
     assert!(args.iter().any(|a| a.contains("In Review")), "it follows the anchor's PR into review: {args:?}");
     assert!(!args.iter().any(|a| a.contains("\"Done\"")), "a member that linked the PR isn't done with no PR: {args:?}");
 }
+
+#[test]
+fn the_card_names_the_anchor_on_a_member_and_the_members_on_the_anchor() {
+    let b = new_board();
+    let a = b.task("Add the endpoint", json!({}));
+    let m = b.task("Use it", json!({"same_pr": format!("T{a}")}));
+    let m2 = b.task("Use it too", json!({"same_pr": format!("T{a}")}));
+    let lone = b.task("Alone", json!({}));
+    b.link(a, 42, "feat/endpoint");
+    b.added(a, m);
+
+    let card = |id| board::task_card(&b.app, &b.row(id)).unwrap()["pr_group"].clone();
+    let g = card(m);
+    assert_eq!(g["anchor"]["ref"], json!(format!("T{a}")));
+    assert_eq!(g["anchor"]["num"], json!(42));
+    assert_eq!(g["anchor"]["merged"], json!(false));
+    let g = card(a);
+    assert_eq!(g["anchor"], Value::Null);
+    let refs: Vec<(Value, Value)> = g["members"].as_array().unwrap().iter().map(|x| (x["ref"].clone(), x["added"].clone())).collect();
+    assert_eq!(refs, vec![(json!(format!("T{m}")), json!(true)), (json!(format!("T{m2}")), json!(false))]);
+    assert_eq!(card(lone), Value::Null);
+
+    b.app.db.tx(|| prflow::mark_merged(&b.app, &b.row(a), "Pat")).unwrap();
+    assert_eq!(card(m)["anchor"]["merged"], json!(true));
+}
