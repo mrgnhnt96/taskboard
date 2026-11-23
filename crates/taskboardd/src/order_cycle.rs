@@ -1,8 +1,10 @@
-//! Waits that cycle with a goal's run-in-order order. In a goal that runs in order, a task can't start
-//! until the tasks before it are done, so an earlier task that waits for a later one (or for anything
-//! that comes to wait on it) holds both forever, and the rest of the goal behind them. A wait that would
-//! make such a cycle is refused (`refusal`), and one already on the board (the order changed, or the
-//! goal was set to run in order after the wait) goes on Needs you until it's broken (`sweep`).
+//! Waits that cycle with the order goals run their tasks in. A task can't start until the tasks before it
+//! are done when its goal runs in order, until every task of a goal its goal runs after (`--after`) is done,
+//! and until an earlier wave that stops for the owner's review is done. So an earlier task that waits for
+//! a later one (or for anything that comes to wait on it) holds both forever, and the rest of the goal
+//! behind them. A wait that would make such a cycle is refused (`refusal`), and one already on the board
+//! (the order changed, or the goal was set to run in order after the wait) goes on Needs you until it's
+//! broken (`sweep`). Waves alone don't: a wave passes once its tasks are held back by their own waits.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -16,13 +18,31 @@ use crate::waitsfor;
 const PREFIX: &str = "ordercycle:";
 const RAISED: &str = "order_cycles_raised";
 
-/// One step of a cycle: `from` can't start until `to` is done, because it waits for it or because it
-/// comes after it in goal `in_goal`'s order.
+/// One step of a cycle: `from` can't start until `to` is done, for the reason `by` gives.
 #[derive(Clone, Debug)]
 struct Hop {
     from: i64,
     to: i64,
-    in_goal: Option<i64>,
+    by: By,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum By {
+    /// `from` waits for `to`, or stacks on it.
+    Wait,
+    /// `to` comes before `from` in this goal's run-in-order order.
+    Order(i64),
+    /// `from`'s goal (the first) runs after `to`'s (the second).
+    Chain(i64, i64),
+    /// `to` is in this goal's wave (the second) that stops for the owner's review before `from`'s wave.
+    Stop(i64, i64),
+}
+
+impl Hop {
+    /// Held by the goals' order, not by a wait.
+    fn by_order(&self) -> bool {
+        self.by != By::Wait
+    }
 }
 
 /// Which waits count. `Plan` asks whether a wait would ever cycle, so a planned task counts as the run
@@ -38,11 +58,13 @@ struct Walk<'a> {
     mode: Mode,
     tasks: HashMap<i64, Option<Row>>,
     order: HashMap<i64, Vec<Row>>,
+    after: HashMap<i64, Vec<(i64, Vec<Row>)>>,
+    stops: HashMap<i64, Vec<Row>>,
 }
 
 impl<'a> Walk<'a> {
     fn new(app: &'a App, mode: Mode) -> Self {
-        Walk { app, mode, tasks: HashMap::new(), order: HashMap::new() }
+        Walk { app, mode, tasks: HashMap::new(), order: HashMap::new(), after: HashMap::new(), stops: HashMap::new() }
     }
 
     fn task(&mut self, id: i64) -> Result<Option<Row>> {
@@ -71,6 +93,53 @@ impl<'a> Walk<'a> {
         Ok(&self.order[&goal])
     }
 
+    /// The goals this one runs after that aren't finished, each with its tasks (`chain::blocker`).
+    fn after(&mut self, goal: i64) -> Result<&[(i64, Vec<Row>)]> {
+        if !self.after.contains_key(&goal) {
+            let mut rows = vec![];
+            if let Some(g) = board::find_goal(self.app, Some(goal))? {
+                for n in crate::chain::ids(&g) {
+                    if board::find_goal(self.app, Some(n))?.is_some() && !board::goal_finished(self.app, n)? {
+                        rows.push((n, crate::shared::counted_tasks(self.app, n)?));
+                    }
+                }
+            }
+            self.after.insert(goal, rows);
+        }
+        Ok(&self.after[&goal])
+    }
+
+    /// The goal's tasks in a wave that stops for the owner's review and isn't continued yet: a later
+    /// wave waits until every one of them is done (`waves::waves`).
+    fn stopped(&mut self, goal: i64) -> Result<&[Row]> {
+        if !self.stops.contains_key(&goal) {
+            let stops: Vec<i64> = self
+                .app
+                .db
+                .q("SELECT wave FROM goal_waves WHERE goal_id = ? AND stop_after = 1 AND released_at IS NULL", crate::p![goal])?
+                .iter()
+                .filter_map(|w| w.i("wave"))
+                .collect();
+            let rows = if stops.is_empty() {
+                vec![]
+            } else {
+                board::goal_tasks(self.app, goal)?.into_iter().filter(|t| t.i("wave").is_some_and(|w| stops.contains(&w))).collect()
+            };
+            self.stops.insert(goal, rows);
+        }
+        Ok(&self.stops[&goal])
+    }
+
+    /// Whether `y` isn't done yet, so it holds back the tasks its goals' order puts after it.
+    fn pending(&self, y: &Row) -> bool {
+        let open = match y.s("status") {
+            Some("done") => false,
+            Some("planned") => self.mode == Mode::Plan,
+            _ => true,
+        };
+        open && !crate::human::released(y)
+    }
+
     /// Whether `x` can be held back at all: a queued task, or in `Plan` a planned one too.
     fn waits(&self, x: &Row) -> bool {
         match x.s("status") {
@@ -80,8 +149,9 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// What holds `x` back: the tasks it waits for that aren't ready, and the earlier tasks in its goal's
-    /// order that aren't done.
+    /// What holds `x` back: the tasks it waits for that aren't ready, the earlier tasks in its goal's
+    /// order, the tasks of the goals its goal runs after, and those of an earlier wave that stops for
+    /// review, that aren't done.
     fn holds(&mut self, x: &Row) -> Result<Vec<Hop>> {
         let mut out = vec![];
         if x.s("status") == Some("done") || crate::human::released(x) {
@@ -94,25 +164,42 @@ impl<'a> Walk<'a> {
                 Mode::Live => self.waits(x) && other.is_some() && !waitsfor::ready_for(self.app, x, d, other.as_ref())?,
             };
             if held {
-                out.push(Hop { from: x.id(), to: d, in_goal: None });
+                out.push(Hop { from: x.id(), to: d, by: By::Wait });
             }
         }
-        let Some(g) = x.i("goal_id").filter(|_| self.waits(x)) else { return Ok(out) };
-        let mode = self.mode;
+        // A goal that runs after others keeps its tasks planned until those finish (`chain::finished`).
+        let Some(g) = x.i("goal_id").filter(|_| self.waits(x) || x.s("status") == Some("planned")) else { return Ok(out) };
+        let mut ahead: Vec<(Row, By)> = vec![];
+        for (n, rows) in self.after(g)? {
+            ahead.extend(rows.iter().map(|y| (y.clone(), By::Chain(g, *n))));
+        }
+        if !self.waits(x) {
+            return Ok(self.hops(x, out, ahead));
+        }
         for y in self.in_order(g)? {
             if y.id() == x.id() {
                 break;
             }
-            let pending = match y.s("status") {
-                Some("done") => false,
-                Some("planned") => mode == Mode::Plan,
-                _ => true,
-            };
-            if pending && !crate::human::released(y) {
-                out.push(Hop { from: x.id(), to: y.id(), in_goal: Some(g) });
+            ahead.push((y.clone(), By::Order(g)));
+        }
+        if let Some(mine) = x.i("wave") {
+            for y in self.stopped(g)? {
+                if let Some(w) = y.i("wave").filter(|w| *w < mine) {
+                    ahead.push((y.clone(), By::Stop(g, w)));
+                }
             }
         }
-        Ok(out)
+        Ok(self.hops(x, out, ahead))
+    }
+
+    /// `out` and a step to each task in `ahead` that isn't done yet.
+    fn hops(&self, x: &Row, mut out: Vec<Hop>, ahead: Vec<(Row, By)>) -> Vec<Hop> {
+        for (y, by) in ahead {
+            if y.id() != x.id() && self.pending(&y) {
+                out.push(Hop { from: x.id(), to: y.id(), by });
+            }
+        }
+        out
     }
 
     /// The steps from `start` to `target`, when `start` can't start until `target` is done.
@@ -156,29 +243,56 @@ impl<'a> Walk<'a> {
         let mut bits = vec![];
         for h in hops {
             let (from, to) = (self.name(h.from)?, self.name(h.to)?);
-            bits.push(match h.in_goal {
-                Some(g) => format!("{from} runs after {to} in {}'s order", rf("goal", g)),
-                None => format!("{from} waits for {to}"),
+            bits.push(match h.by {
+                By::Wait => format!("{from} waits for {to}"),
+                By::Order(g) => format!("{from} runs after {to} in {}'s order", rf("goal", g)),
+                By::Chain(g, n) => format!("{from} is in {}, which runs after {to}'s goal {}", rf("goal", g), rf("goal", n)),
+                By::Stop(g, w) => {
+                    format!("{from} is in a later wave than {to}, and {} stops after wave {w} until it's done and {} reviews it", rf("goal", g), self.app.cfg.owner)
+                }
             });
         }
         Ok(bits.join(", "))
     }
 
-    /// How to break the cycle: move the first pair the order holds, or let that goal run out of order.
+    /// How to break the cycle at the first step the goals' order holds: move the pair, or lift the order.
     fn fix(&mut self, app: &App, hops: &[Hop]) -> Result<String> {
-        let Some(h) = hops.iter().find(|h| h.in_goal.is_some()) else { return Ok(String::new()) };
-        let g = rf("goal", h.in_goal.unwrap_or_default());
-        let (from, to) = (self.name(h.from)?, self.name(h.to)?);
-        Ok(format!("move {from} ahead of {to} in {g}, or let {g} run out of order: {} goal set {g} --in-order off", board::tb_cmd(app)))
+        let Some(h) = hops.iter().find(|h| h.by_order()) else { return Ok(String::new()) };
+        let (from, to, tb) = (self.name(h.from)?, self.name(h.to)?, board::tb_cmd(app));
+        Ok(match h.by {
+            By::Wait => String::new(),
+            By::Order(g) => {
+                let g = rf("goal", g);
+                format!("move {from} ahead of {to} in {g}, or let {g} run out of order: {tb} goal set {g} --in-order off")
+            }
+            By::Chain(g, n) => {
+                let rest: Vec<String> = board::find_goal(app, Some(g))?
+                    .map(|x| crate::chain::ids(&x))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|o| *o != n)
+                    .map(|o| rf("goal", o))
+                    .collect();
+                let after = if rest.is_empty() { "none".to_string() } else { rest.join(" --after ") };
+                let (g, n) = (rf("goal", g), rf("goal", n));
+                format!("move {to} out of {n} or {from} out of {g}, or let {g} run without waiting for {n}: {tb} goal set {g} --after {after}")
+            }
+            By::Stop(g, w) => format!(
+                "move {from} into wave {w} or earlier: {tb} task set {from} --wave {w}, or {} takes the review stop off {}'s wave {w}",
+                app.cfg.owner,
+                rf("goal", g)
+            ),
+        })
     }
 }
 
-/// Why `t` may not wait for task `n`: `n` can't start until `t` is done, because of a goal's run-in-order
-/// order somewhere on the way. None when it may (a cycle of waits alone is `waitsfor::clean`'s to refuse).
+/// Why `t` may not wait for task `n`: `n` can't start until `t` is done, because of the goals' order
+/// somewhere on the way (run in order, `--after`, a review stop). None when it may (a cycle of waits
+/// alone is `waitsfor::clean`'s to refuse).
 pub fn refusal(app: &App, t: &Row, n: i64) -> Result<Option<String>> {
     let mut w = Walk::new(app, Mode::Plan);
     w.tasks.insert(t.id(), Some(t.clone()));
-    let Some(hops) = w.path(n, t.id())?.filter(|h| h.iter().any(|h| h.in_goal.is_some())) else { return Ok(None) };
+    let Some(hops) = w.path(n, t.id())?.filter(|h| h.iter().any(|h| h.by_order())) else { return Ok(None) };
     let (me, it) = (w.name(t.id())?, w.name(n)?);
     let (said, fix) = (w.say(&hops)?, w.fix(app, &hops)?);
     Ok(Some(format!(
@@ -211,9 +325,9 @@ fn cycles(app: &App) -> Result<Vec<Cycle>> {
     let mut w = Walk::new(app, Mode::Live);
     let mut out: Vec<Cycle> = vec![];
     for x in queued {
-        for first in w.holds(&x)?.into_iter().filter(|h| h.in_goal.is_none()) {
+        for first in w.holds(&x)?.into_iter().filter(|h| !h.by_order()) {
             let Some(rest) = w.path(first.to, x.id())? else { continue };
-            if !rest.iter().any(|h| h.in_goal.is_some()) {
+            if !rest.iter().any(|h| h.by_order()) {
                 continue;
             }
             let c = Cycle { task: x.clone(), hops: [vec![first], rest].concat() };
@@ -407,5 +521,76 @@ mod tests {
         waits(&app, c, e);
         assert_eq!(sweep(&app).unwrap(), 0);
         assert!(cycle_alerts(&app).is_empty());
+    }
+
+    fn after(app: &App, g: i64, first: i64) {
+        app.db.x("UPDATE goals SET after_goals = ? WHERE id = ?", crate::p![format!("[{first}]"), g]).unwrap();
+    }
+
+    #[test]
+    fn a_task_may_not_wait_for_one_in_a_goal_that_runs_after_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let (first, then) = (goal(&app, false), goal(&app, false));
+        after(&app, then, first);
+        let (a, b) = (task(&app, first, 1, "queued"), task(&app, then, 1, "planned"));
+        let why = refusal(&app, &row(&app, a), b).unwrap().expect("refused");
+        let (ra, rb, rf1, rf2) = (rf("task", a), rf("task", b), rf("goal", first), rf("goal", then));
+        assert!(why.contains(&format!("{rb} is in {rf2}, which runs after {ra}'s goal {rf1}")), "{why}");
+        assert!(why.contains(&format!("goal set {rf2} --after none")), "{why}");
+        let e = waitsfor::clean(&app, &json!(rb), Some(&row(&app, a))).unwrap_err();
+        assert!(e.to_string().contains("would hold both forever"), "{e}");
+        assert!(crate::stack::clean(&app, &json!(rb), Some(&row(&app, a))).is_err(), "stacking on it holds both too");
+        assert!(refusal(&app, &row(&app, b), a).unwrap().is_none(), "a later goal's task waits for an earlier goal's already");
+
+        board::update_task(&app, a, fields!["status" => "done"]).unwrap();
+        let c = task(&app, first, 2, "queued");
+        assert!(refusal(&app, &row(&app, c), b).unwrap().is_some(), "the earlier goal isn't finished while one of its tasks is open");
+        board::update_task(&app, c, fields!["status" => "done"]).unwrap();
+        let other = goal(&app, false);
+        let x = task(&app, other, 1, "queued");
+        assert!(refusal(&app, &row(&app, x), b).unwrap().is_none(), "the goal it runs after is finished");
+    }
+
+    #[test]
+    fn a_wait_past_a_review_stop_is_refused_but_waves_alone_dont_hold() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let g = goal(&app, false);
+        let (a, b) = (task(&app, g, 1, "queued"), task(&app, g, 2, "queued"));
+        board::update_task(&app, a, fields!["wave" => 1]).unwrap();
+        board::update_task(&app, b, fields!["wave" => 2]).unwrap();
+        assert!(refusal(&app, &row(&app, a), b).unwrap().is_none(), "wave 1 passes once its task waits for its own");
+
+        crate::waves::set_wave(&app, g, 1, fields!["stop_after" => 1]).unwrap();
+        let why = refusal(&app, &row(&app, a), b).unwrap().expect("refused");
+        let (ra, rb, rg) = (rf("task", a), rf("task", b), rf("goal", g));
+        assert!(why.contains(&format!("{rb} is in a later wave than {ra}, and {rg} stops after wave 1")), "{why}");
+        assert!(why.contains(&format!("task set {rb} --wave 1")), "{why}");
+        assert!(refusal(&app, &row(&app, b), a).unwrap().is_none(), "the later wave waits for the earlier already");
+
+        crate::waves::set_wave(&app, g, 1, fields!["released_at" => now_iso()]).unwrap();
+        assert!(refusal(&app, &row(&app, a), b).unwrap().is_none(), "continued past the stop");
+    }
+
+    #[test]
+    fn an_existing_wait_into_a_later_goal_goes_on_needs_you() {
+        let d = tempfile::tempdir().unwrap();
+        let app = app(d.path());
+        let (first, then) = (goal(&app, false), goal(&app, false));
+        let (a, b) = (task(&app, first, 1, "queued"), task(&app, then, 1, "planned"));
+        waits(&app, a, b);
+        assert_eq!(sweep(&app).unwrap(), 0, "no cycle while the goals run side by side");
+        after(&app, then, first);
+        assert_eq!(sweep(&app).unwrap(), 1);
+        let up = cycle_alerts(&app);
+        assert_eq!(up.len(), 1, "{up:?}");
+        assert_eq!(up[0]["task_id"].as_i64(), Some(a));
+        let text = up[0]["text"].as_str().unwrap();
+        let (ra, rb) = (rf("task", a), rf("task", b));
+        assert!(text.contains(&format!("{ra} waits for {rb}, {rb} is in {}", rf("goal", then))), "{text}");
+        app.db.x("UPDATE goals SET after_goals = NULL WHERE id = ?", crate::p![then]).unwrap();
+        sweep(&app).unwrap();
+        assert!(cycle_alerts(&app).is_empty(), "comes down once the goal no longer runs after the other");
     }
 }
