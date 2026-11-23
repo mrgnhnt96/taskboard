@@ -537,6 +537,8 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             app.take_reports(None);
             reports::handle(app, body.clone(), false)
         }
+        ("GET", ["handled"]) => crate::handled::list(app, query),
+        ("POST", ["handled", id, "pull-back"]) => crate::handled::pull_back(app, id.parse().map_err(|_| ApiError::new(404, "The board has no record of handling that."))?),
         ("GET", ["home"]) => crate::home::page(app, q(query, "project", "all")),
         ("POST", ["home", "talk"]) => crate::needs_talk::start(app, body),
         ("GET", ["reviews"]) => crate::review::list(app),

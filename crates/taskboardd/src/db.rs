@@ -49,6 +49,7 @@ CREATE INDEX IF NOT EXISTS tasks_goal ON tasks(goal_id);
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY, task_id INT, at TEXT, who TEXT, kind TEXT, text TEXT, data TEXT);
 CREATE INDEX IF NOT EXISTS events_task ON events(task_id);
+CREATE INDEX IF NOT EXISTS events_kind ON events(kind);
 
 CREATE TABLE IF NOT EXISTS goals(
   id INTEGER PRIMARY KEY, name TEXT, outcome TEXT, tldr TEXT, project TEXT, repo_path TEXT,

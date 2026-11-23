@@ -110,3 +110,35 @@ fn a_miss_that_came_back_from_an_agent_stays_with_the_owner() {
     assert!(misses::sweep(&b.app).unwrap().is_empty(), "the board hands a miss to an agent once");
     assert_eq!(board::get_issue(&b.app, iid).unwrap().s("state"), Some("open"));
 }
+
+#[test]
+fn a_pulled_back_miss_is_the_owners_call_again() {
+    let b = new_board();
+    let iid = b.issue(&b.found(json!({})).unwrap());
+    let task = board::get_issue(&b.app, iid).unwrap().i("task_id").unwrap();
+    let mut q = Query::new();
+    q.insert("project".into(), "webapp".into());
+    let l = api::dispatch(&b.app, "GET", "/handled", &q, &json!({})).unwrap();
+    let item = &l["items"][0];
+    assert_eq!((item["ref"].as_str(), item["title"].as_str(), item["can_pull"].as_bool()), (Some(format!("B{iid}").as_str()), Some("Sign-in fails on Android"), Some(true)), "{l}");
+
+    api::dispatch(&b.app, "POST", &format!("/handled/{}/pull-back", item["id"]), &Query::new(), &json!({})).unwrap();
+    let i = board::get_issue(&b.app, iid).unwrap();
+    assert_eq!((i.s("state"), i.i("needs_owner"), i.i("task_id")), (Some("open"), Some(1), None));
+    assert!(b.app.db.q1("SELECT * FROM tasks WHERE id = ?", p![task]).unwrap().is_none(), "the board's task went");
+    assert!(b.miss_alerts().iter().any(|a| a.contains("Sign-in fails on Android")), "{:?}", b.miss_alerts());
+    assert!(misses::sweep(&b.app).unwrap().is_empty(), "the board doesn't hand it out again");
+    assert_eq!(api::dispatch(&b.app, "GET", "/handled", &Query::new(), &json!({})).unwrap()["total"], 0);
+}
+
+#[test]
+fn a_miss_already_being_worked_on_can_t_be_pulled_back() {
+    let b = new_board();
+    let iid = b.issue(&b.found(json!({})).unwrap());
+    let task = board::get_issue(&b.app, iid).unwrap().i("task_id").unwrap();
+    board::update_task(&b.app, task, vec![("status", json!("working")), ("session_id", json!("s1"))]).unwrap();
+    let id = b.app.db.q("SELECT id FROM events WHERE kind = 'handled'", p![]).unwrap()[0].id();
+    let e = api::dispatch(&b.app, "POST", &format!("/handled/{id}/pull-back"), &Query::new(), &json!({})).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
+    assert_eq!(board::get_issue(&b.app, iid).unwrap().s("state"), Some("task"));
+}

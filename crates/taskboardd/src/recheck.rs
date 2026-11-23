@@ -89,6 +89,8 @@ pub fn settle(first: Option<Verdict>, second: impl FnOnce() -> Option<Verdict>) 
 /// Never read: due when it was raised before the screener read such items, or before the rules changed.
 pub fn due(stamp: Option<&Value>, key: &str, raised: f64, rules_at: f64, since: f64) -> bool {
     match stamp.filter(|s| s.is_object()) {
+        // The owner pulled it back from Handled for you: theirs while it says the same.
+        Some(s) if s["pulled"] == true && s["key"].as_str() == Some(key) => false,
         Some(s) => s["key"].as_str() != Some(key) || s["at"].as_str().and_then(parse_iso).is_none_or(|at| at < rules_at),
         None => raised < rules_at.max(since),
     }
@@ -250,6 +252,14 @@ fn check(app: &App, t: &Row, item: Item) -> Result<()> {
     })
 }
 
+/// Marks the item's last re-check as pulled back by the owner, in task context `ctx`: it isn't read again
+/// until it says something else.
+pub fn pin(ctx: &mut Row) {
+    if let Some(Value::Object(s)) = ctx.get_mut(STAMP) {
+        s.insert("pulled".into(), json!(true));
+    }
+}
+
 fn verdict_name(v: &Verdict) -> &'static str {
     match v {
         Verdict::Keep => "keep",
@@ -328,6 +338,7 @@ fn hand_human_back(app: &App, h: &Row, why: &str) -> Result<()> {
         to.push(rf("task", m.id()));
     }
     let mut note = why.to_string();
+    let mut made_id = None;
     if to.is_empty() {
         let made = ops::new_task(
             app,
@@ -337,13 +348,14 @@ fn hand_human_back(app: &App, h: &Row, why: &str) -> Result<()> {
             board::BOARD,
             Some(&format!("Made from {r}, which an agent can do")),
         )?;
+        made_id = made["id"].as_i64();
         let t = made["ref"].as_str().unwrap_or("").to_string();
         note = format!("{why} {t} does it.");
         to.push(t);
     }
     human::take_off(app, h, human::BOARD_AGENT, &note, &format!("An agent can do it, so it went to {}: {why}", to.join(", ")))?;
     let text = format!("Not for {owner}: an agent can do it. Went to {}. {why}", to.join(", "));
-    handled::record(app, h.id(), "recheck", &text, json!({"item": Item::Human.name(), "verdict": "agent", "why": why, "to": to}))?;
+    handled::record(app, h.id(), "recheck", &text, json!({"item": Item::Human.name(), "verdict": "agent", "why": why, "to": to, "made": made_id}))?;
     Ok(())
 }
 
