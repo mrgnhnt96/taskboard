@@ -109,8 +109,18 @@ fn has_pr(t: &Value) -> bool {
     t["pr"].is_object() && !t["pr"]["num"].is_null()
 }
 
+/// Merged while its head's checks still run (stage `landing`): the board waits on those checks.
+pub(crate) fn pr_landing(pr: &Value) -> bool {
+    pr["stage"]["phase"] == "landing"
+}
+
+/// A PR its task still waits on: open, or merged with its checks still running.
+pub(crate) fn pr_waiting(pr: &Value) -> bool {
+    pr_open(pr) || pr_landing(pr)
+}
+
 pub(crate) fn awaiting_merge(t: &Value) -> bool {
-    s(t, "status") == "done" && !b(t, "failed") && has_pr(t) && pr_open(&t["pr"])
+    s(t, "status") == "done" && !b(t, "failed") && has_pr(t) && pr_waiting(&t["pr"])
 }
 
 fn pr_stopped(t: &Value) -> bool {
@@ -139,6 +149,9 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
         let open: Vec<&Value> = tasks.iter().filter(|t| awaiting_merge(t)).collect();
         if open.iter().any(|t| pr_stopped(t)) {
             return ("Waiting on you".into(), "warn");
+        }
+        if !open.is_empty() && open.iter().all(|t| pr_landing(&t["pr"])) {
+            return ("Merged, checks running".into(), "accent");
         }
         if !open.is_empty() {
             return (if open.len() > 1 { format!("{} PRs awaiting merge", open.len()) } else { "Awaiting merge".into() }, "accent");
@@ -2169,6 +2182,16 @@ mod tests {
         assert_eq!(goal_state(&g(json!([closed, {"status": "done"}]))), ("Stopped".to_string(), "queued"));
         assert_eq!(goal_state(&g(json!([closed, {"status": "working"}]))).0, "In progress", "work still running comes first");
         assert_ne!(goal_state(&g(json!([closed, lost]))).0, "Stopped", "a real loss still shows");
+    }
+
+    #[test]
+    fn a_goal_whose_last_pr_merged_before_its_checks_waits_on_them() {
+        let landing = json!({"status": "done", "pr": {"num": 933, "state": "MERGED", "stage": {"phase": "landing"}}});
+        let open = json!({"status": "done", "pr": {"num": 934, "state": "OPEN", "stage": {"phase": "checks"}}});
+        let g = |tasks: Value| json!({"tasks": tasks});
+        assert_eq!(goal_state(&g(json!([landing]))), ("Merged, checks running".to_string(), "accent"));
+        assert_eq!(goal_state(&g(json!([landing, open]))), ("2 PRs awaiting merge".to_string(), "accent"));
+        assert_eq!(resume_label(&g(json!([landing]))), "Resume: PRs move again");
     }
 
     #[test]

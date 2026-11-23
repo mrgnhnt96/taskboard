@@ -114,7 +114,7 @@ pub fn row(c: &Value) -> Row {
         "Queued" => (St::Queued, opt_s(c, "waiting").map(str::to_string).unwrap_or_default(), false, String::new()),
         "Checks failed" | "Conflicts" => (St::Review, format!("{} · {}", tile.status, tile.line), true, String::new()),
         "Checks running" | "Comments" | "Ready to merge" => (St::Review, format!("{} · {}", tile.status, tile.line), false, String::new()),
-        "In review" => (St::Review, tile.line, false, String::new()),
+        "In review" | "Merged, checks running" => (St::Review, tile.line, false, String::new()),
         "Pending merge" => (St::Pending, tile.line, false, String::new()),
         "Failed" => (St::Failed, opt_s(c, "summary").unwrap_or("").to_string(), false, fmt::hhmm(when)),
         "Done" if !crate::ui::goal::awaiting_merge(c) => (St::Done, opt_s(c, "summary").map(str::to_string).unwrap_or_default(), false, fmt::hhmm(when)),
@@ -378,6 +378,19 @@ mod tests {
             let c = card(json!({"status": "done", "pr": {"num": 7, "state": "OPEN", "stage": {"phase": phase}}}));
             assert_eq!(row(&c).st, St::Review, "phase {phase}");
         }
+    }
+
+    #[test]
+    fn a_pr_merged_while_its_checks_run_stays_in_review_until_they_finish() {
+        let pr = json!({"num": 933, "state": "MERGED", "stage": {"phase": "landing", "label": "Merged, checks still running"}});
+        let c = card(json!({"status": "done", "summary": "Merged early", "pr": pr}));
+        let r = row(&c);
+        assert_eq!((r.st, r.line.as_str(), r.loud), (St::Review, "PR #933 · Merged, checks still running", false));
+        assert_eq!(by_task(&c), St::Review);
+        assert!(crate::ui::goal::awaiting_merge(&c));
+        // Once the checks finish the daemon moves it to merged: plain Done.
+        let merged = card(json!({"status": "done", "pr": {"num": 933, "state": "MERGED", "stage": {"phase": "merged"}}}));
+        assert_eq!((row(&merged).st, row(&merged).line.as_str()), (St::Done, "PR #933 merged"));
     }
 
     #[test]

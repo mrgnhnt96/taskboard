@@ -2,6 +2,7 @@
 //! there are and which view each belongs in. The functions are the web board's logic one to one;
 //! the parity tests run them against its output.
 use crate::fmt::{arr, b, i, s};
+use crate::ui::goal::awaiting_merge;
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -12,12 +13,6 @@ pub struct Counts {
     pub queued: i64,
     pub prs: i64,
     pub finished: bool,
-}
-
-/// `awaitingMerge`: a done, not failed task whose PR is still open.
-fn awaiting_merge(t: &Value) -> bool {
-    let pr = &t["pr"];
-    s(t, "status") == "done" && !b(t, "failed") && pr.is_object() && !pr["num"].is_null() && pr["state"].as_str().unwrap_or("OPEN").to_uppercase() == "OPEN"
 }
 
 /// `goalCounts`: from the goal's task list when it has one (goal detail), else its summary.
