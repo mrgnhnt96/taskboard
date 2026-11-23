@@ -145,6 +145,7 @@ pub mod stack;
 pub mod stack_carried;
 pub mod stack_drop;
 pub mod suggest;
+pub mod start_pace;
 pub mod startwatch;
 pub mod doneword;
 pub mod startword;

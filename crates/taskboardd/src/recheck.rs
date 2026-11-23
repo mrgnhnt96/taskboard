@@ -349,6 +349,9 @@ fn hand_human_back(app: &App, h: &Row, why: &str) -> Result<()> {
             Some(&format!("Made from {r}, which an agent can do")),
         )?;
         made_id = made["id"].as_i64();
+        if let Some(id) = made_id {
+            crate::start_pace::hold(app, id)?;
+        }
         let t = made["ref"].as_str().unwrap_or("").to_string();
         note = format!("{why} {t} does it.");
         to.push(t);

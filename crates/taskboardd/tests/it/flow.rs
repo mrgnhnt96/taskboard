@@ -1231,3 +1231,20 @@ fn handled_for_you_lists_newest_first_a_page_at_a_time() {
     assert_eq!((titles(&rest), rest["next"].is_null()), (vec!["Q1".to_string()], true));
     assert_eq!(titles(&b.get("/handled?project=api")), vec!["Q2".to_string()]);
 }
+
+#[test]
+fn a_sweep_of_many_failed_starts_spaces_their_retries() {
+    let b = new_board();
+    let ids: Vec<i64> = (0..3).map(|i| new_task(&b, &format!("Flaky start {i}"), json!({}))).collect();
+    for id in &ids {
+        b.app
+            .db
+            .x("UPDATE tasks SET status = 'needs', needs_reason = 'start_failed', latest = 'Couldn''t start: git fetch failed' WHERE id = ?", p![id])
+            .unwrap();
+    }
+    b.app.db.tx(|| taskboardd::needs_retry::sweep(&b.app)).unwrap();
+    let mut at: Vec<f64> = ids.iter().map(|id| b.task(*id).s("retry_at").and_then(taskboardd::util::parse_iso).expect("queued to try again")).collect();
+    at.sort_by(f64::total_cmp);
+    let gap = taskboardd::start_pace::GAP_SECS;
+    assert!(at.windows(2).all(|w| w[1] - w[0] >= gap - 1.0), "each starts on its own: {at:?}");
+}

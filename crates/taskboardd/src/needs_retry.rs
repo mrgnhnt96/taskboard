@@ -170,7 +170,8 @@ fn save(app: &App, id: i64, v: Value) -> Result<()> {
 }
 
 fn requeue(app: &App, t: &Row, kind: Kind, n: i64, wait: i64, why: &str) -> Result<()> {
-    let at = iso(now_ts() + wait as f64);
+    // Spaced from the board's other starts, so a sweep of many doesn't start them together.
+    let at = iso(crate::start_pace::slot(app, now_ts() + wait as f64)?);
     let when = local_clock(Some(&at));
     let of = WAITS.len();
     let mut f = match kind {
