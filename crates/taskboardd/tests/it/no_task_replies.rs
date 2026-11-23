@@ -80,11 +80,18 @@ impl Board {
     }
     /// The terminal has sat at its prompt long enough to take a message.
     fn settle(&self) {
-        self.app.db.x("UPDATE sessions SET status_at = '2020-01-01T00:00:00Z' WHERE id = 's1'", p![]).unwrap();
+        self.stopped_at("2020-01-01T00:00:00Z");
+    }
+    /// The terminal stopped just now, however long screening its reply took on a loaded machine.
+    fn just_stopped(&self) {
+        self.stopped_at(&taskboardd::util::now_iso());
+    }
+    fn stopped_at(&self, at: &str) {
+        self.app.db.x("UPDATE sessions SET status_at = ? WHERE id = 's1'", p![at]).unwrap();
         let held = self.jobs(reply_screen::KIND);
         for j in held.iter().filter(|j| j.s("state") == Some("pending")) {
             let mut target = board::job_target(j);
-            target.insert("stopped_at".into(), json!("2020-01-01T00:00:00Z"));
+            target.insert("stopped_at".into(), json!(at));
             self.app.db.x("UPDATE jobs SET target = ? WHERE id = ?", p![Value::Object(target).to_string(), j.id()]).unwrap();
         }
     }
@@ -157,6 +164,7 @@ fn an_answer_from_the_rules_is_typed_in_once_the_terminal_settles() {
     assert_eq!(b.session_status(), "idle", "the owner isn't asked");
     assert_eq!(b.jobs(reply_screen::KIND).len(), 1);
 
+    b.just_stopped();
     reply_screen::tick(&b.app).unwrap();
     assert!(b.jobs("message").is_empty(), "it waits for the terminal to settle at its prompt");
 

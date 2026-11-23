@@ -159,10 +159,10 @@ mod tests {
             })
         };
         has_it.recv().unwrap();
-        app.db.count("SELECT 1", vec![]).unwrap();
+        app.db.x("DELETE FROM tasks WHERE id = -1", vec![]).unwrap();
         holder.join().unwrap();
         let log = std::fs::read_to_string(app.cfg.log_path()).unwrap();
         assert!(log.contains("command timed out after 0.2s: sleep 5 in "), "{log}");
-        assert!(log.contains("slow db lock: waited 1.") && log.contains("for SELECT 1"), "{log}");
+        assert!(log.contains("slow db lock: waited 1.") && log.contains("for DELETE FROM tasks WHERE id = -1"), "{log}");
     }
 }

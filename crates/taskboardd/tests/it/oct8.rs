@@ -269,6 +269,7 @@ fn each_role_s_file_is_named_in_the_skill_and_holds_its_rules() {
         ("board.md", "## Work hours"),
         ("triage.md", "# When you're a code review's triage agent"),
         ("jira.md", "## When you're the Jira desk"),
+        ("human-tasks.md", "# Human tasks"),
     ] {
         assert!(core.contains(&format!("`{file}`")), "SKILL.md points to {file}");
         assert!(read(file).lines().any(|l| l == heading), "{file} holds {heading}");
