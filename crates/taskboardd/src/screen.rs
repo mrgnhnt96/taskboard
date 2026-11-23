@@ -113,15 +113,27 @@ pub fn rule_files(entry: &str) -> Vec<PathBuf> {
     vec![p]
 }
 
+/// Every file the owner's `questions.rules` name, each once, up to `RULES_FILES`.
+pub fn rule_paths(app: &App) -> Vec<PathBuf> {
+    let mut seen: Vec<PathBuf> = vec![];
+    for p in app.cfg.questions.rules.iter().flat_map(|r| rule_files(r)) {
+        if seen.len() >= RULES_FILES {
+            break;
+        }
+        if !seen.contains(&p) {
+            seen.push(p);
+        }
+    }
+    seen
+}
+
 fn rules(app: &App) -> String {
     let mut out = vec![format!("questions.md:\n{SKILL_QUESTIONS}")];
-    let mut seen: Vec<PathBuf> = vec![];
     let mut left = RULES_BUDGET;
-    for p in app.cfg.questions.rules.iter().flat_map(|r| rule_files(r)) {
-        if seen.contains(&p) || left == 0 || seen.len() >= RULES_FILES {
-            continue;
+    for p in rule_paths(app) {
+        if left == 0 {
+            break;
         }
-        seen.push(p.clone());
         if let Ok(text) = std::fs::read_to_string(&p) {
             let text = clip(&text, 12000.min(left));
             left = left.saturating_sub(text.len());

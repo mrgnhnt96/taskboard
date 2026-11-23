@@ -10,7 +10,7 @@ Steps are work the owner wants on every task in this project, before the PR or b
 - A script: `tb step run "<name>"`, fix what it reports and run it again. It can take a while: give it time.
 - The owner's: `tb step ask "<name>"`, then end your turn; the board brings you back once it's done.
 
-A step that can't pass: `tb step fail "<name>" --why "…"`, then end your turn. The board refuses the PR and `tb submit` while one is left.
+A step that can't pass: `tb step fail "<name>" --why "…"`, then end your turn. When the handoff quotes a rule for the step, do what the rule says instead; `tb step fail` refuses such a step unless you add `--override` and say in `--why` why the rule doesn't fit. The board refuses the PR and `tb submit` while one is left.
 
 ## Review steps
 

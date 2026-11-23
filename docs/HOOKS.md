@@ -229,7 +229,10 @@ prompt = "Sign off the screens this task changes."
   terminal, so long runs and their output are fine; past `timeout` everything they started is stopped. A step
   that doesn't pass is in the task's history with the tail of its output, and the agent is told to fix it and
   try again. When it can't pass, the agent runs `tb step fail "<name>" --why "…"`: the task goes to Needs you,
-  and you answer it, or press **Skip this step** (or `tb step done "<name>" --skip --task T12`).
+  and you answer it, or press **Skip this step** (or `tb step done "<name>" --skip --task T12`). When a kept
+  lesson, the repo's `AGENTS.md` or `CLAUDE.md`, or a file in your `[questions] rules` names the step, the
+  handoff quotes that rule for the step, and `tb step fail` is refused with it unless the agent adds `--override`
+  and says why the rule doesn't fit. A one-word step name counts only where the passage also says "step".
 - **Your steps send you somewhere.** `tb step ask` puts the task in Needs you with an alert. The task shows the
   step with **Open** (the `open` link: a URL, an app's URL scheme or a file path) and **Done**, which brings the
   agent back to carry on.

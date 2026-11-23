@@ -1367,11 +1367,15 @@ enum StepCmd {
         #[command(flatten)]
         t: TaskArg,
     },
-    /// A step can't pass: the task waits for the owner's answer, so end your turn after
+    /// A step can't pass: the task waits for the owner's answer, so end your turn after. Refused when a
+    /// rule or lesson covers the step, unless --override
     Fail {
         name: String,
         #[arg(long)]
         why: String,
+        /// Fail it even though a rule or lesson covers the step; say in --why why that rule doesn't fit
+        #[arg(long = "override")]
+        override_rule: bool,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -6088,7 +6092,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             s
         }),
         StepCmd::Skip { name, why, t } => skip_step(c, &name, &why, t),
-        StepCmd::Fail { name, why, t } => fail_step(c, &name, &why, t),
+        StepCmd::Fail { name, why, override_rule, t } => fail_step(c, &name, &why, override_rule, t),
     }
 }
 
@@ -6133,13 +6137,13 @@ fn done_step(c: &Ctx, name: &str, note: Option<String>, skip: bool, t: TaskArg, 
     step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
 }
 
-/// `tb step skip`: passes a skippable step on the aimed head (else this checkout's) without doing it.
 /// `tb step fail`: the board screens it like a tb question (#1144), so it can take a while; when the
 /// owner's rules settle it, the agent gets the answer and carries on.
-fn fail_step(c: &Ctx, name: &str, why: &str, t: TaskArg) -> Result<i32, String> {
+/// A step a rule or lesson covers is refused with that rule unless `override_rule` (#1146).
+fn fail_step(c: &Ctx, name: &str, why: &str, override_rule: bool, t: TaskArg) -> Result<i32, String> {
     let task = t.task.map(|x| task_ref(&x)).transpose()?;
     let owner = &c.cfg.owner;
-    match c.report_progress("tb.step_fail", json!({"name": name, "why": why}), task.as_deref())? {
+    match c.report_progress("tb.step_fail", json!({"name": name, "why": why, "override": override_rule}), task.as_deref())? {
         None => out(SAVED),
         Some(v) if !v["task"].is_string() => out(NO_TASK),
         Some(v) => out(&step_fail_text(&v, owner)),
@@ -6158,6 +6162,7 @@ fn step_fail_text(v: &Value, owner: &str) -> String {
     }
 }
 
+/// `tb step skip`: passes a skippable step on the aimed head (else this checkout's) without doing it.
 fn skip_step(c: &Ctx, name: &str, why: &str, t: TaskArg) -> Result<i32, String> {
     let (v, step) = find_step(c, t.task.clone(), name)?;
     if !step.skippable {
