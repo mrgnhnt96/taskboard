@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 mod groups;
+pub mod handled;
 mod view;
 
 pub use view::{State, render};

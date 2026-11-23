@@ -25,6 +25,11 @@ impl Fresh {
         Fresh { first, asked, again, stamp }
     }
 
+    #[cfg(test)]
+    pub fn for_tests(first: Value) -> Fresh {
+        Fresh::new(first, vec![], None)
+    }
+
     /// The first page as the board sent it, for what else it says about the list.
     pub fn first(&self) -> &Value {
         &self.first
@@ -132,6 +137,17 @@ impl Paged {
         rows.extend(page.iter().cloned());
         self.older = true;
         self.next = v["next"].as_str().map(String::from);
+        self.stamp = None;
+        self.set(rows);
+    }
+
+    /// Take a row off the list at once, as a change made here took it off the board's.
+    pub fn drop_row(&mut self, gone: i64) {
+        if !self.rows.iter().any(|v| id(v) == gone) {
+            return;
+        }
+        let rows = self.rows.iter().filter(|v| id(v) != gone).cloned().collect();
+        self.total = self.total.saturating_sub(1);
         self.stamp = None;
         self.set(rows);
     }

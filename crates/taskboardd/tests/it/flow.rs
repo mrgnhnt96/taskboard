@@ -1185,3 +1185,49 @@ fn the_task_list_comes_a_page_at_a_time_still_to_do_first() {
     got.sort();
     assert_eq!(got, [ids[5], ids[9]]);
 }
+
+#[test]
+fn a_pulled_back_retry_goes_back_on_needs_you_and_isnt_tried_again() {
+    let b = new_board();
+    let id = new_task(&b, "Flaky start", json!({}));
+    // The quick tries, then the board's first own try.
+    let handled = |b: &Board| b.app.db.q("SELECT * FROM events WHERE task_id = ? AND kind = ?", p![id, taskboardd::handled::KIND]).unwrap();
+    while handled(&b).is_empty() {
+        runner::start_queued(&b.app).unwrap();
+        let j = b.app.db.q1("SELECT * FROM jobs WHERE kind = 'agent' AND state = 'pending'", p![]).unwrap().unwrap();
+        b.app.db.x("UPDATE jobs SET state = 'running' WHERE id = ?", p![j.id()]).unwrap();
+        b.app.db.tx(|| jobs::result(&b.app, j.id(), false, "", "midna: the folder is gone", 1)).unwrap();
+        if handled(&b).is_empty() {
+            b.app.db.x("UPDATE tasks SET retry_at = NULL WHERE id = ?", p![id]).unwrap();
+        }
+    }
+    let l = b.get("/handled");
+    assert_eq!((l["items"][0]["can_pull"].as_bool(), l["items"][0]["ref"].as_str()), (Some(true), Some(format!("T{id}").as_str())), "{l}");
+
+    let rec = handled(&b)[0].id();
+    let out = b.post(&format!("/handled/{rec}/pull-back"), json!({}));
+    assert_eq!(out["said"], format!("T{id} is back on Needs you"));
+    let t = b.task(id);
+    assert_eq!((t.s("status"), t.s("needs_reason"), t.s("retry_at")), (Some("needs"), Some("start_failed"), None));
+    assert!(t.st("latest").contains("the folder is gone"), "{}", t.st("latest"));
+    taskboardd::needs_retry::sweep(&b.app).unwrap();
+    assert_eq!(b.task(id).s("status"), Some("needs"), "the board leaves it with the owner");
+    assert_eq!(b.get("/handled")["total"], 0);
+}
+
+#[test]
+fn handled_for_you_lists_newest_first_a_page_at_a_time() {
+    let b = new_board();
+    let a = new_task(&b, "One", json!({}));
+    let c = new_task(&b, "Two", json!({"project": "api"}));
+    for (t, n) in [(a, 1), (c, 2), (a, 3)] {
+        taskboardd::handled::record(&b.app, t, "recheck", &format!("Took it off {n}"), json!({"item": "question", "verdict": "answered", "was": format!("Q{n}")})).unwrap();
+    }
+    let first = b.get("/handled?limit=2");
+    let titles = |v: &Value| v["items"].as_array().unwrap().iter().map(|i| i["title"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!((titles(&first), first["total"].as_i64()), (vec!["Q3".to_string(), "Q2".to_string()], Some(3)));
+    let next = first["next"].as_str().unwrap();
+    let rest = b.get(&format!("/handled?limit=2&before={next}"));
+    assert_eq!((titles(&rest), rest["next"].is_null()), (vec!["Q1".to_string()], true));
+    assert_eq!(titles(&b.get("/handled?project=api")), vec!["Q2".to_string()]);
+}

@@ -225,6 +225,28 @@ goal it holds open; a to-do answered `dont_wait` holds nothing. `later` says wha
 In flight or queued only: a goal with nothing of either (planned, finished, archived or deprioritized) isn't
 listed. Ordered by project, then goals that need you, then working ones, newest goal first.
 
+### `GET /handled`
+
+Handled for you, under Needs you: what the board took off the list by itself, newest first, without the ones
+pulled back. Query: `project=all|<name>`, `ids=12,9` (only these records), `limit` (1–500) and `before=<id>`, the
+`next` of the page before.
+```
+{"items": [{
+   "id": int,                        // the record: POST /handled/:id/pull-back
+   "at": iso,
+   "by": "recheck"|"retry"|"misses", // the sweep that took it off
+   "item": "question"|"human"|"miss"|"start"|"lost",
+   "verdict": "answered"|"agent"|"retry",
+   "text": str,                      // what the board did
+   "why": str|null,                  // the screener's reason, or "From <source>" for an answer
+   "ref": "T12"|"H4"|"B9",           // the item as it was on Needs you
+   "title": str,                     // the question asked, the human task's title or the miss
+   "task": "T12",                    // the task the record is on (for a miss, the task the board made)
+   "project": str, "goal": "G3"|null,
+   "can_pull": bool                  // false once the item moved on (finished, asked again, already started)
+ }], "total": int, "next": str|null}
+```
+
 ### `GET /goals`
 
 No query. Returns `{"goals": [goal_summary]}` for every non-archived goal (all projects). The goals rail, goal
@@ -1063,6 +1085,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. A new alert is marked `suggest: "pending"` (unless `[alerts] suggest = false`), as an agent's question alert is: the board then asks Haiku for its card's `title`, `detail` and one to three `actions` (`{label, prompt, command: ""}`, each opening a Claude terminal with `prompt` typed in), and sets `suggest` to `"done"`, or `"failed"` with the alert left as plain text. **Response read:** `{alert}`. |
 | `POST /alerts/:id/talk` | `{}` | Talk it over on Needs you: a Claude terminal in the alert's project's checkout (the home folder when it has none) with the alert in its context. Settles nothing. 404 for an alert that's gone, 409 while Midna is down. **Response read:** `{ok, job}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
+| `POST /handled/:id/pull-back` | `{}` | Pull back on Handled for you (only from the app): the item goes back on Needs you and off Handled for you. A question is asked again (its terminal is told the board's answer was pulled back; a task not yet started drops it from its handoff); a human task reopens, and a task the board made to do it goes when nothing started it; a miss is marked the owner's call and its alert comes back, and the task the board made for it goes; a retry is back on Needs you as it was, and the board doesn't try it again while it's there. The board doesn't re-check a pulled-back item until it changes. 409 once the item moved on (finished, asks something else, or the board's task already started), or for a record with no way back. **Response read:** `{ok, said}`. |
 | `POST /home/talk` | `{project?}` | Talk it over in the Needs you header: an agent job (purpose `needs_talk`) opens a Claude terminal and brings it to the front, with every Needs you item (only `project`'s when given) in its context and "What needs me, and what should I do first?" typed in for the owner to send. In `project`'s checkout when given and checked out, the home folder otherwise. Settles nothing; Claude acts on an item only on the owner's word, through `tb needs`. 409 while Midna is down. **Response read:** `{ok, job}`. |
 | `POST /alerts/:id/snooze` | `{mins}`, `{until: "tomorrow"\|"next_week"\|"back"}` or `{after_goal: "G3"}` | Put a Needs you item off: an alert, a task with no alert (`task:T12`) or a finished stage (`stage:G3:1`). `mins` is up to a week; `tomorrow` and `next_week` are when those work hours start (`next_week` is next Monday); `back` is after the owner's next stretch away; `after_goal` is when that goal finishes or is archived, and is 409 for a goal that's over or that the item holds open. A put-off agent question still counts in `waiting` on `GET /home`. **Response read:** `{alert}`. |
 

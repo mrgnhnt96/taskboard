@@ -170,3 +170,55 @@ fn an_old_question_the_rules_answer_is_answered_like_the_owner_would() {
     let data: Value = serde_json::from_str(&b.handled()[0].st("data")).unwrap();
     assert_eq!((data["item"].as_str(), data["was"].as_str()), (Some("question"), Some("How long does Amplitude keep events?")));
 }
+
+impl Board {
+    fn list(&self) -> Value {
+        taskboardd::api::dispatch(&self.app, "GET", "/handled", &[("limit".to_string(), "50".to_string())].into_iter().collect(), &json!({})).unwrap()
+    }
+    fn pull_back(&self, id: i64) -> Result<Value, (u16, String)> {
+        taskboardd::api::dispatch(&self.app, "POST", &format!("/handled/{id}/pull-back"), &Default::default(), &json!({})).map_err(|e| (e.status, e.message))
+    }
+}
+
+#[test]
+fn a_pulled_back_human_task_waits_on_the_owner_again_and_the_task_made_for_it_goes() {
+    let b = board(json!({"verdict": "owner"}));
+    let h = b.human();
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id = 1", p![]).unwrap();
+    b.backdate(h);
+    b.say(json!({"verdict": "agent", "why": "The Amplitude MCP reads the retention."}));
+    recheck::run(&b.app).unwrap();
+    let made = b.app.db.q("SELECT * FROM tasks WHERE id > ? AND COALESCE(kind, '') != 'human'", p![h]).unwrap()[0].id();
+
+    let l = b.list();
+    assert_eq!(l["total"], 1, "{l}");
+    let item = &l["items"][0];
+    assert_eq!((item["ref"].as_str(), item["why"].as_str(), item["can_pull"].as_bool()), (Some(format!("H{h}").as_str()), Some("The Amplitude MCP reads the retention."), Some(true)), "{item}");
+
+    let out = b.pull_back(item["id"].as_i64().unwrap()).unwrap();
+    assert!(out["said"].as_str().unwrap().contains(&format!("T{made} is gone")), "{out}");
+    let t = b.row(h);
+    assert_eq!((t.st("status"), t.s("owner_answer")), ("needs".to_string(), None));
+    assert!(b.app.db.q1("SELECT * FROM tasks WHERE id = ?", p![made]).unwrap().is_none(), "the board's task went");
+    assert_eq!(b.list()["total"], 0, "off Handled for you");
+    assert!(recheck::picks(&b.app).unwrap().is_empty(), "the board leaves it with the owner");
+    assert_eq!(b.pull_back(item["id"].as_i64().unwrap()).unwrap_err().0, 409, "once");
+}
+
+#[test]
+fn a_pulled_back_question_is_asked_again() {
+    let b = board(json!({"verdict": "ask", "question": "How long does Amplitude keep events?"}));
+    b.report("tb.question", json!({"text": "How long does Amplitude keep events?"})).unwrap();
+    b.backdate(1);
+    b.say(json!({"verdict": "answered", "answer": "Read it with the Amplitude MCP.", "source": "rules.md"}));
+    recheck::run(&b.app).unwrap();
+    let item = b.list()["items"][0].clone();
+    assert_eq!((item["ref"].as_str(), item["title"].as_str(), item["why"].as_str()), (Some("T1"), Some("How long does Amplitude keep events?"), Some("From rules.md")));
+
+    b.pull_back(item["id"].as_i64().unwrap()).unwrap();
+    let t = b.row(1);
+    assert_eq!((t.st("status"), t.st("needs_reason"), t.s("answered_at")), ("needs".to_string(), "question".to_string(), None));
+    assert_eq!(t.st("question"), "How long does Amplitude keep events?");
+    assert!(b.sent_to(1).iter().any(|m| m.contains("pulled back the board's answer")), "{:?}", b.sent_to(1));
+    assert!(recheck::picks(&b.app).unwrap().is_empty(), "not answered from the rules again");
+}
