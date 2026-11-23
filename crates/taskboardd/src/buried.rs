@@ -102,6 +102,15 @@ mod tests {
     }
 
     #[test]
+    fn a_final_questions_block_closed_by_a_rule_is_not_buried() {
+        let block = "I capped the retries.\n\n## Questions\n\n1. Should the cap be 3 or 5?";
+        assert_eq!(buried(&format!("{block}\n\n---")), None);
+        assert_eq!(buried(&format!("{block}\n\n---\n\n***\n\n  \n")), None);
+        assert_eq!(buried(&format!("{block}\n\n___\n")), None);
+        assert!(buried(&format!("{block}\n\n---\n\nDone for now.")).is_some(), "real text after the rule buries it");
+    }
+
+    #[test]
     fn code_and_quotes_ask_nothing() {
         assert_eq!(buried("It reads:\n\n```rust\nlet x = a?;\nif ok? { }\n```\n\nDone."), None);
         assert_eq!(buried("The flag `--retry?` stays.\n\nDone."), None);

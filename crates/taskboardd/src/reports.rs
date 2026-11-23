@@ -801,8 +801,14 @@ static ASKS_OWNER: Lazy<Regex> = Lazy::new(|| {
 /// The question a turn's reply ends on, when its last paragraph asks the owner something: a
 /// sentence ending in "?", or asking for an answer in so many words ("tell me which…").
 pub(crate) fn ends_on_question(reply: &str) -> Option<String> {
-    let last = reply.trim().rsplit("\n\n").map(str::trim).find(|p| !p.is_empty())?;
+    let last = last_words(reply)?;
     asks_owner(last).then(|| one_line(last, 1000))
+}
+
+/// A reply's last paragraph with words in it: a closing horizontal rule (`---`, `***`) or other
+/// paragraph with no letter or digit after it says nothing, so the paragraph above it ends the reply.
+fn last_words(reply: &str) -> Option<&str> {
+    reply.rsplit("\n\n").map(str::trim).find(|p| p.chars().any(char::is_alphanumeric))
 }
 
 /// `text` asks the owner something, by [`ends_on_question`]'s signals.
@@ -1650,7 +1656,7 @@ fn on_attention(r: &mut Report) -> Result<Value> {
 
 /// The last paragraph of a reply, where it says what it waits for.
 fn last_paragraph(reply: &str) -> Option<String> {
-    reply.trim().rsplit("\n\n").map(str::trim).find(|p| !p.is_empty()).map(|p| p.to_string())
+    last_words(reply).map(str::to_string)
 }
 
 /// Claude showed its question picker (`AskUserQuestion`): the task waits on the owner, who answers it
