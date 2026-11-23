@@ -230,7 +230,7 @@ fn log_list_item(m: &mut MainWindow, ix: usize, window: &mut Window, cx: &mut Co
     let t = cx.global::<Theme>().clone();
     let Some(l) = &m.task_panel.log_list else { return div().into_any_element() };
     let (rows, more) = (l.rows.clone(), l.more);
-    let mut d = Draw { t: &t, window, path: Vec::new(), within: Vec::new() };
+    let mut d = Draw { t: &t, window, path: Vec::new(), within: Vec::new(), down: m.paused() };
     if ix == 0 {
         return match build(m) {
             Some(tree) => d.sheet(m, &tree, false, cx).1.into_any_element(),
@@ -395,6 +395,9 @@ fn drop_field(m: &mut MainWindow, key: &str) {
 
 /// Run one control, exactly as the web board's `ACTIONS[act]` did.
 pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
+    if a.posts() && m.paused() {
+        return;
+    }
     let id = a.id.clone();
     let tp = |suffix: &str| format!("tasks/{id}{suffix}");
     match a.act {
@@ -870,7 +873,7 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         load_older_log(m, cx);
     }
     m.task_panel.focused = m.task_panel.fields.values().find(|i| i.focus.is_focused(window)).map(|i| i.focus.clone());
-    let mut d = Draw { t, window, path: Vec::new(), within: Vec::new() };
+    let mut d = Draw { t, window, path: Vec::new(), within: Vec::new(), down: m.paused() };
     Some(d.panel(m, &tree, cx))
 }
 
@@ -878,7 +881,7 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
 pub fn draw_note(m: &MainWindow, text: &str, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     // Its own id space, apart from the panel's under the dialog.
-    let mut d = Draw { t: &t, window, path: vec![usize::MAX], within: Vec::new() };
+    let mut d = Draw { t: &t, window, path: vec![usize::MAX], within: Vec::new(), down: m.paused() };
     d.node(m, &view::note_body(text), None, cx)
 }
 
@@ -899,6 +902,8 @@ struct Draw<'a> {
     /// The containers the node being drawn sits in (innermost last): some leaves look different
     /// inside some containers, as the web's descendant selectors made them.
     within: Vec<K>,
+    /// The board is down: what would change it waits (greyed, sends nothing).
+    down: bool,
 }
 
 impl Draw<'_> {
@@ -1049,7 +1054,7 @@ impl Draw<'_> {
             _ if boxed.is_some() && !matches!(look, Look::Icon(_) | Look::Menu | Look::Ref) => button(self.t, self.id("btn"), label, look).px(px(12.)),
             _ => button(self.t, self.id("btn"), label, look),
         };
-        let b = if disabled {
+        let b = if disabled || (self.down && a.posts()) {
             kit::disabled(b)
         } else {
             let a = a.clone();
@@ -1852,18 +1857,17 @@ impl Draw<'_> {
             _ => String::new(),
         };
         let tint = t.tint;
-        focus::stop(t, div().id(self.id("menu-item")))
-            .flex()
+        let item = div().id(self.id("menu-item"));
+        // With the board down it waits, greyed.
+        let item = if self.down && a.posts() { kit::disabled(item) } else { focus::stop(t, item).cursor_pointer().hover(move |d| d.bg(tint)).on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx))) };
+        item.flex()
             .flex_col()
             .gap(px(2.))
             .px(px(10.))
             .py(px(7.))
             .rounded(px(6.))
-            .cursor_pointer()
-            .hover(move |d| d.bg(tint))
             .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(if danger { t.down } else { t.text }).child(label))
             .child(div().text_size(px(12.)).text_color(t.muted).child(sub))
-            .on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx)))
             .into_any_element()
     }
 

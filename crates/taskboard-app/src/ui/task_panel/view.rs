@@ -114,6 +114,13 @@ pub struct Act {
     pub grp: String,
 }
 
+/// The controls that ask the board for a change: `task_panel::act` sends each through `run` (or a
+/// dialog that does).
+const POSTS: &[&str] = &[
+    "start", "schedule", "queue-planned", "answer", "answer-opt", "pick", "requeue", "pr-reviewed", "pr-merge-now", "detach", "close-term", "focus", "step", "did",
+    "owner-reopen", "talk", "term-focus", "resume", "write-note",
+];
+
 impl Act {
     pub fn new(act: &'static str, arg: impl Into<String>, id: impl Into<String>, grp: impl Into<String>) -> Act {
         Act { act, arg: arg.into(), id: id.into(), grp: grp.into() }
@@ -122,6 +129,12 @@ impl Act {
     /// The web's `busyKey`: act, arg and id.
     pub fn busy_key(&self) -> String {
         format!("{}:{}:{}", self.act, self.arg, self.id)
+    }
+
+    /// It asks the board for a change (or opens the dialog that does), so it waits while the
+    /// board is down.
+    pub fn posts(&self) -> bool {
+        POSTS.contains(&self.act)
     }
 }
 

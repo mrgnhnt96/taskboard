@@ -33,6 +33,41 @@ impl Composer {
     }
 }
 
+/// The note forms by the name a restart saves them under.
+const NOTE_KINDS: [(Note, &str); 4] = [(Note::Done, "done"), (Note::CantDo, "cant_do"), (Note::NotNeeded, "not_needed"), (Note::WaitingOn, "waiting_on")];
+
+/// What's typed in the page's note boxes, for a restart to update to keep: by row key, the form
+/// open, its text, Done's note kept aside and the waiting date. Boxes with no text are left out.
+pub fn drafts(m: &MainWindow, cx: &App) -> HashMap<String, Value> {
+    m.home
+        .notes
+        .iter()
+        .filter_map(|(key, c)| {
+            let text = c.input.text(cx);
+            if text.trim().is_empty() && c.done_text.trim().is_empty() {
+                return None;
+            }
+            let kind = NOTE_KINDS.iter().find(|(k, _)| *k == c.kind).map_or("done", |(_, n)| n);
+            Some((key.clone(), json!({"kind": kind, "text": text, "done": c.done_text, "until": c.until})))
+        })
+        .collect()
+}
+
+/// Back after a restart: each saved note box with its text, its row open.
+pub fn restore_drafts(m: &mut MainWindow, kept: &serde_json::Map<String, Value>, cx: &mut Context<MainWindow>) {
+    for (key, v) in kept {
+        let kind = NOTE_KINDS.iter().find(|(_, n)| v["kind"] == *n).map_or(Note::Done, |(k, _)| *k);
+        let mut c = Composer::new(cx);
+        c.kind = kind;
+        c.until = v["until"].as_str().map(str::to_string);
+        c.done_text = v["done"].as_str().unwrap_or("").to_string();
+        c.input.set_text(v["text"].as_str().unwrap_or(""), cx);
+        m.home.notes.insert(key.clone(), c);
+        FLIPPED.with(|f| f.borrow_mut().insert(key.clone()));
+    }
+    m.home.remeasure = true;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Line {
     Head,
@@ -1217,6 +1252,34 @@ mod tests {
         .unwrap();
         settle(cx);
         assert_eq!(rec.last("tasks/T42/did"), Some(json!({"note": "Sent the invoice"})));
+    }
+
+    #[gpui_kit::test]
+    fn typed_notes_are_kept_for_a_restart_and_come_back_open(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _) = window(cx);
+        let (key, empty) = ("task:T44".to_string(), "task:T45".to_string());
+        let saved = w
+            .update(cx, |m, window, cx| {
+                m.home.notes.entry(key.clone()).or_insert_with(|| Composer::new(cx)).input.set_text("Sent the invoice", cx);
+                open_note(m, &key, Note::WaitingOn, window, cx);
+                let c = m.home.notes.get_mut(&key).unwrap();
+                c.input.set_text("Dana", cx);
+                c.until = Some("2026-12-01".into());
+                m.home.notes.entry(empty.clone()).or_insert_with(|| Composer::new(cx));
+                drafts(m, cx)
+            })
+            .unwrap();
+        assert_eq!(saved.keys().collect::<Vec<_>>(), [&key], "an empty box isn't kept");
+        let saved = serde_json::Map::from_iter(saved);
+        w.update(cx, |m, _, cx| {
+            m.home.notes.clear();
+            FLIPPED.with(|f| f.borrow_mut().clear());
+            restore_drafts(m, &saved, cx);
+            let c = &m.home.notes[&key];
+            assert_eq!((c.kind, c.input.text(cx), c.done_text.as_str(), c.until.as_deref()), (Note::WaitingOn, "Dana".to_string(), "Sent the invoice", Some("2026-12-01")));
+            assert!(flipped(&key), "its row opens");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
