@@ -273,13 +273,13 @@ pub fn watched(field: &str) -> bool {
 /// Announces a task's step: its hooks run on the hooks thread (inline in tests).
 pub fn fire(app: &App, event: &str, t: &Row, before: Option<&Row>) {
     let input = payload(app, event, t, before);
-    queue(app, event, &t.st("project"), input, t.s("repo_path"), Some(t.id()));
+    queue(app, event, &t.st("project"), input, t, Some(t.id()));
 }
 
 /// Announces a goal's step.
 pub fn fire_goal(app: &App, event: &str, g: &Row, t: Option<&Row>) {
     let input = goal_payload(app, event, g, t);
-    queue(app, event, &g.st("project"), input, g.s("repo_path"), t.map(|t| t.id()));
+    queue(app, event, &g.st("project"), input, g, t.map(|t| t.id()));
 }
 
 fn hooks_for(app: &App, event: &str, project: &str) -> Vec<Hook> {
@@ -292,16 +292,18 @@ fn hooks_for(app: &App, event: &str, project: &str) -> Vec<Hook> {
     }
 }
 
-fn cwd_of(repo: Option<&str>) -> Option<PathBuf> {
-    repo.map(PathBuf::from).filter(|p| p.is_dir())
+/// The folder a task's or goal's hooks run in: its saved repo, or its project's folder once that's gone
+/// (the project moved). With neither, the daemon's own.
+fn cwd_of(app: &App, row: &Row) -> Option<PathBuf> {
+    crate::worktrees::repo_of(app, row).ok().flatten().map(PathBuf::from).filter(|p| p.is_dir())
 }
 
-fn queue(app: &App, event: &str, project: &str, input: Value, repo: Option<&str>, task_id: Option<i64>) {
+fn queue(app: &App, event: &str, project: &str, input: Value, row: &Row, task_id: Option<i64>) {
     let hooks = hooks_for(app, event, project);
     if hooks.is_empty() {
         return;
     }
-    let cwd = cwd_of(repo);
+    let cwd = cwd_of(app, row);
     let event = event.to_string();
     let log = log_path(&app.cfg);
     app.queue_hook(Box::new(move |app: &App| {
@@ -356,7 +358,7 @@ pub fn gate(app: &App, event: &str, t: &Row, extra: Value) -> Decision {
             dst.insert(k.clone(), v.clone());
         }
     }
-    let cwd = cwd_of(t.s("repo_path"));
+    let cwd = cwd_of(app, t);
     let log = log_path(&app.cfg);
     for h in hooks {
         // A hook can run up to its timeout; tb on the progress stream hears it's still going.

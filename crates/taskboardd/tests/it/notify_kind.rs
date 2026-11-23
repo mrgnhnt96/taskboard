@@ -79,3 +79,17 @@ fn a_start_ask_with_no_ask_kind_adds_one_that_stays_until_answered() {
     assert_eq!(made["key"], midna::NOTIFY_ASK_KIND);
     assert_eq!(made["settings"]["stay"], 0, "it stays on screen until answered: {made}");
 }
+
+#[test]
+fn a_refused_send_leaves_a_line_in_server_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = taskboardd::app::App::new(taskboardd::config::Config::for_tests(dir.path()), false).unwrap();
+    taskboardd::slowlog::install(&app);
+    let exe = dir.path().join("midna");
+    std::fs::write(&exe, "#!/bin/sh\necho 'midna: no kind `board` to send as; kinds you can send to: agent' >&2; exit 2\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(midna::notify_send(&exe, &params()).is_err());
+    let log = std::fs::read_to_string(app.cfg.log_path()).unwrap();
+    let line = log.lines().find(|l| l.contains("notification not sent")).unwrap_or_else(|| panic!("no line in server.log: {log}"));
+    assert!(line.ends_with("notification not sent (board) \"Start T1?\": no kind `board` to send as; kinds you can send to: agent"), "{line}");
+}
