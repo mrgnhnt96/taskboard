@@ -6336,7 +6336,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             // The latest round of each step that ran: its headline and findings, to triage.
             if let Ok(d) = c.call("GET", &format!("/tasks/{task}"), None) {
                 for r in d["step_results"].as_array().into_iter().flatten() {
-                    let moved = if r["stale"] == true { " (the branch has moved since)" } else { "" };
+                    let moved = match r["kept_from"].as_str() {
+                        _ if r["stale"] == true => " (the branch has moved since)".to_string(),
+                        Some(was) => format!(" (kept from {}: a clean rebase left the change as it was)", &was[..was.len().min(12)]),
+                        None => String::new(),
+                    };
                     out(&format!("{}: {}{moved}", r["name"].as_str().unwrap_or(""), r["headline"].as_str().unwrap_or("")));
                     for f in r["findings"].as_array().into_iter().flatten() {
                         let at = match (f["file"].as_str(), f["line"].as_i64()) {

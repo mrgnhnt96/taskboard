@@ -249,7 +249,7 @@ fn hold(app: &App, body: &Value, t: &Row, spooled: bool) -> Result<Option<Value>
             // Reviewed as it stands: a submit that was turned back after its review needn't wait again.
             return Ok(None);
         }
-        let patch = tree.as_deref().and_then(|tr| patch_of(&dir, &base_ref_of(app, t), tr));
+        let patch = tree.as_deref().and_then(|tr| patch_of(&dir, &base_ref_of(app, t), "HEAD", tr));
         if patch.is_some() && last["patch"].as_str() == patch.as_deref() {
             // Rebased onto a base that moved, with the change itself as it was reviewed (#1071).
             app.db.tx(|| board::log_event(app, t.id(), board::BOARD, "note", "Code review kept: the rebase left the change as it was reviewed"))?;
@@ -461,7 +461,7 @@ fn review(app: &App, t: &Row, cmd: &str, n: u64) -> Ran {
     let dir = worktree(app, t);
     let head = head_of(&dir);
     let tree = tree_of(&dir);
-    let patch = tree.as_deref().and_then(|tr| patch_of(&dir, &base_ref_of(app, t), tr));
+    let patch = tree.as_deref().and_then(|tr| patch_of(&dir, &base_ref_of(app, t), "HEAD", tr));
     let mut ran = Ran { head: head.clone(), tree, patch, result: Value::Null, reviewer: None, cost: Value::Null, error: None, output: String::new(), secs: 0.0 };
     let base = task_dir(app, t.id());
     let state = base.join("state");
@@ -657,13 +657,15 @@ fn base_ref_of(app: &App, t: &Row) -> String {
     steps::vars_at(app, t, None).get("base_ref").cloned().unwrap_or_default()
 }
 
-/// The change `tree` makes on top of where HEAD left `base_ref`, as `git patch-id --stable`: the same
-/// after a clean rebase that moved the branch onto a newer base without changing its own diff.
-fn patch_of(dir: &str, base_ref: &str, tree: &str) -> Option<String> {
+/// The change `tree` makes on top of where the commit `at` left `base_ref`, as `git patch-id --stable`:
+/// the same after a clean rebase that moved the branch onto a newer base without changing its own diff.
+/// A rebase that had to resolve a conflict in the change's own lines changes the lines it replaces, so
+/// it changes the patch too. Steps keep a pass across a clean rebase with it as well (#1145).
+pub(crate) fn patch_of(dir: &str, base_ref: &str, at: &str, tree: &str) -> Option<String> {
     if base_ref.is_empty() {
         return None;
     }
-    let from = git_out(dir, &["merge-base", base_ref, "HEAD"], &[])?;
+    let from = git_out(dir, &["merge-base", base_ref, at], &[])?;
     let bin = crate::proc::which("git")?;
     let args = |a: &[&str]| -> Vec<String> { ["-C", dir].iter().chain(a).map(|s| s.to_string()).collect() };
     let diff = crate::proc::run(&bin, &args(&["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", &from, tree]), None, 60.0).ok()?;
