@@ -158,6 +158,7 @@ fn main() {
                 cx.new(|cx| app::MainWindow::new(b, window, cx))
             })
             .expect("open main window");
+        cx.set_global(app::MainHandle(handle));
         cx.spawn(async move |cx| {
             while let Ok(urls) = link_rx.recv().await {
                 cx.update(|cx| {

@@ -750,6 +750,8 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     close_idle_after_hours(app)?;
     close_compacted(app)?;
     close_pr_tabs(app)?;
+    // Before queued starts: an open PR visit waiting on a slot is mid-work. Outside a transaction (git).
+    crate::slots::resume_pr_waits(app)?;
     // Outside a transaction: a restart command may take a while.
     crate::feed::check(app)?;
     crate::prhost::limit::check(app)?;

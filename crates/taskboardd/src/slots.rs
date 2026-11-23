@@ -32,7 +32,7 @@ static LIVE: parking_lot::Mutex<BTreeMap<String, (Link, bool)>> = parking_lot::M
 /// When a done task last claimed a slot for PR work, in its context (`visit_due`).
 const PR_CLAIM: &str = "worktree_pr_claim";
 /// When a done task last asked for a slot for PR work while the pool was full, in its context: it's
-/// listed as waiting until it takes one.
+/// listed as waiting until it takes one, and `resume_pr_waits` claims it one once a slot frees.
 const PR_WAIT: &str = "worktree_pr_wait";
 /// How long a PR claim keeps its slot while no visit comes of it.
 const PR_CLAIM_SECS: f64 = 900.0;
@@ -846,6 +846,50 @@ pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
     claimed.map(Some)
 }
 
+/// Whether a done task still waits for a slot for PR work (`PR_WAIT`): it holds none, and its visit
+/// is still open or it asked lately (a board wake that keeps finding the pool full asks again each poll).
+fn pr_waiting(app: &App, t: &Row) -> Result<bool> {
+    let ctx = board::task_context(t);
+    let Some(at) = ctx.s(PR_WAIT) else { return Ok(false) };
+    if held(app, t)?.is_some() {
+        return Ok(false);
+    }
+    Ok(age_secs(Some(at)).is_some_and(|s| s < PR_CLAIM_SECS) || visit_open(app, t)?)
+}
+
+/// PR visits that found the pool full (`PR_WAIT`): once a slot frees, claims it for each visit still
+/// open and types its path into the visit's terminal, so the agent that stopped on the 409 carries
+/// on there. A wait whose visit closed lapses; the board's next wake asks again. Runs outside a
+/// transaction: a claim checks the slot out with git.
+pub fn resume_pr_waits(app: &App) -> Result<()> {
+    let asked = format!("$.{PR_WAIT}");
+    for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND json_extract(context, ?) IS NOT NULL ORDER BY id", p![asked])? {
+        if !pr_waiting(app, &t)? {
+            app.db.tx(|| {
+                let mut ctx = board::task_context(&board::get_task(app, t.id())?);
+                ctx.remove(PR_WAIT);
+                board::save_context(app, t.id(), &ctx, false)
+            })?;
+            continue;
+        }
+        if !visit_open(app, &t)? || crate::prflow::visitor(&t).is_none() {
+            continue;
+        }
+        match reclaim(app, &t) {
+            Ok(Some(path)) => {
+                let name = held(app, &t)?.map(|s| format!("slot-{}", s.i0("n"))).unwrap_or_else(|| "a slot".into());
+                let text = format!("A worktree slot freed: {} holds {name} ({path}) now. Work there from now on: cd {path}, then carry on with the PR.", rf("task", t.id()));
+                crate::deliver::add(app, "slot_free", &text, t.id(), None, None)?;
+                app.info(format!("worktrees: {} took {name} for the PR visit that waited for a slot", rf("task", t.id())));
+            }
+            Ok(None) => {}
+            Err(e) if e.message == WAIT => {}
+            Err(e) => app.info(format!("worktrees: {} still waits for a slot: {}", rf("task", t.id()), e.message)),
+        }
+    }
+    Ok(())
+}
+
 /// Whether `reclaim` would claim `t` a slot afresh, which checks the slot out with git. A caller
 /// holding the database does that first without it.
 pub fn needs_claim(app: &App, t: &Row) -> Result<bool> {
@@ -1041,10 +1085,10 @@ pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
     }
     let asked = format!("$.{PR_WAIT}");
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND json_extract(context, ?) IS NOT NULL ORDER BY id", p![asked])? {
-        let ctx = board::task_context(&t);
-        if ctx.s(PR_WAIT).is_none_or(|a| age_secs(Some(a)).is_none_or(|s| s >= PR_CLAIM_SECS)) || held(app, &t)?.is_some() {
+        if !pr_waiting(app, &t)? {
             continue;
         }
+        let ctx = board::task_context(&t);
         if let Some(repo) = slot_before(&t, &ctx).as_deref().and_then(slot_repo) {
             waiting.push((repo.to_string(), rf("task", t.id())));
         }
@@ -1329,6 +1373,43 @@ mod tests {
         assert_eq!(reclaim(&app, &b).unwrap().as_deref(), Some(slot.as_str()));
         assert_eq!(waiting(&app), json!([]));
         assert!(board::task_context(&board::get_task(&app, b.id()).unwrap()).s(PR_WAIT).is_none());
+    }
+
+    #[test]
+    fn an_open_pr_visit_waiting_for_a_slot_takes_the_next_free_one_and_hears_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _, slot, _) = visiting(dir.path(), 1);
+        let ctx = json!({"worktree_slot": slot, "worktree_base": "HEAD"}).to_string();
+        let flow = json!({"session": "v2"}).to_string();
+        let b = app.db.insert("tasks", crate::fields!["title" => "B", "status" => "done", "context" => ctx, "pr_flow" => flow, "pr_phase" => "comments"]).unwrap();
+        let b = board::get_task(&app, b).unwrap();
+        board::upsert_session(&app, "v1", vec![("status", json!("idle"))]).unwrap();
+        board::upsert_session(&app, "v2", vec![("status", json!("idle"))]).unwrap();
+        assert_eq!(reclaim(&app, &b).unwrap_err().message, WAIT);
+        let told = |app: &App| app.db.q("SELECT * FROM jobs WHERE kind = 'deliver' AND purpose = 'slot_free' AND task_id = ?", p![b.id()]).unwrap();
+        resume_pr_waits(&app).unwrap();
+        assert!(told(&app).is_empty(), "the pool is still full");
+        assert_eq!(overview(&app, None).unwrap()["slots"][0]["waiting"], json!([rf("task", b.id())]));
+        board::upsert_session(&app, "v1", vec![("status", json!("gone"))]).unwrap();
+        resume_pr_waits(&app).unwrap();
+        assert_eq!(held(&app, &b).unwrap().map(|s| s.st("path")), Some(slot.clone()), "B took A's slot once A's visit ended");
+        let jobs = told(&app);
+        assert_eq!(jobs.len(), 1);
+        assert!(board::job_args(&jobs[0]).st("text").contains(&format!("cd {slot}")));
+        assert!(board::task_context(&board::get_task(&app, b.id()).unwrap()).s(PR_WAIT).is_none());
+    }
+
+    #[test]
+    fn a_pr_wait_whose_visit_closed_lapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _, slot, _) = visiting(dir.path(), 1);
+        let long_ago = "2020-01-01T00:00:00Z";
+        let ctx = json!({"worktree_slot": slot, "worktree_base": "HEAD", PR_WAIT: long_ago}).to_string();
+        let b = app.db.insert("tasks", crate::fields!["title" => "B", "status" => "done", "context" => ctx]).unwrap();
+        board::upsert_session(&app, "v1", vec![("status", json!("idle"))]).unwrap();
+        resume_pr_waits(&app).unwrap();
+        assert!(board::task_context(&board::get_task(&app, b).unwrap()).s(PR_WAIT).is_none());
+        assert_eq!(overview(&app, None).unwrap()["slots"][0]["waiting"], json!([]));
     }
 
     #[test]
