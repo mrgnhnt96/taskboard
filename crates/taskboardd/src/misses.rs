@@ -83,6 +83,7 @@ pub fn hand_off(app: &App, issue: &Row) -> Result<i64> {
     f["pickup"] = json!({"mode": "queue"});
     let c = crate::ops::new_task(app, &f, board::BOARD, Some(&format!("Added from {b}, a miss on the goal's done-when an agent can fix")))?;
     let Some(tid) = c["id"].as_i64() else { return err(500, format!("Making {b} a task returned no task.")) };
+    crate::start_pace::hold(app, tid)?;
     let t = rf("task", tid);
     crate::api::issue_tasked(app, id, tid, board::BOARD, &format!("Made into {t}, queued in its goal for an agent to fix; the goal stays open until it's done."))?;
     let text = format!("Gave {b} to an agent instead of asking you: it misses the goal's done-when ({}), and {t} fixes it", one_line(&issue.st("title"), 120));
