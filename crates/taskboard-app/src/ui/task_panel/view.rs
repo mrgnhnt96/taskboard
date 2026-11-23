@@ -496,7 +496,7 @@ fn pr_of(t: &Value) -> Option<&Value> {
 
 /// `awaitingMerge`.
 fn awaiting_merge(t: &Value) -> bool {
-    s(t, "status") == "done" && !b(t, "failed") && pr_of(t).is_some_and(pr_open)
+    s(t, "status") == "done" && !b(t, "failed") && pr_of(t).is_some_and(crate::ui::goal::pr_waiting)
 }
 
 /// `prStopped`: the stage's `stopped` object.
@@ -650,7 +650,11 @@ pub fn status_pill(t: &Value) -> Node {
             let tip = if b(st, "asked") { format!("Its terminal asked you about PR #{num}") } else { format!("Its terminal stopped on PR #{num} before it was finished") };
             return Node::Pill { s: "Needs you".into(), tone: Tone::Needs, tip: Some(tip) };
         }
-        let tip = format!("The work is done; PR #{num} isn’t merged yet");
+        let tip = if crate::ui::goal::pr_landing(p) {
+            format!("PR #{num} merged; the board waits on its checks")
+        } else {
+            format!("The work is done; PR #{num} isn’t merged yet")
+        };
         if let Some(stage) = obj(p, "stage") {
             return Node::Pill { s: or_empty(&stage["label"]), tone: stage_tone(s(stage, "phase")), tip: Some(tip) };
         }
