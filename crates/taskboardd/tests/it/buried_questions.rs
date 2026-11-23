@@ -87,6 +87,13 @@ fn a_reply_ending_on_its_question_or_asking_only_in_code_or_a_quote_is_not_sent_
 }
 
 #[test]
+fn a_final_questions_block_closed_by_a_rule_is_not_sent_back() {
+    let b = new_board();
+    let out = b.stop("I capped the retries.\n\n## Questions\n\n1. Should the cap be 3 or 5?\n\n---\n", false);
+    assert!(out.get("block").is_none(), "{out}");
+}
+
+#[test]
 fn the_setting_turns_the_check_off() {
     let b = new_board();
     assert_eq!(b.call("GET", "/buried-questions", json!({}))["on"], true, "on by default");
