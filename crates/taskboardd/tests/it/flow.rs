@@ -191,13 +191,24 @@ fn a_closed_terminal_requeues_the_task_then_waits_for_the_owner() {
     b.add_session("s2", "working");
     b.report("tb.take", "s2", json!({"task": "T1"}));
     b.report("hook.session_end", "s2", json!({"reason": "other"}));
-    b.add_session("s3", "working");
-    b.report("tb.take", "s3", json!({"task": "T1"}));
-    b.report("hook.session_end", "s3", json!({"reason": "other"}));
+    // Out of quick restarts, the board starts it again on its own during the work hours, waiting longer each time.
+    for n in 3..=6 {
+        let s = format!("s{n}");
+        b.add_session(&s, "working");
+        b.report("tb.take", &s, json!({"task": "T1"}));
+        b.report("hook.session_end", &s, json!({"reason": "other"}));
+        if n < 6 {
+            let t = b.task(id);
+            assert_eq!(t.s("status"), Some("queued"), "board try {} of 3 restarts it from its handoff", n - 2);
+            assert!(t.s("retry_at").is_some());
+            assert!(t.st("latest").contains(&format!("({} of 3)", n - 2)));
+        }
+    }
     let t = b.task(id);
-    assert_eq!(t.s("status"), Some("needs"), "after two restarts in an hour it waits for the owner");
+    assert_eq!(t.s("status"), Some("needs"), "after the board's own tries it waits for the owner");
     assert_eq!(t.s("needs_reason"), Some("lost"));
     assert!(t.b("lost"));
+    assert!(t.st("latest").contains("The board started it again from its handoff 3 times during work hours"), "{}", t.st("latest"));
 }
 
 #[test]
@@ -424,7 +435,8 @@ fn spooled_reports_are_read_in_order_and_deduplicated() {
 fn a_failed_start_retries_then_waits_for_the_owner() {
     let b = new_board();
     let id = new_task(&b, "Flaky start", json!({}));
-    for _ in 0..4 {
+    // Four quick tries, then three of the board's own with longer waits.
+    for n in 0..8 {
         runner::start_queued(&b.app).unwrap();
         let j = b.app.db.q1("SELECT * FROM jobs WHERE kind = 'agent' AND state = 'pending'", p![]).unwrap().unwrap();
         b.app.db.x("UPDATE jobs SET state = 'running' WHERE id = ?", p![j.id()]).unwrap();
@@ -433,11 +445,14 @@ fn a_failed_start_retries_then_waits_for_the_owner() {
         if b.task(id).s("status") == Some("needs") {
             break;
         }
+        assert!(n < 7, "it waits for the owner after the board's own tries");
         assert_eq!(b.task(id).s("status"), Some("queued"));
+        assert!(b.get("/state")["alerts"].as_array().unwrap().is_empty(), "no alert while the board still tries");
     }
     let t = b.task(id);
     assert_eq!(t.s("status"), Some("needs"));
     assert_eq!(t.s("needs_reason"), Some("start_failed"));
+    assert!(t.st("latest").contains("The board tried to start it 3 times during work hours"), "{}", t.st("latest"));
     assert_eq!(b.get("/state")["alerts"].as_array().unwrap().len(), 1);
 }
 
