@@ -276,7 +276,7 @@ pub fn rename_state(app: &App, sid: &str) -> Result<Row> {
     Ok(out)
 }
 
-const START_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+pub const START_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// How often a start waiting for a worktree slot looks for one again.
 const SLOT_RETRY_SECS: f64 = 60.0;
 
@@ -302,17 +302,28 @@ pub fn start_failed(app: &App, t: &Row, text: &str, counts: bool, retry: bool) -
     }
     let tries = t.i0("start_tries") + if counts { 1 } else { 0 };
     if !retry || tries > START_RETRY_WAITS.len() as i64 {
+        use crate::needs_retry::{self as nr, Kind, Outcome};
+        let mut latest = text.to_string();
+        let msg = if !retry {
+            nr::not_retried(app, t.id())?;
+            text.to_string()
+        } else {
+            // During the work hours the board tries it again on its own, with longer waits, first.
+            match nr::try_again(app, &t, Kind::Start, text)? {
+                Outcome::Retried => return Ok(true),
+                Outcome::GaveUp(n) => {
+                    latest = nr::gave_up_line(text, Kind::Start, n);
+                    latest.clone()
+                }
+                Outcome::No => format!("{text}. It didn't start after {} tries, so it's waiting for you", START_RETRY_WAITS.len() + 1),
+            }
+        };
         board::update_task(
             app,
             t.id(),
-            fields!["status" => "needs", "needs_reason" => "start_failed", "start_job" => null, "latest" => text,
+            fields!["status" => "needs", "needs_reason" => "start_failed", "start_job" => null, "latest" => latest,
                     "start_tries" => 0, "retry_at" => null],
         )?;
-        let msg = if retry {
-            format!("{text}. It didn't start after {} tries, so it's waiting for you", START_RETRY_WAITS.len() + 1)
-        } else {
-            text.to_string()
-        };
         board::log_event(app, t.id(), board::MIDNA, "midna", &msg)?;
         dispatch::add_alert(app, &format!("{} didn't start: {}", rf("task", t.id()), one_line(text, 200)), Some(t.id()), t.i("goal_id"), None, None)?;
         return Ok(false);

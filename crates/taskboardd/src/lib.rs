@@ -74,6 +74,7 @@ pub mod merges;
 pub mod merged_note;
 pub mod midna;
 pub mod misses;
+pub mod needs_retry;
 pub mod needs_talk;
 pub mod no_pr_words;
 pub mod ops;

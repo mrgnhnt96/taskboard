@@ -1764,7 +1764,8 @@ pub fn mark_lost_with(app: &App, t: &Row, reason: &str, detail: Option<&str>) ->
     };
     let closed = format!("The terminal closed at {} before the task was done.", local_clock(None));
     let asked = t.s("status") == Some("needs") && t.s("needs_reason") == Some("question");
-    if !DELIBERATE_EXITS.contains(&reason) && !asked && restarts_left(app, t)? {
+    let retryable = !DELIBERATE_EXITS.contains(&reason) && !asked;
+    if retryable && restarts_left(app, t)? {
         let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
         update_task(
             app,
@@ -1782,13 +1783,28 @@ pub fn mark_lost_with(app: &App, t: &Row, reason: &str, detail: Option<&str>) ->
         Some(s) => format!(" Its context was saved at {}.", local_clock(Some(&s))),
         None => " Nothing was saved yet.".into(),
     };
+    let mut latest = format!("{closed}{saved_line}");
+    // Out of quick restarts: during the work hours the board tries again on its own, with longer waits.
+    use crate::needs_retry::{self as nr, Kind, Outcome};
+    if retryable && nr::will_retry(app, t) {
+        log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done{QUEUED_AGAIN}"))?;
+        nr::try_again(app, t, Kind::Lost, &latest)?;
+        return Ok(());
+    }
+    let gave_up = if retryable { if let Outcome::GaveUp(n) = nr::try_again(app, t, Kind::Lost, &latest)? { Some(n) } else { None } } else { None };
+    if let Some(n) = gave_up {
+        latest = nr::gave_up_line(&latest, Kind::Lost, n);
+    }
     update_task(
         app,
         t.id(),
         fields!["status" => "needs", "lost" => 1, "needs_reason" => "lost", "start_job" => null,
-                "latest" => format!("{closed}{saved_line}"), "looks_finished" => crate::lost_done::lost_now()],
+                "latest" => latest.clone(), "looks_finished" => crate::lost_done::lost_now()],
     )?;
     log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({why}) before the task was done"))?;
+    if gave_up.is_some() {
+        log_event(app, t.id(), BOARD, "midna", &latest)?;
+    }
     // Whether it was closed by hand is read from that line, logged after the update queued the panel.
     crate::midna::queue_panel(app, t.id());
     app.info(format!("task {} lost: {why}", rf("task", t.id())));

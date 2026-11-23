@@ -527,6 +527,7 @@ impl Db {
         add_columns(&conn, crate::breaks::ADDED)?;
         add_columns(&conn, crate::lines::ADDED)?;
         add_columns(&conn, crate::lost_done::ADDED)?;
+        add_columns(&conn, crate::needs_retry::ADDED)?;
         add_columns(&conn, crate::qa::ADDED)?;
         add_columns(&conn, crate::tidy::ADDED)?;
         conn.execute_batch(crate::lines::SCHEMA)?;
