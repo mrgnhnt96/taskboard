@@ -179,3 +179,76 @@ fn actual_time_counts_only_working_stretches_and_a_goal_has_its_sum_and_running_
     assert_eq!(gd["estimate"]["actual_min"], 80);
     assert_eq!(gd["estimate"]["est_ratio"], 1.3);
 }
+
+impl Board {
+    /// A finished task with `est` (none when 0) that worked `worked` minutes, finished `ago` hours back.
+    fn finished(&self, title: &str, goal: Option<i64>, est: i64, worked: f64, ago: f64) -> i64 {
+        let id = self.bare_task(goal);
+        let base = now_ts() - ago * 3600.0;
+        self.history(id, base, &[(0.0, "working"), (worked, "needs"), (worked + 30.0, "done")]);
+        let est = if est > 0 { json!(est) } else { Value::Null };
+        board::update_task(&self.app, id, fields!["title" => title, "status" => "done", "failed" => 0, "est_min" => est,
+                                                  "finished_at" => iso(base + (worked + 30.0) * 60.0)]).unwrap();
+        id
+    }
+}
+
+#[test]
+fn with_no_estimates_yet_the_report_and_replies_give_the_typical_working_time() {
+    let b = new_board();
+    for (m, ago) in [(30.0, 50.0), (60.0, 40.0), (120.0, 30.0)] {
+        b.finished("Old work", None, 0, m, ago);
+    }
+    let r = b.get("/estimates");
+    assert!(r["tasks"].is_null() && r["goals"].is_null(), "{r}");
+    assert_eq!(r["typical"][0]["project"], "webapp");
+    assert_eq!(r["typical"][0]["median_min"], 60.0, "the waiting after each stretch isn't counted");
+    assert_eq!(r["lines"][0], "No finished work with an estimate yet.");
+
+    let made = b.report("tb.new_task", json!({"title": "Fix the footer", "est": "45m"})).unwrap();
+    assert_eq!(made["estimates"], json!(["No finished webapp work with an estimate yet.",
+                                         "Past webapp tasks took a median 1h of working time (middle half 45m–1h 30m, 3 tasks)."]));
+    let human = b.report("tb.new_task", json!({"title": "Sign it", "detail": "1. Sign it.", "kind": "human"})).unwrap();
+    assert!(human.get("estimates").is_none(), "a human task gets no estimate lines");
+}
+
+#[test]
+fn the_report_compares_finished_estimates_and_planning_and_replies_carry_its_summary() {
+    let b = new_board();
+    b.finished("Header", None, 60, 90.0, 30.0);
+    b.finished("Footer", None, 60, 60.0, 20.0);
+    b.finished("Menu", None, 20, 80.0, 10.0);
+    // Still working: not counted.
+    let open = b.bare_task(None);
+    board::update_task(&b.app, open, fields!["est_min" => 10]).unwrap();
+    b.history(open, now_ts() - 3600.0, &[(0.0, "working")]);
+    // A finished goal, one task working 2h against a 1h goal estimate; its task had no estimate.
+    let g = b.post("/goals", json!({"name": "Dark mode", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    board::update_goal(&b.app, g, fields!["est_min" => 60]).unwrap();
+    b.finished("Colors", Some(g), 0, 120.0, 5.0);
+
+    let r = b.get("/estimates");
+    assert_eq!(r["tasks"]["n"], 3);
+    assert_eq!(r["tasks"]["ratio"], 1.5, "ratios 1.5, 1 and 4");
+    assert_eq!(r["tasks"]["runs"], "short");
+    assert_eq!(r["goals"]["n"], 1);
+    assert_eq!(r["goals"]["ratio"], 2.0);
+    let misses: Vec<&str> = r["misses"].as_array().unwrap().iter().map(|m| m["title"].as_str().unwrap()).collect();
+    assert_eq!(misses, ["Menu", "Dark mode", "Header"], "Footer was on target");
+    assert_eq!(r["typical"][0]["n"], 4);
+    let printed: Vec<&str> = r["lines"].as_array().unwrap().iter().filter_map(|l| l.as_str()).collect();
+    assert!(printed[0].starts_with("Tasks took 1.5× their estimate (median of 3 tasks)"), "{printed:?}");
+    assert!(printed.iter().any(|l| l.contains("Menu · est 20m · actual 1h 20m (4×)")), "{printed:?}");
+
+    let summary = json!(["Your webapp estimates have run short: work took 1.5× the estimate (median of 3 tasks; 33% within ±25%).",
+                         "Tasks you called 30m–2h took a median 1h 15m (2 tasks). Goals took 2× their estimate (median of 1 goal)."]);
+    let q: Query = [("project".to_string(), "webapp".to_string())].into_iter().collect();
+    assert_eq!(api::dispatch(&b.app, "GET", "/planning", &q, &json!({})).unwrap()["estimates"], summary);
+    let made = b.report("tb.goal", json!({"name": "Light mode", "est": "2h", "tasks": ["Colors::pick them::est=1h"]})).unwrap();
+    assert_eq!(made["estimates"], summary);
+    let g2 = made["goal"].as_str().unwrap().to_string();
+    assert_eq!(b.report("tb.propose", json!({"goal": g2, "tasks": ["Toggle::add it::est=30m"]})).unwrap()["estimates"], summary);
+    let other: Query = [("project".to_string(), "other".to_string())].into_iter().collect();
+    let none = api::dispatch(&b.app, "GET", "/estimates", &other, &json!({})).unwrap();
+    assert!(none["tasks"].is_null() && none["typical"].as_array().unwrap().is_empty() && none["summary"][0].as_str().unwrap().starts_with("Your estimates have run short"), "a project with none falls back to every project's: {none}");
+}

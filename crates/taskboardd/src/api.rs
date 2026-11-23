@@ -579,6 +579,7 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
         ("GET", ["planning", "lessons"]) => crate::planning::suggest(app, query),
         ("POST", ["planning", "lessons"]) => crate::planning::accept(app, body),
         ("GET", ["quality"]) => crate::quality::get(app, query),
+        ("GET", ["estimates"]) => crate::accuracy::get(app, query),
         ("GET", ["jira", "jobs", id]) => {
             let n = need_ref(&json!(id), "job")?;
             match app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![n])? {
