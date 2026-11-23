@@ -209,6 +209,21 @@ fn a_closed_terminal_requeues_the_task_then_waits_for_the_owner() {
     assert_eq!(t.s("needs_reason"), Some("lost"));
     assert!(t.b("lost"));
     assert!(t.st("latest").contains("The board started it again from its handoff 3 times during work hours"), "{}", t.st("latest"));
+    assert_retries_handled(&b, id, "lost");
+}
+
+/// Each of the board's own tries is on Handled for you, saying what Pull back puts back.
+fn assert_retries_handled(b: &Board, id: i64, item: &str) {
+    let rows = b.app.db.q("SELECT * FROM events WHERE task_id = ? AND kind = ? ORDER BY id", p![id, taskboardd::handled::KIND]).unwrap();
+    assert_eq!(rows.len(), 3, "one record per try");
+    for (n, r) in rows.iter().enumerate() {
+        assert_eq!(r.s("who"), Some(board::BOARD));
+        let d: Value = serde_json::from_str(&r.st("data")).unwrap();
+        assert_eq!(d["by"], "retry");
+        assert_eq!(d["item"], item);
+        assert_eq!(d["try"], n as i64 + 1);
+        assert!(d["was"].as_str().is_some_and(|w| !w.is_empty()));
+    }
 }
 
 #[test]
@@ -453,6 +468,7 @@ fn a_failed_start_retries_then_waits_for_the_owner() {
     assert_eq!(t.s("status"), Some("needs"));
     assert_eq!(t.s("needs_reason"), Some("start_failed"));
     assert!(t.st("latest").contains("The board tried to start it 3 times during work hours"), "{}", t.st("latest"));
+    assert_retries_handled(&b, id, "start");
     assert_eq!(b.get("/state")["alerts"].as_array().unwrap().len(), 1);
 }
 

@@ -4,7 +4,7 @@
 //! start again from its handoff, as `tb needs restart` does, unless its terminal was closed by hand, it
 //! looks finished or it waits on an open question. Each try waits longer (`WAITS`), so the item is off
 //! Needs you while it waits; once the last one fails it stays on Needs you and says why. Outside the
-//! hours an item waits on the list, and `sweep` tries it once they open. Each try is logged on the task.
+//! hours an item waits on the list, and `sweep` tries it once they open. Each try is logged on the task as Handled for you (`handled::record`, by `retry`).
 //!
 //! This comes after the quick retries a start or a lost terminal already gets (`jobs::start_failed`,
 //! `board::mark_lost`), where the task would otherwise go on Needs you.
@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, dispatch, fields, hours, p};
+use crate::{board, dispatch, fields, handled, hours, p};
 
 /// `{"tries", "at", "held"?}`: how many times the board tried the task again on its own and when it
 /// last did. `held` ("gave_up", or "no" for a start that isn't tried again) stops the tries until the
@@ -156,6 +156,14 @@ fn word(kind: Kind) -> &'static str {
     }
 }
 
+/// The `item` of its Handled for you record.
+pub fn item(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Start => "start",
+        Kind::Lost => "lost",
+    }
+}
+
 /// Keeps `needs_retry` without touching `updated_at`: the card's times read it.
 fn save(app: &App, id: i64, v: Value) -> Result<()> {
     app.db.update("tasks", &json!(id), fields!["needs_retry" => jdumps(&v)]).map(|_| ())
@@ -180,7 +188,7 @@ fn requeue(app: &App, t: &Row, kind: Kind, n: i64, wait: i64, why: &str) -> Resu
         }
     };
     f.extend(fields![
-        "retry_at" => at,
+        "retry_at" => at.clone(),
         "latest" => format!("{}. The board tries it again at {when} ({n} of {of}).", trim(why)),
         "needs_retry" => jdumps(&json!({"tries": n, "at": now_iso()})),
     ]);
@@ -191,7 +199,18 @@ fn requeue(app: &App, t: &Row, kind: Kind, n: i64, wait: i64, why: &str) -> Resu
         Kind::Start => "start it",
         Kind::Lost => "start it from its handoff in a new terminal",
     };
-    board::log_event(app, t.id(), board::BOARD, "midna", &format!("Tries again on its own at {when} to {what} ({n} of {of})"))?;
+    // Logged as Handled for you: Pull back puts it on Needs you again as it was (`reason`, `was`).
+    let reason = match kind {
+        Kind::Start => "start_failed",
+        Kind::Lost => "lost",
+    };
+    handled::record(
+        app,
+        t.id(),
+        "retry",
+        &format!("Tries again on its own at {when} to {what} ({n} of {of})"),
+        json!({"item": item(kind), "verdict": "retry", "reason": reason, "was": trim(why), "try": n, "of": of, "retry_at": at}),
+    )?;
     app.info(format!("task {} {}: retry {n} of {of} at {when}", rf("task", t.id()), word(kind)));
     Ok(())
 }
