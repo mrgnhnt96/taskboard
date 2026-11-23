@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::api::{Paging, Query};
 use crate::app::App;
 use crate::util::*;
-use crate::{blocks, board, deliver, fields, handoff, human, misses, p};
+use crate::{blocks, board, deliver, fields, handoff, human, misses, needs_retry, p};
 
 pub const KIND: &str = "handled";
 
@@ -42,10 +42,16 @@ fn issue_of(app: &App, d: &Value) -> Result<Option<Row>> {
 fn can_pull(app: &App, t: &Row, d: &Value) -> Result<bool> {
     Ok(match (d["by"].as_str(), d["item"].as_str()) {
         (Some("misses"), _) => t.s("status") != Some("done") && issue_of(app, d)?.is_some_and(|i| matches!(i.s("state"), Some("open" | "task"))),
+        (Some("retry"), _) => waits_on_retry(t, d),
         (_, Some("question")) => t.s("status") != Some("done") && !asks_now(t),
         (_, Some("human")) => t.s("status") == Some("done") && matches!(t.s("owner_answer"), Some(human::BOARD_AGENT | human::BOARD_ANSWERED)),
         _ => false,
     })
+}
+
+/// The task is still queued for the try this record logged, with nothing started yet.
+fn waits_on_retry(t: &Row, d: &Value) -> bool {
+    t.s("status") == Some("queued") && t.s("session_id").is_none() && t.s("retry_at").is_some() && t.s("retry_at") == d["retry_at"].as_str()
 }
 
 /// The task waits on a question of the owner's that nobody answered yet.
@@ -129,6 +135,7 @@ pub fn pull_back(app: &App, id: i64) -> Result<Value> {
         let t = board::get_task(app, e.i("task_id").unwrap_or_default())?;
         let said = match (d["by"].as_str(), d["item"].as_str()) {
             (Some("misses"), _) => pull_miss(app, &t, &d)?,
+            (Some("retry"), _) => pull_retry(app, &t, &d)?,
             (_, Some("question")) => pull_question(app, &t, &d)?,
             (_, Some("human")) => pull_human(app, &t, &d)?,
             _ => return err(409, "The board can't put this one back on Needs you."),
@@ -230,4 +237,23 @@ fn pull_miss(app: &App, t: &Row, d: &Value) -> Result<String> {
         blocks::miss_alert(app, issue.id(), g, &issue.st("title"))?;
     }
     Ok(format!("{b} is back on Needs you"))
+}
+
+/// A failed start or lost terminal the board queued to try again: back on Needs you as it was, and the
+/// board doesn't try it again until it leaves the list.
+fn pull_retry(app: &App, t: &Row, d: &Value) -> Result<String> {
+    let r = human::task_ref(t);
+    if !waits_on_retry(t, d) {
+        return err(409, format!("{r} already started again, so there's nothing to pull back."));
+    }
+    let reason = d["reason"].as_str().unwrap_or("start_failed");
+    let was = d["was"].as_str().filter(|s| !s.is_empty()).map(|w| format!("{w}.")).unwrap_or_else(|| t.st("latest"));
+    board::update_task(
+        app,
+        t.id(),
+        fields!["status" => "needs", "needs_reason" => reason, "lost" => i64::from(reason == "lost"), "retry_at" => null, "start_job" => null, "latest" => was],
+    )?;
+    needs_retry::not_retried(app, t.id())?;
+    board::log_event(app, t.id(), board::OWNER, "note", "Pulled back from Handled for you: the board won't try it again")?;
+    Ok(format!("{r} is back on Needs you"))
 }
