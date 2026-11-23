@@ -1137,6 +1137,8 @@ fn a_closed_pr_ends_closed_without_merging() {
         let text = view::text(&tree);
         assert!(!text.contains("Declined") && !text.contains("Merged") && !text.contains("Pending merge"), "named for what happened, nothing under it: {text}");
         assert!(!view::acts(&tree).iter().any(|a| a == "pr-menu"), "nothing left to merge");
+        task["pr"]["closed"] = json!({"line": "Superseded by #12", "superseded_by": "#12"});
+        assert!(panel_text(task, json!({})).contains("Superseded by #12"), "says where its work went");
     }
 }
 

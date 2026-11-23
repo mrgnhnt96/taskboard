@@ -2671,6 +2671,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     changes.extend(reread_by(&after, merge_look_at(&phase, &after)));
     board::update_task(app, t.id(), task_fields)?;
     merge_flow(app, t.id(), changes)?;
+    if phase_changed && phase == "declined" {
+        crate::pr_closed::closed_outside(app, t, &f, rec)?;
+    }
     if phase_changed {
         crate::samepr::follow(app, t, &old, &phase)?;
     }

@@ -473,6 +473,10 @@ pub trait PrHost: Send + Sync {
     /// Closes the PR without merging it (Bitbucket declines it), leaving its branch; `comment`, when
     /// given, is posted on it first.
     fn close(&self, pr: &PrRef, comment: Option<&str>) -> HostResult<()>;
+    /// Posts `body` on the PR as a plain comment (not on a thread).
+    fn comment(&self, _pr: &PrRef, _body: &str) -> HostResult<()> {
+        Err(format!("the board can't comment on a {} PR", self.id()))
+    }
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()>;
     /// Opens a PR in `repo` from the pushed `branch` into `base`; the new PR.
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef>;
@@ -751,6 +755,10 @@ impl PrHost for FakeHost {
     fn close(&self, _pr: &PrRef, comment: Option<&str>) -> HostResult<()> {
         self.log(format!("close{}", comment.map(|c| format!(": {c}")).unwrap_or_default()));
         self.rec.lock().state = if self.host == "bitbucket" { "DECLINED" } else { "CLOSED" }.into();
+        Ok(())
+    }
+    fn comment(&self, _pr: &PrRef, body: &str) -> HostResult<()> {
+        self.log(format!("comment: {body}"));
         Ok(())
     }
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, _body: &str) -> HostResult<PrRef> {

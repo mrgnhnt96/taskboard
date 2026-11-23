@@ -2632,8 +2632,15 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     vec![
         tl_node(TlSt::Done, tl_head(tl_name("Pull request"), "", ""), [el(K::PrHead, vec![head, txt(repo, St::Small)])].into_iter().chain(group_line(c, t)).collect(), false),
         tl_node(st, tl_head(tl_name("Checks and review"), "", &updated), body, false),
-        tl_node(merge_st, tl_head(tl_name(merge_name), &merge_sub, ""), merged_note_row(c, t).into_iter().collect(), false),
+        tl_node(merge_st, tl_head(tl_name(merge_name), &merge_sub, ""), merged_note_row(c, t).into_iter().chain(closed_line(p)).collect(), false),
     ]
+}
+
+/// Under "Closed without merging": where its work went ("Superseded by #12", "Its work is on main in
+/// abc1234"), when the board knows.
+fn closed_line(p: &Value) -> Option<Node> {
+    let line = obj(p, "closed").and_then(|x| opt_s(x, "line")).filter(|_| !pr_open(p))?;
+    Some(el(K::Line, vec![txt(line, St::Small)]))
 }
 
 /// What's left before it merges, on a task with no PR yet, as one quiet line under now: "Then: Pull

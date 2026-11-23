@@ -129,7 +129,10 @@ pub fn row(c: &Value) -> Row {
     let declined = c["pr"]["state"].as_str().is_some_and(|st| !st.eq_ignore_ascii_case("MERGED") && !st.eq_ignore_ascii_case("OPEN"));
     let line = match (st == St::Done, pr_num, landed) {
         (true, Some(_), Some(sha)) if declined => format!("Landed in {}", &sha[..sha.len().min(7)]),
-        (true, Some(n), None) if declined => format!("PR #{n} declined"),
+        (true, Some(n), None) if declined => match c["pr"]["closed"]["line"].as_str() {
+            Some(went) => format!("PR #{n} declined · {went}"),
+            None => format!("PR #{n} declined"),
+        },
         (true, Some(n), _) if line.is_empty() => format!("PR #{n} merged"),
         _ => line,
     };
@@ -346,6 +349,8 @@ mod tests {
         // way the row says where.
         let declined = row(&card(json!({"status": "done", "summary": "Fixed it", "pr": {"num": 4, "state": "DECLINED"}})));
         assert_eq!((declined.st, declined.line.as_str()), (St::Done, "PR #4 declined"));
+        let superseded = row(&card(json!({"status": "done", "pr": {"num": 4, "state": "DECLINED", "closed": {"line": "Superseded by #12"}}})));
+        assert_eq!(superseded.line, "PR #4 declined · Superseded by #12", "says where its work went");
         let landed = row(&card(json!({"status": "done", "landed": "0123456789abcdef", "pr": {"num": 4, "state": "DECLINED"}})));
         assert_eq!((landed.st, landed.line.as_str()), (St::Done, "Landed in 0123456"));
         assert_eq!(row(&card(json!({"status": "done", "failed": true}))).st, St::Failed);

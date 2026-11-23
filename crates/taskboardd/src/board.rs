@@ -334,6 +334,8 @@ pub fn pr_card(app: &App, t: &Row) -> Value {
         "approvals": approvals, "stage": stage,
         // When the board last read the PR (a poll or a feed event): how fresh its checks and review are.
         "checked_at": flow.get("checked_at").cloned().unwrap_or(Value::Null),
+        // Where a PR closed without merging sent its work (`pr_closed.rs`).
+        "closed": crate::pr_closed::card(&flow),
     })
 }
 

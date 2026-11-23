@@ -957,7 +957,7 @@ fn the_owner_closes_a_pr_and_an_agent_only_on_their_word() {
     assert!(!h.calls().iter().any(|c| c.starts_with("close")), "{:?}", h.calls());
     said("decline PR #9");
     close().unwrap();
-    assert!(h.calls().contains(&"close: Went another way".to_string()), "{:?}", h.calls());
+    assert!(h.calls().contains(&"close: Closed without merging: Went another way".to_string()), "{:?}", h.calls());
     assert_eq!(b.phase(id), "declined");
     assert!(b.try_post(&format!("/tasks/T{id}/pr/close"), json!({})).unwrap_err().contains("already closed"));
 }
@@ -969,7 +969,7 @@ fn an_agent_closes_a_pr_the_owner_names_by_its_task() {
     let h = fake(&b, green());
     poll(&b);
     b.report("hook.prompt", "s1", json!({"prompt": format!("close T{id}'s PR")}));
-    b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s1"})).unwrap();
+    b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s1", "superseded_by": "#14"})).unwrap();
     assert!(h.calls().iter().any(|c| c.starts_with("close")), "{:?}", h.calls());
     assert_eq!(b.phase(id), "declined");
 }
@@ -991,7 +991,7 @@ fn an_agent_on_a_done_tasks_pr_closes_it_when_the_owner_answers_its_question() {
     board::session_event(&b.app, "s2", "reply", "Asked whether to close it; #12 is merged.", None).unwrap();
     b.report("hook.prompt", "s2", json!({"prompt": "yeah, close the PR."}));
     close().unwrap();
-    assert!(h.calls().contains(&"close: Went another way".to_string()), "{:?}", h.calls());
+    assert!(h.calls().contains(&"close: Closed without merging: Went another way".to_string()), "{:?}", h.calls());
     assert_eq!(b.phase(id), "declined");
 }
 
@@ -1044,8 +1044,10 @@ fn the_owner_closes_a_pr_from_their_own_shell_but_not_a_merged_one() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
     let h = fake(&b, green());
-    b.post(&format!("/tasks/T{id}/pr/close"), json!({}));
-    assert!(h.calls().contains(&"close".to_string()), "{:?}", h.calls());
+    assert!(b.try_post(&format!("/tasks/T{id}/pr/close"), json!({})).unwrap_err().contains("--reason"), "says where its work goes");
+    assert!(!h.calls().iter().any(|c| c.starts_with("close")), "{:?}", h.calls());
+    b.post(&format!("/tasks/T{id}/pr/close"), json!({"reason": "Not needed"}));
+    assert!(h.calls().contains(&"close: Closed without merging: Not needed".to_string()), "{:?}", h.calls());
     assert_eq!(b.phase(id), "declined");
 
     let b = board_with(|_| {});
