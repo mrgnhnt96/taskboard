@@ -271,7 +271,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     };
     crate::progress::stage(&format!("Read PR #{} from {on_host}", pr.num));
     let t = board::get_task(app, id)?;
-    let ends_visit = t.s("pr_phase") == Some("ask");
+    let ends_visit = ends_ask_visit(&t);
     let by = who_of(app, body);
     let fail = |what: &str, e: String| wait_out_limit(app, id, &pr, body, ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num)));
     let drop = body_str(body, "drop");
@@ -420,7 +420,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
             note_asked(app, id, &names, &by)?;
         }
         // At the `ask` stage, asking finishes the agent's visit.
-        if t.s("pr_phase") == Some("ask") {
+        if ends_visit {
             prflow::waited(app, &t)?;
         }
         Ok(())
@@ -504,6 +504,13 @@ fn removable(rec: &Value, pr: &PrRef, w: &Who) -> Result<()> {
     Ok(())
 }
 
+/// Asking finishes the visit: the PR is at the `ask` stage, or a terminal was brought back to ask and
+/// the PR has moved on since (the read before asking saw its checks start again), which would
+/// otherwise leave that visit, and its terminal, open for good.
+fn ends_ask_visit(t: &Row) -> bool {
+    t.s("pr_phase") == Some("ask") || flow(t).s("woke").is_some_and(|k| k.starts_with("ask:"))
+}
+
 /// What `--dry-run` answers: who the board would ask, take off or swap, with nothing sent to the host.
 fn dry_run(id: i64, asks: &[(Who, String)], drop: Option<&Who>, swap: Option<&(Who, Who)>) -> Value {
     json!({
@@ -515,16 +522,8 @@ fn dry_run(id: i64, asks: &[(Who, String)], drop: Option<&Who>, swap: Option<&(W
     })
 }
 
-/// Whether the agent asks at this PR's `ask` stage: it's being (or will be) brought back in hours.
-fn agent_asks(app: &App, t: &Row) -> Result<bool> {
-    if prflow::waking(app, t)? {
-        return Ok(true);
-    }
-    Ok(app.cfg.pr.wake && crate::hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()))
-}
-
-/// The `ask` stage without an agent: outside work hours (or with `pr.wake` off) the board picks
-/// and asks the reviewers itself, retrying after each of `ask_retry_waits` when it can't.
+/// The `ask` stage: the board picks and asks the reviewers itself, at any hour, retrying after each
+/// of `ask_retry_waits` when it can't (an alert after the last). No agent is brought back for it.
 pub fn stage(app: &App) -> Result<()> {
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_phase = 'ask' AND pr_num IS NOT NULL", vec![])? {
         if let Err(e) = stage_one(app, &t) {
@@ -546,13 +545,6 @@ fn stage_one(app: &App, t: &Row) -> Result<bool> {
         return Ok(false);
     }
     let f = flow(t);
-    if agent_asks(app, t)? {
-        // The agent asks: bring it back now if the feed held its wake before.
-        if let Some(rec) = f.get("rec").filter(|r| r.is_object()) {
-            app.db.tx(|| prflow::step(app, t, rec).map(|_| ()))?;
-        }
-        return Ok(false);
-    }
     if f.s("ask_retry_at").is_some_and(|r| r > now_iso().as_str()) {
         return Ok(false);
     }

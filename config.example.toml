@@ -531,8 +531,8 @@ bot_due_mins = 45.0
 # reviewer); one with nobody to swap in is noted once.
 swap = false
 swap_after_mins = 90.0
-# The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The agent is
-# brought back to ask (tb pr reviewers); outside work hours (or with pr.wake off) the board asks itself.
+# The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The board asks
+# them itself, at any hour; no agent terminal is opened for it.
 ask_stage = false
 ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when it can't ask
 

@@ -109,6 +109,17 @@ fn a_visit_the_board_ends_under_a_rate_limit_closes_its_terminal() {
 }
 
 #[test]
+fn a_terminal_left_from_an_ask_visit_closes_once_idle() {
+    let b = board();
+    let id = b.visiting_in_s2();
+    b.idle("s2");
+    assert!(!b.closing().contains(&"s2".to_string()), "the fix visit is still on");
+    // An older board brought it back to ask for reviews; asking no longer wakes anyone, so its wake holds nothing.
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.woke', 'ask:h1:0') WHERE id = ?", p![id]).unwrap();
+    assert!(b.closing().contains(&"s2".to_string()), "{:?}", b.closing());
+}
+
+#[test]
 fn a_compacted_terminal_still_closes_once_its_visit_ends() {
     let b = board();
     let id = b.visiting_in_s2();

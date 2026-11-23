@@ -1557,11 +1557,13 @@ request for changes doesn't make it one.
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
 board used the stage). Once the owner has marked a green PR reviewed
 (`POST /tasks/:id/pr/reviewed`, "I reviewed it"), its phase is `ask` until reviewers are asked (`pr_flow.asked`).
-In work hours, with `pr.wake` on, the agent is brought back to run `tb pr reviewers` (which finishes the visit);
-otherwise the board picks and asks them itself through the host (asks with `why: "stage"`, by "Task board"),
+No agent is brought back for it: the board picks and asks them itself through the host, at any hour (asks with
+`why: "stage"`, by "Task board"),
 retrying after each of `ask_retry_waits` seconds (`pr_flow.ask_tries`, `ask_retry_at`) and alerting once they're
-spent. Then the phase moves on to `review`. While the feed holds (`feed::holding`), the agent isn't brought back to
-ask and the board doesn't ask; the sweep brings the agent back once the feed has settled. `tb pr reviewers` (besides
+spent. Then the phase moves on to `review`. While the feed holds (`feed::holding`), the board doesn't ask; the
+sweep asks once the feed has settled. A terminal an older board brought back to ask (`pr_flow.woke` `ask:…`) no
+longer holds itself open: its tab closes once idle, and `tb pr reviewers` there finishes the visit even after the
+PR has moved on. `tb pr reviewers` (besides
 `--dry-run`) answers 409 while the feed holds, and, with the stage on, when it would ask someone before the owner
 has reviewed the PR and before anyone was asked on it, whatever the task's status (a reopened task waits too); a
 later `--replace` or `--drop` doesn't wait for the owner. Asked on it counts the host too: anyone on the PR's
