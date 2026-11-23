@@ -126,6 +126,7 @@ mod startword;
 mod state_board;
 mod state_cost;
 mod step_aim;
+mod step_rebase;
 mod steps;
 mod stream;
 mod submit_merged_early;
