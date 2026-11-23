@@ -1379,6 +1379,8 @@ struct Wants {
     days_q: Option<Vec<(&'static str, String)>>,
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
+    /// Needs you's Handled for you list: the project, and the held rows to ask for again.
+    handled: Option<(String, Vec<i64>)>,
     /// The ⌘K palette's query, for its tasks and backlog issues (`GET /search?palette=1`).
     palette: Option<ui::search::Ask>,
     /// The Projects page: the picked project, for its open tasks outside any goal.
@@ -1413,6 +1415,7 @@ struct Got {
     sessions: Option<Answer>,
     days: Option<Answer>,
     home: Option<Value>,
+    handled: Option<(String, Result<ui::paged::Fresh, String>)>,
     today: Option<Value>,
     palette: Option<(ui::search::Ask, Value)>,
     loose: Option<(String, Answer)>,
@@ -1458,6 +1461,7 @@ impl Wants {
             sessions: ui::search::is_open(m),
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
+            handled: (m.page == Page::Board).then(|| (m.filters.project.clone(), m.home.handled.recheck())),
             palette: ui::search::query(m, cx),
             loose: (m.page == Page::Projects).then(|| ui::projects::picked(m)).flatten(),
             review: (m.page == Page::Review).then_some(m.review.id),
@@ -1486,7 +1490,7 @@ impl Wants {
             q.extend(since.map(|s| ("since", s)));
             q
         }
-        let Wants { state_q, task, issue, goal, goal_rows, sessions, days_q, home, palette, loose, review, recap, releases, release_rows, ideas, idea } = self;
+        let Wants { state_q, task, issue, goal, goal_rows, sessions, days_q, home, handled, palette, loose, review, recap, releases, release_rows, ideas, idea } = self;
         let Since { state: state_since, goals: goals_since } = since;
         add(&mut c, "state", move |be| Got { state: Some(be.get("state", &since_q(state_q, state_since))), ..Got::default() });
         add(&mut c, "goals", move |be| Got { goals: get(be, "goals", &since_q(vec![], goals_since)).ok(), ..Got::default() });
@@ -1511,6 +1515,12 @@ impl Wants {
         if let Some(p) = home {
             add(&mut c, "today", |be| Got { today: get(be, "days", &[]).ok(), ..Got::default() });
             add(&mut c, "home", move |be| Got { home: get(be, "home", &[("project", p)]).ok(), ..Got::default() });
+        }
+        if let Some((p, ids)) = handled {
+            add(&mut c, "handled", move |be| {
+                let got = ui::paged::Paged::fetch(be, "handled", "items", &ui::home::handled::query(&p), ui::home::handled::PAGE, ids);
+                Got { handled: Some((p, got)), ..Got::default() }
+            });
         }
         if let Some(q) = palette {
             add(&mut c, "palette", move |be| Got { palette: ui::search::ask(be, &q).ok().map(|v| (q, v)), ..Got::default() });
@@ -1630,7 +1640,7 @@ impl Got {
         let mut f = Fingerprint::new(asked);
         // The board and goal list by their stamps, so an unchanged answer prints as the one it stands for.
         f.add(&self.state.as_ref().map(|a| a.as_ref().map(Stamped))).add(&self.goals.as_ref().map(Stamped)).add(&self.task).add(&self.issue).add(&self.goal).add(&self.goal_rows);
-        f.add(&self.sessions).add(&self.home).add(&self.palette);
+        f.add(&self.sessions).add(&self.home).add(&self.handled).add(&self.palette);
         f.add(&self.loose).add(&self.reviews).add(&self.review).add(&self.recaps).add(&self.recap).add(&self.releases).add(&self.release_rows);
         f.add(&self.ideas).add(&self.idea);
         f.skip = fingerprint::DAY_CLOCKS;
@@ -1668,6 +1678,9 @@ impl Got {
         }
         if asked.home != now.home {
             self.home = None;
+        }
+        if asked.handled != now.handled {
+            self.handled = None;
         }
         if asked.ideas != now.ideas {
             self.ideas = None;
@@ -1772,6 +1785,10 @@ impl Got {
         }
         if self.home.is_some() {
             d.home = self.home.map(Rc::new);
+        }
+        // A failed fetch keeps the rows shown; Needs you's own answer says when the board is down.
+        if let Some((p, Ok(f))) = self.handled.filter(|_| m.page == Page::Board) {
+            m.home.handled.land(p, f);
         }
         if self.today.is_some() {
             d.today = self.today.map(Rc::new);
