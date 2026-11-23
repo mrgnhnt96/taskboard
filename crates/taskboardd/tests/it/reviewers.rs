@@ -740,7 +740,7 @@ fn closed_hours(b: &Board) {
 }
 
 #[test]
-fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
+fn after_the_owner_s_review_the_board_asks_for_reviews_itself_in_work_hours() {
     let b = board_with(|c| c.reviewers.ask_stage = true);
     let h = fake(&b, green());
     let id = b.pr_task(BB);
@@ -751,20 +751,14 @@ fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
     let e = b.try_post(&format!("/tasks/{id}/pr/reviewed"), json!({"agent": true, "via_session": "s1"})).unwrap_err();
     assert!(e.starts_with("Only ") && e.contains("haven't told you"), "{e}");
     assert_eq!(b.phase(id), "review", "an agent can't mark the owner's review");
-    b.mark_reviewed(id);
-    assert_eq!(b.phase(id), "ask");
     assert_eq!(prflow::label("ask"), "Asking for reviews");
-    let jobs = pr_jobs(&b, id);
-    assert_eq!(jobs.len(), 1, "{jobs:?}");
-    assert!(jobs[0].contains("pr reviewers T"), "{}", jobs[0]);
-    assert!(h.calls().iter().all(|c| !c.starts_with("request")), "the agent asks, not the board");
-
-    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    b.mark_reviewed(id);
+    assert!(pr_jobs(&b, id).is_empty(), "no terminal is opened to ask");
+    assert!(h.calls().contains(&"request {ana},{bo}".to_string()), "{:?}", h.calls());
     assert_eq!(b.phase(id), "review");
-    assert_eq!(b.flow(id)["asked"]["names"].as_array().unwrap().len(), 2);
-    assert!(b.flow(id).get("woke").is_none(), "asking finished the visit");
+    assert_eq!(b.flow(id)["asked"]["names"], json!(["Ana", "Bo"]));
     let card = board::task_card(&b.app, &b.task(id)).unwrap();
-    assert_eq!(card["pr"]["stage"]["asked"]["by"], "The agent");
+    assert_eq!(card["pr"]["stage"]["asked"]["by"], "Task board");
 }
 
 /// Ends the limit the fake host's account is under, and the wait the board set for it.
@@ -775,57 +769,33 @@ fn limit_over(b: &Board, h: &FakeHost, id: i64) {
 }
 
 #[test]
-fn a_rate_limited_ask_ends_the_visit_and_brings_the_agent_back_after_it() {
+fn a_rate_limited_host_holds_the_board_s_ask_and_wakes_no_agent() {
     let b = board_with(|c| c.reviewers.ask_stage = true);
     let h = fake(&b, green());
     let id = b.pr_task(BB);
     crew(&b);
     poll(&b);
-    b.mark_reviewed(id);
-    assert_eq!(pr_jobs(&b, id).len(), 1);
-    // The host has the board's account limited: the ask fails, and nothing is asked.
     *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
     *h.review_error.lock() = Some("Bitbucket answered 429".into());
-
-    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"})).unwrap_err();
-    assert!(e.contains("The board ended this visit and brings you back after"), "{e}");
-    assert!(e.contains("don't wait for it"), "{e}");
-    let f = b.flow(id);
-    assert!(f.get("woke").is_none(), "the visit is over");
-    assert!(f.get("asked").is_none());
-    assert!(f["retry_at"].as_str().is_some_and(|r| r > taskboardd::util::now_iso().as_str()), "{f}");
-    assert_eq!(b.phase(id), "ask");
-
-    // Once the limit is over, the next read brings the agent back to ask.
-    *h.review_error.lock() = None;
-    limit_over(&b, &h, id);
-    poll(&b);
-    let jobs = pr_jobs(&b, id);
-    assert_eq!(jobs.len(), 2, "{jobs:?}");
-    assert!(jobs[1].contains("pr reviewers T"), "{}", jobs[1]);
-}
-
-#[test]
-fn the_agent_isn_t_brought_back_to_ask_while_the_host_account_is_limited() {
-    let b = board_with(|c| c.reviewers.ask_stage = true);
-    let h = fake(&b, green());
-    let id = b.pr_task(BB);
-    crew(&b);
-    poll(&b);
-    *h.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
     b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask");
-    assert!(pr_jobs(&b, id).is_empty(), "its first tb pr call would fail");
-    assert!(b.flow(id)["retry_at"].is_string());
+    assert!(pr_jobs(&b, id).is_empty());
+    assert_eq!(b.flow(id)["ask_tries"], 1, "{}", b.flow(id));
+
+    *h.review_error.lock() = None;
     limit_over(&b, &h, id);
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.ask_retry_at', '2000-01-01T00:00:00Z')", vec![]).unwrap();
     poll(&b);
-    assert_eq!(pr_jobs(&b, id).len(), 1);
+    assert!(pr_jobs(&b, id).is_empty());
+    assert_eq!(b.phase(id), "review");
+    assert_eq!(b.flow(id)["asked"]["names"], json!(["Ana", "Bo"]));
 }
+
 
 #[test]
 fn a_limit_on_another_host_holds_nothing_here() {
     let b = board_with(|c| c.reviewers.ask_stage = true);
-    let _h = fake(&b, green());
+    let h = fake(&b, green());
     let gh = FakeHost::new("github", green());
     *gh.held.lock() = Some(taskboardd::util::now_ts() + 600.0);
     prhost::install(&b.app, gh);
@@ -833,23 +803,25 @@ fn a_limit_on_another_host_holds_nothing_here() {
     crew(&b);
     poll(&b);
     b.mark_reviewed(id);
-    assert_eq!(pr_jobs(&b, id).len(), 1, "GitHub's limit doesn't hold a Bitbucket PR");
-    assert!(b.flow(id).get("retry_at").is_none());
+    assert!(h.calls().contains(&"request {ana},{bo}".to_string()), "GitHub's limit doesn't hold a Bitbucket PR: {:?}", h.calls());
+    assert_eq!(b.phase(id), "review");
 }
 
 #[test]
-fn asking_for_reviews_gives_the_visit_s_slot_back() {
+fn asking_finishes_an_ask_visit_even_after_the_pr_moved_on() {
     let b = board_with(|c| c.reviewers.ask_stage = true);
     let _h = fake(&b, green());
     let id = b.pr_task(BB);
     crew(&b);
     poll(&b);
-    b.mark_reviewed(id);
-    assert_eq!(b.phase(id), "ask");
+    // A terminal an older board brought back to ask; the read before asking finds the PR at another stage.
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.woke', 'ask:h1:0', '$.session', 's2', '$.reviewed', '2026-11-23T00:00:00Z') WHERE id = ?", vec![json!(id)]).unwrap();
+    assert_eq!(b.phase(id), "review");
     let gone = b.dir.path().join("slot-1").to_string_lossy().to_string();
     b.app.db.x("INSERT INTO worktree_slots(repo, n, path, task_id) VALUES ('webapp', 1, ?, ?)", vec![json!(gone), json!(id)]).unwrap();
 
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert!(b.flow(id).get("woke").is_none(), "asking finished the visit");
     let slot = b.app.db.q1("SELECT task_id FROM worktree_slots WHERE n = 1", vec![]).unwrap().unwrap();
     assert!(slot.i("task_id").is_none(), "the next work can take it");
 }
@@ -1120,8 +1092,7 @@ fn with_the_ask_stage_reviewers_wait_for_the_owner_s_review() {
     let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
     assert!(e.contains("hasn't reviewed PR #9 yet"), "{e}");
     b.mark_reviewed(id);
-    assert_eq!(b.phase(id), "ask", "the project's switch turns the stage on");
-    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert_eq!(b.flow(id)["asked"]["by"], "Task board", "the project's switch turns the stage on: the board asked");
     assert_eq!(b.phase(id), "review");
     let v = b.post("/projects/webapp", json!({"ask_stage": "off"}));
     assert_eq!(v["pr_rules"]["ask_stage"], false);
@@ -1129,27 +1100,25 @@ fn with_the_ask_stage_reviewers_wait_for_the_owner_s_review() {
 }
 
 #[test]
-fn the_agent_isn_t_woken_to_ask_while_the_feed_holds_and_is_once_it_s_back() {
+fn the_board_doesn_t_ask_while_the_feed_holds_and_does_once_it_s_back() {
     let b = board_with(|c| {
         c.reviewers.ask_stage = true;
         c.feed.on = true;
     });
-    let _h = fake(&b, green());
+    let h = fake(&b, green());
     let id = b.pr_task(BB);
     crew(&b);
     poll(&b);
     feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
     b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask");
-    assert!(pr_jobs(&b, id).is_empty(), "held: no wake");
     taskboardd::runner::reviews(&b.app).unwrap();
-    assert!(pr_jobs(&b, id).is_empty());
+    assert!(h.calls().iter().all(|c| !c.starts_with("request")), "held: {:?}", h.calls());
 
     feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(1.0), "healthy_at": ago(400.0)}));
     taskboardd::runner::reviews(&b.app).unwrap();
-    let jobs = pr_jobs(&b, id);
-    assert_eq!(jobs.len(), 1, "the sweep brings it back once the feed has settled");
-    assert!(jobs[0].contains("pr reviewers T"), "{}", jobs[0]);
+    assert!(pr_jobs(&b, id).is_empty(), "no terminal is opened to ask");
+    assert!(h.calls().contains(&"request {ana},{bo}".to_string()), "the sweep asks once the feed has settled: {:?}", h.calls());
 }
 
 #[test]

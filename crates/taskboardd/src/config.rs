@@ -662,7 +662,7 @@ pub struct ModelsConfig {
     pub large_effort: String,
     /// The effort of tasks that name a model outright; empty passes none, Claude's own.
     pub default_effort: String,
-    /// The model of PR visits that don't change code (merging, asking for reviews): `small`, `large` or a
+    /// The model of PR visits that don't change code (merging): `small`, `large` or a
     /// model name. Empty runs them on the task's own model.
     pub pr_visit: String,
     /// Those visits start a fresh conversation with a short prompt instead of resuming the task's.
