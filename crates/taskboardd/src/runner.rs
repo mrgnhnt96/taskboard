@@ -761,6 +761,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     dispatch::start_answers(app)?;
     crate::start_grants::answers(app)?;
     crate::scheduled::tick(app)?;
+    app.db.tx(|| crate::misses::sweep(app).map(|_| ()))?;
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;

@@ -102,8 +102,9 @@ pub fn report_block(app: &App, tb: &str) -> String {
         format!("- At each milestone and before a long step: {tb} checkpoint --done \"…\" --next \"…\" --decision \"…\""),
         format!("- A problem outside this task: {tb} found \"<problem>\" --kind bug|gap|follow|clean --output \"<excerpt>\""),
         format!(
-            "- The goal's own done-when isn't met: {tb} found \"<what misses>\" --misses-goal. It goes to {owner}, not the \
-             backlog, and the goal stays open until it's settled"
+            "- The goal's own done-when isn't met: {tb} found \"<what misses>\" --misses-goal. The board makes it a task for \
+             an agent (add --needs-owner when settling it needs {owner}'s call; then it goes to {owner}), and the goal stays \
+             open until it's settled"
         ),
         format!(
             "- Needs another task's work that isn't there yet: {tb} wait-for T<n> --why \"<what you need>\". Don't ask \
