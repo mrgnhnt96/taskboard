@@ -2763,9 +2763,19 @@ fn step_fail_screened(app: &App, step: &steps::Step, why: &str) -> String {
     q
 }
 
-/// `tb step fail`: a step can't pass. When the owner's rules settle what to do (screened before the
-/// transaction, as `tb question` is), the board answers and the task carries on; otherwise the task
-/// waits for the owner's answer (or their skip).
+/// The rule or lesson that says what to do about a failing step, unless the agent overrode it
+/// (`tb step fail --override`) or the report was saved while the board was down and its agent has moved on.
+fn step_fail_rule(r: &Report, t: &Row, step: &steps::Step) -> Option<steps::StepRule> {
+    if r.spooled || r.body["override"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    steps::rule_for(r.app, t, step)
+}
+
+/// `tb step fail`: a step can't pass. A step a rule or lesson covers is refused with that rule, unless
+/// overridden (#1146). When the owner's rules settle what to do (screened before the transaction, as
+/// `tb question` is), the board answers and the task carries on; otherwise the task waits for the
+/// owner's answer (or their skip).
 fn on_step_fail(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
@@ -2774,6 +2784,9 @@ fn on_step_fail(r: &mut Report) -> Result<Value> {
     let why = one_line(&r.b("why"), 2000);
     if why.is_empty() {
         return err(400, "Say why the step can't pass (--why).");
+    }
+    if let Some(rule) = step_fail_rule(r, &t, &step) {
+        return err(409, steps::rule_refusal(&board::tb_cmd(app), &step.name, &rule));
     }
     let ask = step_fail_ask(&step, &why);
     if let Some(s) = r.screened.clone().filter(|s| s["verdict"] == "answered") {
@@ -3792,7 +3805,7 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         // Screened like a tb question: the owner's rules may already say what to do about this step (#1144).
         let why = one_line(&r.b("why"), 2000);
         if let (Some(t), false) = (r.task().ok().flatten(), why.is_empty()) {
-            if let Ok(step) = steps::find(app, &t, &r.b("name")) {
+            if let Some(step) = steps::find(app, &t, &r.b("name")).ok().filter(|s| step_fail_rule(&r, &t, s).is_none()) {
                 r.screened = screen::question(app, Some(&t), &step_fail_screened(app, &step, &why));
             }
         }

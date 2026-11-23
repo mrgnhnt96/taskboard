@@ -21,6 +21,7 @@
 //! held. The file is read fresh each time, like hooks.json, so edits apply without restarting the board.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -1000,11 +1001,108 @@ pub fn refusal(tb: &str, what: &str, left: &[Step]) -> String {
     lines.join("\n")
 }
 
+/// A kept lesson or a rule of the owner's that names a step: where it's from and what it says (#1146).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepRule {
+    pub source: String,
+    pub text: String,
+}
+
+/// How much of a rule the handoff and the refusal quote.
+const RULE_CHARS: usize = 400;
+
+/// The first kept lesson, project instruction file (`AGENTS.md`, `CLAUDE.md` in the task's repo) or file
+/// in the owner's question rules (`questions.rules`, which the question screener reads) that names the
+/// step, else None. A step named in one word (`Lens`) counts only where the same passage also says
+/// "step", so a rule that merely uses the word doesn't take it over.
+pub fn rule_for(app: &App, t: &Row, step: &Step) -> Option<StepRule> {
+    let lessons = crate::lessons::kept(app, t.s("project"), &["code", "process", "tooling"]).unwrap_or_default();
+    if let Some(l) = lessons.iter().find(|l| names_step(&l.st("text"), &step.name)) {
+        return Some(StepRule { source: format!("lesson {}", rf("lesson", l.id())), text: one_line(&l.st("text"), RULE_CHARS) });
+    }
+    let repo = t.st("repo_path");
+    let mut files: Vec<PathBuf> = vec![];
+    if !repo.trim().is_empty() {
+        files.extend(["AGENTS.md", "CLAUDE.md"].map(|f| Path::new(&repo).join(f)));
+    }
+    files.extend(crate::screen::rule_paths(app));
+    files.iter().find_map(|p| {
+        let text = std::fs::read_to_string(p).ok()?;
+        let b = passages(&text).into_iter().find(|b| names_step(b, &step.name))?;
+        Some(StepRule { source: shown_path(p, &repo), text: one_line(&b, RULE_CHARS) })
+    })
+}
+
+/// Whether `text` names the step `name` as a whole phrase, any case or spacing; a one-word name also
+/// needs the word "step" nearby.
+fn names_step(text: &str, name: &str) -> bool {
+    let words: Vec<String> = name.split_whitespace().map(regex::escape).collect();
+    if words.is_empty() {
+        return false;
+    }
+    let Ok(re) = regex::Regex::new(&format!(r"(?i)(?:^|\W){}(?:\W|$)", words.join(r"\s+"))) else { return false };
+    if !re.is_match(text) {
+        return false;
+    }
+    words.len() > 1 || regex::Regex::new(r"(?i)\bsteps?\b").map(|s| s.is_match(text)).unwrap_or(false)
+}
+
+/// A Markdown file's passages: each paragraph or list item, a heading joined to the paragraph under it.
+fn passages(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut cur = String::new();
+    let mut heading_only = false;
+    for line in text.lines() {
+        let l = line.trim();
+        let item = l.starts_with("- ") || l.starts_with("* ") || l.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        let heading = l.starts_with('#');
+        let breaks = heading || item || l == "---" || (l.is_empty() && !heading_only);
+        if breaks && !cur.trim().is_empty() {
+            out.push(std::mem::take(&mut cur).trim().to_string());
+        }
+        if breaks {
+            cur.clear();
+            heading_only = heading;
+        } else if !l.is_empty() {
+            heading_only = false;
+        }
+        if l != "---" && !l.is_empty() {
+            cur += l.trim_start_matches('#').trim_start_matches("- ").trim_start_matches("* ").trim();
+            cur += if heading { ": " } else { " " };
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// A rule file as the agent should see it: relative to the task's repo, else with `~` for home.
+fn shown_path(p: &Path, repo: &str) -> String {
+    if let Some(r) = p.strip_prefix(repo).ok().filter(|_| !repo.trim().is_empty()) {
+        return r.display().to_string();
+    }
+    match std::env::var("HOME").ok().and_then(|h| p.strip_prefix(h).ok().map(|r| r.display().to_string())) {
+        Some(r) => format!("~/{r}"),
+        None => p.display().to_string(),
+    }
+}
+
+/// What `tb step fail` says when a rule covers the step and the agent didn't override it.
+pub fn rule_refusal(tb: &str, step: &str, rule: &StepRule) -> String {
+    format!(
+        "Not failed: a rule covers the step “{step}” ({}): “{}”\nDo what it says and run the step again. If it truly \
+         doesn't fit this failure, say why: {tb} step fail \"{step}\" --why \"<why the rule doesn't fit and the step can't pass>\" --override",
+        rule.source, rule.text
+    )
+}
+
 /// The handoff's lines about the task's steps, or nothing when it has none.
 pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
     let v = vars_for(app, t);
     let all: Vec<Step> = for_task(app, t).iter().map(|s| s.filled(&v)).collect();
     let mut s = String::new();
+    let (mut listed, mut ruled) = (0, 0);
     for (before, when) in [(Before::Pr, "Before you open the PR"), (Before::Done, "Before you run tb submit"), (Before::Merge, "Before the PR merges")] {
         let these: Vec<&Step> = all.iter().filter(|s| s.before == before && (ships_prs || before == Before::Done)).collect();
         if these.is_empty() {
@@ -1013,6 +1111,11 @@ pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
         s += &format!("\n{when}, do {}:", if these.len() == 1 { "this step" } else { "these steps in order" });
         for (i, st) in these.iter().enumerate() {
             s += &format!("\n{}. {}: {}. Then: {}.", i + 1, st.name, st.what(), st.how(tb));
+            listed += 1;
+            if let Some(r) = rule_for(app, t, st) {
+                ruled += 1;
+                s += &format!(" A rule covers it ({}): “{}” Follow that rule when it doesn't pass.", r.source, r.text);
+            }
         }
     }
     let ignored = ignored_for(app, t);
@@ -1032,9 +1135,14 @@ pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
     if s.is_empty() {
         return off.trim_start().to_string();
     }
+    let fail = match ruled {
+        0 => format!(" If one can't pass, {tb} step fail \"<name>\" --why \"…\" and end your turn."),
+        n if n == listed => String::new(),
+        _ => format!(" If a step with no rule above can't pass, {tb} step fail \"<name>\" --why \"…\" and end your turn."),
+    };
     format!(
         "{}{off}\nThe board won't let the PR open or the task finish until they pass. A script or check can take a while: \
-         give it time. If one can't pass, {tb} step fail \"<name>\" --why \"…\" and end your turn. {tb} steps lists them.",
+         give it time.{fail} {tb} steps lists them.",
         s.trim_start()
     )
 }
@@ -1239,6 +1347,22 @@ pub fn bar_card(app: &App, t: &Row) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rule_names_a_step_as_a_whole_phrase() {
+        assert!(names_step("When design  PARITY fails, fix the app.", "Design parity"));
+        assert!(names_step("“Design parity”: never ask.", "Design parity"));
+        assert!(!names_step("Design parityx is new.", "Design parity"));
+        assert!(!names_step("Run the tests before pushing.", "Tests"), "one word needs \"step\" too");
+        assert!(names_step("The Tests step needs the VPN.", "Tests"));
+        assert!(!names_step("anything", "  "));
+    }
+
+    #[test]
+    fn passages_are_paragraphs_items_and_headed_sections() {
+        let p = passages("# Agents\n\n## Design parity\n\nNever ask;\nrerun it.\n\n- one\n  more\n- two\n---\n1. three\n");
+        assert_eq!(p, vec!["Agents:", "Design parity: Never ask; rerun it.", "one more", "two", "1. three"]);
+    }
 
     #[test]
     fn scripts_get_each_value_as_one_shell_word() {

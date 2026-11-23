@@ -347,3 +347,98 @@ fn shown_scripts_are_what_runs() {
     let (_, why) = b.report("tb.done", json!({"summary": "Done", "pr": PR})).unwrap_err();
     assert!(why.contains(r#"'Fix `rm -rf` it'"'"'s'"#), "{why}");
 }
+
+const PARITY: &str = r#"
+[[steps]]
+name = "Design parity"
+run = "parity.sh"
+
+[[steps]]
+name = "Tests"
+run = "make test"
+"#;
+
+/// A board with PARITY's steps and the repo's AGENTS.md saying what to do when Design parity fails.
+fn board_with_parity_rule() -> Board {
+    let b = board(PARITY);
+    std::fs::write(
+        b._dir.path().join("webapp").join("AGENTS.md"),
+        "# Agents\n\nRun the tests often.\n\n## Design parity\n\nNever ask the owner; change the app and run the step again.\n",
+    )
+    .unwrap();
+    b
+}
+
+#[test]
+fn a_step_a_rule_covers_gets_that_rule_in_the_handoff() {
+    let b = board_with_parity_rule();
+    let id = b.new_task();
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(
+        h.contains("1. Design parity: the script `parity.sh`. Then: tb step run \"Design parity\"; fix what it reports and run it again. \
+                    A rule covers it (AGENTS.md): “Design parity: Never ask the owner; change the app and run the step again.” \
+                    Follow that rule when it doesn't pass."),
+        "{h}"
+    );
+    assert!(!h.contains("Then: tb step run \"Tests\"; fix what it reports and run it again. A rule"), "a mention of tests isn't a rule for the Tests step: {h}");
+    assert!(h.contains("If a step with no rule above can't pass, tb step fail \"<name>\""), "{h}");
+}
+
+#[test]
+fn the_handoff_drops_fail_and_end_your_turn_when_every_step_has_a_rule() {
+    let b = board_with_parity_rule();
+    std::fs::write(b._dir.path().join("webapp").join("CLAUDE.md"), "- The Tests step needs the VPN: connect it, never fail the step.\n").unwrap();
+    let id = b.new_task();
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(h.contains("A rule covers it (CLAUDE.md): “The Tests step needs the VPN: connect it, never fail the step.”"), "{h}");
+    assert!(!h.contains("step fail"), "{h}");
+}
+
+#[test]
+fn failing_a_step_a_rule_covers_is_refused_unless_overridden() {
+    let b = board_with_parity_rule();
+    let id = b.new_task();
+    let (code, why) = b.report("tb.step_fail", json!({"name": "design parity", "why": "the header is 2px off"})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.starts_with("Not failed: a rule covers the step “Design parity” (AGENTS.md): “Design parity: Never ask the owner;"), "{why}");
+    assert!(why.contains("tb step fail \"Design parity\" --why \"<why the rule doesn't fit and the step can't pass>\" --override"), "{why}");
+    assert_eq!(b.status(id), "working");
+    assert!(b.card(id)["step"]["failed"] != true);
+
+    b.report("tb.step_fail", json!({"name": "Design parity", "why": "the design itself is broken", "override": true})).unwrap();
+    assert_eq!(b.status(id), "needs", "overridden, it goes to the owner as before");
+    assert_eq!(b.task(id).st("question"), "Step “Design parity” can't pass: the design itself is broken. Answer, or skip the step.");
+}
+
+#[test]
+fn a_kept_lesson_naming_the_step_covers_it() {
+    let b = board(PARITY);
+    let l = api::dispatch(
+        &b.app,
+        "POST",
+        "/lessons",
+        &Query::new(),
+        &json!({"text": "When Design parity fails, fix the app and rerun it; never ask the owner.", "kind": "process", "project": "webapp", "kept": true}),
+    )
+    .unwrap();
+    let id = b.new_task();
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(h.contains(&format!("A rule covers it (lesson {}): “When Design parity fails", l["ref"].as_str().unwrap_or("L1"))), "{h}");
+    let (code, _) = b.report("tb.step_fail", json!({"name": "Design parity", "why": "off by 2px"})).unwrap_err();
+    assert_eq!(code, 409);
+}
+
+#[test]
+fn a_rule_file_covers_a_one_word_step_only_where_it_says_step() {
+    let b = board_with(PARITY, |cfg, dir| {
+        let rules = dir.join("rules.md");
+        std::fs::write(&rules, "Run the tests before pushing.\n\nWhen the Tests step can't reach the VPN, skip it with tb step skip.\n").unwrap();
+        cfg.questions.rules = vec![rules.to_string_lossy().to_string()];
+    });
+    let id = b.new_task();
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(h.contains("A rule covers it (") && h.contains("rules.md): “When the Tests step can't reach the VPN, skip it with tb step skip.”"), "{h}");
+    assert!(!h.contains("Run the tests before pushing"), "{h}");
+    let (code, why) = b.report("tb.step_fail", json!({"name": "Tests", "why": "no VPN"})).unwrap_err();
+    assert_eq!(code, 409, "{why}");
+}
