@@ -694,6 +694,8 @@ fn build_with(app: &App, task_id: i64, starting: bool, fit: bool) -> Result<Stri
     ps.extend(parts(also_goals(app, &t)?, Fit::Pointer));
     ps.extend(parts(wave_section(app, &t, g.as_ref())?, Fit::Pointer));
     ps.extend(parts(setup_block(app, &t, g.as_ref())?, Fit::Whole));
+    // A task made before estimates records one before its work.
+    ps.extend(parts(crate::estimate::handoff_lines(app, &t), Fit::Whole));
     // The devices lent to it, early and whole, so a long handoff keeps how to start and stop them.
     ps.extend(parts(crate::devices::handoff_lines(app, &t, starting)?, Fit::Whole));
     ps.extend(parts(branch_and_last_commit(&w), Fit::Whole));
@@ -757,7 +759,7 @@ pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
     let line = format!(
         "Task board: no task on this terminal. To take one, run {tb} take {n}, or ask {owner}. \
          If you change code for {owner} here, put it on the board as you start, before the first edit, in a worktree slot of its own: \
-         {tb} task new \"<title>\" --detail \"…\" --here --lane slot, then cd to the path it prints. Only a small change stays in this \
+         {tb} task new \"<title>\" --detail \"…\" --est <len> --here --lane slot (--est: your estimate of the working time, like 45m), then cd to the path it prints. Only a small change stays in this \
          checkout (--lane shared). Other terminals work here too: never git switch or check out another branch in it. \
          The rest of the rules for a terminal with no task are in the task-board skill's no-task.md."
     );

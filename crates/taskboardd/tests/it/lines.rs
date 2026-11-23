@@ -54,11 +54,11 @@ impl Board {
     /// A terminal on a fresh `--here` task; its ref.
     fn on_task(&self, sid: &str, title: &str) -> String {
         self.add_session(sid);
-        let r = self.report("tb.new_task", sid, json!({"title": title, "detail": "Asked for.", "here": true}));
+        let r = self.report("tb.new_task", sid, json!({"est": "1h", "title": title, "detail": "Asked for.", "here": true}));
         r["created"][0].as_str().unwrap().to_string()
     }
     fn split(&self, sid: &str, title: &str, line: &str) -> Value {
-        self.report("tb.new_task", sid, json!({"title": title, "detail": "A separate ask.", "here": true, "line": line}))
+        self.report("tb.new_task", sid, json!({"est": "1h", "title": title, "detail": "A separate ask.", "here": true, "line": line}))
     }
     fn task(&self, r: &str) -> Value {
         self.get(&format!("tasks/{r}"))
@@ -111,7 +111,7 @@ fn next_queues_the_ask_in_this_terminal_and_nothing_else_starts_it() {
     board::update_task(&b.app, id(&t2), fields!["pickup" => "queue"]).unwrap();
     assert!(runner::start_queued(&b.app).unwrap().is_empty(), "a task in a line starts only there");
 
-    let plain = b.try_report("tb.new_task", "s1", json!({"title": "Another", "here": true}));
+    let plain = b.try_report("tb.new_task", "s1", json!({"est": "1h", "title": "Another", "here": true}));
     assert!(plain.unwrap_err().contains("--here --next"), "a plain --here says how to split");
 }
 
@@ -131,7 +131,7 @@ fn now_switches_and_the_old_task_waits_here_to_resume() {
 
     // A task waiting on the owner's answer keeps its terminal.
     board::update_task(&b.app, id(&t2), fields!["status" => "needs", "needs_reason" => "question", "question" => "Which?"]).unwrap();
-    let held = b.try_report("tb.new_task", "s1", json!({"title": "X", "here": true, "line": "now"}));
+    let held = b.try_report("tb.new_task", "s1", json!({"est": "1h", "title": "X", "here": true, "line": "now"}));
     assert!(held.unwrap_err().contains("answer"));
 }
 

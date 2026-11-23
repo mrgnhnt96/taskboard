@@ -70,7 +70,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::days::{self, NO_PROJECT};
 use crate::util::*;
-use crate::{dispatch, hours, human, midna, p, quality};
+use crate::{dispatch, estimate, hours, human, midna, p, quality};
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS recaps(
@@ -291,36 +291,15 @@ fn busy(stretches: impl Iterator<Item = (f64, f64)>) -> f64 {
     crate::clock::merge(stretches.collect()).iter().map(|(a, b)| b - a).sum()
 }
 
-/// Each task's working seconds, ever, by task (tasks that never worked are left out).
-fn work_by_task(app: &App, tasks: &[i64]) -> Result<HashMap<i64, f64>> {
-    let mut out: HashMap<i64, f64> = HashMap::new();
-    if tasks.is_empty() {
-        return Ok(out);
-    }
-    let now = now_ts();
-    let list = tasks.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
-    let states = app.db.q(&format!("SELECT task_id, at, status FROM task_states WHERE task_id IN ({list}) ORDER BY task_id, at, id"), p![])?;
-    for (i, s) in states.iter().enumerate() {
-        if s.s("status") != Some("working") {
-            continue;
-        }
-        let task = s.i0("task_id");
-        let a = s.s("at").and_then(parse_iso).unwrap_or(now);
-        let b = states.get(i + 1).filter(|n| n.i0("task_id") == task).and_then(|n| n.s("at")).and_then(parse_iso).unwrap_or(now);
-        *out.entry(task).or_default() += (b - a).max(0.0);
-    }
-    Ok(out)
-}
-
 /// The tasks' working seconds, ever, added up (for agent time against the estimate).
 fn total_work(app: &App, tasks: &[i64]) -> Result<f64> {
-    Ok(work_by_task(app, tasks)?.values().sum())
+    Ok(estimate::work_by_task(app, tasks)?.values().sum())
 }
 
 /// `rows`' tasks by their agent time ever, most first, the first `cap` of them.
 fn slowest(app: &App, rows: &[&Row], cap: usize) -> Result<Vec<Value>> {
     let ids: Vec<i64> = rows.iter().map(|r| r.id()).collect();
-    let work = work_by_task(app, &ids)?;
+    let work = estimate::work_by_task(app, &ids)?;
     let mut slow: Vec<(&Row, f64)> = rows.iter().filter_map(|r| Some((*r, *work.get(&r.id()).filter(|s| **s > 0.0)?))).collect();
     slow.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id().cmp(&b.0.id())));
     Ok(slow

@@ -889,7 +889,7 @@ fn wave_mates_are_the_ones_still_to_run_with_their_planned_files() {
     let r = taskboardd::reports::handle(
         &b.app,
         json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"),
-               "tasks": ["Sign-in form::Build it::1::::src/form.rs, src/form.css", "Session cookie::Bake it::1", "Old work::Done already::1"]}),
+               "tasks": ["Sign-in form::Build it::1::::src/form.rs, src/form.css::est=1h", "Session cookie::Bake it::1::est=1h", "Old work::Done already::1::est=1h"]}),
         false,
     )
     .unwrap();
@@ -1177,14 +1177,14 @@ fn a_planned_item_with_pr_no_queues_no_jira_job() {
     let r = taskboardd::reports::handle(
         &b.app,
         json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"),
-               "tasks": [{"title": "Plain", "detail": "d", "jira": "create"}, "Notes::write them::pr=no"]}),
+               "tasks": [{"est": "1h", "title": "Plain", "detail": "d", "jira": "create"}, "Notes::write them::pr=no::est=1h"]}),
         false,
     )
     .unwrap();
     let r2 = taskboardd::reports::handle(
         &b.app,
         json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"),
-               "tasks": [{"title": "Notes two", "detail": "d", "jira": "create", "ships_pr": "no"}]}),
+               "tasks": [{"est": "1h", "title": "Notes two", "detail": "d", "jira": "create", "ships_pr": "no"}]}),
         false,
     )
     .unwrap();

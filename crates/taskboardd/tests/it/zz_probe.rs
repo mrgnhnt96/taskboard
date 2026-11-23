@@ -43,7 +43,7 @@ impl Board {
         self.report("hook.stop", json!({"last_message": start, "last_message_end": end}));
     }
     fn new_task(&self) -> i64 {
-        let v = self.report("tb.new_task", json!({"title": "Add login"}));
+        let v = self.report("tb.new_task", json!({"est": "1h", "title": "Add login"}));
         v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap()
     }
     fn elsewhere(&self) -> i64 {
@@ -62,7 +62,7 @@ impl Board {
         id
     }
     fn goal_new(&self) -> i64 {
-        let v = self.report("tb.goal", json!({"name": "Dark mode", "project": "webapp", "tasks": ["Colors::pick them", "Toggle::add it"]}));
+        let v = self.report("tb.goal", json!({"est": "3h", "name": "Dark mode", "project": "webapp", "tasks": ["Colors::pick them::est=1h", "Toggle::add it::est=1h"]}));
         v["goal"].as_str().unwrap().trim_start_matches('G').parse().unwrap()
     }
     /// A goal made in another terminal's conversation (`s2`).
@@ -70,8 +70,8 @@ impl Board {
         let repo = self._dir.path().join("webapp");
         let term = |id: &str| json!({"id": id, "name": "Term", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}});
         midna::sync(&self.app, &[term("s1"), term("s2")], &[]).unwrap();
-        let b = json!({"event": "tb.goal", "session": "s2", "claude_session": "c-s2", "cwd": "", "name": "Search", "project": "webapp",
-                       "tasks": ["Index::build it", "Box::add it"]});
+        let b = json!({"est": "3h", "event": "tb.goal", "session": "s2", "claude_session": "c-s2", "cwd": "", "name": "Search", "project": "webapp",
+                       "tasks": ["Index::build it::est=1h", "Box::add it::est=1h"]});
         let v = reports::handle(&self.app, b, false).unwrap();
         v["goal"].as_str().unwrap().trim_start_matches('G').parse().unwrap()
     }
@@ -206,10 +206,10 @@ fn goal_row(line: &str) -> String {
             }
             s if s.starts_with("use:") => g = gs[s[4..].parse::<usize>().unwrap() - 1],
             "propose" => {
-                b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Colors::pick them"]}));
+                b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Colors::pick them::est=1h"]}));
             }
             "task new" => {
-                b.report("tb.new_task", json!({"title": "Toggle", "goal": format!("G{g}")}));
+                b.report("tb.new_task", json!({"est": "1h", "title": "Toggle", "goal": format!("G{g}")}));
             }
             "clear" | "startup" => {
                 b.report("hook.session_start", json!({"source": st}));

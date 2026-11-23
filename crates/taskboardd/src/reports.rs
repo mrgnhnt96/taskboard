@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{blocks, board, deliver, fields, handoff, hooks, lines, midna, ops, p, prflow, projects, screen, steps, transcript, waitsfor};
+use crate::{blocks, board, deliver, estimate, fields, handoff, hooks, lines, midna, ops, p, prflow, projects, screen, steps, transcript, waitsfor};
 
 static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[Tt](\d+)\]").unwrap());
 static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)$").unwrap());
@@ -1103,9 +1103,9 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     Ok(Some(format!(
         "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
          Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
-         --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR). \
+         --detail \"<what {owner} asked for and what you changed>\" --est <len> --here (add --no-pr if it won't end in a PR). \
          If the work is a design (concepts, a canvas, mockups, a design artifact), make a goal for the feature first: \
-         {tb} goal new \"<feature>\" --tldr \"…\" --outcome \"<done when>\", then the task with --kind design --goal G<n> --here; \
+         {tb} goal new \"<feature>\" --tldr \"…\" --outcome \"<done when>\" --est <len>, then the task with --kind design --goal G<n> --here; \
          the build tasks that follow go in that goal and wait for it.{backlog} \
          To check the board for this work first: {tb} search \"<words>\".{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn. The task-board skill's no-task.md has the rest."
@@ -1719,6 +1719,17 @@ fn on_note(r: &mut Report) -> Result<Value> {
     r.log(t.id(), "note", &text, None)?;
     board::update_task(app, t.id(), fields!["latest" => one_line(&text, 200)])?;
     Ok(ok(Some(&t), None))
+}
+
+/// `tb estimate <len>`: the task's estimate of its working time, for one made without one.
+fn on_estimate(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return err(400, "This terminal has no task: name it with --task T<n>.") };
+    let Some(min) = estimate::parse(r.body.get("est"))? else {
+        return err(400, format!("Give the estimate as a length: tb estimate 45m (or 3h, 1h30m), {}", estimate::what_it_is(r.app)));
+    };
+    estimate::set_task(r.app, &t, min, &r.name())?;
+    Ok(with(ok(Some(&t), None), json!({"est_min": min, "est": estimate::len(min as f64)})))
 }
 
 fn on_checkpoint(r: &mut Report) -> Result<Value> {
@@ -3009,7 +3020,7 @@ static PLANNED_WITH_FILES: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s
 static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
 static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
-static PLANNED_PART: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(model|effort|project|lane|pr)\s*=\s*([^:\s]*)\s*$").unwrap());
+static PLANNED_PART: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(model|effort|project|lane|pr|est)\s*=\s*([^:\s]*)\s*$").unwrap());
 
 /// The project a planned task goes in: the one it names, in the board's spelling, or its goal's.
 fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
@@ -3021,17 +3032,17 @@ fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
 
 /// A `--task` item's named parts at the very end ("::model=small", "::effort=high", "::project=api",
 /// "::lane=slot", "::pr=no", in any order), taken off before the rest is read: the rest, then the model, effort, project and lane.
-fn planned_parts(item: &str) -> (String, Value, Value, Value, Value, Value) {
-    let (mut rest, mut parts) = (item.to_string(), [Value::Null, Value::Null, Value::Null, Value::Null, Value::Null]);
+fn planned_parts(item: &str) -> (String, Value, Value, Value, Value, Value, Value) {
+    let (mut rest, mut parts) = (item.to_string(), [Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null]);
     while let Some(c) = PLANNED_PART.captures(&rest).filter(|c| !c[1].trim().is_empty()) {
-        let k = ["model", "effort", "project", "lane", "pr"].iter().position(|k| *k == &c[2]).unwrap_or(0);
+        let k = ["model", "effort", "project", "lane", "pr", "est"].iter().position(|k| *k == &c[2]).unwrap_or(0);
         if parts[k].is_null() {
             parts[k] = json!(&c[3]);
         }
         rest = c[1].to_string();
     }
-    let [model, effort, project, lane, pr] = parts;
-    (rest, model, effort, project, lane, pr)
+    let [model, effort, project, lane, pr, est] = parts;
+    (rest, model, effort, project, lane, pr, est)
 }
 
 /// "title::detail", "title::detail::2" (its wave) or "title::detail::<wave or nothing>::T14 #1" (what it
@@ -3108,16 +3119,19 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     let log = if status == "planned" { format!("Planned by {}", r.name()) } else { format!("Added by {} and queued: {} is running", r.name(), rf("goal", g.id())) };
     let mut created: Vec<String> = vec![];
     let waves_before = crate::pace::waves_left(r.app, g)?;
-    for item in items.as_array().cloned().unwrap_or_default() {
-        let (item, files, model, effort, project, lane, pr) = match &item {
+    let items = items.as_array().cloned().unwrap_or_default();
+    estimate::need_items(r.app, &unestimated(&items)?)?;
+    for item in items {
+        let (item, files, model, effort, project, lane, pr, est) = match &item {
             Value::String(s) => {
-                let (s, model, effort, project, lane, pr) = planned_parts(s);
+                let (s, model, effort, project, lane, pr, est) = planned_parts(s);
                 let (rest, files) = planned_files(&s);
-                (Value::String(rest), files, model, effort, project, lane, pr)
+                (Value::String(rest), files, model, effort, project, lane, pr, est)
             }
             v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null), v.get("model").cloned().unwrap_or(Value::Null),
                   v.get("effort").cloned().unwrap_or(Value::Null), v.get("project").cloned().unwrap_or(Value::Null),
-                  v.get("lane").cloned().unwrap_or(Value::Null), v.get("ships_pr").cloned().unwrap_or(Value::Null)),
+                  v.get("lane").cloned().unwrap_or(Value::Null), v.get("ships_pr").cloned().unwrap_or(Value::Null),
+                  v.get("est").cloned().unwrap_or(Value::Null)),
         };
         let project = planned_in(r, g, &project)?;
         let (title, detail, wave, waits) = match &item {
@@ -3142,7 +3156,7 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "same_pr": item.get("same_pr"), "stack_merge": item.get("stack_merge"), "ships_pr": if pr.is_null() { item.get("ships_pr").cloned().unwrap_or(Value::Null) } else { pr },
                     "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model, "effort": effort,
-                    "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"), "kind": item.get("kind"),
+                    "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"), "kind": item.get("kind"), "est": est,
                     "not_backlog": item.get("not_backlog").filter(|v| !v.is_null()).or(r.body.get("not_backlog")),
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
                         .unwrap_or_else(|| json!({"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}))}),
@@ -3177,6 +3191,29 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     Ok(created)
 }
 
+/// The titles of `--task` items for agent work that give no estimate, or one that isn't a length.
+fn unestimated(items: &[Value]) -> Result<Vec<String>> {
+    let mut out = vec![];
+    for item in items {
+        let (title, est, kind) = match item {
+            Value::String(s) => {
+                let (rest, _, _, _, _, _, est) = planned_parts(s);
+                (split_planned(&rest).0, est, Value::Null)
+            }
+            Value::Object(o) => (o.s("title").unwrap_or("").to_string(), item.get("est").cloned().unwrap_or(Value::Null), item.get("kind").cloned().unwrap_or(Value::Null)),
+            _ => continue,
+        };
+        let title = one_line(&title, 300);
+        if title.is_empty() || crate::design::clean_kind(Some(&kind))? == Some(crate::human::KIND) {
+            continue;
+        }
+        if estimate::parse(Some(&est))?.is_none() {
+            out.push(title);
+        }
+    }
+    Ok(out)
+}
+
 fn on_propose(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
@@ -3198,10 +3235,11 @@ fn on_propose(r: &mut Report) -> Result<Value> {
 fn on_goal(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let project = project_for(r, &r.b("project"))?;
+    let est = estimate::need_goal(r.app, &r.body)?;
     let g = ops::new_goal(
         r.app,
         &json!({"name": r.body.get("name"), "outcome": r.b("outcome"), "tldr": r.b("tldr"), "project": project, "product": r.body.get("product"),
-                "after": r.body.get("after"), "area": r.body.get("area"), "pr_base": r.body.get("pr_base")}),
+                "after": r.body.get("after"), "area": r.body.get("area"), "pr_base": r.body.get("pr_base"), "est": est}),
     )?;
     let gid = g["id"].as_i64().unwrap_or(0);
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
@@ -3233,6 +3271,9 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     if let Some(why) = r.screened.as_ref().and_then(|s| screen::human_refusal(r.app, s)) {
         return err(409, why);
     }
+    if crate::design::clean_kind(r.body.get("kind"))? != Some(crate::human::KIND) {
+        estimate::need_task(r.app, &r.body)?;
+    }
     if as_bool(r.body.get("here"), false) {
         if crate::design::clean_kind(r.body.get("kind"))? == Some(crate::human::KIND) {
             return err(400, "A human task isn't done in a terminal; leave out --here.");
@@ -3252,7 +3293,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "same_pr": r.body.get("same_pr"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                            "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
-                           "not_backlog": r.body.get("not_backlog"), "kind": r.body.get("kind")}]);
+                           "not_backlog": r.body.get("not_backlog"), "kind": r.body.get("kind"), "est": r.body.get("est")}]);
         if let Some(b) = &issue {
             item[0] = with_issue(r, b, item[0].take());
         }
@@ -3282,7 +3323,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"), "lane": r.body.get("lane"), "pr_base": r.body.get("pr_base"),
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "same_pr": r.body.get("same_pr"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-                "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
+                "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"), "est": r.body.get("est"),
                 "not_backlog": r.body.get("not_backlog"), "origin": {"from": "Added by an agent", "by": r.name()}});
     if let Some(b) = &issue {
         fields = with_issue(r, b, fields);
@@ -3402,7 +3443,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>, more: &[i64])
             409,
             format!(
                 "This terminal works in {h}, so --here can't take {p}'s work: the task would be tracked here while its work \
-                 happens in another repository. Make it a task in {p} instead: tb task new \"{title}\" --project {p} (without --here)."
+                 happens in another repository. Make it a task in {p} instead: tb task new \"{title}\" --est <len> --project {p} (without --here)."
             ),
         );
     }
@@ -3410,7 +3451,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>, more: &[i64])
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
             "stack_on": r.body.get("stack_on"), "same_pr": r.body.get("same_pr"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
             "area": r.body.get("area"), "not_backlog": r.body.get("not_backlog"), "goal_id": goal.as_ref().map(|g| g.id()),
-            "kind": r.body.get("kind"), "waits_for": "none",
+            "kind": r.body.get("kind"), "waits_for": "none", "est": r.body.get("est"),
             "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}});
     let how = match issue {
         Some(b) => {
@@ -3678,6 +3719,7 @@ fn handler(event: &str) -> Option<Handler> {
         "hook.delivered" => on_delivered,
         "tb.note" => on_note,
         "tb.checkpoint" => on_checkpoint,
+        "tb.estimate" => on_estimate,
         "tb.found" => on_found,
         "tb.question" => on_question,
         "tb.withdraw" => on_withdraw,

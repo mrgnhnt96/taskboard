@@ -352,7 +352,7 @@ fn a_task_can_end_in_a_pr_or_not_whatever_its_project_does() {
 
     // tb task new --no-pr, from an agent.
     b.session();
-    let v = b.report("tb.new_task", json!({"title": "Notes", "project": "webapp", "ships_pr": false})).unwrap();
+    let v = b.report("tb.new_task", json!({"est": "1h", "title": "Notes", "project": "webapp", "ships_pr": false})).unwrap();
     let id: i64 = v["created"][0].as_str().unwrap()[1..].parse().unwrap();
     assert_eq!(b.row(id).i("ships_pr"), Some(0));
 }

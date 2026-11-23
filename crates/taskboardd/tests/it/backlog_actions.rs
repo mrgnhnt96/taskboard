@@ -58,7 +58,7 @@ impl Board {
         for (k, v) in extra.as_object().unwrap() {
             b[k] = v.clone();
         }
-        reports::handle(&self.app, b, false).map_err(|e| e.message)
+        reports::handle(&self.app, crate::est::fill(b), false).map_err(|e| e.message)
     }
     fn add_session(&self, sid: &str) {
         let repo = self._dir.path().join("webapp").to_string_lossy().to_string();
@@ -236,7 +236,7 @@ fn here_takes_an_issue_as_a_task_on_this_terminal() {
     let i = b.post("/backlog", json!({"title": "Header clips", "detail": "The header clips on narrow windows.", "project": "webapp", "kind": "bug"}))["id"]
         .as_i64()
         .unwrap();
-    let r = b.report("tb.new_task", "s1", json!({"title": "", "issue": format!("B{i}"), "here": true}));
+    let r = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "", "issue": format!("B{i}"), "here": true}));
     let tr = r["created"][0].as_str().unwrap().to_string();
     assert_eq!(r["status"], "working");
     assert_eq!(r["title"], "Header clips", "the item's title when none is given");
@@ -257,15 +257,15 @@ fn here_takes_an_issue_as_a_task_on_this_terminal() {
 fn here_next_queues_the_issue_behind_this_terminals_task() {
     let b = new_board();
     b.add_session("s1");
-    let first = b.report("tb.new_task", "s1", json!({"title": "Fix the footer", "detail": "Asked for.", "here": true}))["created"][0]
+    let first = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Fix the footer", "detail": "Asked for.", "here": true}))["created"][0]
         .as_str()
         .unwrap()
         .to_string();
     let i = b.issue("Footer overlaps");
-    let busy = b.try_report("tb.new_task", "s1", json!({"issue": format!("B{i}"), "here": true}));
+    let busy = b.try_report("tb.new_task", "s1", json!({"est": "1h", "issue": format!("B{i}"), "here": true}));
     assert!(busy.unwrap_err().contains("already on"));
     assert_eq!(b.state(i), "open", "a refused take leaves the item open");
-    let r = b.report("tb.new_task", "s1", json!({"issue": format!("B{i}"), "here": true, "line": "next"}));
+    let r = b.report("tb.new_task", "s1", json!({"est": "1h", "issue": format!("B{i}"), "here": true, "line": "next"}));
     let tr = r["created"][0].as_str().unwrap().to_string();
     assert_eq!(r["status"], "queued");
     assert!(r["context"].as_str().unwrap().contains(&format!("{tr} is queued in this terminal after {first}")));
@@ -281,7 +281,7 @@ fn issue_makes_a_planned_task_in_a_goal_or_a_queued_one_on_the_board() {
     b.add_session("s1");
     let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
     let i = b.issue("Password field loses focus");
-    let r = b.report("tb.new_task", "s1", json!({"title": "Keep focus in the password field", "issue": format!("B{i}"), "goal": format!("G{g}"), "wave": 1}));
+    let r = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Keep focus in the password field", "issue": format!("B{i}"), "goal": format!("G{g}"), "wave": 1}));
     let tr = r["created"][0].as_str().unwrap().to_string();
     let t = b.get(&format!("tasks/{tr}"));
     assert_eq!(t["status"], "planned");
@@ -291,7 +291,7 @@ fn issue_makes_a_planned_task_in_a_goal_or_a_queued_one_on_the_board() {
     assert_eq!(b.state(i), "task");
 
     let j = b.issue("Slow search");
-    let r = b.report("tb.new_task", "s1", json!({"issue": format!("B{j}"), "detail": "Cache the index."}));
+    let r = b.report("tb.new_task", "s1", json!({"est": "1h", "issue": format!("B{j}"), "detail": "Cache the index."}));
     let tr = r["created"][0].as_str().unwrap().to_string();
     let t = b.get(&format!("tasks/{tr}"));
     assert_eq!(t["status"], "queued");
@@ -309,9 +309,9 @@ fn issue_refuses_a_closed_or_already_tasked_item() {
     let j = b.issue("Old crash");
     b.post(&format!("backlog/B{j}/drop"), json!({"reason": "dupe"}));
     let before = b.task_count();
-    let tasked = b.try_report("tb.new_task", "s1", json!({"issue": format!("B{i}"), "here": true})).unwrap_err();
+    let tasked = b.try_report("tb.new_task", "s1", json!({"est": "1h", "issue": format!("B{i}"), "here": true})).unwrap_err();
     assert!(tasked.contains("already T"), "{tasked}");
-    let closed = b.try_report("tb.new_task", "s1", json!({"issue": format!("B{j}")})).unwrap_err();
+    let closed = b.try_report("tb.new_task", "s1", json!({"est": "1h", "issue": format!("B{j}")})).unwrap_err();
     assert!(closed.contains("isn't open any more"), "{closed}");
     assert_eq!(b.task_count(), before);
     assert!(b.get("tasks")["tasks"].as_array().unwrap().iter().all(|t| t["session_id"] != "s1"), "the terminal took nothing");
@@ -353,9 +353,9 @@ fn several_issues_are_refused_together_when_one_cant_link() {
     b.post(&format!("backlog/B{j}/drop"), json!({"reason": "dupe"}));
     let k = b.post("/backlog", json!({"title": "Elsewhere", "project": "other", "kind": "bug"}))["id"].as_i64().unwrap();
     let before = b.task_count();
-    let closed = b.try_report("tb.new_task", "s1", json!({"issue": [format!("B{i}"), format!("B{j}")]})).unwrap_err();
+    let closed = b.try_report("tb.new_task", "s1", json!({"est": "1h", "issue": [format!("B{i}"), format!("B{j}")]})).unwrap_err();
     assert!(closed.contains(&format!("B{j} isn't open any more")), "{closed}");
-    let other = b.try_report("tb.new_task", "s1", json!({"issue": [format!("B{i}"), format!("B{k}")]})).unwrap_err();
+    let other = b.try_report("tb.new_task", "s1", json!({"est": "1h", "issue": [format!("B{i}"), format!("B{k}")]})).unwrap_err();
     assert!(other.contains(&format!("B{k} is in other's backlog")), "{other}");
     assert_eq!(b.task_count(), before);
     assert_eq!(b.state(i), "open", "a refused task links nothing");
@@ -365,7 +365,7 @@ fn several_issues_are_refused_together_when_one_cant_link() {
 fn task_set_issue_links_open_items_to_a_task() {
     let b = new_board();
     b.add_session("s1");
-    let tr = b.report("tb.new_task", "s1", json!({"title": "Fix the footer", "detail": "Fixes B1 and B2."}))["created"][0].as_str().unwrap().to_string();
+    let tr = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Fix the footer", "detail": "Fixes B1 and B2."}))["created"][0].as_str().unwrap().to_string();
     let tid: i64 = tr.trim_start_matches('T').parse().unwrap();
     let (i, j) = (b.issue("Footer overlaps"), b.issue("Footer flickers"));
     b.post(&format!("tasks/{tr}"), json!({"issues": [format!("B{i}"), format!("B{j}")]}));
@@ -373,7 +373,7 @@ fn task_set_issue_links_open_items_to_a_task() {
     assert_eq!(b.link(&tr, i).0, None, "linking doesn't make it the task's source");
     // Linking one it already has changes nothing; another task's is refused.
     b.post(&format!("tasks/{tr}"), json!({"issues": [format!("B{i}")]}));
-    let other = b.report("tb.new_task", "s1", json!({"title": "Other work", "detail": "x"}))["created"][0].as_str().unwrap().to_string();
+    let other = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Other work", "detail": "x"}))["created"][0].as_str().unwrap().to_string();
     let (code, msg) = b.post_err(&format!("tasks/{other}"), json!({"issues": [format!("B{i}")]}));
     assert_eq!(code, 409);
     assert!(msg.contains(&format!("B{i} is already {tr}")), "{msg}");

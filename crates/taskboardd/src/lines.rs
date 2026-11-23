@@ -198,7 +198,7 @@ pub fn split_check(app: &App, t: &Row, sid: &str) -> Result<String> {
     let r = rf("task", t.id());
     let mut text = format!(
         "[task-board] You're on {r} “{}”. If this ask is separate work, split it off before you start on it: \
-         tb task new \"<title>\" --detail \"<the ask>\" --here --next (queue it after {r}), or --here --now \
+         tb task new \"<title>\" --detail \"<the ask>\" --est <len> --here --next (queue it after {r}), or --here --now \
          (switch to it; {r} waits here to resume).",
         t.st("title")
     );

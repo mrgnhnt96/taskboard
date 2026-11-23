@@ -128,8 +128,8 @@ fn planned_tasks_carry_their_model() {
     let r = reports::handle(
         &b.app,
         json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"),
-               "tasks": ["One::do it::model=small::effort=low", "Two::do it too::1::::src/a.rs::model=large", "Three::no model",
-                         {"title": "Four", "model": "small", "effort": "max"}]}),
+               "tasks": ["One::do it::model=small::effort=low::est=1h", "Two::do it too::1::::src/a.rs::model=large::est=1h", "Three::no model::est=1h",
+                         {"est": "1h", "title": "Four", "model": "small", "effort": "max"}]}),
         false,
     )
     .unwrap();

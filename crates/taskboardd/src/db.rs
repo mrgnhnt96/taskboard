@@ -366,6 +366,12 @@ const ADDED: &[(&str, &str, &str)] = &[
     // A failed wave the owner let the goal go on past: who, when and the tasks that had failed
     // (JSON `{"by", "at", "tasks"}`, `waves::release`).
     ("goal_waves", "passed_failed", "TEXT"),
+    // The agent's estimate of its working time in minutes, and when it was made (`estimate.rs`): a
+    // goal's is of its running time. Null on work made before estimates; kept once work starts.
+    ("tasks", "est_min", "INT"),
+    ("tasks", "est_at", "TEXT"),
+    ("goals", "est_min", "INT"),
+    ("goals", "est_at", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

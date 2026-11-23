@@ -1234,6 +1234,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         let who = board::caller(app, body, OWNER);
         crate::devices::take_needs(app, "task", id, body, &who)?;
         crate::bits::take_task_bits(app, id, body, &who)?;
+        if let Some(m) = crate::estimate::parse(body.get("est"))? {
+            crate::estimate::set_task(app, &t, m, &who)?;
+        }
         let mut f: Vec<(&str, Value)> = vec![];
         let mut bump = false;
         let has_key = |k: &str| body.get(k).is_some();
@@ -2592,6 +2595,9 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
     app.db.tx(|| {
         let g = board::get_goal(app, id)?;
         crate::devices::take_needs(app, "goal", id, body, OWNER)?;
+        if let Some(m) = crate::estimate::parse(body.get("est"))? {
+            crate::estimate::set_goal(app, &g, m, &board::caller(app, body, OWNER))?;
+        }
         let mut f: Vec<(&str, Value)> = vec![];
         let hk = |k: &str| body.get(k).is_some();
         if hk("name") {

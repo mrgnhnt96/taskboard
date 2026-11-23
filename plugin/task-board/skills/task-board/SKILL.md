@@ -27,7 +27,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Notes** worth keeping: `tb note "..."`. For the whole goal: `tb note --goal --kind finding|decision|reference "..."`.
 - **Lessons** that should outlast the goal (a trap in the code, a step that keeps failing, a plan that had to be redone): `tb lesson add "<what to do differently>" --kind planning|code|process|tooling`. Read `lessons.md` first.
 - **The owner asks for something else**: the board asks on each of their prompts whether it's part of this task. Small follow-ups to the same change are; a separate fix or feature (its own commit or PR) isn't. Split separate work off before you start on it, without asking:
-  - `tb task new "<title>" --detail "<the ask>" --here --next` queues it in this terminal after the current task; carry on with the current one.
+  - `tb task new "<title>" --detail "<the ask>" --est <len> --here --next` queues it in this terminal after the current task; carry on with the current one.
   - `--here --now` switches to it now; the current task waits here to resume. Commit or stash its changes first when they share the checkout.
   - `tb line`, `tb switch T<n>` and `tb line drop T<n>` work this terminal's line.
   - `tb move` hands the task you're on to a new terminal, only on the owner's word; leave its work to that terminal and carry on with their other asks here.
@@ -50,5 +50,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Code review**: never run a reviewer yourself. When `tb submit` says the task is in code review, end your turn and leave the worktree as it is.
 - **Jira** (when the board has it on: your handoff has a `Jira:` line or names a ticket): read `jira.md`. Never ask the owner which ticket.
 - **At the end**: `tb submit "<summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. Add `--fixes B<n>` for each open backlog issue the work fixed (the first submit lists the likely ones); they close when it ships. The summary is for the owner, not another agent: one or two short plain sentences on what's different now or what was found, with little to no jargon (no file, function, query or header names, no task and backlog refs). The details belong in the PR, a note or an attached doc. `--human` is your honest estimate of how long this would have taken a developer by hand (`3h`, `90m`, `1d`). A PR, now or later? Read `pr.md` first: the board opens it (`tb submit "<summary>" --pr-body <file>`); `--pr <link>` is only for a PR that was open before the task. When this terminal has a line, `tb submit`, `tb fail` and a `tb wait-for` that parks the task print the next task's handoff: carry straight on with it.
+
+**Estimates**: `--est` is your honest estimate of agent working time (`45m`, `3h`), compared with the actual; `planning.md` has the rest.
 
 `tb status` shows this terminal's task and its line (with the board down it says so and fails; it saves nothing). Your handoff comes once, in hook context; `tb handoff` reprints it. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.

@@ -38,7 +38,7 @@ impl Board {
     }
     /// What the agent's `tb task new` adds: a task that waits for Start.
     fn new_task(&self) -> i64 {
-        let v = self.report("tb.new_task", json!({"title": "Add login"}));
+        let v = self.report("tb.new_task", json!({"est": "1h", "title": "Add login"}));
         v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap()
     }
     /// What `tb start T<id>` sends from terminal s1.
@@ -190,14 +190,14 @@ fn a_task_made_here_is_what_the_turn_made() {
     let mine = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Mine", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
     b.app.db.x("UPDATE tasks SET session_id = 's1', status = 'working' WHERE id = ?", p![mine]).unwrap();
     b.said("create a new task to fix the footer and start it");
-    let v = b.report("tb.new_task", json!({"title": "Fix the footer", "here": true, "line": "next"}));
+    let v = b.report("tb.new_task", json!({"est": "1h", "title": "Fix the footer", "here": true, "line": "next"}));
     let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
     assert!(b.tb_start(id).unwrap()["starting"] == true);
 
     // Taken on this terminal at once: the word counts, and the refusal says where it already runs.
     b.app.db.x("UPDATE tasks SET session_id = NULL, status = 'done' WHERE id = ?", p![mine]).unwrap();
     b.said("create a new task to fix the header and start it");
-    let v = b.report("tb.new_task", json!({"title": "Fix the header", "here": true}));
+    let v = b.report("tb.new_task", json!({"est": "1h", "title": "Fix the header", "here": true}));
     let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
     let (code, why) = b.tb_start(id).unwrap_err();
     assert_eq!(code, 409, "{why}");
@@ -257,7 +257,7 @@ fn a_later_prompt_that_takes_the_start_back_wins() {
 fn a_task_waiting_on_unfinished_work_does_not_start_even_on_the_word() {
     let b = board();
     let first = b.new_task();
-    let v = b.report("tb.new_task", json!({"title": "Add logout", "waits_for": [format!("T{first}")]}));
+    let v = b.report("tb.new_task", json!({"est": "1h", "title": "Add logout", "waits_for": [format!("T{first}")]}));
     let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
     b.said(&format!("start T{id}"));
     let (code, why) = b.tb_start(id).unwrap_err();
@@ -595,7 +595,7 @@ fn an_ask_for_the_goal_points_the_agent_at_the_goal() {
     let g = api::dispatch(&b.app, "POST", "/goals", &Query::new(), &json!({"name": "Settings", "project": "webapp"})).unwrap()["id"]
         .as_i64()
         .unwrap();
-    let v = b.report("tb.new_task", json!({"title": "Chips", "goal": format!("G{g}")}));
+    let v = b.report("tb.new_task", json!({"est": "1h", "title": "Chips", "goal": format!("G{g}")}));
     let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
     b.said("You can start the goal");
     let (code, why) = b.tb_start(id).unwrap_err();
@@ -661,7 +661,7 @@ fn the_goal_unnamed_is_this_conversations_goal() {
     b.planned(g);
     b.planned(other);
     // The conversation made a task in goal g: "the goal" is g, not the other.
-    b.report("tb.new_task", json!({"title": "Chips", "goal": format!("G{g}")}));
+    b.report("tb.new_task", json!({"est": "1h", "title": "Chips", "goal": format!("G{g}")}));
     b.said("You can start the goal");
     assert!(b.tb_run(g).is_ok());
     assert_eq!(b.tb_run(other).unwrap_err().0, 403);
@@ -708,7 +708,7 @@ impl Board {
     }
     /// What `tb goal new … --task` reports: a goal and its planned tasks.
     fn goal_new(&self) -> i64 {
-        let v = self.report("tb.goal", json!({"name": "Dark mode", "project": "webapp", "tasks": ["Colors::pick them", "Toggle::add it"]}));
+        let v = self.report("tb.goal", json!({"est": "3h", "name": "Dark mode", "project": "webapp", "tasks": ["Colors::pick them::est=1h", "Toggle::add it::est=1h"]}));
         v["goal"].as_str().unwrap().trim_start_matches('G').parse().unwrap()
     }
 }
@@ -928,13 +928,13 @@ fn goal_cases_wrong(runs: &[Vec<&str>], refused: &[Vec<&str>]) -> Vec<String> {
                         g = b.goal_new();
                     }
                     "propose" => {
-                        b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Colors::pick them"]}));
+                        b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Colors::pick them::est=1h"]}));
                     }
                     "task new" => {
-                        b.report("tb.new_task", json!({"title": "Toggle", "goal": format!("G{g}")}));
+                        b.report("tb.new_task", json!({"est": "1h", "title": "Toggle", "goal": format!("G{g}")}));
                     }
                     "task alone" => {
-                        b.report("tb.new_task", json!({"title": "Footer"}));
+                        b.report("tb.new_task", json!({"est": "1h", "title": "Footer"}));
                     }
                     "plan" | "plan other" => {
                         let other = if *step == "plan" { g } else { b.goal() };

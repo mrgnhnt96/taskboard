@@ -58,8 +58,8 @@ fn planned_tasks_go_in_the_project_they_name() {
     let g = b.goal();
     let r = b
         .report(json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"),
-                       "tasks": ["Form::the page", "Endpoint::the route::project=API", "Tokens::sign them::model=small::project=api",
-                                 "Logs::log it::project=api::model=small", {"title": "Docs", "project": "api"}]}))
+                       "tasks": ["Form::the page::est=1h", "Endpoint::the route::project=API::est=1h", "Tokens::sign them::model=small::project=api::est=1h",
+                                 "Logs::log it::project=api::model=small::est=1h", {"est": "1h", "title": "Docs", "project": "api"}]}))
         .unwrap();
     assert_eq!(b.projects_of(&r), ["webapp", "api", "api", "api", "api"]);
     let logs = board::get_task(&b.app, r["created"][3].as_str().unwrap()[1..].parse().unwrap()).unwrap();
@@ -77,8 +77,8 @@ fn planned_tasks_go_in_the_project_they_name() {
 fn a_task_new_in_a_goal_keeps_its_project() {
     let b = new_board();
     let g = b.goal();
-    let r = b.report(json!({"event": "tb.new_task", "session": "s1", "title": "Endpoint", "goal": format!("G{g}"), "project": "api"})).unwrap();
+    let r = b.report(json!({"est": "1h", "event": "tb.new_task", "session": "s1", "title": "Endpoint", "goal": format!("G{g}"), "project": "api"})).unwrap();
     assert_eq!(b.projects_of(&r), ["api"]);
-    let e = b.report(json!({"event": "tb.new_task", "session": "s1", "title": "Endpoint", "goal": format!("G{g}"), "project": "nope"})).unwrap_err();
+    let e = b.report(json!({"est": "1h", "event": "tb.new_task", "session": "s1", "title": "Endpoint", "goal": format!("G{g}"), "project": "nope"})).unwrap_err();
     assert!(e.contains("no project “nope”"), "{e}");
 }

@@ -156,6 +156,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let model = if human { None } else { crate::runner::clean_model(body.get("model"))? };
     let effort = if human { None } else { crate::runner::clean_effort(body.get("effort"))? };
     let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
+    let est = if human { None } else { crate::estimate::parse(body.get("est"))? };
     let tid = app.db.insert(
         "tasks",
         fields!["title" => title, "detail" => body_str(body, "detail"), "project" => project, "repo_path" => repo, "area" => area.clone(),
@@ -171,7 +172,8 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "latest" => if latest.is_empty() { None } else { Some(latest) },
                 "ticket_summary" => if ticket_summary.is_empty() { None } else { Some(ticket_summary) },
                 "ticket_text" => if ticket_text.is_empty() { None } else { Some(ticket_text) },
-                "kind" => kind, "ships_pr" => if kind.is_some() { Some(0) } else { None }],
+                "kind" => kind, "ships_pr" => if kind.is_some() { Some(0) } else { None },
+                "est_min" => est, "est_at" => est.map(|_| now.clone())],
     )?;
     if let Some(w) = body.get("wave").filter(|w| !w.is_null()) {
         let w = wave_of(w)?;
@@ -337,6 +339,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
     // A goal that makes worktrees takes the slot lane unless it names another.
     let lane = crate::worklane::clean(body.get("lane"))?.or_else(|| base.is_some().then(|| "slot".to_string()));
     let pr_base = crate::worktrees::clean_pr_base(body.get("pr_base"))?;
+    let est = crate::estimate::parse(body.get("est"))?;
     let gid = app.db.insert(
         "goals",
         fields!["name" => name, "outcome" => body_str(body, "outcome"), "tldr" => if tldr.is_empty() { None } else { Some(tldr) },
@@ -345,7 +348,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
                 "run_in_order" => as_bool(body.get("run_in_order"), true) as i64, "max_terminals" => max_t,
                 "auto_close" => as_bool(body.get("auto_close"), true) as i64, "product" => product,
                 "worktree_base" => base, "lane" => lane, "pr_base" => pr_base,
-                "setup" => clean_setup(body),
+                "setup" => clean_setup(body), "est_min" => est, "est_at" => est.map(|_| now.clone()),
                 "created_at" => now, "updated_at" => now, "archived" => 0],
     )?;
     if body_has(body, "after") {
@@ -446,6 +449,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "jobs": jobs_now,
             "goal_attachments": match &g { Some(g) => Value::Array(board::goal_attachments(app, &atts, g.id())?), None => json!([]) },
             "attachments": atts,
+            "estimate": crate::estimate::task_view(app, &t)?,
         }),
     ))
     .and_then(|d| with_step_results(app, &t, d))
@@ -503,6 +507,7 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
             "bits": crate::bits::goal_card(app, id)?,
             "devices": crate::devices::goal_card(app, id)?,
             "plan_review": crate::plan_review::card(app, id)?,
+            "estimate": crate::estimate::goal_view(app, &g)?,
         }),
     ))
 }

@@ -57,7 +57,7 @@ impl Board {
     }
     /// What the agent's `tb task new` adds in terminal s1.
     fn new_task(&self) -> i64 {
-        let v = self.report("tb.new_task", json!({"title": "Triage the crash reports"}));
+        let v = self.report("tb.new_task", json!({"est": "1h", "title": "Triage the crash reports"}));
         v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap()
     }
     fn post(&self, path: &str, query: &Query, body: Value) -> Result<Value, (u16, String)> {

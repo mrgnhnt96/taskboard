@@ -57,7 +57,7 @@ pub fn done_text(app: &App, t: &Row) -> Result<Option<String>> {
 /// How to put research on the board, for an agent that's about to do it.
 fn how_to_track(tb: &str) -> String {
     format!(
-        "Make a research task for each question: {tb} task new \"<the question>\" --kind research --detail \"<what to find out>\" --goal G<n>, \
+        "Make a research task for each question: {tb} task new \"<the question>\" --kind research --detail \"<what to find out>\" --est <len> --goal G<n>, \
          in the goal this work belongs to, or a new one (tb goal new \"<name>\" --tldr \"…\" --outcome \"<done when>\"). \
          One question you'll answer here yourself: --here in place of --goal. \
          Each task attaches the artifacts it makes (tb attach <link> --kind results)."

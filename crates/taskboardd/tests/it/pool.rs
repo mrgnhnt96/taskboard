@@ -271,7 +271,7 @@ fn tb_task_new_with_an_unknown_bit_adds_no_task() {
     taskboardd::midna::sync(&b.app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
     let g = b.goal();
     let report = |extra: Value| {
-        let mut body = json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": "", "title": "Checkout", "project": "webapp"});
+        let mut body = json!({"est": "1h", "event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": "", "title": "Checkout", "project": "webapp"});
         for (k, v) in extra.as_object().unwrap() {
             body[k] = v.clone();
         }

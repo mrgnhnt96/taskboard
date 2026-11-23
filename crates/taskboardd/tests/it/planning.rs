@@ -75,7 +75,7 @@ fn the_built_in_rules_weigh_the_cost_of_each_extra_pr() {
 /// Proposes `tasks` for goal `g` from a terminal in the webapp checkout: (the tasks made, the plan check's warnings).
 fn propose(app: &App, dir: &std::path::Path, g: i64, tasks: Value) -> (Vec<String>, Vec<String>) {
     midna::sync(app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": dir.join("webapp").to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
-    let b = json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"), "tasks": tasks});
+    let b = crate::est::fill(json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"), "tasks": tasks}));
     let r = reports::handle(app, b, false).unwrap_or_else(|e| panic!("propose: {}", e.message));
     let strs = |v: &Value| v.as_array().cloned().unwrap_or_default().iter().map(|w| w.as_str().unwrap().to_string()).collect();
     (strs(&r["created"]), strs(&r["warnings"]))
