@@ -27,6 +27,7 @@ fn what(purpose: &str) -> &'static str {
         "code_review" => "the code review's word",
         "code_review_fix" => "the code review's fix list",
         "checkin" => "the check-in on its slow turn",
+        "slot_free" => "the worktree slot that freed",
         _ => "the board's message",
     }
 }
@@ -43,6 +44,7 @@ fn done_text(purpose: &str, to: &str) -> String {
         "code_review" => format!("Told {to} its tb submit was turned back after its code review"),
         "code_review_fix" => format!("Sent {to} its code review's findings to fix"),
         "checkin" => format!("Told {to} its turn looked slow or stuck"),
+        "slot_free" => format!("Told {to} a worktree slot freed for its PR work"),
         _ => format!("Delivered a message to {to}"),
     }
 }
@@ -72,7 +74,7 @@ fn open_jobs(app: &App, task_id: Option<i64>) -> Result<Vec<Row>> {
 fn unwanted(app: &App, j: &Row, t: Option<&Row>) -> Result<Option<&'static str>> {
     let Some(t) = t else { return Ok(Some("its task was deleted")) };
     if t.s("status") == Some("done")
-        && !(j.s("purpose") == Some("answer") && (prflow::visitor(t).is_some() || prflow::waking(app, t)?))
+        && !(matches!(j.s("purpose"), Some("answer" | "slot_free")) && (prflow::visitor(t).is_some() || prflow::waking(app, t)?))
     {
         return Ok(Some("the task is done"));
     }

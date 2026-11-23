@@ -179,6 +179,16 @@ pub struct Toast {
     pub undo: Option<String>,
 }
 
+/// The main window, for the windows beside it (Settings) to open a task or a page in.
+pub struct MainHandle(pub WindowHandle<MainWindow>);
+impl Global for MainHandle {}
+
+/// Opens a `taskboard://` link in the main window and brings it forward, as a clicked notification does.
+pub fn open_in_main(url: &str, cx: &mut App) {
+    let Some(h) = cx.try_global::<MainHandle>().map(|g| g.0) else { return };
+    let _ = h.update(cx, |m, window, cx| m.arrive(url, window, cx));
+}
+
 pub struct MainWindow {
     pub backend: Arc<dyn Backend>,
     pub data: Data,

@@ -3954,7 +3954,15 @@ fn slot_claim(app: &App, id: i64, body: &Value) -> Result<Value> {
     let held = app.db.q1("SELECT id FROM worktree_slots WHERE task_id = ?", p![id])?.is_some();
     let before = board::task_context(&t);
     let start = if held { None } else { crate::bring::start_at(app, &t)? };
-    let path = match crate::slots::reclaim(app, &t)? {
+    // A PR visit's wait is queued (`slots::resume_pr_waits`): it hears where to work once a slot frees.
+    let reclaimed = crate::slots::reclaim(app, &t).map_err(|e| {
+        if e.message == crate::slots::WAIT && t.s("status") == Some("done") {
+            ApiError::new(e.status, format!("{}: the pool is full. Stop here: once one frees, the board claims it for {me} and types its path into this terminal.", crate::slots::WAIT))
+        } else {
+            e
+        }
+    })?;
+    let path = match reclaimed {
         Some(p) => p,
         None => match &start {
             Some((sha, _)) => crate::worktrees::make(app, &t, Some(sha))?,

@@ -3,8 +3,8 @@
 //! "Agent commands" adds under the rows the exact command an agent would run (copyable).
 //!
 //! Worktrees shows each project's slot pool (`GET /slots`): its settings, changed in place
-//! (`POST projects/<name>`), then each slot with the task holding it, its size and last use, and
-//! the tasks waiting for one.
+//! (`POST projects/<name>`), then each slot with its size and last use and the task holding it (its
+//! title opens the task in the main window), or "free", and how many tasks wait for one.
 //!
 //! Accounts: GitHub, Bitbucket, Azure DevOps, Slack and Jira, so the board and its agents can
 //! check PRs, comment, push, read failed builds, assign reviewers and work Jira tickets. The daemon owns them (`taskboardd::accounts`): each
@@ -1961,14 +1961,23 @@ impl SettingsWindow {
             }
             let mut card = kit::card(t).overflow_hidden();
             for (i, r) in p.slots.iter().enumerate() {
-                let pill = match &r.held_by {
-                    Some(task) => kit::tone_pill(t, "working", task.clone()).id(SharedString::from(format!("slot-tip-{}", r.key))).when_some(r.tip.clone(), |d, tip| d.tooltip(kit::tip(tip))).into_any_element(),
-                    None => kit::tone_pill(t, "neutral", "Free").into_any_element(),
-                };
-                card = card.child(line(t, &format!("slot-{}", r.key), i == 0, false, &r.name, &r.note, None).child(controls().child(pill)));
+                let mut row = line(t, &format!("slot-{}", r.key), i == 0, false, &r.name, &r.note, None);
+                // The holder's title opens its task in the main window.
+                if let Some(task) = r.held_by.clone() {
+                    let label = r.title.clone().unwrap_or_else(|| task.clone());
+                    let link = format!("taskboard://task/{task}");
+                    let open = kit::btn_small(t, SharedString::from(format!("slot-task-{}", r.key)), label)
+                        .max_w(px(260.))
+                        .truncate()
+                        .tooltip(kit::tip(task))
+                        .on_click(move |_, _, cx| crate::app::open_in_main(&link, cx));
+                    row = row.child(controls().child(open));
+                }
+                card = card.child(row);
             }
             if !p.waiting.is_empty() {
-                card = card.child(line(t, &format!("waiting-{}", p.project), false, true, &format!("{} waiting", p.waiting.len()), &p.waiting.join(", "), None));
+                let show = kit::link(t, SharedString::from(format!("waiting-show-{}", p.project)), "Show in Backlog").on_click(|_, _, cx| crate::app::open_in_main("taskboard://backlog", cx));
+                card = card.child(line(t, &format!("waiting-{}", p.project), false, false, "", "", Some((&waiting_label(p.waiting.len()), true))).child(controls().child(show)));
             }
             list = list.child(div().flex().flex_col().gap(px(8.)).child(section("Slots")).child(card));
         }
@@ -2101,12 +2110,17 @@ pub(crate) struct PoolLimits {
 pub(crate) struct SlotVm {
     pub key: String,
     pub name: String,
-    /// "7.7 GB · last used 10:08 AM".
+    /// "7.7 GB · last used 10:08 AM" while held, "5.1 GB · free" when free.
     pub note: String,
     /// "T12", the task holding it; None when it's free.
     pub held_by: Option<String>,
     /// The holder's title.
-    pub tip: Option<String>,
+    pub title: Option<String>,
+}
+
+/// "14 tasks waiting for a slot".
+pub(crate) fn waiting_label(n: usize) -> String {
+    format!("{n} {} waiting for a slot", if n == 1 { "task" } else { "tasks" })
 }
 
 /// `GET /slots` grouped by project, in the daemon's order (project, then slot number).
@@ -2124,12 +2138,15 @@ pub(crate) fn pools_vm(v: &Value) -> Vec<PoolVm> {
         let p = &mut out[i];
         let held = x["held_by"].as_str().map(str::to_string);
         let size = x["size_kb"].as_i64().map(disk_size);
-        let used = x["used_at"].as_str().map(used_at).filter(|u| !u.is_empty()).map(|u| format!("last used {u}"));
+        let used = match held {
+            Some(_) => x["used_at"].as_str().map(used_at).filter(|u| !u.is_empty()).map(|u| format!("last used {u}")),
+            None => Some("free".to_string()),
+        };
         p.slots.push(SlotVm {
             key: x["path"].as_str().unwrap_or("").to_string(),
             name: x["name"].as_str().unwrap_or("").to_string(),
             note: [size, used].into_iter().flatten().collect::<Vec<_>>().join(" · "),
-            tip: held.as_ref().and_then(|_| x["title"].as_str()).filter(|t| !t.is_empty()).map(str::to_string),
+            title: held.as_ref().and_then(|_| x["title"].as_str()).filter(|t| !t.is_empty()).map(str::to_string),
             held_by: held,
         });
         // Every slot of a repo lists the same waiting tasks; each shows once.
@@ -2715,12 +2732,14 @@ mod worktree_tests {
         assert_eq!(board.pool, Some(super::PoolLimits { min: 2, max: 10, trim: 1, remove: 7 }));
         assert_eq!(board.waiting, ["T13", "T14"], "each waiting task once");
         assert_eq!(board.slots[0].note, "2.3 GB · last used 2:30 PM");
-        assert_eq!((board.slots[0].held_by.as_deref(), board.slots[0].tip.as_deref()), (Some("T12"), Some("Slot pool view")));
-        assert_eq!((board.slots[1].note.as_str(), board.slots[1].held_by.as_deref()), ("840 MB · last used Oct 7, 3:05 PM", None));
+        assert_eq!((board.slots[0].held_by.as_deref(), board.slots[0].title.as_deref()), (Some("T12"), Some("Slot pool view")));
+        assert_eq!((board.slots[1].note.as_str(), board.slots[1].held_by.as_deref()), ("840 MB · free", None));
         let lens = &pools[1];
-        assert_eq!((lens.slots[0].name.as_str(), lens.slots[0].note.as_str()), ("slot-2", ""), "not measured or used yet");
+        assert_eq!((lens.slots[0].name.as_str(), lens.slots[0].note.as_str()), ("slot-2", "free"), "not measured yet");
         assert!(lens.waiting.is_empty());
         assert!(super::pools_vm(&json!({"slots": []})).is_empty());
+        assert_eq!(super::waiting_label(14), "14 tasks waiting for a slot");
+        assert_eq!(super::waiting_label(1), "1 task waiting for a slot");
     }
 
     #[test]
