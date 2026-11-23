@@ -161,6 +161,22 @@ pub struct Questions {
     pub human_model: String,
     /// Screen a `tb question` from a terminal with no task too. Off: it goes straight to the owner.
     pub no_task: bool,
+    /// Re-check the questions and human tasks waiting in Needs you during work hours (`recheck.rs`):
+    /// ones raised before screening existed or before the rule files last changed.
+    pub recheck: bool,
+    /// Minutes between re-checks.
+    pub recheck_every_mins: u64,
+}
+
+impl Questions {
+    /// The model for a human task, and the second opinion on what the first model can't decide.
+    pub fn human_model(&self) -> &str {
+        if self.human_model.trim().is_empty() {
+            &self.model
+        } else {
+            &self.human_model
+        }
+    }
 }
 
 impl Default for Questions {
@@ -169,6 +185,8 @@ impl Default for Questions {
             screen: true,
             human_model: "sonnet".into(),
             no_task: true,
+            recheck: true,
+            recheck_every_mins: 45,
             model: "claude-haiku-5-5".into(),
             budget_usd: "0.30".into(),
             timeout_secs: 75,

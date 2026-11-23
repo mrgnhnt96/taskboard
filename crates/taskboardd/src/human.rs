@@ -26,6 +26,11 @@ pub const CANT_DO: &str = "cant_do";
 pub const NOT_NEEDED: &str = "not_needed";
 pub const DONT_WAIT: &str = "dont_wait";
 
+/// The board took it off the owner's list itself (`recheck.rs`): an agent can do it, or the owner's
+/// rules already settle it. Like the owner's answers, they finish the task.
+pub const BOARD_AGENT: &str = "board_agent";
+pub const BOARD_ANSWERED: &str = "board_answered";
+
 /// The `answer` of `POST /tasks/:id/owner-answer` that keeps what waits waiting and records nothing on the task.
 const WAITING: &str = "waiting";
 
@@ -220,7 +225,11 @@ fn keep_note(app: &App, t: &Row, note: &str) -> Result<()> {
 }
 
 fn finish(app: &App, t: &Row, summary: &str) -> Result<()> {
-    reports::finish_task(app, t, OWNER, summary, false, None)?;
+    finish_by(app, t, OWNER, summary)
+}
+
+fn finish_by(app: &App, t: &Row, who: &str, summary: &str) -> Result<()> {
+    reports::finish_task(app, t, who, summary, false, None)?;
     dispatch::clear_alert_key(app, &alert_key(t.id()))?;
     dispatch::clear_alerts(app, Some(t.id()), None)
 }
@@ -255,6 +264,14 @@ fn close(app: &App, t: &Row, answer: &str, what: &str, note: &str) -> Result<()>
     keep_note(app, t, note)?;
     board::update_task(app, t.id(), fields!["owner_answer" => answer])?;
     finish(app, t, &if note.is_empty() { what.to_string() } else { format!("{what}: {note}") })
+}
+
+/// The board takes open human task `t` off the owner's list (`BOARD_AGENT` or `BOARD_ANSWERED`), with
+/// `note` (the why, or the answer) for the tasks that wait for it. Reopen puts it back.
+pub fn take_off(app: &App, t: &Row, answer: &str, note: &str, summary: &str) -> Result<()> {
+    keep_note(app, t, note)?;
+    board::update_task(app, t.id(), fields!["owner_answer" => answer])?;
+    finish_by(app, t, board::BOARD, summary)
 }
 
 fn dont_wait(app: &App, t: &Row, note: &str) -> Result<()> {
@@ -461,6 +478,12 @@ pub fn note(t: &Row) -> Option<String> {
 /// The resume prompt's line for a human task this one waited for.
 pub fn done_line(app: &App, t: &Row) -> String {
     let (owner, name) = (&app.cfg.owner, format!("{} “{}”", task_ref(t), short(&t.st("title"), 80)));
+    let said = note(t).map(|n| format!(" {n}")).unwrap_or_default();
+    match t.s("owner_answer") {
+        Some(BOARD_AGENT) => return format!("- {name} isn't for {owner} after all: an agent can do it, so do it yourself.{said}"),
+        Some(BOARD_ANSWERED) => return format!("- {name} isn't for {owner} after all: {owner}'s rules settle it.{said}"),
+        _ => {}
+    }
     let mut line = match t.s("owner_answer") {
         Some(CANT_DO) => format!("- {name} wasn't done: {owner} can't do it, so find another way, or say what's missing with a question"),
         Some(NOT_NEEDED) => format!("- {name} was cancelled: {owner} says it isn't needed"),
