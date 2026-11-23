@@ -60,6 +60,8 @@
 //! - `tries`: the PRs merged in the period, and how many merged on their first try, with no review
 //!   round that found something to fix (`pr_merges.fix_rounds`). A PR merged before the rounds were
 //!   recorded is `unknown` and counts in neither.
+//! - `estimates`: how the agents' own estimates of the period's finished tasks compared with their
+//!   working time (`accuracy.rs`), with the trend by month; null when none had an estimate.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -651,6 +653,7 @@ fn labels() -> Value {
         "heat": "Finished tasks by weekday and hour",
         "ranks": "Projects ranked by finished tasks, this period and the one before",
         "first_try": "PRs merged with no review round that found something to fix",
+        "estimates": "Agents' own estimates of their working time against the working time tasks took (not the developer-time estimate)",
     })
 }
 
@@ -705,6 +708,7 @@ pub fn facts(app: &App, kind: &str, first: NaiveDate) -> Result<Value> {
         "slowest": slowest(app, &done_rows, SLOW_CAP)?,
         "heat": heat(&g),
         "tries": tries(app, from, to)?,
+        "estimates": crate::accuracy::window(app, from, to, &[])?,
     });
     f["ranks"] = if f["before"].is_null() { Value::Null } else { ranks(&project_list, &pg) };
     if kind == "monthly" {
