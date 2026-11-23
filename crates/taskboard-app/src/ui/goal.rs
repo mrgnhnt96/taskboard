@@ -545,6 +545,24 @@ pub fn gate_view(g: &Value) -> Option<(&'static str, &'static str, (&'static str
     }
 }
 
+/// "Est 3h · Running 2h 40m · 0.9× · Task time 5h 10m": the goal's estimate of its running time
+/// against the time any of its tasks was working, then its tasks' working time added up. None
+/// when the goal has no estimate.
+pub fn estimate_line(g: &Value) -> Option<String> {
+    let e = &g["estimate"];
+    let est = e["est_min"].as_i64().filter(|m| *m > 0)?;
+    let running = e["actual_min"].as_i64().unwrap_or(0);
+    let work = e["work_min"].as_i64().unwrap_or(0);
+    let mut out = format!("Est {}", fmt::work_len(est));
+    if running > 0 {
+        out += &format!(" · Running {} · {}", fmt::work_len(running), fmt::times(running as f64 / est as f64));
+    }
+    if work > 0 {
+        out += &format!(" · Task time {}", fmt::work_len(work));
+    }
+    Some(out)
+}
+
 // ------------------------------------------------------------------ aside
 
 /// "How it runs": (key, value) rows; the review stop only while one is ahead.
@@ -1423,6 +1441,16 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, loaded: bool, cx: &mut Context<M
                         .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).line_height(relative(1.2)).child(sel(t, "goal-name", s(g, "name").to_string())))
                         .when_some(fmt::opt_s(g, "tldr").map(str::to_string), |d, tl| {
                             d.child(div().max_w(px(820.)).text_size(px(14.)).line_height(relative(1.5)).text_color(t.text_2).child(sel(t, "goal-tldr", tl)))
+                        })
+                        .when_some(estimate_line(g), |d, line| {
+                            d.child(
+                                div()
+                                    .id("goal-estimate")
+                                    .text_size(px(12.))
+                                    .text_color(t.muted)
+                                    .child(line)
+                                    .tooltip(kit::tip("The agents’ estimate of the goal’s running time (while any of its tasks was working), against the time it has run; then its tasks’ working time added up. Time waiting on you or a review doesn’t count.")),
+                            )
                         }),
                 )
                 .when(loaded, |d| d.child(buttons(m, t, g, cx))),
@@ -2149,5 +2177,14 @@ mod tests {
         let (parts, lead, tail) = progress(&json!({"tasks": [closed, closed, {"status": "done"}, {"status": "queued"}]}));
         assert_eq!(parts, vec![(St::Done, 1), (St::Stopped, 2), (St::Queued, 1)]);
         assert_eq!(format!("{lead}{tail}"), "1 of 4 done · 2 stopped · 1 queued");
+    }
+
+    #[test]
+    fn the_goal_estimate_reads_against_its_running_and_task_time() {
+        let g = |e: Value| json!({"estimate": e});
+        assert_eq!(estimate_line(&g(json!({"est_min": 180, "actual_min": 160, "work_min": 310}))).as_deref(), Some("Est 3h · Running 2h 40m · 0.9× · Task time 5h 10m"));
+        assert_eq!(estimate_line(&g(json!({"est_min": 180, "actual_min": 0, "work_min": 0}))).as_deref(), Some("Est 3h"));
+        assert_eq!(estimate_line(&g(json!({"est_min": null, "actual_min": 40, "work_min": 40}))), None, "no estimate, no line");
+        assert_eq!(estimate_line(&json!({})), None);
     }
 }

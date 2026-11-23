@@ -148,6 +148,8 @@ pub static CATALOG: &[Component] = &[
       &[fact("projects", "projects", Min(2.0))]),
     c("bump", "Project rank shift", "Trends", "half", "When the top projects' ranks changed since the previous period.",
       &[fact("projects", "ranks.projects", Min(2.0)), fact("moved", "ranks.moved", Min(1.0))]).no_month(),
+    c("est", "Estimate accuracy", "Trends", "half", "Agents' estimates of their working time against the time it took: median actual over estimate, share within 25%, over and under, by project and month. Not the developer-time estimate; say \"agent estimates\".",
+      &[fact("tasks", "estimates.tasks", Min(1.0)), fact("estimates", "estimates", Any)]),
     c("tries", "Merged first try", "Quality", "half", "PRs merged with no review round that found something to fix.",
       &[fact("prs", "tries.prs", Min(1.0)), fact("first", "tries.first_try", Opt), fact("retried", "tries.retried", Opt)]).no_month(),
     c("plan", "Plan-quality scorecard", "Quality", "full", "A month's plan quality against the month before.",
@@ -167,7 +169,7 @@ pub static CATALOG: &[Component] = &[
 const NEVER_BOTH: &[(&str, &str)] = &[("hero", "heroR"), ("timeline", "train")];
 
 /// The page used when there's no spec from Claude: whichever of these fit, in this order.
-const DEFAULT: &[&str] = &["open", "kpis", "gcards", "days", "trend", "time", "list", "board", "timeline", "lessons"];
+const DEFAULT: &[&str] = &["open", "kpis", "gcards", "days", "trend", "time", "est", "list", "board", "timeline", "lessons"];
 
 fn component(id: &str) -> Option<&'static Component> {
     CATALOG.iter().find(|c| c.id == id)

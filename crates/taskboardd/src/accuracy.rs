@@ -9,9 +9,15 @@
 //!
 //! A call reads the board in four queries, however many tasks there are: the finished tasks, their
 //! working stretches, the estimated goals' tasks and those tasks' stretches.
+//!
+//! [`window`] is the app's view of the same numbers: the tasks finished in a period (a recap's
+//! `estimates` fact, the Days page's last 30 days), with over and under counted and a trend by month.
+//! These are the agents' own estimates (`est_min`), not the developer-time estimate (`human_min`)
+//! behind the hours-saved numbers.
 
 use std::collections::{BTreeMap, HashMap};
 
+use chrono::{Datelike, Duration, NaiveDate};
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -384,6 +390,116 @@ pub fn summary_for(app: &App, project: Option<&str>) -> Vec<String> {
     }
 }
 
+// ------------------------------------------------------------------ the app's cards
+
+/// Months the app's trend covers, the last one the month the window ends in.
+pub const MONTHS: u32 = 6;
+
+/// One finished estimated task in a window.
+struct Done {
+    task: String,
+    title: String,
+    project: String,
+    est: f64,
+    actual: f64,
+    at: f64,
+}
+
+impl Done {
+    fn ratio(&self) -> f64 {
+        self.actual / self.est
+    }
+}
+
+/// The counts and shares of a set of tasks: on the mark within ±25%, over above it, under below it.
+fn tally(ds: &[&Done]) -> Value {
+    let ratios: Vec<f64> = ds.iter().map(|d| d.ratio()).collect();
+    let over = ratios.iter().filter(|r| **r > NEAR.1).count();
+    let under = ratios.iter().filter(|r| **r < NEAR.0).count();
+    let on = ratios.len() - over - under;
+    json!({
+        "tasks": ds.len(),
+        "median_ratio": median(&ratios).map(round2),
+        "within": if ds.is_empty() { Value::Null } else { json!(round2(on as f64 / ds.len() as f64)) },
+        "over": over, "under": under, "on": on,
+        "est_min": ds.iter().map(|d| d.est).sum::<f64>().round(),
+        "actual_min": ds.iter().map(|d| d.actual).sum::<f64>().round(),
+    })
+}
+
+/// The first day of the month `back` months before `d`'s.
+fn month_start(d: NaiveDate, back: u32) -> NaiveDate {
+    let n = d.year() * 12 + d.month0() as i32 - back as i32;
+    NaiveDate::from_ymd_opt(n.div_euclid(12), n.rem_euclid(12) as u32 + 1, 1).unwrap_or(d)
+}
+
+/// The finished estimated agent tasks from `from` to `to` (epoch seconds), each with its working time.
+fn finished_in(app: &App, from: f64, to: f64) -> Result<Vec<Done>> {
+    let rows = app.db.q(
+        "SELECT * FROM tasks WHERE status = 'done' AND COALESCE(failed, 0) = 0 AND est_min > 0 AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, id",
+        p![iso(from), iso(to)],
+    )?;
+    let rows: Vec<Row> = rows.into_iter().filter(|r| !crate::human::is(r)).collect();
+    let work = crate::estimate::work_by_task(app, &rows.iter().map(|r| r.id()).collect::<Vec<_>>())?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let actual = (work.get(&r.id())? / 60.0).round();
+            (actual > 0.0).then(|| Done {
+                task: crate::human::task_ref(r),
+                title: r.st("title").to_string(),
+                project: project_of(r),
+                est: r.i0("est_min") as f64,
+                actual,
+                at: r.s("finished_at").and_then(parse_iso).unwrap_or(from),
+            })
+        })
+        .collect())
+}
+
+/// How the estimates of tasks finished from `from` to `to` turned out, with the trend by month over
+/// the [`MONTHS`] up to `to`'s month: overall, by project, the biggest misses and `months`. Null when
+/// no task finished in the window had an estimate. `hide` leaves out those projects.
+pub fn window(app: &App, from: f64, to: f64, hide: &[String]) -> Result<Value> {
+    let last_day = local_dt(to - 1.0).date_naive();
+    let first_month = month_start(last_day, MONTHS - 1);
+    let start = crate::days::start_of(first_month).min(from);
+    let all: Vec<Done> = finished_in(app, start, to)?.into_iter().filter(|d| !hide.contains(&d.project)).collect();
+    let now: Vec<&Done> = all.iter().filter(|d| d.at >= from).collect();
+    if now.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut out = tally(&now);
+
+    let mut names: Vec<&str> = now.iter().map(|d| d.project.as_str()).collect();
+    names.sort();
+    names.dedup();
+    let mut projects: Vec<Value> = names
+        .iter()
+        .map(|n| with(tally(&now.iter().copied().filter(|d| d.project == *n).collect::<Vec<_>>()), json!({"name": n})))
+        .collect();
+    projects.sort_by(|a, b| b["tasks"].as_u64().cmp(&a["tasks"].as_u64()).then(a["name"].as_str().cmp(&b["name"].as_str())));
+    out["projects"] = json!(projects);
+
+    let mut misses: Vec<&&Done> = now.iter().filter(|d| d.ratio() < NEAR.0 || d.ratio() > NEAR.1).collect();
+    misses.sort_by(|a, b| b.ratio().ln().abs().total_cmp(&a.ratio().ln().abs()).then(b.at.total_cmp(&a.at)));
+    out["misses"] = json!(misses
+        .iter()
+        .take(MISSES)
+        .map(|d| json!({"task": d.task, "title": d.title, "project": d.project, "est_min": d.est, "actual_min": d.actual, "ratio": round2(d.ratio())}))
+        .collect::<Vec<_>>());
+
+    out["months"] = json!((0..MONTHS)
+        .rev()
+        .map(|back| {
+            let m = month_start(last_day, back);
+            let (a, b) = (crate::days::start_of(m), crate::days::start_of(month_start(m + Duration::days(32), 0)));
+            with(tally(&all.iter().filter(|d| d.at >= a && d.at < b).collect::<Vec<_>>()), json!({"month": m.format("%Y-%m").to_string()}))
+        })
+        .collect::<Vec<_>>());
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +597,28 @@ mod tests {
         assert_eq!(printed[0], "No finished work with an estimate yet.");
         assert!(printed.iter().any(|l| l.starts_with("  tb") && l.contains("median 1h")), "{printed:?}");
         assert!(summary(&Data::default(), None).is_empty());
+    }
+
+    fn done(est: f64, actual: f64) -> Done {
+        Done { task: "T1".into(), title: "t".into(), project: "p".into(), est, actual, at: 0.0 }
+    }
+
+    #[test]
+    fn a_window_counts_over_under_and_on_the_mark() {
+        let ds = [done(60.0, 60.0), done(60.0, 120.0), done(60.0, 30.0), done(40.0, 50.0)];
+        let v = tally(&ds.iter().collect::<Vec<_>>());
+        assert_eq!(v["tasks"], 4);
+        assert_eq!((v["over"].as_u64(), v["under"].as_u64(), v["on"].as_u64()), (Some(1), Some(1), Some(2)));
+        assert_eq!(v["within"], json!(0.5));
+        assert_eq!(v["median_ratio"], json!(1.13));
+        let empty = tally(&[]);
+        assert!(empty["median_ratio"].is_null() && empty["within"].is_null());
+    }
+
+    #[test]
+    fn months_step_back_across_years() {
+        let d = NaiveDate::from_ymd_opt(2026, 2, 14).unwrap();
+        assert_eq!(month_start(d, 0), NaiveDate::from_ymd_opt(2026, 2, 1).unwrap());
+        assert_eq!(month_start(d, 5), NaiveDate::from_ymd_opt(2025, 9, 1).unwrap());
     }
 }

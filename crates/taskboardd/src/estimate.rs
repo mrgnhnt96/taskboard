@@ -192,11 +192,16 @@ fn ratio(est: Option<i64>, actual_min: i64) -> Option<f64> {
     (actual_min > 0).then(|| (actual_min as f64 / e as f64 * 10.0).round() / 10.0)
 }
 
-/// The estimate fields on a task's detail: `est_min`, `est_at`, `actual_min` (working minutes) and
-/// `est_ratio` (actual over estimate).
+/// The estimate fields on a task's detail: `est_min`, `est_at`, `actual_min` (working minutes, to
+/// `as_of`), `est_ratio` (actual over estimate) and `working_since`, when the stretch it's working in
+/// now began (null when it isn't working), so the app can keep the actual time going.
 pub fn task_view(app: &App, t: &Row) -> Result<Value> {
-    let actual = whole_min(work_by_task(app, &[t.id()])?.get(&t.id()).copied().unwrap_or(0.0));
-    Ok(json!({"est_min": t.v("est_min"), "est_at": t.v("est_at"), "actual_min": actual, "est_ratio": ratio(t.i("est_min"), actual)}))
+    let now = now_ts();
+    let st = stretches(app, &[t.id()])?.remove(&t.id()).unwrap_or_default();
+    let actual = whole_min(st.iter().map(|(a, b)| b - a).sum());
+    let since = st.last().filter(|(_, b)| *b >= now && t.s("status") == Some("working")).map(|(a, _)| iso(*a));
+    Ok(json!({"est_min": t.v("est_min"), "est_at": t.v("est_at"), "actual_min": actual, "est_ratio": ratio(t.i("est_min"), actual),
+              "working_since": since, "as_of": iso(now)}))
 }
 
 /// The estimate fields on a goal's detail: `actual_min` is its running time, which `est_min` estimates;

@@ -28,6 +28,8 @@ const SUMMARY_KEY: &str = "history_summary_days";
 const LAST_CLEANUP_KEY: &str = "history_last_cleanup";
 pub const DETAIL_DAYS: i64 = 90;
 pub const SUMMARY_DAYS: i64 = 365;
+/// Days of finished tasks the Days page's Estimate accuracy card counts, up to the day shown.
+pub const ESTIMATE_DAYS: i64 = 30;
 pub const DETAIL_CHOICES: &[i64] = &[30, 90, 180, 365];
 /// `0` keeps day summaries forever.
 pub const SUMMARY_CHOICES: &[i64] = &[180, 365, 730, 0];
@@ -750,6 +752,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         "first_weekday": weekday_key(app.cfg.first_weekday),
         "usual": usual,
         "oldest": oldest(app)?.map(date_str),
+        "estimates": crate::accuracy::window(app, start_of(date - Duration::days(ESTIMATE_DAYS - 1)), bounds(date).1.min(now), &hide.iter().cloned().collect::<Vec<_>>())?,
         "planning": crate::quality::recent(app, date)?.into_iter().filter(|v| !hide.contains(v["project"].as_str().unwrap_or(""))).collect::<Vec<_>>(),
     }))
 }

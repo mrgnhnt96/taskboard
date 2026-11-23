@@ -292,6 +292,61 @@ pub struct Plan {
     pub stats: Vec<(&'static str, String, String, Option<bool>)>,
 }
 
+/// How agents' own estimates of their working time compared with the time it took, over the last
+/// 30 days. Not the developer-time estimate behind the hours-saved card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Accuracy {
+    /// "1.3×": the median of actual ÷ estimate.
+    pub median: String,
+    /// (label, value) rows: tasks within ±25%, over and under.
+    pub stats: Vec<(&'static str, String)>,
+    /// (project, palette slot, "1.2× · 8 tasks"), when there's more than one.
+    pub projects: Vec<(String, usize, String)>,
+    /// (month, median or "–", tooltip), oldest first, when more than one month has estimates.
+    pub months: Vec<(String, String, String)>,
+}
+
+impl Accuracy {
+    fn of(e: &Value, slot: impl Fn(&str) -> usize) -> Option<Accuracy> {
+        let n = e["tasks"].as_f64().filter(|n| *n > 0.0)?;
+        let count = |v: &Value, k: &str| v[k].as_f64().unwrap_or(0.0);
+        let tasks = |x: f64| format!("{} {}", x as i64, if x == 1.0 { "task" } else { "tasks" });
+        let median = |v: &Value| v["median_ratio"].as_f64().map(fmt::times);
+        let line = |v: &Value| {
+            let mut out: Vec<String> = median(v).into_iter().collect();
+            out.push(tasks(count(v, "tasks")));
+            out.join(" · ")
+        };
+        let share = |x: f64| format!("{}%", (x / n * 100.0).round() as i64);
+        let stats = vec![
+            ("Within ±25%", format!("{} · {}", share(count(e, "on")), tasks(count(e, "on")))),
+            ("Over", format!("{} · {}", share(count(e, "over")), tasks(count(e, "over")))),
+            ("Under", format!("{} · {}", share(count(e, "under")), tasks(count(e, "under")))),
+        ];
+        let projects: Vec<(String, usize, String)> = arr(e, "projects").iter().map(|p| (s(p, "name").to_string(), slot(s(p, "name")), line(p))).collect();
+        let ms = arr(e, "months");
+        let months = if ms.iter().filter(|m| count(m, "tasks") > 0.0).count() > 1 {
+            ms.iter()
+                .map(|m| {
+                    let d = NaiveDate::parse_from_str(&format!("{}-01", s(m, "month")), "%Y-%m-%d").ok();
+                    let short = d.map(|d| d.format("%b").to_string()).unwrap_or_default();
+                    let long = d.map(|d| d.format("%B %Y").to_string()).unwrap_or_default();
+                    let has = count(m, "tasks") > 0.0;
+                    (short, if has { median(m).unwrap_or_else(|| "–".into()) } else { "–".into() }, if has { format!("{long}: {}", line(m)) } else { format!("{long}: no estimated tasks") })
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        Some(Accuracy {
+            median: median(e).unwrap_or_else(|| "–".into()),
+            stats,
+            projects: if projects.len() > 1 { projects } else { vec![] },
+            months,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     pub title: String,
@@ -340,6 +395,8 @@ pub struct View {
     /// (project, palette slot, minutes, share).
     pub split: Vec<(String, usize, f64, String)>,
     pub planning: Vec<Plan>,
+    /// Agents' estimates against their working time; `None` before any.
+    pub accuracy: Option<Accuracy>,
 }
 
 impl View {
@@ -704,6 +761,7 @@ impl View {
                 }
             })
             .collect();
+        let accuracy = Accuracy::of(&v["estimates"], slot);
 
         Some(View {
             title: if is_today { "Today".into() } else { date.format("%A, %B %-d").to_string() },
@@ -742,6 +800,7 @@ impl View {
             done_bars,
             split,
             planning,
+            accuracy,
         })
     }
 }
@@ -1004,7 +1063,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .children((!v.split.is_empty()).then(|| split_card(&v, &t, &pc)))
         .child(saved_card(&v, &t))
         .child(done_card(&v, &t))
-        .children((!v.planning.is_empty()).then(|| planning_card(&v, &t, &pc)));
+        .children((!v.planning.is_empty()).then(|| planning_card(&v, &t, &pc)))
+        .children(v.accuracy.as_ref().map(|a| accuracy_card(a, &t, &pc)));
 
     shell
         .child(
@@ -1692,10 +1752,58 @@ fn planning_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
     }))
 }
 
+/// Agents' own estimates against their working time, last 30 days: the median ratio, how many
+/// landed within ±25%, over and under, by project and by month.
+fn accuracy_card(a: &Accuracy, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
+    let row = |label: SharedString, value: String| {
+        div().flex().items_center().gap(px(8.)).text_size(px(12.5)).child(div().flex_1().truncate().text_color(t.text_2).child(label)).child(div().font_weight(FontWeight::SEMIBOLD).child(value))
+    };
+    card(t)
+        .child(h2("Agent estimates, last 30 days"))
+        .child(
+            div()
+                .id("days-est-median")
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(a.median.clone()))
+                .child(div().text_size(px(12.)).text_color(t.muted).child("median actual ÷ estimate"))
+                .tooltip(kit::tip("Agents’ own estimates of their working time, against the time they spent working. Time waiting on you or a review doesn’t count. Not the developer-time estimate behind hours saved.")),
+        )
+        .children(a.stats.iter().map(|(l, v)| row((*l).into(), v.clone())))
+        .children(a.projects.iter().map(|(p, slot, line)| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(12.5))
+                .child(swatch(pc(*slot), 9.))
+                .child(div().flex_1().truncate().text_color(t.text_2).child(p.clone()))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(line.clone()))
+        }))
+        .when(!a.months.is_empty(), |d| {
+            d.child(div().flex().gap(px(4.)).children(a.months.iter().enumerate().map(|(i, (m, r, tip))| {
+                div()
+                    .id(("days-est-month", i))
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .py(px(4.))
+                    .rounded(px(6.))
+                    .bg(t.panel_2)
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(r.clone()))
+                    .child(div().text_size(px(11.)).text_color(t.muted).child(m.clone()))
+                    .tooltip(kit::tip(tip.clone()))
+            })))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute.
-    use super::{View, dur, estimate_sum, hour_label, saved_title, week_from, week_names};
+    use super::{Accuracy, View, dur, estimate_sum, hour_label, saved_title, week_from, week_names};
     use serde_json::{Value, json};
 
     #[test]
@@ -1931,6 +2039,29 @@ mod tests {
         assert_eq!(p[1].size, "1 goal · 1 task");
         assert_eq!(p[1].stats.len(), 4, "no estimate, no time line");
         assert!(View::of(&sample()).unwrap().planning.is_empty());
+    }
+
+    #[::core::prelude::v1::test]
+    fn agent_estimates_read_as_a_median_ratio_with_shares() {
+        let mut v = sample();
+        assert_eq!(View::of(&v).unwrap().accuracy, None, "no estimates yet, no card");
+        let m = |month: &str, tasks: f64, r: Option<f64>| json!({"month": month, "tasks": tasks, "median_ratio": r});
+        v["estimates"] = json!({
+            "tasks": 8, "median_ratio": 1.3, "within": 0.5, "on": 4, "over": 3, "under": 1,
+            "projects": [{"name": "webapp", "tasks": 6, "median_ratio": 1.4}, {"name": "api", "tasks": 2, "median_ratio": 0.9}],
+            "months": [m("2026-10", 3.0, Some(1.6)), m("2026-11", 5.0, Some(1.2)), m("2026-12", 0.0, None)],
+        });
+        let a: Accuracy = View::of(&v).unwrap().accuracy.unwrap();
+        assert_eq!(a.median, "1.3×");
+        assert_eq!(a.stats[0], ("Within ±25%", "50% · 4 tasks".to_string()));
+        assert_eq!(a.stats[2], ("Under", "13% · 1 task".to_string()));
+        assert_eq!(a.projects[0], ("webapp".to_string(), 1, "1.4× · 6 tasks".to_string()));
+        assert_eq!(a.months[0], ("Oct".to_string(), "1.6×".to_string(), "October 2026: 1.6× · 3 tasks".to_string()));
+        assert_eq!(a.months[2].1, "–");
+        v["estimates"]["projects"] = json!([{"name": "webapp", "tasks": 8, "median_ratio": 1.3}]);
+        v["estimates"]["months"] = json!([m("2026-11", 8.0, Some(1.3))]);
+        let a = View::of(&v).unwrap().accuracy.unwrap();
+        assert!(a.projects.is_empty() && a.months.is_empty(), "one project or one month says nothing more");
     }
 
     #[::core::prelude::v1::test]

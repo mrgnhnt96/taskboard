@@ -67,6 +67,7 @@ fn view(id: &str) -> Option<Draw> {
         "issues" => trends::issues,
         "bump" => trends::bump,
         "tries" => trends::tries,
+        "est" => trends::est,
         _ => return None,
     })
 }

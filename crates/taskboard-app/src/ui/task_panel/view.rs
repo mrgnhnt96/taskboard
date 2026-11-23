@@ -734,6 +734,13 @@ fn head_chips(c: &Ctx, t: &Value) -> Option<Node> {
     (!chips.is_empty()).then(|| el(K::Head, chips))
 }
 
+/// The agent's estimate against the time it has spent working: "Est 45m · Actual 1h 10m · 1.6×";
+/// nothing when the task has no estimate.
+pub fn estimate_row(t: &Value) -> Option<Node> {
+    let line = fmt::estimate_line(&t["estimate"])?;
+    Some(txt_tip(line, St::Small, "The agent’s estimate of its working time, against the time it has spent working. Time waiting on you or a review doesn’t count."))
+}
+
 /// `goalChip(t)`: "Wave 5 · 18 of 20", opening the goal at the task's wave.
 pub fn goal_chip(t: &Value) -> Option<Node> {
     let g = obj(t, "goal").filter(|g| g.get("id").is_some_and(|x| !x.is_null()) || opt_s(g, "ref").is_some())?;
@@ -887,6 +894,7 @@ pub fn panel(c: &Ctx) -> Node {
     }
     kids.push(txt(or_empty(&t["title"]), St::Title));
     kids.extend(head_chips(c, t));
+    kids.extend(estimate_row(t));
     kids.push(panel_tabs(c, t, tab));
     let body = match tab {
         "what" => vec![what_view(t)],

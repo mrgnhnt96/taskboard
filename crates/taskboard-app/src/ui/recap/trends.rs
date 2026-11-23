@@ -463,3 +463,119 @@ pub fn tries(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<AnyE
     }
     Some(card(c, "tries", Some("Merged first try"), None, body))
 }
+
+/// "Nov 2026" from "2026-11".
+fn month_name(m: &str) -> String {
+    chrono::NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").map(|d| d.format("%b %Y").to_string()).unwrap_or_else(|_| m.to_string())
+}
+
+/// "1.3× · 58% on the mark · 12 tasks": a set's median actual ÷ estimate, its share within ±25%
+/// and its count.
+pub fn est_line(v: &Value) -> String {
+    let mut out = vec![];
+    if let Some(r) = v["median_ratio"].as_f64() {
+        out.push(crate::fmt::times(r));
+    }
+    if let Some(w) = v["within"].as_f64() {
+        out.push(format!("{}% on the mark", int(w * 100.)));
+    }
+    out.push(pl(num(&v["tasks"]), "task", "tasks"));
+    out.join(" · ")
+}
+
+/// Agents' own estimates of their working time against the working time their tasks took. Not the
+/// developer-time estimate behind the hours-saved numbers, so it says "agent estimates" throughout.
+pub fn est(c: &Ctx, comp: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let t = &c.t;
+    let e = c.prop(comp, "estimates", "estimates");
+    let tasks = num(&e["tasks"]);
+    if tasks <= 0. {
+        return None;
+    }
+    let title = Some("Agent estimate accuracy");
+    let (over, on, under) = (num(&e["over"]), num(&e["on"]), num(&e["under"]));
+    let mut body = vec![];
+    if let Some(r) = e["median_ratio"].as_f64() {
+        body.push(big_count(c, "est", 80, r, crate::fmt::times));
+        body.push(small(t, format!("Median actual ÷ agent estimate, {}", pl(tasks, "task", "tasks"))).into_any_element());
+    }
+    let within = e["within"].as_f64().unwrap_or(0.);
+    body.push(
+        div()
+            .id(c.id("est-within"))
+            .text_size(px(13.))
+            .text_color(t.text_2)
+            .child(format!("{}% within ±25% of the estimate", int(within * 100.)))
+            .tooltip(kit::tip("Working time from 0.75 to 1.25 times the agent’s estimate. Time waiting on you or a review doesn’t count."))
+            .into_any_element(),
+    );
+    body.push(stack(
+        c,
+        "est-stack",
+        80,
+        400,
+        12.,
+        vec![
+            (under, grey(t), format!("Under the estimate: {}", pl(under, "task", "tasks"))),
+            (on, t.accent, format!("Within ±25%: {}", pl(on, "task", "tasks"))),
+            (over, t.warn, format!("Over the estimate: {}", pl(over, "task", "tasks"))),
+        ],
+    ));
+    body.push(legend(t, vec![(grey(t), format!("Under {}", int(under))), (t.accent, format!("On the mark {}", int(on))), (t.warn, format!("Over {}", int(over)))]).into_any_element());
+
+    let projects = vals(&e["projects"]);
+    if projects.len() > 1 {
+        body.push(lbl(t, "By project").into_any_element());
+        for (i, p) in projects.iter().enumerate() {
+            let name = s(p, "name").to_string();
+            let b = Brow::new(name.clone(), est_line(p), num(&p["tasks"]) / tasks).color(c.pc(&name));
+            body.push(brow(c, &format!("est-p-{name}"), i, b, None));
+        }
+    }
+
+    let months = vals(&e["months"]);
+    if months.iter().filter(|m| num(&m["tasks"]) > 0.).count() > 1 {
+        let cs: Vec<Col> = months
+            .iter()
+            .map(|m| {
+                let n = num(&m["tasks"]);
+                Col {
+                    value: m["median_ratio"].as_f64().unwrap_or(0.),
+                    tip: if n > 0. { format!("{}: {}", month_name(s(m, "month")), est_line(m)) } else { format!("{}: no estimated tasks", month_name(s(m, "month"))) },
+                    dim: n <= 0.,
+                }
+            })
+            .collect();
+        let row = |v: Vec<String>, color: Hsla| div().flex().gap(px(2.)).text_size(px(12.)).text_color(color).children(v.into_iter().map(|x| div().flex_1().min_w_0().flex().justify_center().whitespace_nowrap().child(x)));
+        let short = |m: &Value| chrono::NaiveDate::parse_from_str(&format!("{}-01", s(m, "month")), "%Y-%m-%d").map(|d| d.format("%b").to_string()).unwrap_or_default();
+        body.push(lbl(t, "Median by month").into_any_element());
+        body.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(cols(c, "est-months", 80., 60, 0., &cs, None, vec![]))
+                .child(row(months.iter().map(|m| m["median_ratio"].as_f64().filter(|_| num(&m["tasks"]) > 0.).map_or("–".into(), crate::fmt::times)).collect(), t.text_2))
+                .child(row(months.iter().map(short).collect(), t.muted))
+                .into_any_element(),
+        );
+    }
+
+    let misses: Vec<Value> = vals(&e["misses"]).to_vec();
+    if !misses.is_empty() {
+        let n = misses.len();
+        body.extend(xp(c, "est-misses", "Biggest misses", None, 32. * n as f32, cx, |cx| {
+            div().flex().flex_col().children(
+                misses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        let value = format!("Est {} · Actual {}", crate::fmt::work_len(num(&m["est_min"]) as i64), crate::fmt::work_len(num(&m["actual_min"]) as i64));
+                        trow(c, &format!("est-m{i}"), i, s(m, "task"), s(m, "title"), value, cx)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }));
+    }
+    Some(card(c, "est", title, None, body))
+}
