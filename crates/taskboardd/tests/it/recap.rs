@@ -108,6 +108,8 @@ fn a_week_reports_merged_released_and_human_work_apart_and_leaves_out_closed_prs
     state(&app, no_pr, &at(wed, 11, 30), "done", None);
     state(&app, mine, &at(wed, 9, 0), "needs", Some("human"));
     state(&app, mine, &at(wed, 9, 30), "done", None);
+    state(&app, open, &at(wed, 13, 0), "needs", Some("question"));
+    state(&app, open, &at(wed, 13, 30), "done", None);
 
     app.db.insert("pr_merges", fields!["task_id" => merged, "pr_num" => 5, "project" => "webapp", "merged_at" => at(wed, 11, 5), "added" => 10, "removed" => 2]).unwrap();
     app.db.insert("events", fields!["task_id" => merged, "at" => at(wed, 10, 40), "who" => "agent", "kind" => "commit", "text" => "Committed abc123: login form"]).unwrap();
@@ -163,8 +165,9 @@ fn a_week_reports_merged_released_and_human_work_apart_and_leaves_out_closed_prs
     assert_eq!(f["agent"]["categories"][0], json!({"name": "build", "minutes": 10.0}));
 
     let w = &f["waiting"];
-    assert_eq!(w["minutes"], 30.0);
-    assert_eq!((w["tasks"][0]["task"].clone(), w["tasks"][0]["human"].clone()), (json!(format!("H{mine}")), json!(true)));
+    assert_eq!(w["minutes"], 30.0, "the owner's own task waiting on them isn't counted");
+    assert_eq!(w["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!((w["tasks"][0]["task"].clone(), w["tasks"][0]["human"].clone()), (json!(format!("T{open}")), json!(false)));
     assert_eq!(f["usage"], Value::Null, "no usage samples were taken");
 
     let wed_row = f["days"].as_array().unwrap().iter().find(|d| d["date"] == "2026-10-07").unwrap();
