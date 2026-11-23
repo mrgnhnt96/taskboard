@@ -201,7 +201,7 @@ fn done_tasks(app: &App, from: f64, to: f64) -> Result<Vec<Done>> {
            CASE WHEN t.pr_num IS NOT NULL THEN t.pr_state ELSE a.pr_state END AS any_state,
            CASE WHEN t.pr_num IS NOT NULL THEN t.pr_phase ELSE a.pr_phase END AS any_phase
          FROM tasks t LEFT JOIN tasks a ON a.id = t.same_pr
-         WHERE t.status = 'done' AND t.failed = 0 AND COALESCE(t.owner_answer, '') NOT IN ('cant_do', 'not_needed')
+         WHERE t.status = 'done' AND t.failed = 0 AND COALESCE(t.owner_answer, '') NOT IN ('cant_do', 'not_needed', 'board_agent', 'board_answered')
            AND t.finished_at >= ? AND t.finished_at < ?
          ORDER BY t.finished_at, t.id",
         p![iso(from), iso(to)],

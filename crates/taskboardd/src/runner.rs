@@ -757,6 +757,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::prhost::limit::reader("master", || crate::breaks::tick(app))?;
     crate::relevance::tick(app)?;
     crate::tidy::tick(app)?;
+    crate::recheck::tick(app)?;
     dispatch::start_answers(app)?;
     crate::start_grants::answers(app)?;
     crate::scheduled::tick(app)?;

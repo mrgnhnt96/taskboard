@@ -299,7 +299,7 @@ fn work_out(app: &App, date: NaiveDate, now: f64) -> Result<(BTreeMap<String, Va
         .db
         .q(
             "SELECT task_id, at FROM task_states WHERE status = 'done' AND failed = 0 AND at >= ? AND at < ? \
-             AND task_id NOT IN (SELECT id FROM tasks WHERE owner_answer IN ('cant_do', 'not_needed')) ORDER BY at, id",
+             AND task_id NOT IN (SELECT id FROM tasks WHERE owner_answer IN ('cant_do', 'not_needed', 'board_agent', 'board_answered')) ORDER BY at, id",
             p![iso(from), iso(to)],
         )?
         .iter()

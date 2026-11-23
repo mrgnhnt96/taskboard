@@ -76,6 +76,11 @@ no_task = true                       # also screen tb question from a terminal w
 # Rule files the screener reads: a file, a folder (its MEMORY.md, then every other .md in it, so a
 # new memory note counts at once) or a glob (`*`, `?`, `[…]`, `**` for any depth of folders).
 rules = []                           # example: ["~/.claude/CLAUDE.md", "~/.claude/projects/-Users-alex-code-web/memory", "~/.claude/projects/*/memory/*.md"]
+# Re-read open questions and human tasks during work hours: ones raised before the screener read
+# such items, or before a rule file last changed. `model` reads first; what it would keep with you
+# goes to `human_model`. Each item is read again only once it or the rules change.
+recheck = true
+recheck_every_mins = 45              # 10 at least
 
 # Check-ins on long turns: once a task's terminal has been working `after_mins` (and every
 # `every_mins` after), a headless `claude -p` reads its last lines and the processes under it and says

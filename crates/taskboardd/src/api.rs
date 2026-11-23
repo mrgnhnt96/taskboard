@@ -2011,59 +2011,87 @@ fn answer(app: &App, id: i64, body: &Value) -> Result<Value> {
     if when != "now" && when != "morning" {
         return err(400, "Send the answer now or in the morning.");
     }
+    let message = format!("[task-board:{}] {} answer: {text}", rf("task", id), capitalize(&app.cfg.owners()));
     app.db.tx(|| {
-        let t = board::get_task(app, id)?;
-        let mut ctx = board::task_context(&t);
-        let mut entry = format!("“{text}” ({})", local_clock(None));
-        if let Some(q) = t.s("question").filter(|q| !q.is_empty()) {
-            entry = format!("{} → {entry}", clip(q, 160));
-        }
-        let mut answers = str_list(ctx.get("answers"));
-        answers.push(entry);
-        ctx.insert("answers".into(), json!(answers));
-        let s = board::live_session(app, &t)?;
-        board::save_context(app, id, &ctx, s.is_none())?;
         let later = if when == "morning" { hours::until_open(app) } else { None };
-        if later.is_none() {
-            board::update_task(app, id, fields!["answered_at" => now_iso()])?;
+        match later {
+            Some(later) => answer_later(app, id, &text, &message, &later),
+            None => give_answer(app, id, &text, &message, OWNER, &format!("Answered: {text}")),
         }
-        let message = format!("[task-board:{}] {} answer: {text}", rf("task", id), capitalize(&app.cfg.owners()));
-        let visiting = t.s("status") == Some("done") && (prflow::visitor(&t).is_some() || prflow::waking(app, &t)?);
-        let asked_or_lost = t.s("status") == Some("needs") && matches!(t.s("needs_reason"), Some("question") | Some("lost"));
-        let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
-        if let Some(later) = later {
-            let at = hours::say_when(&later);
-            board::log_event(app, id, OWNER, "answer", &format!("Answered: {text} (sends {at})"))?;
-            if s.is_some() || visiting {
-                deliver::add(app, "answer", &message, id, None, Some(&later))?;
-            } else if asked_or_lost {
-                board::update_task(
-                    app,
-                    id,
-                    fields!["status" => "queued", "needs_reason" => null, "question" => null, "lost" => 0, "session_id" => null,
-                            "pickup_session" => null, "pickup" => pickup, "latest" => format!("Answered; it starts {at} with your answer in its handoff.")],
-                )?;
-            }
-        } else if s.is_some() {
-            deliver::add(app, "answer", &message, id, None, None)?;
-            board::log_event(app, id, OWNER, "answer", &format!("Answered: {text}"))?;
-        } else {
-            board::log_event(app, id, OWNER, "answer", &format!("Answered: {text}"))?;
-            if asked_or_lost {
-                board::update_task(
-                    app,
-                    id,
-                    fields!["status" => "queued", "needs_reason" => null, "question" => null, "lost" => 0, "session_id" => null,
-                            "latest" => "Answered; it starts again from its handoff."],
-                )?;
-            }
-            if t.s("status") != Some("done") || visiting {
-                deliver::answer_in_new_tab(app, &board::get_task(app, id)?, &message)?;
-            }
-        }
-        Ok(())
     })?;
     task_detail(app, id)
+}
+
+/// Keeps `text` in task `t`'s handoff as the answer to its question.
+fn keep_answer(app: &App, t: &Row, text: &str, live: bool) -> Result<()> {
+    let mut ctx = board::task_context(t);
+    let mut entry = format!("“{text}” ({})", local_clock(None));
+    if let Some(q) = t.s("question").filter(|q| !q.is_empty()) {
+        entry = format!("{} → {entry}", clip(q, 160));
+    }
+    let mut answers = str_list(ctx.get("answers"));
+    answers.push(entry);
+    ctx.insert("answers".into(), json!(answers));
+    board::save_context(app, t.id(), &ctx, !live)
+}
+
+/// The task waits on its question, or its terminal was lost: an answer starts it again.
+fn asked_or_lost(t: &Row) -> bool {
+    t.s("status") == Some("needs") && matches!(t.s("needs_reason"), Some("question") | Some("lost"))
+}
+
+/// A done task a PR visit still answers to.
+fn visiting(app: &App, t: &Row) -> Result<bool> {
+    Ok(t.s("status") == Some("done") && (prflow::visitor(t).is_some() || prflow::waking(app, t)?))
+}
+
+/// Answers task `id`'s question now with `text`, as the owner's Answer does: `message` goes to its
+/// terminal, or it starts again from its handoff with the answer in it. `who` and `line` go in its log.
+/// The Needs you re-check (`recheck.rs`) answers this way too. Call it in a transaction.
+pub fn give_answer(app: &App, id: i64, text: &str, message: &str, who: &str, line: &str) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let s = board::live_session(app, &t)?;
+    keep_answer(app, &t, text, s.is_some())?;
+    board::update_task(app, id, fields!["answered_at" => now_iso()])?;
+    if s.is_some() {
+        deliver::add(app, "answer", message, id, None, None)?;
+        return board::log_event(app, id, who, "answer", line).map(|_| ());
+    }
+    board::log_event(app, id, who, "answer", line)?;
+    let visiting = visiting(app, &t)?;
+    if asked_or_lost(&t) {
+        board::update_task(
+            app,
+            id,
+            fields!["status" => "queued", "needs_reason" => null, "question" => null, "lost" => 0, "session_id" => null,
+                    "latest" => "Answered; it starts again from its handoff."],
+        )?;
+    }
+    if t.s("status") != Some("done") || visiting {
+        deliver::answer_in_new_tab(app, &board::get_task(app, id)?, message)?;
+    }
+    Ok(())
+}
+
+/// The owner's answer sent at `later`, when work hours open.
+fn answer_later(app: &App, id: i64, text: &str, message: &str, later: &str) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    let s = board::live_session(app, &t)?;
+    keep_answer(app, &t, text, s.is_some())?;
+    let at = hours::say_when(later);
+    board::log_event(app, id, OWNER, "answer", &format!("Answered: {text} (sends {at})"))?;
+    if s.is_some() || visiting(app, &t)? {
+        deliver::add(app, "answer", message, id, None, Some(later))?;
+    } else if asked_or_lost(&t) {
+        let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
+        board::update_task(
+            app,
+            id,
+            fields!["status" => "queued", "needs_reason" => null, "question" => null, "lost" => 0, "session_id" => null,
+                    "pickup_session" => null, "pickup" => pickup, "latest" => format!("Answered; it starts {at} with your answer in its handoff.")],
+        )?;
+    }
+    Ok(())
 }
 
 /// The daemon's code-signing identifier, which Midna's `agents.trusted_clients` names to let it answer pickers.
