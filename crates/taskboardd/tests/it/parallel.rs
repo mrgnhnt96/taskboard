@@ -199,10 +199,10 @@ fn propose_names_what_each_task_waits_for_by_ref_or_place() {
     let g = b.side_by_side();
     let setup = b.task("Set up", json!({}));
     let out = b.report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": [
-        {"title": "Measure", "detail": "before numbers", "waits_for": [format!("T{setup}")], "locks": ["quiet-mac"]},
-        "Fix the tabs::the fix::2::#1",
-        {"title": "Measure after", "detail": "after", "waits_for": ["#1", "#2"], "alone": "goal"},
-        "Docs::write them::::T1",
+        {"est": "1h", "title": "Measure", "detail": "before numbers", "waits_for": [format!("T{setup}")], "locks": ["quiet-mac"]},
+        "Fix the tabs::the fix::2::#1::est=1h",
+        {"est": "1h", "title": "Measure after", "detail": "after", "waits_for": ["#1", "#2"], "alone": "goal"},
+        "Docs::write them::::T1::est=1h",
     ]}));
     let made: Vec<String> = out["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
     let card = |r: &str| b.get(&format!("tasks/{r}"));
@@ -219,7 +219,7 @@ fn propose_names_what_each_task_waits_for_by_ref_or_place() {
     let two = shown["tasks"].as_array().unwrap().iter().find(|t| t["ref"] == made[1].as_str()).unwrap().clone();
     assert_eq!(two["waits_for_state"], json!([{"ref": made[0], "done": false}]));
 
-    let bad = b.try_report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": [{"title": "First", "detail": "x", "waits_for": ["#1"]}]}));
+    let bad = b.try_report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": [{"est": "1h", "title": "First", "detail": "x", "waits_for": ["#1"]}]}));
     let (code, msg) = bad.unwrap_err();
     assert_eq!(code, 400);
     assert!(msg.contains("#1 is the first"), "{msg}");
@@ -851,7 +851,7 @@ fn more_changes_after_done_reopen_the_task() {
     let b = new_board();
     b.add_session("s1");
     b.report("hook.prompt", "s1", json!({"prompt": "zip the project"}));
-    let tr = b.report("tb.new_task", "s1", json!({"title": "Zip the project", "here": true, "ships_pr": false}))["created"][0].as_str().unwrap().to_string();
+    let tr = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Zip the project", "here": true, "ships_pr": false}))["created"][0].as_str().unwrap().to_string();
     write_turn(&b, "s1", "zip the project", &["notes.md"], "2026-01-01T10:00:00Z");
     b.report("tb.done", "s1", json!({"summary": "Zipped it."}));
     assert!(b.report("hook.stop", "s1", json!({"last_message": "Zipped."})).get("block").is_none());
@@ -879,7 +879,7 @@ fn more_changes_after_done_reopen_the_task() {
 fn more_changes_leave_a_done_pr_task_to_the_pr_flow() {
     let b = new_board();
     b.add_session("s1");
-    let tr = b.report("tb.new_task", "s1", json!({"title": "Fix the tab bar", "here": true}))["created"][0].as_str().unwrap().to_string();
+    let tr = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Fix the tab bar", "here": true}))["created"][0].as_str().unwrap().to_string();
     b.report("tb.done", "s1", json!({"summary": "Fixed it.", "pr": "https://github.com/acme/webapp/pull/7"}));
     b.report("hook.prompt", "s1", json!({"prompt": "one more tweak"}));
     write_turn(&b, "s1", "one more tweak", &["TabBar.swift"], "2099-01-01T00:00:00Z");
@@ -1324,12 +1324,12 @@ fn auto_takes_a_slot_when_wave_mates_overlap_list_no_files_or_have_the_shared_ch
         "tb.propose",
         "s1",
         json!({"goal": format!("G{g}"), "tasks": [
-            "Apart A::x::1::::src/a.rs", "Apart B::x::1::::src/b.rs",
-            "Over C::x::2::::src/c.rs", "Over D::x::2::::src/c.rs, src/d.rs",
-            "Bare E::x::3", "Listed F::x::3::::src/f.rs",
-            "Pinned G::x::4::lane=shared", "Pinned H::x::4::::src/h.rs::lane=slot",
-            "Held I::x::5::::src/i.rs::lane=shared", "Apart J::x::5::::src/j.rs",
-            "Apart K::x::6::::src/k.rs", "Started L::x::6::::src/l.rs",
+            "Apart A::x::1::::src/a.rs::est=1h", "Apart B::x::1::::src/b.rs::est=1h",
+            "Over C::x::2::::src/c.rs::est=1h", "Over D::x::2::::src/c.rs, src/d.rs::est=1h",
+            "Bare E::x::3::est=1h", "Listed F::x::3::::src/f.rs::est=1h",
+            "Pinned G::x::4::lane=shared::est=1h", "Pinned H::x::4::::src/h.rs::lane=slot::est=1h",
+            "Held I::x::5::::src/i.rs::lane=shared::est=1h", "Apart J::x::5::::src/j.rs::est=1h",
+            "Apart K::x::6::::src/k.rs::est=1h", "Started L::x::6::::src/l.rs::est=1h",
         ]}),
     );
     let ids: Vec<i64> =
@@ -1356,7 +1356,7 @@ fn auto_takes_a_slot_when_wave_mates_overlap_list_no_files_or_have_the_shared_ch
 fn auto_stays_in_the_shared_checkout_outside_a_wave_or_a_git_checkout() {
     let b = new_board();
     let g = b.side_by_side();
-    let r = b.report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": ["One::x::1", "Two::x::1"]}));
+    let r = b.report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": ["One::x::1::est=1h", "Two::x::1::est=1h"]}));
     let t: i64 = r["created"][0].as_str().unwrap()[1..].parse().unwrap();
     assert_eq!(lane(&b, t), ("shared".into(), "auto".into()), "no git checkout: no pool to borrow from");
     let loose = b.task("Loose", json!({"goal_id": g}));

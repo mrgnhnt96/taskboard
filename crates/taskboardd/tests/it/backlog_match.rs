@@ -42,7 +42,7 @@ impl Board {
         api::dispatch(&self.app, "GET", "tasks", &Query::new(), &json!({})).unwrap()["tasks"].as_array().map(|a| a.len()).unwrap_or(0)
     }
     fn new_task(&self, extra: Value) -> Result<Value, (u16, String)> {
-        let mut b = json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}});
+        let mut b = json!({"est": "1h", "event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}});
         for (k, v) in extra.as_object().unwrap() {
             b[k] = v.clone();
         }
@@ -83,7 +83,7 @@ fn a_reworded_title_in_the_goal_is_refused_and_names_the_goal() {
     let (status, msg) = b.new_task(json!({"title": "Slow search results loading for large projects", "goal": format!("G{g}")})).unwrap_err();
     assert_eq!(status, 409);
     assert!(msg.contains(&format!("tb task new --issue B{i} --goal G{g}")), "{msg}");
-    let proposed = b.new_task(json!({"event": "tb.propose", "goal": format!("G{g}"), "tasks": ["Search results load slowly on large projects::x"]}));
+    let proposed = b.new_task(json!({"event": "tb.propose", "goal": format!("G{g}"), "tasks": ["Search results load slowly on large projects::x::est=1h"]}));
     assert_eq!(proposed.unwrap_err().0, 409, "a proposed task list is checked too");
 }
 

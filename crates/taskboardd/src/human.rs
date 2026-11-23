@@ -67,7 +67,7 @@ pub fn refuse_bare(body: &Value) -> Result<()> {
         return err(
             400,
             "A release cut is a command an agent runs (tb release cut v<version>), so it's never a human task: \
-             make it an agent task (tb task new \"Cut v<version>\" --no-pr --detail \"…\") and have the task that needs it run tb wait-for T<n> on it.",
+             make it an agent task (tb task new \"Cut v<version>\" --no-pr --detail \"…\" --est <len>) and have the task that needs it run tb wait-for T<n> on it.",
         );
     }
     for k in ["stack_on", "same_pr", "locks", "alone"] {

@@ -53,7 +53,7 @@ fn planned(b: &Board) -> (i64, Vec<i64>) {
 fn plan(b: &Board, tasks: &[&str], max: i64) -> (i64, Vec<i64>) {
     midna::sync(&b.app, &[json!({"id": "s1", "name": "Planner", "agent": "claude", "cwd": b.dir.path().join("webapp").to_string_lossy(), "status": {"state": "idle"}})], &[]).unwrap();
     let g = b.post("/goals", json!({"name": "Login", "project": "webapp", "run_in_order": true, "max_terminals": max}))["id"].as_i64().unwrap();
-    let r = reports::handle(&b.app, json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"), "tasks": tasks}), false).unwrap();
+    let r = reports::handle(&b.app, crate::est::fill(json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"), "tasks": tasks})), false).unwrap();
     let ids: Vec<i64> = r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect();
     api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
     (g, ids)

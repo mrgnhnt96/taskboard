@@ -167,7 +167,7 @@ fn a_miss_made_into_a_task_by_an_agent_report_clears_its_alert() {
     let b = new_board();
     let iid = b.issue(&b.found(json!({"misses_goal": true})).unwrap());
     assert_eq!(b.alerts().len(), 1);
-    let body = json!({"event": "tb.new_task", "session": "s1", "title": "Fix sign-in", "goal": format!("G{}", b.goal), "issue": format!("B{iid}"), "planned": true});
+    let body = json!({"est": "1h", "event": "tb.new_task", "session": "s1", "title": "Fix sign-in", "goal": format!("G{}", b.goal), "issue": format!("B{iid}"), "planned": true});
     reports::handle(&b.app, body, false).unwrap();
     assert_eq!(b.app.db.q("SELECT state FROM issues WHERE id = ?", p![iid]).unwrap()[0].st("state"), "task");
     assert!(b.alerts().is_empty(), "{:?}", b.alerts());

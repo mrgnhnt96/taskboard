@@ -123,7 +123,7 @@ fn also_is_checked() {
     assert!(msg.contains("no goal of its own"), "{msg}");
 
     b.add_session("s1");
-    let out = b.try_report("tb.new_task", "s1", json!({"title": "No home", "also": [format!("G{home}")]}));
+    let out = b.try_report("tb.new_task", "s1", json!({"est": "1h", "title": "No home", "also": [format!("G{home}")]}));
     assert!(out.unwrap_err().contains("Only a task in a goal"));
 }
 
@@ -155,7 +155,7 @@ fn every_task_says_where_it_came_from() {
     assert_eq!(b.get(&format!("tasks/T{t}"))["origin"], json!({"from": "Added on the board", "by": "You"}));
 
     b.add_session("s1");
-    let r = b.report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": ["Plan one::do it"]}));
+    let r = b.report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": ["Plan one::do it::est=1h"]}));
     let planned = r["created"][0].as_str().unwrap().to_string();
     assert_eq!(b.get(&format!("tasks/{planned}"))["origin"], json!({"from": format!("Planned in G{g}"), "by": "Term s1"}));
 
@@ -174,7 +174,7 @@ fn every_task_says_where_it_came_from() {
 fn here_makes_a_standalone_task_this_terminal_is_on() {
     let b = new_board();
     b.add_session("s1");
-    let r = b.report("tb.new_task", "s1", json!({"title": "Fix the header", "detail": "The owner asked for it.", "here": true}));
+    let r = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Fix the header", "detail": "The owner asked for it.", "here": true}));
     let tr = r["created"][0].as_str().unwrap().to_string();
     assert_eq!(r["status"], "working");
     assert!(r["context"].as_str().unwrap().contains(&format!("you're on {tr} now")));
@@ -184,7 +184,7 @@ fn here_makes_a_standalone_task_this_terminal_is_on() {
     assert!(t["goal"].is_null());
     assert_eq!(t["origin"]["from"], format!("Code changed in Term s1 while {} worked there", b.app.cfg.owner));
 
-    let again = b.try_report("tb.new_task", "s1", json!({"title": "Another", "here": true}));
+    let again = b.try_report("tb.new_task", "s1", json!({"est": "1h", "title": "Another", "here": true}));
     assert!(again.unwrap_err().contains("already on"), "a terminal on a task tracks its work there");
 }
 
@@ -194,10 +194,10 @@ fn here_with_a_goal_puts_the_terminals_task_in_it_and_the_runner_leaves_it_alone
     b.add_session("s1");
     let g = b.goal("Releases redesign");
     let gr = format!("G{g}");
-    let also = b.try_report("tb.new_task", "s1", json!({"title": "X", "here": true, "goal": gr, "also": [gr]}));
+    let also = b.try_report("tb.new_task", "s1", json!({"est": "1h", "title": "X", "here": true, "goal": gr, "also": [gr]}));
     assert!(also.unwrap_err().contains("--also"));
 
-    let r = b.report("tb.new_task", "s1", json!({"title": "Design the Releases page", "detail": "Concepts on a canvas.", "here": true, "goal": gr}));
+    let r = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Design the Releases page", "detail": "Concepts on a canvas.", "here": true, "goal": gr}));
     let tr = r["created"][0].as_str().unwrap().to_string();
     assert_eq!((r["status"].as_str(), r["goal"].as_str()), (Some("working"), Some(gr.as_str())));
     let context = r["context"].as_str().unwrap();
@@ -207,7 +207,7 @@ fn here_with_a_goal_puts_the_terminals_task_in_it_and_the_runner_leaves_it_alone
     assert_eq!(t["goal"]["ref"], gr);
 
     // Its next task in the same goal waits in this terminal's line, and running the goal starts neither elsewhere.
-    let next = b.report("tb.new_task", "s1", json!({"title": "Build the Releases page", "here": true, "goal": gr, "line": "next"}));
+    let next = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Build the Releases page", "here": true, "goal": gr, "line": "next"}));
     let nr = next["created"][0].as_str().unwrap().to_string();
     assert_eq!((next["status"].as_str(), next["goal"].as_str()), (Some("queued"), Some(gr.as_str())));
     api::dispatch(&b.app, "POST", &format!("goals/{gr}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();

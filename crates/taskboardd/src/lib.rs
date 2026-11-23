@@ -38,6 +38,7 @@ pub mod devices;
 pub mod dig;
 pub mod digest;
 pub mod dispatch;
+pub mod estimate;
 pub mod export;
 pub mod feed;
 pub mod fixes;

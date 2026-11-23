@@ -60,19 +60,19 @@ impl Board {
         for (k, v) in extra.as_object().unwrap() {
             body[k] = v.clone();
         }
-        reports::handle(&self.app, body, false).unwrap()
+        reports::handle(&self.app, crate::est::fill(body), false).unwrap()
     }
     /// What `tb goal new … --task` reports.
     fn goal_new(&self) -> String {
         let v = self.report(
             "tb.goal",
-            json!({"name": "Dark mode", "project": "webapp", "outcome": "Every screen follows the system theme and the toggle remembers the choice",
-                   "tasks": ["Colors::pick the dark palette", "Toggle::add the theme toggle"]}),
+            json!({"est": "3h", "name": "Dark mode", "project": "webapp", "outcome": "Every screen follows the system theme and the toggle remembers the choice",
+                   "tasks": ["Colors::pick the dark palette::est=1h", "Toggle::add the theme toggle::est=1h"]}),
         );
         v["goal"].as_str().unwrap().to_string()
     }
     fn propose(&self, goal: &str) -> Value {
-        self.report("tb.propose", json!({"goal": goal, "tasks": ["Remember::keep the toggle's choice"]}))
+        self.report("tb.propose", json!({"goal": goal, "tasks": ["Remember::keep the toggle's choice::est=1h"]}))
     }
     fn try_post(&self, path: &str, body: Value) -> Result<Value, (u16, String)> {
         api::dispatch(&self.app, "POST", path, &Query::new(), &body).map_err(|e| (e.status, e.message))
@@ -217,7 +217,7 @@ fn with_the_usage_used_up_nothing_runs() {
 #[test]
 fn a_goal_with_no_tasks_has_no_plan_to_review() {
     let b = board();
-    let g = b.report("tb.goal", json!({"name": "Empty", "project": "webapp"}))["goal"].as_str().unwrap().to_string();
+    let g = b.report("tb.goal", json!({"est": "3h", "name": "Empty", "project": "webapp"}))["goal"].as_str().unwrap().to_string();
     assert!(b.calls().is_empty());
     assert!(b.get(&format!("/goals/{g}"))["plan_review"].is_null());
     let (status, msg) = b.try_post(&format!("/goals/{g}/review"), json!({})).unwrap_err();
@@ -230,8 +230,8 @@ fn work_a_task_records_as_done_or_proves_itself_is_not_a_gap() {
     let b = board();
     b.report(
         "tb.goal",
-        json!({"name": "Store sync", "project": "webapp", "outcome": "Every store page loads under a second, with timings attached",
-               "tasks": ["Sync::call the store API with the key Morgan already made; attach the page timings as results"]}),
+        json!({"est": "3h", "name": "Store sync", "project": "webapp", "outcome": "Every store page loads under a second, with timings attached",
+               "tasks": ["Sync::call the store API with the key Morgan already made; attach the page timings as results::est=1h"]}),
     );
     let args = b.calls();
     assert!(args.contains("with the key Morgan already made"), "the task's record of the done step reaches Claude: {args}");
@@ -245,7 +245,7 @@ fn work_a_task_records_as_done_or_proves_itself_is_not_a_gap() {
 #[test]
 fn every_item_of_a_source_the_outcome_points_at_reaches_claude() {
     let b = board();
-    let g = b.report("tb.goal", json!({"name": "Budget review", "project": "webapp", "outcome": "The app matches the Nov 1 review and B900 is closed"}))
+    let g = b.report("tb.goal", json!({"est": "3h", "name": "Budget review", "project": "webapp", "outcome": "The app matches the Nov 1 review and B900 is closed"}))
         ["goal"].as_str().unwrap().to_string();
     let review = b.dir.path().join("review.csv");
     std::fs::write(&review, "item,decision\n1,Pay Southwest first\n2,Tithing comes first from every paycheck\n3,Link X Money once\n").unwrap();
@@ -258,7 +258,7 @@ fn every_item_of_a_source_the_outcome_points_at_reaches_claude() {
         )
         .unwrap();
     b.calls();
-    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay order::pay Southwest first"]}));
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay order::pay Southwest first::est=1h"]}));
 
     let args = b.calls();
     assert!(args.contains("--tools\nRead,Grep,Glob\n"), "no link, so no WebFetch: {args}");
@@ -277,11 +277,11 @@ fn every_item_of_a_source_the_outcome_points_at_reaches_claude() {
 #[test]
 fn a_linked_source_lets_claude_open_it() {
     let b = board();
-    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in https://github.com/acme/webapp/pull/7#pullrequestreview-1 is fixed"}))
+    let g = b.report("tb.goal", json!({"est": "3h", "name": "Review fixes", "project": "webapp", "outcome": "Every point in https://github.com/acme/webapp/pull/7#pullrequestreview-1 is fixed"}))
         ["goal"].as_str().unwrap().to_string();
     b.report("tb.attach", json!({"goal": g, "url": "https://claude.ai/artifact/abc", "title": "Screens", "kind": "design"}));
     b.calls();
-    b.report("tb.propose", json!({"goal": g, "tasks": ["Fix::fix the review's points"]}));
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Fix::fix the review's points::est=1h"]}));
     let args = b.calls();
     assert!(args.contains("--tools\nRead,Grep,Glob,WebFetch\n"), "the outcome's link can be opened: {args}");
     assert!(args.contains("Open a source's link with WebFetch"), "{args}");
@@ -291,7 +291,7 @@ fn a_linked_source_lets_claude_open_it() {
 #[test]
 fn an_artifacts_copy_is_read_in_place_of_its_title() {
     let b = board();
-    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in the attached review is fixed"}))
+    let g = b.report("tb.goal", json!({"est": "3h", "name": "Review fixes", "project": "webapp", "outcome": "Every point in the attached review is fixed"}))
         ["goal"].as_str().unwrap().to_string();
     let page = "<html><head><title>Nov 1 review</title><style>li { color: red }</style></head><body>\
         <h1>Points</h1><ol><li>Tithing comes first</li><li>Link X Money &amp; Venmo once</li></ol>\
@@ -300,7 +300,7 @@ fn an_artifacts_copy_is_read_in_place_of_its_title() {
     // Attaching it again without a copy keeps the one it has.
     b.report("tb.attach", json!({"goal": g, "url": "https://claude.ai/artifact/abc", "title": "Nov 1 review", "kind": "doc"}));
     b.calls();
-    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay::pay tithing first"]}));
+    b.report("tb.propose", json!({"goal": g, "tasks": ["Pay::pay tithing first::est=1h"]}));
     let args = b.calls();
     assert!(args.contains("--tools\nRead,Grep,Glob\n"), "an artifact with a copy needs no WebFetch: {args}");
     assert!(args.contains("Its contents, as copied when it was attached:") && args.contains("| - Tithing comes first")
@@ -312,7 +312,7 @@ fn an_artifacts_copy_is_read_in_place_of_its_title() {
 #[test]
 fn a_copy_with_no_text_is_refused() {
     let b = board();
-    let g = b.report("tb.goal", json!({"name": "Review fixes", "project": "webapp", "outcome": "Every point in the attached review is fixed"}))
+    let g = b.report("tb.goal", json!({"est": "3h", "name": "Review fixes", "project": "webapp", "outcome": "Every point in the attached review is fixed"}))
         ["goal"].as_str().unwrap().to_string();
     let body = json!({"event": "tb.attach", "session": "s1", "claude_session": "c-s1", "cwd": "", "goal": g,
                       "url": "https://claude.ai/artifact/abc", "title": "Review", "copy": "<html><script>x()</script></html>"});

@@ -65,6 +65,14 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Record this task's estimate of its agent working time, for one made without one
+    Estimate {
+        /// How long the work will take you, like 45m, 3h or 1h30m: an honest guess of working time, not
+        /// counting time waiting on the owner. The board compares it with the time actually spent working
+        len: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// Report a problem outside the task to the backlog
     Found {
         /// A short summary, 80 characters at most
@@ -253,8 +261,8 @@ enum Cmd {
         goal: String,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
-        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs, "::effort=high" (low, medium, high, xhigh or max) for its effort and/or "::project=api" to put it in another project than the goal's
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::effort=E][::project=P]")]
+        /// end each with "::est=45m", your estimate of its agent working time (required), and any of them with "::model=small" (small, large or a model name) for the model its terminal runs, "::effort=high" (low, medium, high, xhigh or max) for its effort and/or "::project=api" to put it in another project than the goal's
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]::est=LEN[::model=M][::effort=E][::project=P]")]
         tasks: Vec<String>,
         /// Planned even while the goal is running, so they wait for its next run
         #[arg(long)]
@@ -1459,9 +1467,13 @@ enum GoalCmd {
         after: Vec<String>,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
-        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs, "::effort=high" (low, medium, high, xhigh or max) for its effort and/or "::project=api" to put it in another project than the goal's
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::effort=E][::project=P]")]
+        /// end each with "::est=45m", your estimate of its agent working time (required), and any of them with "::model=small" (small, large or a model name) for the model its terminal runs, "::effort=high" (low, medium, high, xhigh or max) for its effort and/or "::project=api" to put it in another project than the goal's
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]::est=LEN[::model=M][::effort=E][::project=P]")]
         tasks: Vec<String>,
+        /// Your estimate of the goal's running time (3h, 1d): from its first task starting to its last one
+        /// finishing, counting only time a task is working. Required; the board compares it with the actual
+        #[arg(long, value_name = "LEN")]
+        est: Option<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
@@ -1484,6 +1496,10 @@ enum GoalCmd {
     /// Change a goal
     Set {
         goal: String,
+        /// Its estimate of the goal's running time (3h, 1d): only while none of its tasks has started, or
+        /// its first one; once work starts the first estimate is kept
+        #[arg(long, value_name = "LEN")]
+        est: Option<String>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
@@ -1716,6 +1732,11 @@ enum TaskCmd {
         /// The effort its terminal runs at: low, medium, high, xhigh or max; its model's tier's (`[models]`) when left out
         #[arg(long, value_name = "low|medium|high|xhigh|max")]
         effort: Option<String>,
+        /// Your estimate of the agent working time it takes, like 45m, 3h or 1h30m: an honest guess, not
+        /// counting time waiting on the owner. Required for agent work; the board compares it with the
+        /// time the task actually spends working
+        #[arg(long, value_name = "LEN", conflicts_with = "human")]
+        est: Option<String>,
         /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
         /// starts on it, --detail holds the steps and links, and the owner presses Done in the app (or tells
         /// an agent to: tb needs done H<n>).
@@ -1735,6 +1756,10 @@ enum TaskCmd {
     /// Change a task
     Set {
         task: String,
+        /// Its estimate of the agent working time (45m, 3h, 1h30m): only while it hasn't started, or its
+        /// first one; once work starts the first estimate is kept
+        #[arg(long, value_name = "LEN")]
+        est: Option<String>,
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
@@ -4256,6 +4281,9 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
     if let Some(b) = v["pr_base"].as_str().filter(|b| !b.is_empty()) {
         lines.push(format!("PR into: {b}"));
     }
+    if let Some(e) = taskboardd::estimate::line(&v["estimate"]) {
+        lines.push(e);
+    }
     for (label, key) in [("Detail", "detail"), ("Summary", "summary")] {
         let block = indented(label, v[key].as_str().unwrap_or(""));
         if !block.is_empty() {
@@ -5477,6 +5505,12 @@ fn goal_lines(g: &Value) -> Vec<String> {
     if let Some(o) = g["outcome"].as_str().filter(|o| !o.is_empty()) {
         lines.push(format!("Done when: {o}"));
     }
+    if let Some(mut e) = taskboardd::estimate::line(&g["estimate"]) {
+        if let Some(w) = g["estimate"]["work_min"].as_i64().filter(|w| *w > 0) {
+            e += &format!(" · Task work {}", taskboardd::estimate::len(w as f64));
+        }
+        lines.push(e);
+    }
     if g["paused"] == true {
         lines.push("Paused: nothing new starts.".into());
     }
@@ -6382,6 +6416,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let f = checkpoint_body(done, next, decisions, files)?;
             c.run_report("tb.checkpoint", f, t.task, true, |v| format!("Checkpoint saved on {}.", v["task"].as_str().unwrap_or("")))
         }
+        Cmd::Estimate { len, t } => c.run_report("tb.estimate", json!({"est": len}), t.task, true, |v| {
+            format!("Estimated {} for {}; the board compares it with the time actually spent working.", v["est"].as_str().unwrap_or(""), v["task"].as_str().unwrap_or(""))
+        }),
         Cmd::Found { title, kind, detail, output, misses_goal, needs_owner, blocks, blocks_why, t } => c.run_report(
             "tb.found",
             json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>()), "misses_goal": misses_goal, "needs_owner": needs_owner, "blocks": blocks, "blocks_why": blocks_why}),
@@ -6826,10 +6863,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Goal { action } => match action {
-            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area, base, not_backlog } => {
+            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area, base, not_backlog, est } => {
                 short_task_titles(&tasks)?;
                 let after = if after.is_empty() { Value::Null } else { json!(after) };
-                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area, "pr_base": base, "not_backlog": not_backlog});
+                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area, "pr_base": base, "not_backlog": not_backlog, "est": est});
                 match c.report("tb.goal", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
@@ -6875,9 +6912,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, jira, worktrees, lane, base, run, deprioritize, prioritize, area, devices, after } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, jira, worktrees, lane, base, run, deprioritize, prioritize, area, devices, after, est } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
+                if let Some(x) = est {
+                    b["est"] = json!(x);
+                }
                 if let Some(x) = name {
                     b["name"] = json!(x);
                 }
@@ -7131,7 +7171,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, same_pr, pr, no_pr, area, model, effort, human, kind, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, same_pr, pr, no_pr, area, model, effort, human, kind, not_backlog, est } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -7147,7 +7187,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
                 let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
                 let title = title.as_deref().map(short_title).transpose()?.unwrap_or_default();
-                let mut body = json!({"title": title, "detail": &detail, "goal": goal, "project": project, "planned": planned, "area": area, "not_backlog": not_backlog});
+                let mut body = json!({"title": title, "detail": &detail, "goal": goal, "project": project, "planned": planned, "area": area, "not_backlog": not_backlog, "est": est});
                 let linked = issue_refs(&issue)?;
                 match linked.as_slice() {
                     [] => {}
@@ -7262,9 +7302,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, issue, area, model, effort, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, issue, area, model, effort, project, est } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
+                if let Some(x) = est {
+                    b["est"] = json!(x);
+                }
                 if let Some(x) = title {
                     b["title"] = json!(short_title(&x)?);
                 }

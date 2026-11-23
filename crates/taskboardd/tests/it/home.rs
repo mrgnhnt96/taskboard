@@ -48,7 +48,7 @@ fn goal(b: &Board) -> (i64, Vec<i64>) {
     midna::sync(&b.app, &[json!({"id": "s1", "name": "Planner", "agent": "claude", "cwd": b.dir.path().join("webapp").to_string_lossy(), "status": {"state": "idle"}})], &[]).unwrap();
     let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
     let r = reports::handle(&b.app, json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"),
-        "tasks": ["Model::add it::1", "Form::build it::1", "Wire::connect::2", "Errors::show them::2", "Docs::write::3"]}), false).unwrap();
+        "tasks": ["Model::add it::1::est=1h", "Form::build it::1::est=1h", "Wire::connect::2::est=1h", "Errors::show them::2::est=1h", "Docs::write::3::est=1h"]}), false).unwrap();
     let ids: Vec<i64> = r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect();
     (g, ids)
 }

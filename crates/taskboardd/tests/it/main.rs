@@ -38,6 +38,8 @@ mod done_leftovers;
 mod doneword;
 mod done_fixes;
 mod duplicate_visits;
+mod est;
+mod estimates;
 mod feed;
 mod flow;
 mod goal_accept;

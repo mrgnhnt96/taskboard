@@ -255,7 +255,7 @@ fn in_a_goal_it_holds_later_tasks_but_takes_no_terminal_slot() {
     let gref = g["ref"].as_str().unwrap().to_string();
     b.session("s1");
     let h = b.human("s1", json!({"goal": gref}));
-    let next = b.report("tb.new_task", "s1", json!({"title": "Deploy to Oracle Cloud", "detail": "Ship it.", "goal": gref})).unwrap()["created"][0]
+    let next = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Deploy to Oracle Cloud", "detail": "Ship it.", "goal": gref})).unwrap()["created"][0]
         .as_str()
         .unwrap()
         .to_string();
@@ -281,7 +281,7 @@ fn waiting_on_the_owner_it_leaves_the_goals_terminal_free() {
     let gref = g["ref"].as_str().unwrap().to_string();
     b.session("s1");
     let h = b.human("s1", json!({"goal": gref}));
-    let other = b.report("tb.new_task", "s1", json!({"title": "Write the deploy script", "detail": "Ship it.", "goal": gref})).unwrap()["created"][0]
+    let other = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Write the deploy script", "detail": "Ship it.", "goal": gref})).unwrap()["created"][0]
         .as_str()
         .unwrap()
         .to_string();
@@ -401,7 +401,7 @@ fn a_screen_that_fails_lets_the_human_task_through() {
 #[test]
 fn an_agent_task_isn_t_screened() {
     let b = screening_board(&verdict(json!({"verdict": "agent", "why": "x"})));
-    let out = b.report("tb.new_task", "s1", json!({"title": "Fix the footer", "detail": "Do it.", "project": "webapp"})).unwrap();
+    let out = b.report("tb.new_task", "s1", json!({"est": "1h", "title": "Fix the footer", "detail": "Do it.", "project": "webapp"})).unwrap();
     assert!(out["created"][0].as_str().unwrap().starts_with('T'));
     assert!(!b.dir.path().join("prompt.txt").exists(), "claude isn't run");
 }

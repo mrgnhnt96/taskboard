@@ -464,6 +464,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
         o.insert("owner_note".into(), json!(crate::human::note(t)));
         o.insert("owner_answer".into(), t.v("owner_answer"));
+        // The agent's estimate of its working time (`estimate.rs`); the detail adds the actual time.
+        o.insert("est_min".into(), t.v("est_min"));
         o.insert("lane".into(), crate::worklane::card(app, t)?);
         // The PR bar's review step (a step with `bar`) before the PR opens, from its first round.
         o.insert("code_review".into(), crate::code_review::card(app, t)?);
@@ -1058,7 +1060,7 @@ fn read_goal_dict(app: &App, g: &Row) -> Result<(Value, Option<Vec<i64>>)> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "set_aside": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "pr_base": g.v("pr_base"), "setup": g.v("setup"),
+        "jira_off": g.b("jira_off"), "accepted": accepted_dict(g), "deprioritized": g.b("deprioritized"), "set_aside": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "pr_base": g.v("pr_base"), "setup": g.v("setup"), "est_min": g.v("est_min"),
         "lane": crate::worklane::goal_lane(g),
         "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
         "after_blocker": crate::chain::blocker(app, g)?,

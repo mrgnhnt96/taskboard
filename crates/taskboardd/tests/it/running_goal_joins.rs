@@ -45,7 +45,7 @@ impl Board {
     fn goal(&self, name: &str, run: bool) -> (i64, Vec<i64>) {
         let _ = &self.dir;
         let g = self.post("/goals", json!({"name": name, "project": "webapp"}))["id"].as_i64().unwrap();
-        let r = self.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["One::do it::1", "Two::do it too::2"]}));
+        let r = self.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["One::do it::1::est=1h", "Two::do it too::2::est=1h"]}));
         if run {
             api::dispatch(&self.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
         }
@@ -63,7 +63,7 @@ impl Board {
 fn proposed_tasks_join_a_running_goal_queued_and_wait_for_their_wave() {
     let b = new_board();
     let (g, t) = b.goal("Login", true);
-    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later::2"]}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later::2::est=1h"]}));
     assert_eq!(r["status"], "queued");
     assert_eq!(r["why"], format!("queued: G{g} is running"));
     let late = ids(&r)[0];
@@ -71,7 +71,7 @@ fn proposed_tasks_join_a_running_goal_queued_and_wait_for_their_wave() {
     assert_eq!(b.task(late).st("pickup"), b.task(t[0]).st("pickup"), "picked up the way the run's own tasks are");
     assert!(waitsfor::waiting_line(&b.app, &b.task(late)).unwrap().as_str().unwrap().starts_with("Waits for wave 1 to start "), "queued, it still waits for its wave");
 
-    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Later::next run"], "planned": true}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Later::next run::est=1h"], "planned": true}));
     assert_eq!(r["why"], "planned (asked)");
     assert_eq!(b.status(ids(&r)[0]), "planned");
 }
@@ -80,7 +80,7 @@ fn proposed_tasks_join_a_running_goal_queued_and_wait_for_their_wave() {
 fn a_goal_that_isnt_running_still_gets_planned_tasks() {
     let b = new_board();
     let (g, _) = b.goal("Login", false);
-    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later"]}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later::est=1h"]}));
     assert_eq!(r["why"], format!("planned: G{g} isn't running"));
     assert_eq!(b.status(ids(&r)[0]), "planned");
 
@@ -90,12 +90,12 @@ fn a_goal_that_isnt_running_still_gets_planned_tasks() {
         board::update_task(&b.app, id, fields!["status" => "done"]).unwrap();
     }
     assert_eq!(b.app.db.q1("SELECT * FROM goals WHERE id = ?", p![g2]).unwrap().unwrap().s("ran_at"), None, "finishing clears the run");
-    let r = b.report("tb.new_task", json!({"goal": format!("G{g2}"), "title": "Afterthought"}));
+    let r = b.report("tb.new_task", json!({"est": "1h", "goal": format!("G{g2}"), "title": "Afterthought"}));
     assert_eq!(r["status"], "planned");
 
     // Starting that one task later doesn't make the finished run running again.
     board::update_task(&b.app, ids(&r)[0], fields!["status" => "working"]).unwrap();
-    let r = b.report("tb.propose", json!({"goal": format!("G{g2}"), "tasks": ["Another::found later"]}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g2}"), "tasks": ["Another::found later::est=1h"]}));
     assert_eq!(r["why"], format!("planned: G{g2} isn't running"));
 }
 
@@ -103,12 +103,12 @@ fn a_goal_that_isnt_running_still_gets_planned_tasks() {
 fn a_new_task_in_a_running_goal_is_queued_unless_asked_planned() {
     let b = new_board();
     let (g, _) = b.goal("Login", true);
-    let r = b.report("tb.new_task", json!({"goal": format!("G{g}"), "title": "Fix the form"}));
+    let r = b.report("tb.new_task", json!({"est": "1h", "goal": format!("G{g}"), "title": "Fix the form"}));
     assert_eq!(r["status"], "queued");
     assert_eq!(r["why"], format!("queued: G{g} is running"));
     assert_eq!(b.status(ids(&r)[0]), "queued");
 
-    let r = b.report("tb.new_task", json!({"goal": format!("G{g}"), "title": "Polish", "planned": true}));
+    let r = b.report("tb.new_task", json!({"est": "1h", "goal": format!("G{g}"), "title": "Polish", "planned": true}));
     assert_eq!(r["status"], "planned");
     assert_eq!(r["why"], "planned (asked)");
 }
@@ -173,7 +173,7 @@ fn one_task_started_on_its_own_doesnt_make_the_goal_running() {
     let b = new_board();
     let (g, t) = b.goal("Login", false);
     board::update_task(&b.app, t[0], fields!["status" => "working"]).unwrap();
-    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later"]}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later::est=1h"]}));
     assert_eq!(r["why"], format!("planned: G{g} isn't running"), "the goal was never run");
     assert_eq!(b.status(ids(&r)[0]), "planned");
 
@@ -181,7 +181,7 @@ fn one_task_started_on_its_own_doesnt_make_the_goal_running() {
     for id in &t {
         board::update_task(&b.app, *id, fields!["status" => "queued"]).unwrap();
     }
-    let r = b.report("tb.new_task", json!({"goal": format!("G{g}"), "title": "Afterthought"}));
+    let r = b.report("tb.new_task", json!({"est": "1h", "goal": format!("G{g}"), "title": "Afterthought"}));
     assert_eq!(r["status"], "planned");
 }
 
@@ -189,11 +189,11 @@ fn one_task_started_on_its_own_doesnt_make_the_goal_running() {
 fn a_task_kept_planned_doesnt_stop_the_run_taking_new_tasks() {
     let b = new_board();
     let (g, t) = b.goal("Login", true);
-    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Later::next run"], "planned": true}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Later::next run::est=1h"], "planned": true}));
     assert_eq!(b.status(ids(&r)[0]), "planned");
     board::update_task(&b.app, t[1], fields!["status" => "planned"]).unwrap();
 
-    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Fix::found now"]}));
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Fix::found now::est=1h"]}));
     assert_eq!(r["why"], format!("queued: G{g} is running"));
     assert_eq!(b.status(ids(&r)[0]), "queued");
 }
@@ -202,7 +202,7 @@ fn a_task_kept_planned_doesnt_stop_the_run_taking_new_tasks() {
 fn a_task_waiting_for_a_start_moved_into_a_running_goal_is_picked_up_by_the_run() {
     let b = new_board();
     let (g, _) = b.goal("Login", true);
-    let lone = |title: &str| ids(&b.report("tb.new_task", json!({"title": title, "project": "webapp"})))[0];
+    let lone = |title: &str| ids(&b.report("tb.new_task", json!({"est": "1h", "title": title, "project": "webapp"})))[0];
 
     let t = lone("Loose end");
     assert_eq!((b.status(t), b.task(t).st("pickup")), ("queued".to_string(), "manual".to_string()));

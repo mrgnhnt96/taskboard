@@ -37,7 +37,7 @@ impl Board {
         for (k, v) in extra.as_object().unwrap() {
             b[k] = v.clone();
         }
-        reports::handle(&self.app, b, false).unwrap()
+        reports::handle(&self.app, crate::est::fill(b), false).unwrap()
     }
     fn task(&self, project: &str, title: &str, detail: &str) -> i64 {
         self.post("/tasks", json!({"title": title, "detail": detail, "project": project, "pickup": "manual"})).unwrap()["id"].as_i64().unwrap()

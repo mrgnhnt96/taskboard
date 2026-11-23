@@ -77,7 +77,7 @@ fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
         .unwrap();
     let r = reports::handle(
         &b.app,
-        json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("notes"), "git": {},
+        json!({"est": "1h", "event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("notes"), "git": {},
                "title": "Sync drops a task", "here": true}),
         false,
     )
@@ -148,7 +148,7 @@ fn here_refuses_another_projects_work() {
     let new = |project: Option<&str>| {
         reports::handle(
             &b.app,
-            json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("notes"), "git": {},
+            json!({"est": "1h", "event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("notes"), "git": {},
                    "title": "Fix the kernel gate", "here": true, "project": project}),
             false,
         )
@@ -179,7 +179,7 @@ fn here_refuses_a_project_the_board_doesnt_know_or_a_folder_with_no_project() {
     let new = |sid: &str, cwd: &str, project: Option<&str>| {
         reports::handle(
             &b.app,
-            json!({"event": "tb.new_task", "session": sid, "claude_session": format!("c-{sid}"), "cwd": cwd, "git": {},
+            json!({"est": "1h", "event": "tb.new_task", "session": sid, "claude_session": format!("c-{sid}"), "cwd": cwd, "git": {},
                    "title": "Fix the kernel gate", "here": true, "project": project}),
             false,
         )

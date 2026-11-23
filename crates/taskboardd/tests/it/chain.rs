@@ -37,7 +37,7 @@ impl Board {
     fn goal(&self, name: &str) -> (i64, Vec<i64>) {
         let _ = &self.dir;
         let g = self.post("/goals", json!({"name": name, "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
-        let r = reports::handle(&self.app, json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"), "tasks": ["One::do it", "Two::do it too"]}), false).unwrap();
+        let r = reports::handle(&self.app, json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"), "tasks": ["One::do it::est=1h", "Two::do it too::est=1h"]}), false).unwrap();
         (g, r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect())
     }
     fn run(&self, g: i64) {

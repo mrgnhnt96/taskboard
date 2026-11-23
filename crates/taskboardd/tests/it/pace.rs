@@ -43,7 +43,7 @@ impl Board {
     fn propose(&self, g: i64, tasks: Value) -> (Vec<i64>, Vec<String>) {
         midna::sync(&self.app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": self.dir.path().join("webapp").to_string_lossy(), "status": {"state": "working"}})], &[])
             .unwrap();
-        let b = json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"), "tasks": tasks});
+        let b = crate::est::fill(json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"), "tasks": tasks}));
         let r = reports::handle(&self.app, b, false).unwrap_or_else(|e| panic!("propose: {}", e.message));
         (strs(&r["created"]).iter().map(|t| t.trim_start_matches('T').parse().unwrap()).collect(), strs(&r["warnings"]))
     }
