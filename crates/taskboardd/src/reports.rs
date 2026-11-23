@@ -2743,7 +2743,29 @@ fn on_step_ask(r: &mut Report) -> Result<Value> {
     Ok(with(ok(Some(&t), None), json!({"step": step.name, "open": s.open})))
 }
 
-/// `tb step fail`: a step can't pass; the task waits for the owner's answer (or their skip).
+/// What the owner is asked when a step can't pass.
+fn step_fail_ask(step: &steps::Step, why: &str) -> String {
+    format!("Step “{}” can't pass: {why}. Answer, or skip the step.", step.name)
+}
+
+/// What the question screener reads for a `tb step fail`: the ask, what the step is and who can skip it,
+/// so a rule about that kind of step (or failure) can settle it.
+fn step_fail_screened(app: &App, step: &steps::Step, why: &str) -> String {
+    let mut q = step_fail_ask(step, why);
+    if !step.prompt.trim().is_empty() {
+        q += &format!("\n\nThe step asks: {}", one_line(&step.prompt, 1000));
+    }
+    q += &if step.skippable {
+        "\nThe agent may skip it itself with tb step skip when it doesn't apply.".to_string()
+    } else {
+        format!("\nOnly {} can skip it.", app.cfg.owner)
+    };
+    q
+}
+
+/// `tb step fail`: a step can't pass. When the owner's rules settle what to do (screened before the
+/// transaction, as `tb question` is), the board answers and the task carries on; otherwise the task
+/// waits for the owner's answer (or their skip).
 fn on_step_fail(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
@@ -2753,7 +2775,12 @@ fn on_step_fail(r: &mut Report) -> Result<Value> {
     if why.is_empty() {
         return err(400, "Say why the step can't pass (--why).");
     }
-    wait_on_owner(r, &t, &step, &format!("Step “{}” can't pass: {why}. Answer, or skip the step.", step.name), true)?;
+    let ask = step_fail_ask(&step, &why);
+    if let Some(s) = r.screened.clone().filter(|s| s["verdict"] == "answered") {
+        let v = answered(r, &t, &ask, &s)?;
+        return Ok(with(v, json!({"step": step.name})));
+    }
+    wait_on_owner(r, &t, &step, &ask, true)?;
     Ok(with(ok(Some(&t), None), json!({"step": step.name})))
 }
 
@@ -3590,7 +3617,10 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
         }
         "tb.step" => out["step"].as_str().map(|s| ("step", format!("Did the step {s}"))),
         "tb.step_ask" => out["step"].as_str().map(|s| ("ask", format!("Asked you to do the step {s}"))),
-        "tb.step_fail" => out["step"].as_str().map(|s| ("ask", format!("The step {s} can't pass: {}", r.b("why")))),
+        "tb.step_fail" => out["step"].as_str().map(|s| match out.get("source").and_then(|a| a.as_str()) {
+            Some(a) => ("ask", format!("The step {s} can't pass, and the board answered it from {a}: {}", r.b("why"))),
+            None => ("ask", format!("The step {s} can't pass: {}", r.b("why"))),
+        }),
         "tb.fail" => Some(("fail", format!("Gave up on {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("reason")))),
         "tb.take" => out["task"].as_str().map(|t| ("take", format!("Picked up {t}"))),
         "tb.switch" => out["task"].as_str().map(|t| ("take", format!("Switched to {t}"))),
@@ -3756,6 +3786,15 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         let unscreened = t.is_none() && !app.cfg.questions.no_task && prflow::visited_by(app, r.sid().unwrap_or(""))?.is_none();
         if !unscreened {
             r.screened = screen::question(app, t.as_ref(), &asked);
+        }
+    }
+    if r.event == "tb.step_fail" && !spooled {
+        // Screened like a tb question: the owner's rules may already say what to do about this step (#1144).
+        let why = one_line(&r.b("why"), 2000);
+        if let (Some(t), false) = (r.task().ok().flatten(), why.is_empty()) {
+            if let Ok(step) = steps::find(app, &t, &r.b("name")) {
+                r.screened = screen::question(app, Some(&t), &step_fail_screened(app, &step, &why));
+            }
         }
     }
     if r.event == "tb.new_task" && !spooled && crate::design::clean_kind(r.body.get("kind")).ok().flatten() == Some(crate::human::KIND) {

@@ -6088,9 +6088,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             s
         }),
         StepCmd::Skip { name, why, t } => skip_step(c, &name, &why, t),
-        StepCmd::Fail { name, why, t } => c.run_report("tb.step_fail", json!({"name": name, "why": why}), t.task, true, |v| {
-            format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
-        }),
+        StepCmd::Fail { name, why, t } => fail_step(c, &name, &why, t),
     }
 }
 
@@ -6136,6 +6134,30 @@ fn done_step(c: &Ctx, name: &str, note: Option<String>, skip: bool, t: TaskArg, 
 }
 
 /// `tb step skip`: passes a skippable step on the aimed head (else this checkout's) without doing it.
+/// `tb step fail`: the board screens it like a tb question (#1144), so it can take a while; when the
+/// owner's rules settle it, the agent gets the answer and carries on.
+fn fail_step(c: &Ctx, name: &str, why: &str, t: TaskArg) -> Result<i32, String> {
+    let task = t.task.map(|x| task_ref(&x)).transpose()?;
+    let owner = &c.cfg.owner;
+    match c.report_progress("tb.step_fail", json!({"name": name, "why": why}), task.as_deref())? {
+        None => out(SAVED),
+        Some(v) if !v["task"].is_string() => out(NO_TASK),
+        Some(v) => out(&step_fail_text(&v, owner)),
+    }
+    Ok(0)
+}
+
+fn step_fail_text(v: &Value, owner: &str) -> String {
+    let step = v["step"].as_str().unwrap_or("the step");
+    match v["answer"].as_str() {
+        Some(a) => format!(
+            "Answered without asking {owner}, from {}:\n{a}\n\nCarry on with {step}. If this answer really doesn't fit, run tb step fail again and say why.",
+            v["source"].as_str().unwrap_or("the rules")
+        ),
+        None => format!("Told {owner} that {step} can't pass; the task waits for their answer. End your turn now."),
+    }
+}
+
 fn skip_step(c: &Ctx, name: &str, why: &str, t: TaskArg) -> Result<i32, String> {
     let (v, step) = find_step(c, t.task.clone(), name)?;
     if !step.skippable {
@@ -8862,6 +8884,15 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_failure_answered_from_the_rules_says_carry_on() {
+        let a = step_fail_text(&json!({"step": "Design parity", "answer": "Fix the app and rerun.", "source": "parity.md"}), "Morgan");
+        assert!(a.starts_with("Answered without asking Morgan, from parity.md:\nFix the app and rerun."), "{a}");
+        assert!(a.contains("Carry on with Design parity") && !a.contains("End your turn"), "{a}");
+        let w = step_fail_text(&json!({"step": "Design parity"}), "Morgan");
+        assert_eq!(w, "Told Morgan that Design parity can't pass; the task waits for their answer. End your turn now.");
+    }
 
     #[test]
     fn tb_speaks_for_its_terminal_only_when_claude_runs_it() {
