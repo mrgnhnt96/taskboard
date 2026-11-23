@@ -2226,12 +2226,16 @@ enum PrCmd {
         #[arg(long = "override")]
         force: bool,
     },
-    /// Close it without merging (Bitbucket: decline), keeping its branch: only on the owner's word
+    /// Close it without merging (Bitbucket: decline), keeping its branch: only on the owner's word. Says where its work went, on the PR as a comment
+    #[command(group(clap::ArgGroup::new("why").required(true).multiple(true).args(["reason", "superseded_by"])))]
     Close {
         task: Option<String>,
-        /// Why, posted on the PR as a comment
+        /// Why it's closed
         #[arg(long)]
         reason: Option<String>,
+        /// The PR (#12 or its link) or commit that replaced it
+        #[arg(long, value_name = "PR_OR_COMMIT")]
+        superseded_by: Option<String>,
     },
     /// Record the owner's review, so reviewers can be asked: only the owner, or an agent on their word (a no-op when owner review is off)
     Reviewed { task: Option<String> },
@@ -2435,6 +2439,9 @@ fn print_pr_status(t: &str, v: &Value) {
         out(&w);
     }
     out(&format!("State: {} · checks: {} · review: {}", pr["state"].as_str().unwrap_or("?"), pr["checks"].as_str().unwrap_or("unknown"), review_words(pr)));
+    if let Some(l) = pr["closed"]["line"].as_str() {
+        out(l);
+    }
     if let Some(e) = live["read_error"].as_str() {
         out(&format!("Couldn't read it just now ({e}); this is the last read."));
     }
@@ -4230,6 +4237,9 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
     let mut lines = vec![show_head(v, status), v["title"].as_str().unwrap_or("").to_string()];
     if let Some(num) = v["pr"]["num"].as_i64() {
         lines.push(format!("PR: #{num} {} {}", v["pr"]["state"].as_str().unwrap_or(""), v["pr"]["url"].as_str().unwrap_or("")).trim_end().to_string());
+        if let Some(l) = v["pr"]["closed"]["line"].as_str() {
+            lines.push(l.to_string());
+        }
     }
     if let Some(w) = v["who"].as_str().filter(|w| !w.is_empty()) {
         lines.push(format!("Terminal: {w}"));
@@ -7916,10 +7926,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
                 Ok(0)
             }
-            PrCmd::Close { task, reason } => {
+            PrCmd::Close { task, reason, superseded_by } => {
                 let t = c.pr_task(task)?;
-                c.call_progress("POST", &format!("/tasks/{t}/pr/close"), Some(json!({"reason": reason.unwrap_or_default(), "agent": !c.session.is_empty(), "via_session": c.session})))?;
-                out(&format!("Closed {t}'s PR without merging it; its branch stays. You can stop here."));
+                let body = json!({"reason": reason.unwrap_or_default(), "superseded_by": superseded_by.unwrap_or_default(), "agent": !c.session.is_empty(), "via_session": c.session});
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/close"), Some(body))?;
+                let said = v["pr"]["closed"]["line"].as_str().map(|l| format!(" ({l})")).unwrap_or_default();
+                out(&format!("Closed {t}'s PR without merging it{said}; its branch stays. You can stop here."));
                 Ok(0)
             }
             PrCmd::Reviewed { task } => {
@@ -9460,6 +9472,17 @@ mod tests {
         assert_eq!(list_query(&c, None, Some("G41".into())).unwrap(), ["project=all", "goal=G41"], "a goal says which project");
         assert_eq!(list_query(&c, Some("my app".into()), Some("none".into())).unwrap(), ["project=my%20app", "goal=none"]);
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_pr_close_says_where_the_work_went() {
+        assert!(Cli::try_parse_from(["tb", "pr", "close", "T4"]).is_err(), "a reason or what replaced it");
+        let Cmd::Pr { action: PrCmd::Close { reason, superseded_by, .. } } = Cli::try_parse_from(["tb", "pr", "close", "T4", "--superseded-by", "#12"]).unwrap().cmd else { panic!("not tb pr close") };
+        assert_eq!((reason, superseded_by.as_deref()), (None, Some("#12")));
+        let Cmd::Pr { action: PrCmd::Close { reason, .. } } = Cli::try_parse_from(["tb", "pr", "close", "--reason", "Not needed"]).unwrap().cmd else { panic!("not tb pr close") };
+        assert_eq!(reason.as_deref(), Some("Not needed"));
+        let v = json!({"ref": "T4", "status": "done", "title": "Fix it", "pr": {"num": 9, "state": "DECLINED", "url": "u", "closed": {"line": "Superseded by #12"}}});
+        assert_eq!(task_show_lines(&v, 0)[2..4], ["PR: #9 DECLINED u", "Superseded by #12"]);
     }
 
     #[test]

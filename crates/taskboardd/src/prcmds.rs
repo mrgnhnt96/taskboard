@@ -1039,12 +1039,14 @@ fn note_override(app: &App, id: i64, who: &str, num: i64, gates: &[String], word
     Ok(())
 }
 
-/// `tb pr close [--reason]`: closes the task's PR without merging it (Bitbucket declines it), keeping
-/// its branch. An agent closes one only on the owner's word in its terminal.
+/// `tb pr close --reason <why> | --superseded-by <PR or commit>`: closes the task's PR without merging
+/// it (Bitbucket declines it), keeping its branch, and says where its work went on the PR and the card.
+/// An agent closes one only on the owner's word in its terminal.
 pub fn close(app: &App, id: i64, body: &Value) -> Result<Value> {
     let agent = as_bool(body.get("agent"), false);
     let via = body_str(body, "via_session");
     let reason = one_line(&body_str(body, "reason"), 1000);
+    let replaced = body_str(body, "superseded_by");
     let before = board::get_task(app, id)?;
     let linked = PrRef::of(&before);
     let word = match &linked {
@@ -1064,18 +1066,31 @@ pub fn close(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         _ => {}
     }
+    let superseded_by = if replaced.trim().is_empty() { String::new() } else { crate::pr_closed::superseder(&replaced, &pr.repo)? };
+    if reason.is_empty() && superseded_by.is_empty() {
+        return err(
+            400,
+            format!(
+                "Say where PR #{}'s work goes: --reason \"<why it's closed>\", or --superseded-by <the PR or commit that replaced it>. It's posted on the PR.",
+                pr.num
+            ),
+        );
+    }
     let site = prhost::limit::label(&pr.host);
     let h = host(app, &pr)?;
-    let comment = (!reason.is_empty()).then_some(reason.as_str());
-    if let Err(e) = on_host(&pr, "closing", || h.close(&pr, comment)) {
-        return err(502, format!("Couldn't close PR #{}: {e}.", pr.num));
-    }
-    progress::stage(&format!("Closed PR #{} on {site}", pr.num));
     let who = match &word {
         Some(_) => format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)),
         None => who_of(app, body),
     };
-    app.db.tx(|| prflow::mark_declined(app, &board::get_task(app, id)?, &who, &reason))?;
+    let comment = crate::pr_closed::comment(&reason, &superseded_by);
+    app.db.tx(|| crate::pr_closed::record_close(app, id, &who, &reason, &superseded_by))?;
+    if let Err(e) = on_host(&pr, "closing", || h.close(&pr, Some(&comment))) {
+        app.db.tx(|| crate::pr_closed::forget(app, id))?;
+        return err(502, format!("Couldn't close PR #{}: {e}.", pr.num));
+    }
+    progress::stage(&format!("Closed PR #{} on {site}", pr.num));
+    let logged = if superseded_by.is_empty() { reason.clone() } else { comment.trim_start_matches("Closed without merging: ").to_string() };
+    app.db.tx(|| prflow::mark_declined(app, &board::get_task(app, id)?, &who, &logged))?;
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "closed": true, "pr": board::pr_card(app, &t)}))
 }

@@ -87,6 +87,7 @@ mod plan_review;
 mod pace;
 mod planning;
 mod pool;
+mod pr_closed;
 mod pr_other_repo;
 mod pr_wait_watch;
 mod prbuilds;

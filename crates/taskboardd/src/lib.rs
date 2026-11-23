@@ -83,6 +83,7 @@ pub mod picker;
 pub mod plan_review;
 pub mod plan_review_again;
 pub mod planning;
+pub mod pr_closed;
 pub mod prcmds;
 pub mod presence;
 pub mod prbar;

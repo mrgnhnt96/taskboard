@@ -462,6 +462,10 @@ impl PrHost for BitbucketHost {
         self.http.call("POST", &format!("{}/decline", self.pr_url(pr)), None).map(|_| ())
     }
 
+    fn comment(&self, pr: &PrRef, body: &str) -> HostResult<()> {
+        self.http.call("POST", &format!("{}/comments", self.pr_url(pr)), Some(&json!({"content": {"raw": body}}))).map(|_| ())
+    }
+
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef> {
         // Closes the branch once the PR merges, as the Python board did.
         let b = json!({"title": title, "description": body, "source": {"branch": {"name": branch}}, "destination": {"branch": {"name": base}},
