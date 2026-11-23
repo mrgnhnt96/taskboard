@@ -1,6 +1,7 @@
 //! The owner's steps (config.toml's `[[steps]]`): the agent is told them, records each with `tb step
 //! done`, and can't finish until they're recorded.
 
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -33,8 +34,27 @@ struct Board {
 }
 
 fn board(config: &str) -> Board {
+    board_with(config, |_, _| {})
+}
+
+/// A board whose question screener is a script printing `verdict` (the JSON claude would return); it
+/// saves the prompt it's given to `prompt.txt`.
+fn board_screening(config: &str, verdict: Value) -> Board {
+    board_with(config, |cfg, dir| {
+        let script = dir.join("claude");
+        let saved = dir.join("prompt.txt");
+        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$2\" > '{}'\necho '{}'\n", saved.display(), json!({"structured_output": verdict})))
+            .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        cfg.claude = script.to_string_lossy().to_string();
+        cfg.questions.screen = true;
+    })
+}
+
+fn board_with(config: &str, set: impl FnOnce(&mut Config, &std::path::Path)) -> Board {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = Config::for_tests(dir.path());
+    let mut cfg = Config::for_tests(dir.path());
+    set(&mut cfg, dir.path());
     std::fs::write(&cfg.config_path, config).unwrap();
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
@@ -251,6 +271,37 @@ fn a_step_that_cant_pass_waits_for_an_answer_or_a_skip() {
     assert_eq!(b.steps()["steps"][1]["done"], true);
     let last = b.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'step' ORDER BY id DESC", taskboardd::p![id]).unwrap().unwrap();
     assert_eq!(last.st("text"), "Step skipped: Tests");
+}
+
+#[test]
+fn a_step_failure_the_rules_settle_is_answered_without_the_owner() {
+    let b = board_screening(KINDS, json!({"verdict": "answered", "answer": "Fix the app and rerun the step.", "source": "design-parity.md"}));
+    let id = b.new_task();
+    let v = b.report("tb.step_fail", json!({"name": "Review", "why": "the screens don't match the design"})).unwrap();
+    assert_eq!(v["step"], "Review");
+    assert_eq!(v["answer"], "Fix the app and rerun the step.");
+    assert_eq!(v["source"], "design-parity.md");
+    assert_eq!(b.status(id), "working", "the owner isn't asked");
+    assert!(b.task(id).s("question").is_none_or(|q| q.is_empty()));
+    assert!(b.card(id)["step"]["failed"] != true);
+    let prompt = std::fs::read_to_string(b._dir.path().join("prompt.txt")).unwrap();
+    assert!(prompt.contains("Step “Review” can't pass: the screens don't match the design"), "{prompt}");
+    assert!(prompt.contains("The step asks: Review {branch} against {base}."), "{prompt}");
+    let answer = b.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'answer' ORDER BY id DESC", taskboardd::p![id]).unwrap().unwrap();
+    assert_eq!(answer.st("text"), "Answered from design-parity.md without asking you: Fix the app and rerun the step.");
+}
+
+#[test]
+fn a_step_failure_the_rules_dont_settle_waits_for_the_owner() {
+    let b = board_screening(KINDS, json!({"verdict": "ask", "question": "The tests need a VPN; skip them?"}));
+    let id = b.new_task();
+    let v = b.report("tb.step_fail", json!({"name": "Tests", "why": "the suite needs a VPN"})).unwrap();
+    assert!(v.get("answer").is_none(), "{v}");
+    assert_eq!(b.status(id), "needs");
+    assert_eq!(b.task(id).st("question"), "Step “Tests” can't pass: the suite needs a VPN. Answer, or skip the step.");
+    assert_eq!(b.card(id)["step"]["failed"], true);
+    let prompt = std::fs::read_to_string(b._dir.path().join("prompt.txt")).unwrap();
+    assert!(prompt.contains("Only "), "{prompt}");
 }
 
 #[test]
