@@ -124,7 +124,7 @@ pub fn fields(b: &Blocks) -> Vec<(&'static str, Value)> {
 }
 
 /// Marks a filed item (new, or the open one it was merged into) with what it blocks: `goal` holds the
-/// goal open and alerts the owner; `pr` filed from a task holds that task's PR and becomes a pre-merge
+/// goal open and goes to an agent or the owner (`misses::route`); `pr` filed from a task holds that task's PR and becomes a pre-merge
 /// fix (see [`crate::samepr::take_critical`]), and what became of it is returned for the filer. An item
 /// merged into one that already blocks keeps the stronger mark, and one already holding a PR keeps it.
 pub fn mark(app: &App, iid: i64, b: &Blocks, goal_id: Option<i64>, title: &str, who: &str, fresh: bool, filer: Option<&Row>) -> Result<Option<String>> {
@@ -144,14 +144,14 @@ pub fn mark(app: &App, iid: i64, b: &Blocks, goal_id: Option<i64>, title: &str, 
     let what = if b.level == PR { "its task's PR" } else { "its goal" };
     board::add_issue_event(app, iid, who, "blocks", &format!("Blocks {what}: {}", b.why.as_deref().unwrap_or("")), None)?;
     match (b.level, goal_id, filer) {
-        (GOAL, Some(g), _) => miss_alert(app, iid, g, title).map(|_| None),
+        (GOAL, Some(g), _) => crate::misses::route(app, iid, g, title),
         (PR, _, Some(t)) => crate::samepr::take_critical(app, iid, t, who),
         _ => Ok(None),
     }
 }
 
-/// A miss on the goal's own done-when goes to the owner as an alert rather than waiting quietly in the
-/// backlog. It stays up until the issue is settled (made a task, ticketed or closed).
+/// A miss on the goal's own done-when that needs the owner goes to them as an alert rather than waiting
+/// quietly in the backlog. It stays up until the issue is settled (made a task, ticketed or closed).
 pub fn miss_alert(app: &App, issue: i64, goal_id: i64, title: &str) -> Result<()> {
     let g = board::get_goal(app, goal_id)?;
     let text = format!("{} misses its done-when: {title} ({})", g.st("name"), rf("issue", issue));

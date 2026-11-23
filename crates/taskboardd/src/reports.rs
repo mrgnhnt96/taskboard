@@ -1817,6 +1817,11 @@ fn on_found(r: &mut Report) -> Result<Value> {
     let filer = blocks::Filer { task: t.as_ref(), goal_id, always: false };
     let marked = blocks::read(&r.body, &filer, None, &title)?;
     let misses = marked.level == blocks::GOAL;
+    // A miss that needs the owner's call stays on Needs you; any other goes to an agent (`misses.rs`).
+    let owner_call = as_bool(r.body.get("needs_owner"), false);
+    if owner_call && !misses {
+        return err(400, "--needs-owner is for a miss on the goal's done-when: give it with --misses-goal.");
+    }
     let key = norm_title(&title);
     let cands = match goal_id {
         Some(g) => app.db.q("SELECT * FROM issues WHERE state = 'open' AND goal_id = ?", p![g])?,
@@ -1830,6 +1835,9 @@ fn on_found(r: &mut Report) -> Result<Value> {
             text += &format!(" They said: “{}”", one_line(&detail, 400));
         }
         board::add_issue_event(app, dup.id(), &name, "seen", &text, Some(&snap))?;
+        if owner_call {
+            crate::misses::mark_owner(app, dup.id())?;
+        }
         let took = blocks::mark(app, dup.id(), &marked, goal_id, &dup.st("title"), &name, false, t.as_ref())?;
         if let Some(t) = &t {
             let took = took.as_deref().map(|w| format!(" {w}")).unwrap_or_default();
@@ -1853,7 +1861,8 @@ fn on_found(r: &mut Report) -> Result<Value> {
         fields!["goal_id" => goal_id, "project" => project, "kind" => kind, "title" => title,
                 "detail" => if detail.is_empty() { None } else { Some(detail.clone()) }, "said" => said, "how" => how,
                 "source" => "terminal", "found_by_task" => t.as_ref().map(|t| t.id()), "found_by_session" => r.sid(),
-                "found_by_name" => name, "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now]
+                "found_by_name" => name, "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now,
+                "needs_owner" => owner_call as i64]
             .into_iter()
             .chain(blocks::fields(&marked))
             .collect(),
@@ -1867,7 +1876,9 @@ fn on_found(r: &mut Report) -> Result<Value> {
         )?;
     }
     if let Some(t) = &t {
-        let text = if misses {
+        let text = if misses && took.is_some() {
+            format!("Found a miss on the goal’s done-when: {title}. Filed as {} with a snapshot. {}", rf("issue", iid), took.as_deref().unwrap_or(""))
+        } else if misses {
             format!("Found a miss on the goal’s done-when: {title}. Sent to you as {} with a snapshot; the goal stays open until it’s settled.", rf("issue", iid))
         } else if marked.level == blocks::PR {
             let took = took.as_deref().map(|w| format!(" {w}")).unwrap_or_default();

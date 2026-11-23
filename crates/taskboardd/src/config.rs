@@ -222,6 +222,9 @@ pub struct BacklogAi {
     /// can run (the PR holds meanwhile), and rejecting one sends it back to the plain backlog. `auto`:
     /// the fix task runs at once.
     pub critical: String,
+    /// A miss on a goal's done-when that an agent can fix becomes a task in its goal and runs, instead of
+    /// waiting on the owner's Needs you list (`misses.rs`). Off: every miss goes to the owner.
+    pub misses_to_agent: bool,
 }
 
 impl BacklogAi {
@@ -233,7 +236,7 @@ impl BacklogAi {
 
 impl Default for BacklogAi {
     fn default() -> Self {
-        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0, critical_max: 3, critical: "ask".into() }
+        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0, critical_max: 3, critical: "ask".into(), misses_to_agent: true }
     }
 }
 
@@ -1064,6 +1067,8 @@ impl Config {
         c.midna_exit_timeout = 10.0;
         c.questions.screen = false;
         c.backlog.ai = false;
+        // Misses on a goal's done-when go to the owner unless a test hands them to agents.
+        c.backlog.misses_to_agent = false;
         c.pr.watch = false;
         // No host is read for the owner's open PRs unless a test asks.
         c.pr_builds.owner_prs_secs = 0.0;

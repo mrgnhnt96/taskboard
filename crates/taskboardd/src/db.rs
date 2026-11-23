@@ -321,6 +321,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "holds_pr", "INT"),
     // 1 while a `pr` item waits for the owner to approve or reject it (`[backlog] critical = "ask"`).
     ("issues", "asks_owner", "INT DEFAULT 0"),
+    // 1 for a miss on a goal's done-when that needs the owner's call (`tb found --misses-goal --needs-owner`):
+    // it stays on Needs you instead of going to an agent (`misses.rs`).
+    ("issues", "needs_owner", "INT DEFAULT 0"),
     // The model the task's terminal starts with (`tb task new --model`, `[models]`): `small`, `large`
     // or a model name; null for `[models] default`.
     ("tasks", "model", "TEXT"),

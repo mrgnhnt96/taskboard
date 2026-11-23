@@ -78,9 +78,12 @@ enum Cmd {
         /// The error text or other output
         #[arg(long)]
         output: Option<String>,
-        /// It misses the goal's own done-when (same as --blocks goal): it goes to the owner as an alert, and the goal stays open until the miss is made into a task that's done, sent to Jira or closed
+        /// It misses the goal's own done-when (same as --blocks goal): the board makes it a task in the goal for an agent to fix (with --needs-owner, it goes to the owner as an alert instead), and the goal stays open until the miss is made into a task that's done, sent to Jira or closed
         #[arg(long)]
         misses_goal: bool,
+        /// With --misses-goal: settling it needs the owner's call (a decision, an account, a device only they have), so it goes to them rather than to an agent
+        #[arg(long)]
+        needs_owner: bool,
         /// Whether it blocks: pr (merging this task's PR leaves main worse: a crash, data lost, a usable hole, something that works today stops), goal (the goal's done-when isn't met without it) or none. Required while the task's PR is open
         #[arg(long, value_parser = ["none", "pr", "goal"])]
         blocks: Option<String>,
@@ -6369,9 +6372,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let f = checkpoint_body(done, next, decisions, files)?;
             c.run_report("tb.checkpoint", f, t.task, true, |v| format!("Checkpoint saved on {}.", v["task"].as_str().unwrap_or("")))
         }
-        Cmd::Found { title, kind, detail, output, misses_goal, blocks, blocks_why, t } => c.run_report(
+        Cmd::Found { title, kind, detail, output, misses_goal, needs_owner, blocks, blocks_why, t } => c.run_report(
             "tb.found",
-            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>()), "misses_goal": misses_goal, "blocks": blocks, "blocks_why": blocks_why}),
+            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>()), "misses_goal": misses_goal, "needs_owner": needs_owner, "blocks": blocks, "blocks_why": blocks_why}),
             t.task,
             false,
             |v| {

@@ -59,7 +59,7 @@ pub fn refusal(app: &App, t: &Row, fixes: &[i64]) -> Result<()> {
             "Before {me} finishes: it's the last open task in {g}, so check the goal's done-when against what the work shows, not what was planned:\n\
              {}\n\
              Go through it on each platform, device or place it names, one at a time, using results you have (tests, evidence, a run). \
-             For each one it misses, run {tb} found \"<what misses, and where>\" --misses-goal: that goes to the owner and keeps the goal open. \
+             For each one it misses, run {tb} found \"<what misses, and where>\" --misses-goal: the board makes it a task for an agent (with --needs-owner, when it needs the owner's call, it goes to them) and keeps the goal open. \
              When every one holds, run the same {tb} submit again.",
             one_line(&outcome, 1000)
         ),
