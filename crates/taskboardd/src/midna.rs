@@ -206,16 +206,28 @@ fn kind_params(kind: &str) -> Option<Value> {
 
 /// Sends a notification (`notify.send`). Midna refuses a category it has no kind for, so when one of the
 /// board's kinds isn't there (a Midna that never had it, or the owner removed it) it adds the kind and sends again.
+/// A send that still doesn't go through leaves a line in server.log: callers send on their own thread and drop it.
 pub fn notify_send(exe: &Path, params: &Value) -> MResult<Value> {
     let kind = params["category"].as_str().unwrap_or(NOTIFY_KIND);
-    match call_exe(exe, "notify.send", params, CALL_TIMEOUT) {
+    let r = match call_exe(exe, "notify.send", params, CALL_TIMEOUT) {
         Err(MidnaError::Refused(m)) if m.contains(&format!("no kind `{kind}`")) && kind_params(kind).is_some() => {
             // Another send may have added it meanwhile; the second send says whether it's there.
             let _ = call_exe(exe, "notify.kinds.add", &kind_params(kind).unwrap_or_default(), CALL_TIMEOUT);
             call_exe(exe, "notify.send", params, CALL_TIMEOUT)
         }
         r => r,
+    };
+    if let Err(e) = &r {
+        crate::slowlog::line(not_sent(params, e));
     }
+    r
+}
+
+/// The server.log line for a notification Midna didn't take: its kind, title and Midna's reason.
+fn not_sent(params: &Value, e: &MidnaError) -> String {
+    let kind = params["category"].as_str().unwrap_or(NOTIFY_KIND);
+    let title = crate::slowlog::short(params["title"].as_str().unwrap_or(""), 80);
+    format!("notification not sent ({kind}) \"{title}\": {e}")
 }
 
 pub fn call(app: &App, method: &str, params: Value) -> MResult<Value> {
