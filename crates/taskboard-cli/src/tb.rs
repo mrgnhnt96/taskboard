@@ -471,6 +471,14 @@ enum Cmd {
         #[arg(long)]
         accept: bool,
     },
+    /// How past estimates compared with the actual working time: the bias overall, by project and by size,
+    /// the biggest recent misses, and the typical working time of finished tasks. Run it before giving
+    /// anyone a length of time
+    Estimates {
+        /// One project's (every project's when left out)
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// How well goals were planned: tasks added late, failed or retried, review rounds that found something to fix, questions and time against the estimate, by month
     Quality {
         /// The project (this terminal's when left out)
@@ -3405,6 +3413,14 @@ fn print_warnings(v: &Value) {
     }
 }
 
+/// How past estimates turned out (`accuracy::summary`), under a reply that made new ones.
+fn print_estimates(v: &Value) {
+    let lines: Vec<&str> = v["estimates"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).filter(|l| !l.is_empty()).collect();
+    if !lines.is_empty() {
+        out(&format!("{} (tb estimates has more)", lines.join("\n")));
+    }
+}
+
 /// `--jira` on `tb task new`: a key links it, `new` asks for one, `none` means no ticket.
 fn jira_arg(v: &str) -> Value {
     match v.trim().to_lowercase().as_str() {
@@ -3460,6 +3476,10 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     let lessons: Vec<&str> = v["lessons"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
     if !lessons.is_empty() {
         out(&format!("\nWhat earlier goals taught about planning here:\n{}", lessons.join("\n")));
+    }
+    let est: Vec<&str> = v["estimates"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+    if !est.is_empty() {
+        out(&format!("\nHow past estimates turned out (estimate each task and goal with this in mind; tb estimates has more):\n{}", est.join("\n")));
     }
     Ok(0)
 }
@@ -6698,6 +6718,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     out(&format!("Added {} to {g} ({}).", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
                                  v["why"].as_str().unwrap_or("planned")));
                     print_warnings(&v);
+                    print_estimates(&v);
                     for (r, t) in v["created"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).zip(&tasks) {
                         c.midna_pin(r, t.split_once("::").map_or(t.as_str(), |(t, _)| t));
                     }
@@ -6712,6 +6733,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             _ => planning_lessons_cmd(c, project, accept),
         },
         Cmd::Quality { project, all, goals } => quality_cmd(c, project, all, goals),
+        Cmd::Estimates { project } => {
+            let q = project.map(|p| format!("?project={}", qv(&p))).unwrap_or_default();
+            let v = c.call("GET", &format!("/estimates{q}"), None)?;
+            for l in v["lines"].as_array().into_iter().flatten().filter_map(|l| l.as_str()) {
+                out(l);
+            }
+            Ok(0)
+        }
         Cmd::Review { target, since, week, save, list, file_again } => {
             if file_again {
                 return review_file_again(c, target.as_deref().unwrap_or(""));
@@ -6881,6 +6910,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                             format!("#/goals/{}", v["goal"].as_str().unwrap_or(""))
                         ));
                         print_warnings(&v);
+                        print_estimates(&v);
                         c.midna_pin(v["goal"].as_str().unwrap_or(""), v["name"].as_str().unwrap_or(""));
                     }
                 }
@@ -7280,6 +7310,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
+                        print_estimates(&v);
                         unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                         if lane.as_deref() == Some("slot") {
@@ -7295,6 +7326,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         };
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
+                        print_estimates(&v);
                         print_wait_line(&v);
                         unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));

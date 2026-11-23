@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod adf;
 pub mod agent_starts;
+pub mod accuracy;
 pub mod areas;
 pub mod ask;
 pub mod azure_checks;

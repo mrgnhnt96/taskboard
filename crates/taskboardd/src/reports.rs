@@ -3229,7 +3229,7 @@ fn on_propose(r: &mut Report) -> Result<Value> {
     if !board::goal_running(r.app, g.id())? {
         crate::plan_review::queue(r.app, g.id(), "the plan changed", &r.name());
     }
-    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})))
+    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "project": g.v("project"), "status": status, "why": why, "warnings": warnings})))
 }
 
 fn on_goal(r: &mut Report) -> Result<Value> {
@@ -3307,7 +3307,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         }
         note_made(r, &created)?;
         let wait_line = made_wait_line(r, &created)?;
-        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings,
+        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "project": in_project, "status": status, "why": why, "warnings": warnings,
                                               "wait_line": wait_line})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
@@ -3961,6 +3961,13 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         }
         Ok(out)
     })?;
+    let mut out = out;
+    if !spooled && out["created"].is_array() && matches!(r.event.as_str(), "tb.new_task" | "tb.goal" | "tb.propose")
+        && crate::design::clean_kind(r.body.get("kind")).ok().flatten() != Some(crate::human::KIND)
+    {
+        // How past estimates turned out, for the agent that just made new ones.
+        out["estimates"] = json!(crate::accuracy::summary_for(app, out["project"].as_str()));
+    }
     if let Some(t) = gives_back {
         give_back_slot(app, t.id());
     }

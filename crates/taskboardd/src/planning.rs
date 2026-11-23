@@ -218,7 +218,8 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
     });
     let stack_merge = project.as_deref().map(|n| json!({"default": crate::projects::stack_merge_default(app, n), "set": crate::projects::stack_merge_set(app, n).is_some()}));
     Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
-              "lessons": crate::lessons::lines(&lessons), "models": models, "lanes": LANE_RULES, "stack_merge": stack_merge}))
+              "lessons": crate::lessons::lines(&lessons), "models": models, "lanes": LANE_RULES, "stack_merge": stack_merge,
+              "estimates": crate::accuracy::summary_for(app, project.as_deref())}))
 }
 
 /// The rules in force for a project's goals (its own file, else the board's, else the built-in ones)
