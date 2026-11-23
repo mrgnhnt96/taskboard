@@ -375,10 +375,11 @@ pub fn put_away(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWi
 }
 
 /// Add the idea, then open its page. Each missing field says so under itself; a refusal shows
-/// over the buttons.
+/// over the buttons. With the board down it waits, the draft kept.
 fn submit(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let paused = m.paused();
     let Some(f) = m.ideas.form.as_mut() else { return };
-    if f.busy {
+    if f.busy || paused {
         return;
     }
     let title = f.title.text(cx).trim().to_string();
@@ -459,6 +460,7 @@ pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context
         }
     }
     projects.sort_by(|a, b| modals::locale_cmp(a, b));
+    let paused = m.paused();
     let Some(f) = m.ideas.form.as_mut() else { return div().into_any_element() };
     f.shown = true;
     if std::mem::take(&mut f.refocus) {
@@ -488,7 +490,11 @@ pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context
             cx.notify();
         });
     }));
-    let add = if f.busy { kit::btn_primary(t, "new-idea-add", "Adding…").opacity(0.6) } else {
+    let add = if f.busy {
+        kit::btn_primary(t, "new-idea-add", "Adding…").opacity(0.6)
+    } else if paused {
+        kit::disabled(kit::btn_primary(t, "new-idea-add", "Add idea").child(keys(t, "⌘↩")))
+    } else {
         kit::btn_primary(t, "new-idea-add", "Add idea").child(keys(t, "⌘↩")).on_click(cx.listener(|m, _, window, cx| submit(m, window, cx)))
     };
     let cancel = kit::btn(t, "new-idea-cancel", "Cancel").on_click(cx.listener(|m, _, window, cx| close_form(m, window, cx)));
@@ -882,6 +888,30 @@ mod tests {
         })
         .unwrap();
         crate::parity::settle(cx);
+    }
+
+    #[gpui_kit::test]
+    fn with_the_board_down_add_idea_waits_and_the_draft_stays(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        rec.clear();
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.open_link("ideas", cx);
+            open_form(m, window, cx);
+            let f = m.ideas.form.as_mut().unwrap();
+            f.title.set_text("Dark mode", cx);
+            f.project = "webapp".into();
+            m.down = Some("The board isn't answering.".into());
+            submit(m, window, cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+        assert!(rec.last("ideas").is_none(), "nothing is sent while the board is down");
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let f = m.ideas.form.as_ref().expect("the dialog stays");
+            assert!(!f.busy, "it doesn't read Adding…");
+            assert_eq!(f.title.text(cx), "Dark mode");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

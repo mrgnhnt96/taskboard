@@ -24,7 +24,7 @@ mod groups;
 pub mod handled;
 mod view;
 
-pub use view::{State, render};
+pub use view::{State, drafts, render, restore_drafts};
 
 const PAGE_X: f32 = 36.;
 const PROJECT_FILTER: &str = "home-project";
@@ -664,7 +664,7 @@ fn sent(m: &mut MainWindow, text: String, cx: &mut Context<MainWindow>) {
 
 /// With the board down, what would change it waits until it answers.
 fn paused(m: &MainWindow) -> bool {
-    m.down.is_some()
+    m.paused()
 }
 
 pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {

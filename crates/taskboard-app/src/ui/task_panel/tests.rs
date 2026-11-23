@@ -469,6 +469,32 @@ fn start_buttons(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn with_the_board_down_its_controls_wait(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    open(cx, &w, "T5");
+    let start = control(cx, &w, "start", Some("queue"));
+    rec.clear();
+    w.update(cx, |m, _, cx| {
+        m.down = Some("The board isn't answering.".into());
+        act(m, &start, cx);
+        act(m, &Act::new("answer-opt", "Yes", "T5", ""), cx);
+    })
+    .unwrap();
+    settle(cx);
+    assert_eq!(rec.posts(), vec![], "nothing is sent while the board is down");
+    assert!(ui(|u| u.busy.is_empty()), "nothing reads Sending…");
+    // What only changes the panel still works.
+    press(cx, &w, "tab", Some("log"));
+    assert!(matches!(w.update(cx, |m, _, _| m.panel.clone()).unwrap(), Some(Panel::Task { tab: TaskTab::Log, .. })));
+}
+
+#[test]
+fn only_controls_that_change_the_board_wait_for_it() {
+    assert!(Act::new("start", "new", "T1", "").posts() && Act::new("did", "", "T1", "").posts() && Act::new("pr-merge-now", "", "T1", "").posts());
+    assert!(!Act::new("tab", "log", "T1", "").posts() && !Act::new("open-task", "", "T2", "").posts() && !Act::new("term-menu", "", "T1", "").posts());
+}
+
+#[gpui_kit::test]
 fn planned_task_queues(cx: &mut gpui_kit::TestAppContext) {
     let (w, rec) = parity::window(cx);
     open(cx, &w, "T4");
@@ -1713,7 +1739,7 @@ impl gpui_kit::Render for NoteLines {
         use gpui_kit::{ParentElement as _, Styled as _, div, px};
         let t = cx.global::<crate::theme::Theme>().clone();
         let view::Node::El { kids, .. } = view::note_body("Start `quill touch ios` then **swipe** it.\n- Run `idb` now.") else { unreachable!() };
-        let mut d = super::Draw { t: &t, window, path: Vec::new(), within: vec![view::K::MdP] };
+        let mut d = super::Draw { t: &t, window, path: Vec::new(), within: vec![view::K::MdP], down: false };
         let mut col = div().flex().flex_col().w(px(400.));
         for (i, block) in kids.iter().enumerate() {
             d.path = vec![i];

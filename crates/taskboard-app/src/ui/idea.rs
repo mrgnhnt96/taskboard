@@ -479,10 +479,16 @@ pub fn note_byline(n: &Value, now: DateTime<Utc>) -> String {
 
 // ================================================================== requests
 
+/// Marks `key`'s request as on its way: false when one already is, or when the board is down
+/// (what would change it waits until it answers).
+fn claim(m: &mut MainWindow, key: &str) -> bool {
+    !m.paused() && m.idea.busy.insert(key.to_string())
+}
+
 /// Dig or Plan: a start signal, once at a time; the board's answer shows on the next refresh.
 pub(crate) fn start(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
     let key = format!("{act}::{r}");
-    if !m.idea.busy.insert(key.clone()) {
+    if !claim(m, &key) {
         return;
     }
     let k2 = key.clone();
@@ -505,7 +511,7 @@ pub(crate) fn start(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Con
 /// back.
 pub(crate) fn undo(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
     let key = format!("{act}::{r}");
-    if !m.idea.busy.insert(key.clone()) {
+    if !claim(m, &key) {
         return;
     }
     let k2 = key.clone();
@@ -536,6 +542,9 @@ pub(crate) fn undo(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Cont
 /// Plan, asking first while questions are still open.
 pub(crate) fn ask_plan(m: &mut MainWindow, i: &Value, cx: &mut Context<MainWindow>) {
     let r = fmt::ref_of(i, "I");
+    if m.paused() {
+        return;
+    }
     if open_count(i) > 0 {
         m.idea.confirm = Some(r);
         cx.notify();
@@ -548,7 +557,7 @@ pub(crate) fn ask_plan(m: &mut MainWindow, i: &Value, cx: &mut Context<MainWindo
 pub(crate) fn close(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
     m.menu = None;
     let key = format!("close::{r}");
-    if !m.idea.busy.insert(key.clone()) {
+    if !claim(m, &key) {
         return;
     }
     let k2 = key.clone();
@@ -580,7 +589,7 @@ pub(crate) fn talk(m: &mut MainWindow, r: &str, question: Option<&str>, cx: &mut
         Some(q) => format!("talk::{r}::{q}"),
         None => format!("talk::{r}"),
     };
-    if !m.idea.busy.insert(key.clone()) {
+    if !claim(m, &key) {
         return;
     }
     let k2 = key.clone();
@@ -605,7 +614,7 @@ pub(crate) fn talk(m: &mut MainWindow, r: &str, question: Option<&str>, cx: &mut
 pub(crate) fn answer(m: &mut MainWindow, r: &str, round: &str, question: &str, choice: &str, cx: &mut Context<MainWindow>) {
     let q = format!("{r}::{round}::{question}");
     let key = format!("answer::{q}");
-    if !m.idea.busy.insert(key.clone()) {
+    if !claim(m, &key) {
         return;
     }
     let k2 = key.clone();
@@ -743,6 +752,8 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
     let r = fmt::ref_of(i, "I");
     let main = main_action(i);
     let digging = s(i, "state") == "digging";
+    // With the board down every button waits.
+    let paused = m.paused();
     let mut out: Vec<(Main, AnyElement)> = vec![];
     match plan_slot(i) {
         PlanSlot::Goal(g) => {
@@ -752,7 +763,7 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
             let busy = m.idea.busy.contains(&format!("unplan::{r}"));
             let r0 = r.clone();
             let undo_el = kit::btn(t, "idea-unplan", if busy { "Undoing…" } else { "Undo plan" }).tooltip(kit::tip(format!("Delete {g} and open the idea again; not once a task has started")));
-            out.push((Main::None, if busy { kit::disabled(undo_el) } else { undo_el.on_click(cx.listener(move |m, _, _, cx| undo(m, "unplan", &r0, cx))) }.into_any_element()));
+            out.push((Main::None, if busy || paused { kit::disabled(undo_el) } else { undo_el.on_click(cx.listener(move |m, _, _, cx| undo(m, "unplan", &r0, cx))) }.into_any_element()));
         }
         PlanSlot::Button(bt) if b(i, "planning") => {
             let el = kit::btn_primary(t, "idea-plan", bt.label.clone()).child(spinner(14., t.on_accent)).cursor_default().tooltip(kit::tip(bt.tip));
@@ -760,6 +771,7 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
         }
         PlanSlot::Button(bt) => {
             let busy = m.idea.busy.contains(&format!("plan::{r}"));
+            let bt = Btn { enabled: bt.enabled && !paused, ..bt };
             let can = bt.enabled && !busy;
             let i2 = i.clone();
             let el = button(t, "idea-plan", key_tip(bt, "⇧⌘P"), main == Main::Plan, busy).when(can, |d| d.on_click(cx.listener(move |m, _, _, cx| ask_plan(m, &i2, cx))));
@@ -768,6 +780,7 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
     }
     if !digging && s(i, "state") != "planned" && !b(i, "planning") {
         let dig = dig_button(i, fmt::now());
+        let dig = Btn { enabled: dig.enabled && !paused, ..dig };
         let busy = m.idea.busy.contains(&format!("dig::{r}"));
         let can = dig.enabled && !busy;
         let r1 = r.clone();
@@ -776,12 +789,15 @@ fn buttons(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow>) -
     }
     if let Some(bt) = talk_button(i) {
         let busy = m.idea.busy.contains(&format!("talk::{r}"));
+        let bt = Btn { enabled: bt.enabled && !paused, ..bt };
+        let can = bt.enabled && !busy;
         let r3 = r.clone();
-        let el = button(t, "idea-talk", key_tip(bt, "⌘T"), main == Main::Talk, busy).when(!busy, |d| d.on_click(cx.listener(move |m, _, _, cx| talk(m, &r3, None, cx))));
+        let el = button(t, "idea-talk", key_tip(bt, "⌘T"), main == Main::Talk, busy).when(can, |d| d.on_click(cx.listener(move |m, _, _, cx| talk(m, &r3, None, cx))));
         out.push((Main::Talk, el.into_any_element()));
     }
     if let Some(bt) = close_button(i) {
         let busy = m.idea.busy.contains(&format!("close::{r}"));
+        let bt = Btn { enabled: bt.enabled && !paused, ..bt };
         let can = bt.enabled && !busy;
         let bt = Btn { label: format!("{} ▾", bt.label), ..bt };
         let el = button(t, "idea-close", bt, false, busy).child(kit::anchor(CLOSE_MENU)).when(can, |d| {
@@ -853,7 +869,7 @@ fn dig_band_el(m: &MainWindow, t: &Theme, i: &Value, cx: &mut Context<MainWindow
     let r = fmt::ref_of(i, "I");
     let busy = m.idea.busy.contains(&format!("stop::{r}"));
     let stop = kit::btn_small(t, "idea-stop", if busy { "Stopping…" } else { "Stop" }).tooltip(kit::tip("Stop the dig; what it found so far is lost"));
-    let stop = if busy { kit::disabled(stop) } else { stop.on_click(cx.listener(move |m, _, _, cx| undo(m, "stop", &r, cx))) };
+    let stop = if busy || m.paused() { kit::disabled(stop) } else { stop.on_click(cx.listener(move |m, _, _, cx| undo(m, "stop", &r, cx))) };
     let (fg, bg) = kit::tone(t, "accent");
     Some(
         div()
@@ -1088,7 +1104,7 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
             let el = kit::link(t, SharedString::from(format!("idea-talk-{key}::{n}")), if busy { "Sending…" } else { "Talk about this question" })
                 .text_size(px(12.5))
                 .tooltip(kit::tip("Talk this one over with Claude in a terminal"));
-            if busy { kit::disabled(el) } else { el.on_click(cx.listener(move |m, _, _, cx| self::talk(m, &r, Some(&q), cx))) }
+            if busy || m.paused() { kit::disabled(el) } else { el.on_click(cx.listener(move |m, _, _, cx| self::talk(m, &r, Some(&q), cx))) }
         });
         let tap = ask.filter(|_| !id.is_empty());
         let q = tap.map(|(r, round)| format!("{r}::{round}::{id}")).unwrap_or_default();
@@ -1123,7 +1139,7 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
                     }));
                 let empty = input.text(cx).trim().is_empty();
                 let go = kit::btn_small(t, SharedString::from(format!("idea-answer-go-{q}")), if busy { "Sending…" } else { "Answer" });
-                let go = if busy || empty { kit::disabled(go) } else { go.on_click(cx.listener(move |m, _, _, cx| send2(m, cx))) };
+                let go = if busy || empty || m.paused() { kit::disabled(go) } else { go.on_click(cx.listener(move |m, _, _, cx| send2(m, cx))) };
                 div().flex().items_center().gap(px(10.)).child(field).child(go).children(talk_el.take())
             }
             (Some(a), _) => {
@@ -1157,7 +1173,7 @@ fn questions_el(m: &MainWindow, t: &Theme, key: &str, talk: Option<&str>, ask: O
                     .text_size(px(13.))
                     .child(c.clone());
                 match tap {
-                    Some((r, round)) if !busy => {
+                    Some((r, round)) if !busy && !m.paused() => {
                         let (r, round, id, c) = (r.to_string(), round.to_string(), id.clone(), c.clone());
                         crate::ui::focus::stop(t, chip)
                             .cursor_pointer()
@@ -1737,6 +1753,27 @@ mod tests {
             assert_eq!(m.idea.fields[&q].text(cx), "Keep both", "Change brings the box back holding the answer");
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn with_the_board_down_its_actions_wait(cx: &mut gpui_kit::TestAppContext) {
+        use crate::parity::{settle, window};
+        let (w, rec) = window(cx);
+        rec.clear();
+        w.update(cx, |m, _, cx| {
+            m.down = Some("The board isn't answering.".into());
+            start(m, "dig", "I5", cx);
+            undo(m, "stop", "I5", cx);
+            close(m, "shelve", "I5", cx);
+            talk(m, "I5", None, cx);
+            answer(m, "I5", "7", "store", "Files", cx);
+            ask_plan(m, &json!({"ref": "I5"}), cx);
+            assert!(m.idea.busy.is_empty(), "nothing reads Sending…");
+            assert_eq!(m.idea.confirm, None);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.posts(), vec![], "nothing is sent while the board is down");
     }
 
     #[gpui_kit::test]

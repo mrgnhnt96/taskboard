@@ -957,6 +957,12 @@ impl MainWindow {
 
     // -------------------------------------------------------------- calls
 
+    /// With the board down, what would change it waits until it answers: its buttons grey and
+    /// send nothing.
+    pub fn paused(&self) -> bool {
+        self.down.is_some()
+    }
+
     /// `POST` to the board off the UI thread. On success runs `ok` (with the answer) and
     /// refreshes; on failure shows the board's sentence as an error toast.
     pub fn post(

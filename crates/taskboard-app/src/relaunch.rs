@@ -1,6 +1,6 @@
 //! Restart to update keeps what's typed: on the way out (only while an update is being applied)
-//! the idea draft and the task panel's drafts are saved, and the new app puts them back and says
-//! which version it's on now.
+//! the idea draft, the task panel's drafts and Home's note boxes are saved, and the new app puts
+//! them back and says which version it's on now.
 use crate::app::MainWindow;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -8,13 +8,13 @@ use std::collections::HashMap;
 
 const KEY: &str = "tb.restart.drafts";
 
-/// What's typed, as saved: `{"idea": {"title", "detail", "project"}, "panel": {key: text}}`, or
-/// None when nothing is.
-pub fn kept(idea: Option<(String, String, String)>, panel: HashMap<String, String>) -> Option<Value> {
-    if idea.is_none() && panel.is_empty() {
+/// What's typed, as saved: `{"idea": {"title", "detail", "project"}, "panel": {key: text},
+/// "home": {key: note}}`, or None when nothing is.
+pub fn kept(idea: Option<(String, String, String)>, panel: HashMap<String, String>, home: HashMap<String, Value>) -> Option<Value> {
+    if idea.is_none() && panel.is_empty() && home.is_empty() {
         return None;
     }
-    let mut v = json!({"panel": panel});
+    let mut v = json!({"panel": panel, "home": home});
     if let Some((title, detail, project)) = idea {
         v["idea"] = json!({"title": title, "detail": detail, "project": project});
     }
@@ -26,7 +26,7 @@ pub fn save(m: &MainWindow, cx: &App) {
     if !matches!(crate::updater::state(), crate::updater::State::Applying { .. }) {
         return;
     }
-    match kept(crate::ui::ideas::draft(m, cx), crate::ui::task_panel::drafts()) {
+    match kept(crate::ui::ideas::draft(m, cx), crate::ui::task_panel::drafts(), crate::ui::home::drafts(m, cx)) {
         Some(v) => crate::prefs::set(KEY, v),
         None => crate::prefs::remove(KEY),
     }
@@ -47,6 +47,10 @@ pub fn restore(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             crate::ui::task_panel::restore_drafts(p.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect());
             back = true;
         }
+        if let Some(h) = v.get("home").and_then(Value::as_object).filter(|h| !h.is_empty()) {
+            crate::ui::home::restore_drafts(m, h, cx);
+            back = true;
+        }
     }
     let Some((version, at)) = crate::updater::take_updated() else { return };
     crate::updater::set_updated(Some((version.clone(), at)));
@@ -65,11 +69,14 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn only_what_holds_text_is_kept() {
-        assert_eq!(kept(None, HashMap::new()), None);
-        let v = kept(Some(("Dark mode".into(), "".into(), "app".into())), HashMap::from([("reply:T4".to_string(), "yes".to_string())])).unwrap();
+        assert_eq!(kept(None, HashMap::new(), HashMap::new()), None);
+        let home = HashMap::from([("task:T9".to_string(), json!({"kind": "cant_do", "text": "No access"}))]);
+        let v = kept(Some(("Dark mode".into(), "".into(), "app".into())), HashMap::from([("reply:T4".to_string(), "yes".to_string())]), home.clone()).unwrap();
         assert_eq!(v["idea"]["title"], "Dark mode");
         assert_eq!(v["idea"]["project"], "app");
         assert_eq!(v["panel"]["reply:T4"], "yes");
+        assert_eq!(v["home"]["task:T9"]["text"], "No access");
+        assert_eq!(kept(None, HashMap::new(), home).unwrap()["home"]["task:T9"]["kind"], "cant_do", "a Home note alone is kept");
         assert_eq!(updated_line("1.2.0", true), "Updated to Taskboard 1.2.0. What you were typing is back.");
         assert_eq!(updated_line("1.2.0", false), "Updated to Taskboard 1.2.0.");
     }
