@@ -125,6 +125,7 @@ mod spans;
 mod stack_defaults;
 mod start_asks;
 mod start_grants;
+mod task_cleanup;
 mod task_grants;
 mod start_item;
 mod start_terminal;

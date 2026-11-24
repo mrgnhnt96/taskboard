@@ -64,6 +64,7 @@ pub mod keep_awake;
 pub mod ideas;
 pub mod idea_plan;
 pub mod idea_talk;
+pub mod leftovers;
 pub mod lessons;
 pub mod machine;
 pub mod limits;
@@ -236,6 +237,7 @@ pub fn start_threads(app: &Arc<App>) {
         spawn(app, "recap", recap::run);
         spawn(app, "code-review", code_review::run);
         spawn(app, "merged-lines", merges::fill_loop);
+        spawn(app, "cleanup", leftovers::run);
     } else {
         spawn(app, "spool", |a| {
             while !a.stopping() {

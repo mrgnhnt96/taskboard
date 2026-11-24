@@ -457,6 +457,14 @@ focus = ""                           # example: "open -a Simulator"
 focus_timeout_secs = 15.0
 goal_pool_only = true                # a goal with devices of its own (tb goal devices) lends its tasks only those; false: those first, then the rest
 
+# Stopping what a task's agent left running (Chrome on a debugging port, Gradle and Kotlin daemons, the
+# pool's booted simulators and emulators, and what its terminal left behind) once the task is done with it.
+# Each task's log says what was stopped. Chrome and devices with no live task go once they're this old;
+# a Gradle or Kotlin daemon or Android Studio that no task started is never touched.
+[cleanup]
+on = true
+orphan_hours = 12.0
+
 # Bits (feature flags, `tb bit add newCheckout --backend --task T4`). Tasks build behind a flag whether or
 # not it's made; a goal whose tasks are done waits until its backend bits are made in the flag tool
 # (`tb bit made`, or "Mark created" on the goal page, which links each one to the tool's new-flag page).
