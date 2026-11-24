@@ -13,7 +13,13 @@ use crate::board;
 use crate::util::*;
 use crate::{fields, hours, p};
 
-pub const ADDED: &[(&str, &str, &str)] = &[("tasks", "waiting_until", "TEXT"), ("tasks", "resume_plan", "TEXT")];
+pub const ADDED: &[(&str, &str, &str)] = &[
+    ("tasks", "waiting_until", "TEXT"),
+    ("tasks", "resume_plan", "TEXT"),
+    // The resume time a task missed and what it was going to do, kept for the app while it needs the owner.
+    ("tasks", "missed_wait_at", "TEXT"),
+    ("tasks", "missed_wait_plan", "TEXT"),
+];
 
 /// How long past its resume time a waiting task may go with no turn before it needs the owner.
 pub const GRACE_SECS: f64 = 15.0 * 60.0;
@@ -151,7 +157,7 @@ pub fn sweep(app: &App) -> Result<()> {
             continue;
         }
         let ask = overdue_text(&t, &at);
-        app.db.x("UPDATE tasks SET waiting_until = NULL, resume_plan = NULL WHERE id = ?", p![t.id()])?;
+        app.db.x("UPDATE tasks SET waiting_until = NULL, resume_plan = NULL, missed_wait_at = ?, missed_wait_plan = ? WHERE id = ?", p![at.clone(), t.v("resume_plan"), t.id()])?;
         board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => OVERDUE, "question" => ask.clone(), "answered_at" => null])?;
         board::log_event(app, t.id(), board::BOARD, "question", &ask)?;
     }
@@ -164,6 +170,15 @@ pub fn card(t: &Row) -> (Value, Value) {
         (t.v("waiting_until"), t.v("resume_plan"))
     } else {
         (Value::Null, Value::Null)
+    }
+}
+
+/// The resume time a task missed and what it was going to do, while that's why it needs the owner.
+pub fn missed(t: &Row) -> Value {
+    if t.s("status") == Some("needs") && t.s("needs_reason") == Some(OVERDUE) && !t.b("lost") && has(t.s("missed_wait_at")) {
+        json!({"at": t.v("missed_wait_at"), "plan": t.v("missed_wait_plan")})
+    } else {
+        Value::Null
     }
 }
 

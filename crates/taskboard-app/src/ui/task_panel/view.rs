@@ -23,6 +23,8 @@ pub enum Tone {
     Failed,
     Planned,
     Working,
+    /// A working task parked until a set time: Working's blue, hollow.
+    Waiting,
     Blocked,
     Neutral,
     Idle,
@@ -179,6 +181,10 @@ pub enum St {
     TlHWarn,
     /// What the needs-you banner says (`.nb-q`): the question, or what went wrong.
     BannerText,
+    /// A box's label behind a clock, or an alert once its time went by.
+    WaitLabel { late: bool },
+    /// What a parked task does when it resumes, in bold.
+    BannerPlan,
     /// How long an ask has waited on its reviewer, in work time; orange once it's about to swap.
     Wait { late: bool },
 }
@@ -275,6 +281,8 @@ pub enum TlStep {
 pub enum TlSt {
     Done,
     Now,
+    /// Now, parked until a set time: a dashed ring.
+    Wait,
     Warn,
     Fail,
     Todo,
@@ -672,6 +680,9 @@ pub fn status_pill(t: &Value) -> Node {
             return Node::Pill { s: or_empty(&stage["label"]), tone: stage_tone(s(stage, "phase")), tip: Some(tip) };
         }
         return Node::Pill { s: "Awaiting merge".into(), tone: Tone::Working, tip: Some(tip) };
+    }
+    if let Some(at) = waiting_until(t) {
+        return Node::Pill { s: "Waiting".into(), tone: Tone::Waiting, tip: Some(format!("Resumes {}", fmt::resume_time(at))) };
     }
     let k = st_key(t);
     if k == "queued" && b(t, "starting") {
@@ -1622,7 +1633,18 @@ fn now_node(c: &Ctx, t: &Value) -> Node {
     out.extend(blocked_row(c, t));
     out.extend(term_actions(c, t));
     out.extend(then_line(c, t));
-    tl_node(TlSt::Now, tl_head(status_pill(t), &sub, ""), out, true)
+    let dot = if waiting_until(t).is_some() { TlSt::Wait } else { TlSt::Now };
+    tl_node(dot, tl_head(status_pill(t), &sub, ""), out, true)
+}
+
+/// When a working task parked itself to resume (`waiting_until`), while it waits.
+fn waiting_until(t: &Value) -> Option<&str> {
+    opt_s(t, "waiting_until").filter(|_| s(t, "status") == "working" && !b(t, "lost"))
+}
+
+/// The resume time a parked task missed and its plan, while that's why it needs you.
+fn wait_missed(t: &Value) -> Option<&Value> {
+    obj(t, "wait_missed").filter(|_| s(t, "status") == "needs" && !b(t, "lost"))
 }
 
 /// "Terminal lost · 9:02 AM": what happened, then when (12-hour, with the day once it isn't today).
@@ -1735,6 +1757,22 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
             el(K::Row, row),
         ];
         (BoxTone::Lost, bx)
+    } else if let Some(missed) = wait_missed(t) {
+        // It parked itself and didn't come back: its terminal is where to look.
+        let grp = format!("ask:{r}");
+        let mut bx = vec![txt(format!("Didn’t resume at {}", fmt::resume_time(s(missed, "at"))), St::WaitLabel { late: true })];
+        bx.extend(opt_s(missed, "plan").filter(|p| !p.is_empty()).map(|p| txt(p, St::BannerPlan)));
+        if session_live(t) {
+            let mut row = vec![c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Primary, false, None)];
+            row.extend(c.note(&grp));
+            bx.push(el(K::Row, row));
+        }
+        (BoxTone::Ask, bx)
+    } else if let Some(at) = waiting_until(t) {
+        // Parked until a set time: nothing for the owner to do.
+        let mut bx = vec![txt(format!("Waiting · resumes {}", fmt::resume_time(at)), St::WaitLabel { late: false })];
+        bx.extend(opt_s(t, "resume_plan").filter(|p| !p.is_empty()).map(|p| txt(p, St::BannerPlan)));
+        (BoxTone::Quiet, bx)
     } else if status == "needs" {
         let grp = format!("ask:{r}");
         let question = opt_s(t, "question").filter(|q| !q.is_empty());
@@ -1838,8 +1876,8 @@ fn term_actions(c: &Ctx, t: &Value) -> Vec<Node> {
     let grp = format!("manage:{r}");
     let live = session_live(t);
     let mut row = Vec::new();
-    // A stuck-looking one has Focus in Midna in its box up top.
-    if live && s(t, "status") == "working" && obj(t, "stuck").is_none() {
+    // A stuck-looking one has Focus in Midna in its box up top; a parked one needs nothing.
+    if live && s(t, "status") == "working" && obj(t, "stuck").is_none() && waiting_until(t).is_none() {
         row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::SoftSmall, false, None));
     }
     if opt_s(t, "session_id").is_some() || live {

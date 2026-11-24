@@ -542,6 +542,14 @@ pub fn clipped(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Inter
     InteractiveText::new(id, styled).tooltip(move |_, _, cx| was_cut(&layout, &text).then(|| cx.new(|_| Tip { text: text.clone() }).into()))
 }
 
+/// [`clipped`] with some of its text styled: a bold lead.
+pub fn clipped_styled(id: impl Into<ElementId>, text: impl Into<SharedString>, highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>) -> InteractiveText {
+    let text = text.into();
+    let styled = StyledText::new(text.clone()).with_highlights(highlights);
+    let layout = styled.layout().clone();
+    InteractiveText::new(id, styled).tooltip(move |_, _, cx| was_cut(&layout, &text).then(|| cx.new(|_| Tip { text: text.clone() }).into()))
+}
+
 /// A truncated layout lays out fewer words and an ellipsis, so its text isn't the text given.
 fn was_cut(layout: &TextLayout, text: &str) -> bool {
     layout.text() != text

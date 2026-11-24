@@ -804,7 +804,10 @@ fn question_body(t: &Theme, a: &Ask, body: Div, paused: bool, cx: &mut Context<M
             _ => kit::disabled(b),
         }
     });
+    // A task that missed the time it parked itself until: its plan under the missed time.
+    let under = (a.asks.is_empty() && !a.line.is_empty() && a.line != a.text).then(|| div().text_size(px(13.)).text_color(t.text_2).child(a.line.clone()));
     body.child(div().text_size(px(14.)).text_color(t.warn_text).child(a.text.clone()))
+        .children(under)
         .when(!rows.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).children(rows)))
         .when(send.is_some() || focus.is_some(), |d| d.child(div().flex().items_center().gap(px(8.)).children(send).children(focus)))
 }

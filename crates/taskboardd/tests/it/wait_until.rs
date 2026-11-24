@@ -128,9 +128,19 @@ fn missing_the_time_by_the_grace_period_needs_the_owner() {
     let q = t.st("question");
     assert!(q.starts_with("T1 was due back at ") && q.contains("hasn't resumed") && q.contains(PLAN), "{q}");
     assert!(t.s("waiting_until").is_none(), "the wait is over");
-    // A turn on its terminal carries it on.
+    // The card keeps the time it missed and its plan for the app.
+    let card = b.card();
+    assert!(card["waiting_until"].is_null(), "{card}");
+    assert_eq!(card["wait_missed"]["plan"], PLAN, "{card}");
+    assert!(card["wait_missed"]["at"].as_str().is_some_and(|at| at.ends_with('Z')), "{card}");
+    // Needs you lists it with the agents waiting on the owner, not as a stopped terminal.
+    let home = b.call("GET", "/home", json!({}));
+    let item = home["needs"].as_array().unwrap().iter().find(|n| n["task"] == "T1").unwrap_or_else(|| panic!("{home}"));
+    assert_eq!(item["waiting"], true, "{item}");
+    // A turn on its terminal carries it on, and the miss goes with it.
     b.report("hook.prompt", json!({"prompt": "carry on"}));
     assert_eq!(b.task().s("status"), Some("working"));
+    assert!(b.card()["wait_missed"].is_null());
     reset_clock();
 }
 

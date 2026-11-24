@@ -201,9 +201,10 @@ fn no_holds() -> Value {
     json!({"tasks": [], "goal": null})
 }
 
-/// An agent is waiting on the owner's word. A lost terminal or a to-do isn't that.
+/// An agent is waiting on the owner's word, or parked itself and didn't come back on time. A lost
+/// terminal or a to-do isn't that.
 fn agent_waiting(t: &Row) -> bool {
-    t.s("status") == Some("needs") && !t.b("lost") && matches!(t.s("needs_reason"), Some("question") | Some("attention"))
+    t.s("status") == Some("needs") && !t.b("lost") && matches!(t.s("needs_reason"), Some("question") | Some("attention") | Some(crate::wait_until::OVERDUE))
 }
 
 /// Whether alert `a` belongs under Agents waiting: its agent waits on the owner's word, or has gone quiet.

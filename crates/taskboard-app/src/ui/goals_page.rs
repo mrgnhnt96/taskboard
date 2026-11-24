@@ -162,6 +162,7 @@ pub fn in_progress(goals: &[Value], project: &str) -> Vec<String> {
 pub(crate) struct Tally {
     needs: i64,
     working: i64,
+    waiting: i64,
     review: i64,
     pending: i64,
     stopped: i64,
@@ -179,6 +180,7 @@ impl Tally {
         match st {
             St::Needs => self.needs += 1,
             St::Working => self.working += 1,
+            St::Waiting => self.waiting += 1,
             St::Review => self.review += 1,
             St::Pending => self.pending += 1,
             St::Stopped => self.stopped += 1,
@@ -207,6 +209,7 @@ impl Tally {
         Tally {
             needs: i(g, "needs"),
             working: (i(g, "active") - i(g, "needs")).max(0),
+            waiting: 0,
             review,
             pending: 0,
             stopped: i(g, "hand_closed"),
@@ -225,7 +228,7 @@ impl Tally {
 
     /// The bar's parts, finished work first.
     pub(crate) fn parts(&self) -> Vec<(St, i64)> {
-        vec![(St::Done, self.done), (St::Pending, self.pending), (St::Review, self.review), (St::Working, self.working), (St::Needs, self.needs), (St::Failed, self.failed), (St::Stopped, self.stopped), (St::Queued, self.queued), (St::Planned, self.planned)]
+        vec![(St::Done, self.done), (St::Pending, self.pending), (St::Review, self.review), (St::Working, self.working), (St::Waiting, self.waiting), (St::Needs, self.needs), (St::Failed, self.failed), (St::Stopped, self.stopped), (St::Queued, self.queued), (St::Planned, self.planned)]
     }
 }
 
@@ -286,6 +289,9 @@ fn now_line(t: &Tally) -> (String, St) {
     if t.working > 0 {
         bits.push(format!("{} working", t.working));
     }
+    if t.waiting > 0 {
+        bits.push(format!("{} waiting", t.waiting));
+    }
     if t.needs > 0 {
         bits.push(format!("{} needs you", t.needs));
     }
@@ -305,7 +311,7 @@ fn now_line(t: &Tally) -> (String, St) {
         St::Needs
     } else if t.failed > 0 {
         St::Failed
-    } else if t.working > 0 {
+    } else if t.working + t.waiting > 0 {
         St::Working
     } else if t.review > 0 {
         St::Review
@@ -757,7 +763,7 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
             .when(kit::is_research(c), |d| d.child(kit::research_pill(t))),
             1.,
         ))
-        .child(fr(div().text_size(px(12.)).truncate().text_color(if row.loud { loud_fg } else { t.muted }).child(row.line), 1.2))
+        .child(fr(div().text_size(px(12.)).truncate().text_color(if row.loud { loud_fg } else { t.muted }).child(status::line_text(t, SharedString::from(format!("goals-task-line-{r}")), &row, &row.line)), 1.2))
         .child(div().flex_none().w(px(96.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(row.age))
         .child(act)
 }
