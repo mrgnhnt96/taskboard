@@ -142,6 +142,7 @@ mod talk_again;
 mod turn_waits;
 mod visit_prompt;
 mod wait_merged;
+mod wait_until;
 mod waves;
 mod worktree_projects;
 mod zz_probe;

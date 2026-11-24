@@ -160,6 +160,7 @@ pub mod upstream;
 pub mod usage;
 pub mod usage_daily;
 pub mod util;
+pub mod wait_until;
 pub mod waitsfor;
 pub mod waves;
 pub mod worklane;

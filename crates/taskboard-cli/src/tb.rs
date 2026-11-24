@@ -256,6 +256,17 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Park this working task until a set time (6:30am, 06:30 UTC, tomorrow 9am, in 40m), or `none`. Set something to wake this conversation then
+    WaitUntil {
+        /// When it resumes
+        #[arg(required = true, num_args = 1..)]
+        at: Vec<String>,
+        /// What it does when it resumes
+        #[arg(long)]
+        then: Option<String>,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// Propose tasks for a goal: --task "title::what to do". Planned, or queued while the goal is running
     Propose {
         goal: String,
@@ -6748,6 +6759,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     v["context"].as_str().unwrap_or("Noted.").to_string()
                 }
             })
+        }
+        Cmd::WaitUntil { at, then, t } => {
+            let at = at.join(" ");
+            let off = matches!(at.trim().to_lowercase().as_str(), "none" | "off" | "cancel" | "clear");
+            if !off && then.as_deref().is_none_or(|x| x.trim().is_empty()) {
+                return Err("say what it does when it resumes, for example: tb wait-until 06:30 UTC --then \"read the nightly build's result\"".into());
+            }
+            c.run_report("tb.wait_until", json!({"at": at, "then": then}), t.task, true, |v| v["context"].as_str().unwrap_or("Noted.").to_string())
         }
         Cmd::Propose { goal, tasks, planned, not_backlog } => {
             let g = goal_ref(&goal)?;

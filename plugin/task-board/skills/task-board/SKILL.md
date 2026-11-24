@@ -38,6 +38,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Another repository**: a task's work stays in its own project's repository. The board refuses the rest and says how to file it.
 - **Worktrees**: never make your own; a task's worktree is a slot from the board's pool. Holding or wanting a slot, or committing in a shared checkout: `worktrees.md`.
 - **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"` (add `--merged` when you need its PR merged first), then end your turn. Never ask the owner.
+- **Waiting until a set time** (a nightly build): `tb wait-until <time> --then "…"`, then end your turn (`questions.md`).
 - **Blocked on the owner**: read `questions.md` first; most calls are yours. Still the owner's? `tb question "<the question>"`, then stop. Answered another way since? `tb withdraw "<how>"`.
 - **Needs something only the owner can do** (make an account, sign an agreement, buy something, get a key from a site you can't reach): read `human-tasks.md`.
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..." --summary "..."` (`--goal G<n>` for the goal). The board can't open a claude.ai artifact: give its title (`--title`) and saved page (`--copy <file>`). Writing is published as a brief artifact and attached as a link; written results go in with `--kind results`, leading with the answer.
