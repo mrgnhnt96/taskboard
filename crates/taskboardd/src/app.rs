@@ -31,6 +31,8 @@ pub struct Shared {
     pub keep_awake_pushed: Option<(Instant, Value)>,
     /// Midna's `agents.resume_after_network`, and when the board last read it.
     pub midna_resumes_network: Option<(Instant, bool)>,
+    /// Midna's `guard.build_slots` as last read with it: builds that run at once (`builds::jobs`).
+    pub midna_build_slots: Option<i64>,
     /// When the board last checked its link patterns in Midna, and the Midna (pid and start) that has them.
     pub midna_links: Option<(Instant, Option<String>)>,
     /// The Midna run that has the board's link menus and the menus it was given (empty when that

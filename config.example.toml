@@ -338,11 +338,11 @@ fresh_pr_visits = true               # those visits start a fresh, short convers
 review = true                        # false: no plan reviews
 review_model = "small"               # small or large (through [models]), a model name, or "" for [backlog] model
 
-# Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
-# so many worktree agents don't each cold-build the project with every core at once.
+# Builds in the board's terminals and the worktree subagents they start, so many agents don't each
+# build with every core at once. Midna runs at most guard.build_slots builds at once (the rest wait in line).
 [builds]
 shared_target = true                 # CARGO_TARGET_DIR = the main checkout's target/, shared by its worktrees (a pool slot keeps its own target/); builds take turns and reuse each other
-jobs = 4                             # CARGO_BUILD_JOBS per terminal; 0 leaves cargo's default (every core)
+# jobs = 4                           # jobs per build (CARGO_BUILD_JOBS, Gradle's org.gradle.workers.max); unset: the cores ÷ Midna's guard.build_slots; 0 leaves each tool's default (every core)
 
 # The worktree slot pool. A goal set with --worktrees starts each task in a reusable worktree at
 # <repo>/.claude/worktrees/slot-<n>: the free one used last (its build is warmest), else a new one up to

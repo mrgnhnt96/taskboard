@@ -776,6 +776,11 @@ fn read_settings(app: &App) {
         let on = v["value"].as_bool().unwrap_or(true);
         app.shared.lock().midna_resumes_network = Some((Instant::now(), on));
     }
+    if let Ok(v) = call_timeout(app, "settings.get", json!({"key": "guard.build_slots"}), 5.0) {
+        if let Some(n) = v["value"].as_i64() {
+            app.shared.lock().midna_build_slots = Some(n);
+        }
+    }
 }
 
 /// How often the board checks that Midna (maybe restarted) has its link patterns.
