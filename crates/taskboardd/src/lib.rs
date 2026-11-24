@@ -145,6 +145,7 @@ pub mod slot_usage;
 pub mod slowlog;
 pub mod spans;
 pub mod stamp;
+pub mod throwaway;
 pub mod tidy;
 pub mod samepr;
 pub mod stack;

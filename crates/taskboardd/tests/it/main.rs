@@ -141,6 +141,7 @@ mod submit_merged_early;
 mod submit_pr_predates;
 mod tab_status;
 mod talk_again;
+mod throwaway_serve;
 mod turn_waits;
 mod visit_prompt;
 mod wait_merged;
