@@ -22,10 +22,12 @@
 //! Simulators are leased like devices: one no task has leased (in the pool or not) is shut down once
 //! it's been up `[cleanup] unleased_simulator_mins`, and at once while more simulators are booted than
 //! the pool has, so no more than the pool's simulators stay up. Nothing shows who booted a simulator
-//! (launchd starts it), so one the owner booted by hand goes too.
+//! (launchd starts it), so one the owner booted by hand goes too. A pool emulator no task has leased is
+//! shut down once it's been up `[cleanup] unleased_emulator_mins`; an emulator outside the pool is never
+//! touched.
 //!
-//! The orphan sweep: a recorded Chrome or emulator with no task, or one from a terminal that's gone,
-//! is cleaned up once it's older than `[cleanup] orphan_hours`. A Gradle or Kotlin daemon or Android
+//! The orphan sweep: a recorded Chrome with no task, or one from a terminal that's gone, is cleaned up
+//! once it's older than `[cleanup] orphan_hours`. A Gradle or Kotlin daemon or Android
 //! Studio with no task is never touched: it may be the owner's own. Nothing outside an agent's reach
 //! is touched either: other users' processes, the board itself and what started it, apps started
 //! with `open`, and terminals the board doesn't know as a task's.
@@ -62,15 +64,17 @@ pub const ADDED: &[(&str, &str, &str)] = &[("leftovers", "target", "TEXT")];
 pub struct CleanupConfig {
     /// Stops what a task's agent left running once the task is done with it.
     pub on: bool,
-    /// How old a Chrome or booted emulator with no live task gets before the sweep stops it.
+    /// How old a Chrome with no live task gets before the sweep stops it.
     pub orphan_hours: f64,
     /// How long a simulator no task has leased stays up before it's shut down.
     pub unleased_simulator_mins: f64,
+    /// How long a pool emulator no task has leased stays up before it's shut down.
+    pub unleased_emulator_mins: f64,
 }
 
 impl Default for CleanupConfig {
     fn default() -> Self {
-        CleanupConfig { on: true, orphan_hours: 12.0, unleased_simulator_mins: 10.0 }
+        CleanupConfig { on: true, orphan_hours: 12.0, unleased_simulator_mins: 10.0, unleased_emulator_mins: 10.0 }
     }
 }
 
@@ -245,6 +249,7 @@ struct Board {
     now: f64,
     orphan_secs: f64,
     unleased_secs: f64,
+    unleased_emulator_secs: f64,
     /// More simulators are booted than the pool has.
     too_many_sims: bool,
     /// Terminal → (when a task took it, the task), oldest first.
@@ -313,6 +318,7 @@ impl Board {
             now: now_ts(),
             orphan_secs: app.cfg.cleanup.orphan_hours.max(0.0) * 3600.0,
             unleased_secs: app.cfg.cleanup.unleased_simulator_mins.max(0.0) * 60.0,
+            unleased_emulator_secs: app.cfg.cleanup.unleased_emulator_mins.max(0.0) * 60.0,
             too_many_sims: booted_sims > pool_sims,
             terms,
             gone,
@@ -375,7 +381,7 @@ fn due(app: &App, b: &mut Board, r: &Row, kind: Kind) -> bool {
         }
         return match kind {
             Kind::Simulator => b.too_many_sims || up >= b.unleased_secs,
-            _ => old,
+            _ => up >= b.unleased_emulator_secs,
         };
     }
     let session = r.s("session_id").map(str::to_string);
@@ -436,7 +442,8 @@ pub fn pass(app: &App, procs: &[Proc], act: &mut dyn FnMut(&Act) -> bool) -> Res
         };
         let target = device_target(p, kind);
         let device = match &target {
-            Some(t) => match b.devices.get(t) {
+            // The pool is keyed by its targets uppercased (a simulator's UDID already is; `emulator-<port>` isn't).
+            Some(t) => match b.devices.get(&t.to_uppercase()) {
                 Some(d) => Some(d.clone()),
                 None if kind == Kind::Simulator => None,
                 None => continue,
