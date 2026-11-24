@@ -150,9 +150,9 @@ fn hook_payload(app: &App, query: &Query) -> Result<Value> {
 /// A read shares the settings and steps it loads across everything it builds (`reqcache`).
 /// A `tb pr …` command someone asked for makes its reads as the PR poll's: they still go while an
 /// account restarts slowly after a limit (`prhost::limit`). The host calls a request makes count as
-/// the `agent` reader's in the account's split.
+/// its `tb pr` command's reader in the account's split (`agent (merge)`, …), else the `agent` reader's.
 pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
-    crate::prhost::limit::reader("agent", || scoped(app, method, path, query, body))
+    crate::prhost::limit::reader(crate::prhost::limit::agent_reader(method, path), || scoped(app, method, path, query, body))
 }
 
 fn scoped(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {

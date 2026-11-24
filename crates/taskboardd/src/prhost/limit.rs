@@ -109,7 +109,8 @@
 //!
 //! Each call is counted against the reader that made it ([`reader`]: the timed PR poll, its full-read
 //! fallback when the host couldn't say what changed, reads after a review hint, the master watch, the
-//! review sweep, and `tb` commands); calls made outside one count as `other`. While the PR stream is
+//! review sweep, and `tb` commands, split by the `tb pr` command that made them: [`AGENT_COMMANDS`]);
+//! calls made outside one count as `other`. While the PR stream is
 //! on, the timed poll's calls are split by why it read the PR ([`POLL_STREAM_DOWN`],
 //! [`POLL_NOT_COVERED`], [`POLL_CATCH_UP`]): a PR a healthy stream covers isn't polled at all. The `rate limit:` line
 //! a limit logs gives the split for the hour and the minute, with the last `X-Request-Count` Bitbucket
@@ -416,9 +417,44 @@ pub const POLL_CATCH_UP: &str = "poll (catch-up)";
 pub const POLL_STREAM_DOWN: &str = "poll (stream down)";
 pub const POLL_NOT_COVERED: &str = "poll (not covered)";
 
+/// The `tb pr` commands whose calls the `agent` reader splits out, each its own reader (#1162), so
+/// `tb pr limits` says which command spends them; the API's other calls stay `agent`.
+pub const AGENT_COMMANDS: [&str; 7] =
+    ["agent (status)", "agent (merge)", "agent (wait)", "agent (reply)", "agent (thread)", "agent (ack)", "agent (reviewers)"];
+
 /// The readers [`reader`] names, in the order the split shows them.
-pub const READERS: [&str; 11] =
-    ["poll", POLL_STREAM_DOWN, POLL_NOT_COVERED, POLL_CATCH_UP, "full-read fallback", "hint", "master", "reviewers", "lost tasks", "agent", "tb api"];
+pub const READERS: [&str; 18] = [
+    "poll",
+    POLL_STREAM_DOWN,
+    POLL_NOT_COVERED,
+    POLL_CATCH_UP,
+    "full-read fallback",
+    "hint",
+    "master",
+    "reviewers",
+    "lost tasks",
+    AGENT_COMMANDS[0],
+    AGENT_COMMANDS[1],
+    AGENT_COMMANDS[2],
+    AGENT_COMMANDS[3],
+    AGENT_COMMANDS[4],
+    AGENT_COMMANDS[5],
+    AGENT_COMMANDS[6],
+    "agent",
+    "tb api",
+];
+
+/// The reader an API request's host calls count against: its `tb pr` command's (`GET /tasks/:id/pr`
+/// is `tb pr status`, `POST /tasks/:id/pr/<command>` the rest), else `agent`.
+pub fn agent_reader(method: &str, path: &str) -> &'static str {
+    let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let cmd = match (method, segs.as_slice()) {
+        ("GET", ["tasks", _, "pr"]) => "status",
+        ("POST", ["tasks", _, "pr", cmd]) => cmd,
+        _ => return "agent",
+    };
+    AGENT_COMMANDS.iter().find(|r| r.strip_prefix("agent (").and_then(|r| r.strip_suffix(')')) == Some(cmd)).copied().unwrap_or("agent")
+}
 
 /// Runs `f` with the calls it makes counted against `name` (one of [`READERS`]) in the split of an
 /// account's calls (see "Who made the calls"); an inner one names its own calls.
@@ -1864,6 +1900,40 @@ mod tests {
         assert_eq!(st["readers_text"], "poll 2, full-read fallback 1, agent 1, other 1");
         assert_eq!((st["calls_last_minute"].as_u64(), st["readers_minute_text"].as_str()), (Some(4), Some("poll 1, full-read fallback 1, agent 1, other 1")));
         assert_eq!(READER.with(|r| r.get()), None, "the reader ends with its calls");
+    }
+
+    #[test]
+    fn each_tb_pr_command_is_its_own_reader() {
+        // #1162: "agent 219" didn't say whether merge, wait or status spent the calls.
+        for (method, path, want) in [
+            ("GET", "/tasks/T5/pr", "agent (status)"),
+            ("POST", "/tasks/T5/pr/merge", "agent (merge)"),
+            ("POST", "/tasks/T5/pr/wait", "agent (wait)"),
+            ("POST", "/tasks/T5/pr/reply", "agent (reply)"),
+            ("POST", "/tasks/T5/pr/thread", "agent (thread)"),
+            ("POST", "/tasks/T5/pr/ack", "agent (ack)"),
+            ("POST", "/tasks/5/pr/reviewers/", "agent (reviewers)"),
+            ("POST", "/tasks/T5/pr/close", "agent"),
+            ("POST", "/tasks/T5/pr", "agent"),
+            ("GET", "/tasks/T5/pr/merge", "agent"),
+            ("POST", "/api-call", "agent"),
+            ("GET", "/state", "agent"),
+        ] {
+            assert_eq!(agent_reader(method, path), want, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn the_split_lists_the_pr_commands_before_the_rest_of_the_agent_s_calls() {
+        let l = Limits::default();
+        for (who, n) in [("agent", 1), ("agent (wait)", 2), ("agent (merge)", 4), ("agent (status)", 3), ("tb api", 1)] {
+            for _ in 0..n {
+                reader(who, || l.admit("bb:1", "bitbucket", false, false, T0)).unwrap();
+            }
+        }
+        let st = &l.status(T0 + 1.0)[0];
+        assert_eq!(st["readers_text"], "agent (status) 3, agent (merge) 4, agent (wait) 2, agent 1, tb api 1");
+        assert_eq!(st["calls_by_reader"], json!({"agent (status)": 3, "agent (merge)": 4, "agent (wait)": 2, "agent": 1, "tb api": 1}));
     }
 
     #[test]
