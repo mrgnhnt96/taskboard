@@ -378,6 +378,11 @@ pub fn git_place(cmd: &str, cwd: &str) -> Option<String> {
     }
 }
 
+/// The folder `cmd` ends up in: `cwd`, through each `cd <dir>` in it.
+pub fn cd_place(cmd: &str, cwd: &str) -> String {
+    CD_RE.captures_iter(cmd).fold(cwd.to_string(), |at, c| resolve(&at, &c[1]))
+}
+
 /// `p` (quoted, `~/…` or relative) as a plain absolute path from `cwd`.
 fn resolve(cwd: &str, p: &str) -> String {
     use std::path::{Component, Path, PathBuf};
