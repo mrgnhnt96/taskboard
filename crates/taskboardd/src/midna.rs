@@ -555,7 +555,7 @@ fn git_of(s: &Value) -> (Value, Value) {
     }
 }
 
-/// Midna's state for terminal `s` is only held by a tab status (the board's own Question puts it in
+/// Midna's state for terminal `s` is only held by a tab status (the board's own Alert puts it in
 /// needs_you), not by a prompt of the agent's: Midna's own rule for typing into a terminal.
 fn labelled(s: &Value) -> bool {
     let (st, cs) = (&s["status"], &s["custom_status"]);
@@ -899,11 +899,13 @@ fn register_menus(app: &App, run: &str) {
 }
 
 /// The tab statuses the board gives a task's terminal: what it sends, the label, its color and the
-/// state Midna sorts and notifies by. Each comes off with the terminal's next prompt.
+/// state Midna sorts and notifies by. Each comes off with the terminal's next prompt. A question
+/// shows in Midna on an idle base: the board's own alert is the one that asks Morgan, so Midna
+/// raises no second needs-you card for it.
 pub const TAB_STATUSES: [(&str, &str, &str, &str); 7] = [
     ("in_review", "In review", "purple", "done"),
     ("done", "Done", "green", "done"),
-    ("question", "Question", "amber", "needs_you"),
+    ("question", "Question", "amber", "idle"),
     ("alert", "Alert", "red", "needs_you"),
     ("urgent", "Alert", "red", "needs_you"),
     ("failed", "Task failed", "red", "failed"),
@@ -919,7 +921,7 @@ pub fn tab_field(field: &str) -> bool {
 }
 
 /// The Midna call that puts a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) on terminal `sid`.
-/// `detail` says what it's waiting on; Midna shows it on the needs-you card a needs_you status raises.
+/// `detail` says what it's waiting on; Midna shows it with the status.
 /// A `held` one goes on with an idle base, so Midna raises no needs-you item for it (`held_tab`).
 pub fn tab_call(sid: &str, tab: &str, detail: Option<&str>, held: bool) -> (&'static str, Value) {
     match TAB_STATUSES.iter().find(|(t, ..)| *t == tab) {
@@ -1546,15 +1548,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
         crate::hours::shut_for_tests(&app);
-        assert!(held_tab(&app, "question"));
         assert!(held_tab(&app, "alert"));
         assert!(!held_tab(&app, "urgent"));
         assert!(!held_tab(&app, "done"));
-        let (_, held) = tab_call("s1", "question", Some("T1 · Fix: which port?"), true);
-        assert_eq!((held["base"].as_str(), held["label"].as_str()), (Some("idle"), Some("Question")));
+        let (_, held) = tab_call("s1", "alert", Some("T1 · Fix: stuck"), true);
+        assert_eq!((held["base"].as_str(), held["label"].as_str()), (Some("idle"), Some("Alert")));
         let (_, urgent) = tab_call("s1", "urgent", None, false);
         assert_eq!((urgent["base"].as_str(), urgent["label"].as_str()), (Some("needs_you"), Some("Alert")));
         crate::hours::set(&app, &json!({"on": false})).unwrap();
+        assert!(!held_tab(&app, "alert"));
+    }
+
+    #[test]
+    fn a_question_tab_shows_in_midna_without_raising_a_needs_you_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        crate::hours::shut_for_tests(&app);
+        let (method, tab) = tab_call("s1", "question", Some("T1 · Fix: which port?"), false);
+        assert_eq!(method, "session.set_status");
+        assert_eq!((tab["label"].as_str(), tab["base"].as_str()), (Some("Question"), Some("idle")));
+        assert_eq!(tab["detail"].as_str(), Some("T1 · Fix: which port?"));
         assert!(!held_tab(&app, "question"));
     }
 

@@ -209,6 +209,17 @@ fn keep(app: &App, rows: &[Value]) -> Result<()> {
     Ok(())
 }
 
+/// Runs `f`, a read-then-write of the alert list (or the dismissed list), in one transaction: it holds the
+/// board's write lock from the read to the write, so another thread's change can't land in between and be
+/// lost. The lists are read afresh, not from what this request loaded before.
+fn locked<T>(app: &App, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    app.db.tx(|| {
+        crate::reqcache::forget_setting("alerts");
+        crate::reqcache::forget_setting(DISMISSED);
+        f()
+    })
+}
+
 fn new_alert_id() -> String {
     use rand::Rng;
     let n: u64 = rand::thread_rng().gen();
@@ -249,31 +260,35 @@ pub fn add_free_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Opti
 /// Marks a free-text alert for `suggest.rs` to ask Haiku for its title and fixes, off the hot path.
 /// An alert that already has fixes, or was asked about before, is left as it is.
 pub fn want_suggestions(app: &App, id: &str) -> Result<()> {
-    if !app.cfg.alerts.suggest {
-        return Ok(());
-    }
-    let mut rows = alerts(app);
-    let Some(a) = rows.iter_mut().find(|a| a["id"] == id && a["actions"].is_null() && a["suggest"].is_null()) else { return Ok(()) };
-    a["suggest"] = json!("pending");
-    keep(app, &rows)
+    locked(app, || {
+        if !app.cfg.alerts.suggest {
+            return Ok(());
+        }
+        let mut rows = alerts(app);
+        let Some(a) = rows.iter_mut().find(|a| a["id"] == id && a["actions"].is_null() && a["suggest"].is_null()) else { return Ok(()) };
+        a["suggest"] = json!("pending");
+        keep(app, &rows)
+    })
 }
 
 /// Puts what `suggest.rs` made of alert `id` on it (`fields`: title, detail, actions, project), or marks
 /// it `failed` when `fields` is None; the card then shows its text with Dismiss. An alert that has gone
 /// meanwhile is left gone.
 pub fn set_suggestions(app: &App, id: &str, fields: Option<Value>) -> Result<()> {
-    let mut rows = alerts(app);
-    let Some(a) = rows.iter_mut().find(|a| a["id"] == id && a["suggest"] == "pending") else { return Ok(()) };
-    match fields {
-        Some(f) => {
-            for (k, v) in f.as_object().into_iter().flatten() {
-                a[k] = v.clone();
+    locked(app, || {
+        let mut rows = alerts(app);
+        let Some(a) = rows.iter_mut().find(|a| a["id"] == id && a["suggest"] == "pending") else { return Ok(()) };
+        match fields {
+            Some(f) => {
+                for (k, v) in f.as_object().into_iter().flatten() {
+                    a[k] = v.clone();
+                }
+                a["suggest"] = json!("done");
             }
-            a["suggest"] = json!("done");
+            None => a["suggest"] = json!("failed"),
         }
-        None => a["suggest"] = json!("failed"),
-    }
-    keep(app, &rows)
+        keep(app, &rows)
+    })
 }
 
 /// The urgent alert up for a task, if any.
@@ -285,38 +300,40 @@ fn urgent_for(app: &App, task_id: Option<i64>) -> Option<Value> {
 /// the ones that stay; an urgent one replaces nothing. While a task has an urgent alert up, a new plain alert
 /// for it isn't raised (None); its PR-review alert still is.
 fn push_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, session_id: Option<&str>, extra: Option<&str>) -> Result<Option<Value>> {
-    let (review, urgent) = (extra == Some("review"), extra == Some("urgent"));
-    if !review && !urgent && urgent_for(app, task_id).is_some() {
-        return Ok(None);
-    }
-    let mut rows: Vec<Value> = alerts(app)
-        .into_iter()
-        .filter(|a| urgent || !(task_id.is_some() && a["task_id"].as_i64() == task_id) || (stays(a) && !review) || a["urgent"] == true)
-        .collect();
-    let now = now_iso();
-    let mut new = json!({"id": new_alert_id(), "at": now, "text": text, "task_id": task_id, "session_id": session_id,
-                         "task": rf_opt("task", task_id), "goal": rf_opt("goal", goal_id), "notified_at": now});
-    if let Some(flag) = extra {
-        new[flag] = json!(true);
-    }
-    if waits_for_hours(app, &new) {
-        new["held"] = json!(true);
-    }
-    let new_id = new["id"].clone();
-    rows.push(new);
-    // The newest 20 alerts, plus every one that stays, however many others came after it.
-    let (staying, mut rest): (Vec<Value>, Vec<Value>) = rows.into_iter().partition(stays);
-    let n = rest.len();
-    if n > 20 {
-        rest.drain(..n - 20);
-    }
-    let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
-    keep(app, &rows)?;
-    let kept = rows.into_iter().find(|a| a["id"] == new_id);
-    if let Some(a) = &kept {
-        notify_new(app, a);
-    }
-    Ok(kept)
+    locked(app, || {
+        let (review, urgent) = (extra == Some("review"), extra == Some("urgent"));
+        if !review && !urgent && urgent_for(app, task_id).is_some() {
+            return Ok(None);
+        }
+        let mut rows: Vec<Value> = alerts(app)
+            .into_iter()
+            .filter(|a| urgent || !(task_id.is_some() && a["task_id"].as_i64() == task_id) || (stays(a) && !review) || a["urgent"] == true)
+            .collect();
+        let now = now_iso();
+        let mut new = json!({"id": new_alert_id(), "at": now, "text": text, "task_id": task_id, "session_id": session_id,
+                             "task": rf_opt("task", task_id), "goal": rf_opt("goal", goal_id), "notified_at": now});
+        if let Some(flag) = extra {
+            new[flag] = json!(true);
+        }
+        if waits_for_hours(app, &new) {
+            new["held"] = json!(true);
+        }
+        let new_id = new["id"].clone();
+        rows.push(new);
+        // The newest 20 alerts, plus every one that stays, however many others came after it.
+        let (staying, mut rest): (Vec<Value>, Vec<Value>) = rows.into_iter().partition(stays);
+        let n = rest.len();
+        if n > 20 {
+            rest.drain(..n - 20);
+        }
+        let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
+        keep(app, &rows)?;
+        let kept = rows.into_iter().find(|a| a["id"] == new_id);
+        if let Some(a) = &kept {
+            notify_new(app, a);
+        }
+        Ok(kept)
+    })
 }
 
 /// A new alert's notification, unless the digest or the work hours hold it.
@@ -335,25 +352,27 @@ fn waits_for_hours(app: &App, a: &Value) -> bool {
 /// An alert raised through `POST /alerts` (`tb alert raise`): with a `key`, raising it again while it's up
 /// changes nothing, and `clear_alert_key` takes it away.
 pub fn raise(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, key: Option<&str>, urgent: bool) -> Result<Value> {
-    if let Some(k) = key {
-        if let Some(a) = alerts(app).into_iter().find(|a| a["key"] == k) {
-            return Ok(a);
+    locked(app, || {
+        if let Some(k) = key {
+            if let Some(a) = alerts(app).into_iter().find(|a| a["key"] == k) {
+                return Ok(a);
+            }
         }
-    }
-    let Some(new) = push_alert(app, text, task_id, goal_id, None, urgent.then_some("urgent"))? else {
-        let held = urgent_for(app, task_id).map(|a| a["id"].as_str().unwrap_or("").to_string()).unwrap_or_default();
-        return err(409, format!("{} has an urgent alert up ({held}); its other alerts wait until that clears.", task_id.map(|t| rf("task", t)).unwrap_or_default()));
-    };
-    let mut rows = alerts(app);
-    let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) else {
-        return err(500, "The alert wasn't kept.");
-    };
-    if let Some(k) = key {
-        a["key"] = json!(k);
-    }
-    let out = a.clone();
-    keep(app, &rows)?;
-    Ok(out)
+        let Some(new) = push_alert(app, text, task_id, goal_id, None, urgent.then_some("urgent"))? else {
+            let held = urgent_for(app, task_id).map(|a| a["id"].as_str().unwrap_or("").to_string()).unwrap_or_default();
+            return err(409, format!("{} has an urgent alert up ({held}); its other alerts wait until that clears.", task_id.map(|t| rf("task", t)).unwrap_or_default()));
+        };
+        let mut rows = alerts(app);
+        let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) else {
+            return err(500, "The alert wasn't kept.");
+        };
+        if let Some(k) = key {
+            a["key"] = json!(k);
+        }
+        let out = a.clone();
+        keep(app, &rows)?;
+        Ok(out)
+    })
 }
 
 /// An alert that goes with a thing rather than a task (a QA comment, `qa:3`): one per key, cleared by
@@ -365,23 +384,25 @@ pub fn add_alert_keyed(app: &App, text: &str, task_id: Option<i64>, goal_id: Opt
 /// `add_alert_keyed`, carrying `fields` for the app's card: a short `title`, one `detail` line and the
 /// `actions` it offers (`AlertAction`). `text` still says it all, for the notification and `tb alerts`.
 pub fn add_alert_keyed_with(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, key: &str, fields: Value) -> Result<()> {
-    if alerts(app).iter().any(|a| a["key"] == key) {
-        return Ok(());
-    }
-    let Some(new) = push_alert(app, text, task_id, goal_id, None, None)? else { return Ok(()) };
-    let mut rows = alerts(app);
-    if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
-        a["key"] = json!(key);
-        for (k, v) in fields.as_object().into_iter().flatten() {
-            a[k] = v.clone();
+    locked(app, || {
+        if alerts(app).iter().any(|a| a["key"] == key) {
+            return Ok(());
         }
-    }
-    keep(app, &rows)?;
-    // Only its key says it's work gone quiet, so `push_alert` couldn't tell it reaches the desktop.
-    if let Some(a) = rows.iter().find(|a| a["id"] == new["id"] && crate::quiet::is_key(key)) {
-        notify_new(app, a);
-    }
-    Ok(())
+        let Some(new) = push_alert(app, text, task_id, goal_id, None, None)? else { return Ok(()) };
+        let mut rows = alerts(app);
+        if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
+            a["key"] = json!(key);
+            for (k, v) in fields.as_object().into_iter().flatten() {
+                a[k] = v.clone();
+            }
+        }
+        keep(app, &rows)?;
+        // Only its key says it's work gone quiet, so `push_alert` couldn't tell it reaches the desktop.
+        if let Some(a) = rows.iter().find(|a| a["id"] == new["id"] && crate::quiet::is_key(key)) {
+            notify_new(app, a);
+        }
+        Ok(())
+    })
 }
 
 /// A fix an alert offers: a button labelled `label` that opens a Claude terminal with `prompt` typed in
@@ -429,41 +450,49 @@ pub fn act(app: &App, id: &str, n: usize) -> Result<Value> {
 
 /// A quiet alert (`quiet`) keyed `key`, carrying `fields` (the review it opens): one per key.
 pub fn add_quiet_alert(app: &App, text: &str, key: &str, fields: Value) -> Result<()> {
-    if alerts(app).iter().any(|a| a["key"] == key) {
-        return Ok(());
-    }
-    let Some(new) = push_alert(app, text, None, None, None, Some("quiet"))? else { return Ok(()) };
-    let mut rows = alerts(app);
-    if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
-        a["key"] = json!(key);
-        for (k, v) in fields.as_object().into_iter().flatten() {
-            a[k] = v.clone();
+    locked(app, || {
+        if alerts(app).iter().any(|a| a["key"] == key) {
+            return Ok(());
         }
-    }
-    keep(app, &rows)
+        let Some(new) = push_alert(app, text, None, None, None, Some("quiet"))? else { return Ok(()) };
+        let mut rows = alerts(app);
+        if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
+            a["key"] = json!(key);
+            for (k, v) in fields.as_object().into_iter().flatten() {
+                a[k] = v.clone();
+            }
+        }
+        keep(app, &rows)
+    })
 }
 
 pub fn clear_alert_key(app: &App, key: &str) -> Result<()> {
-    let rows: Vec<Value> = alerts(app).into_iter().filter(|a| a["key"] != key).collect();
-    keep(app, &rows)
+    locked(app, || {
+        let rows: Vec<Value> = alerts(app).into_iter().filter(|a| a["key"] != key).collect();
+        keep(app, &rows)
+    })
 }
 
 /// Clears every alert whose key starts with `prefix` (`pr-builds:`).
 pub fn clear_alert_prefix(app: &App, prefix: &str) -> Result<()> {
-    let rows: Vec<Value> = alerts(app).into_iter().filter(|a| !a["key"].as_str().is_some_and(|k| k.starts_with(prefix))).collect();
-    keep(app, &rows)
+    locked(app, || {
+        let rows: Vec<Value> = alerts(app).into_iter().filter(|a| !a["key"].as_str().is_some_and(|k| k.starts_with(prefix))).collect();
+        keep(app, &rows)
+    })
 }
 
 /// Clears an alert by id, or a task's alerts: all but the ones that stay (a PR waiting on review, an urgent
 /// alert), which clear on their own condition or by their id or key.
 pub fn clear_alerts(app: &App, task_id: Option<i64>, alert_id: Option<&str>) -> Result<()> {
-    let rows: Vec<Value> = alerts(app)
-        .into_iter()
-        .filter(|a| {
-            !((task_id.is_some() && a["task_id"].as_i64() == task_id && !stays(a)) || (alert_id.is_some() && a["id"].as_str() == alert_id))
-        })
-        .collect();
-    keep(app, &rows)
+    locked(app, || {
+        let rows: Vec<Value> = alerts(app)
+            .into_iter()
+            .filter(|a| {
+                !((task_id.is_some() && a["task_id"].as_i64() == task_id && !stays(a)) || (alert_id.is_some() && a["id"].as_str() == alert_id))
+            })
+            .collect();
+        keep(app, &rows)
+    })
 }
 
 /// The alerts dismissed lately, oldest first, kept so a toast's Undo can bring one back: each as
@@ -482,38 +511,42 @@ fn keep_dismissed(app: &App, rows: &[Value]) -> Result<()> {
 
 /// Dismiss on alert `id`: it goes (its notification too), and the last few dismissed are kept for Undo.
 pub fn dismiss_alert(app: &App, id: &str) -> Result<()> {
-    let rows = alerts(app);
-    if let Some(i) = rows.iter().position(|a| a["id"] == id) {
-        let mut gone: Vec<Value> = dismissed(app).into_iter().filter(|g| g["alert"]["id"] != id).collect();
-        gone.push(json!({"alert": rows[i], "next": rows.get(i + 1).map(|n| n["id"].clone())}));
-        let n = gone.len();
-        gone.drain(..n.saturating_sub(DISMISSED_KEPT));
-        keep_dismissed(app, &gone)?;
-    }
-    clear_alerts(app, None, Some(id))
+    locked(app, || {
+        let rows = alerts(app);
+        if let Some(i) = rows.iter().position(|a| a["id"] == id) {
+            let mut gone: Vec<Value> = dismissed(app).into_iter().filter(|g| g["alert"]["id"] != id).collect();
+            gone.push(json!({"alert": rows[i], "next": rows.get(i + 1).map(|n| n["id"].clone())}));
+            let n = gone.len();
+            gone.drain(..n.saturating_sub(DISMISSED_KEPT));
+            keep_dismissed(app, &gone)?;
+        }
+        clear_alerts(app, None, Some(id))
+    })
 }
 
 /// Undo on a dismissed alert: it's back where it was, with no new notification. Left out when the
 /// same alert is up again, or a newer plain alert for its task took its place.
 pub fn restore_alert(app: &App, id: &str) -> Result<()> {
-    let mut gone = dismissed(app);
-    let Some(i) = gone.iter().position(|g| g["alert"]["id"] == id) else { return err(404, "That alert can't be brought back now.") };
-    let g = gone.remove(i);
-    let a = g["alert"].clone();
-    keep_dismissed(app, &gone)?;
-    let mut rows = alerts(app);
-    let task = a["task_id"].as_i64();
-    let up = rows.iter().any(|r| {
-        r["id"] == a["id"] || (!a["key"].is_null() && r["key"] == a["key"]) || (task.is_some() && r["task_id"].as_i64() == task && !stays(r))
-    });
-    if up {
-        return Ok(());
-    }
-    let at = a["at"].as_str().unwrap_or("").to_string();
-    let next = rows.iter().position(|r| !g["next"].is_null() && r["id"] == g["next"]);
-    let i = next.or_else(|| rows.iter().position(|r| r["at"].as_str().unwrap_or("") > at.as_str())).unwrap_or(rows.len());
-    rows.insert(i, a);
-    keep(app, &rows)
+    locked(app, || {
+        let mut gone = dismissed(app);
+        let Some(i) = gone.iter().position(|g| g["alert"]["id"] == id) else { return err(404, "That alert can't be brought back now.") };
+        let g = gone.remove(i);
+        let a = g["alert"].clone();
+        keep_dismissed(app, &gone)?;
+        let mut rows = alerts(app);
+        let task = a["task_id"].as_i64();
+        let up = rows.iter().any(|r| {
+            r["id"] == a["id"] || (!a["key"].is_null() && r["key"] == a["key"]) || (task.is_some() && r["task_id"].as_i64() == task && !stays(r))
+        });
+        if up {
+            return Ok(());
+        }
+        let at = a["at"].as_str().unwrap_or("").to_string();
+        let next = rows.iter().position(|r| !g["next"].is_null() && r["id"] == g["next"]);
+        let i = next.or_else(|| rows.iter().position(|r| r["at"].as_str().unwrap_or("") > at.as_str())).unwrap_or(rows.len());
+        rows.insert(i, a);
+        keep(app, &rows)
+    })
 }
 
 /// The snooze buttons on a notification, from config.toml's `[alerts] snooze_mins` (at most four).
@@ -540,25 +573,27 @@ pub fn snooze_mins(app: &App, label: &str) -> Option<i64> {
 /// `sent_at` (the alert's `notified_at` when that notification went out) makes each notification's pick count
 /// once, across restarts: Midna keeps answering with it until the alert is notified again.
 pub fn handle_response(app: &App, alert_id: &str, response: &Value) -> Result<bool> {
-    let r = response.get("response").filter(|r| r.is_object()).unwrap_or(response);
-    if r["kind"] != "action" {
-        return Ok(false);
-    }
-    let Some(mins) = r["action"].as_str().and_then(|l| snooze_mins(app, l)) else { return Ok(false) };
-    let Some(a) = alerts(app).into_iter().find(|a| a["id"] == alert_id) else { return Ok(false) };
-    let sent_at = response.get("sent_at").and_then(|x| x.as_str());
-    if sent_at.is_some() && a["answered"].as_str() == sent_at {
-        return Ok(false);
-    }
-    snooze_alert(app, alert_id, mins)?;
-    if let Some(at) = sent_at {
-        let mut rows = alerts(app);
-        for a in rows.iter_mut().filter(|a| a["id"] == alert_id) {
-            a["answered"] = json!(at);
+    locked(app, || {
+        let r = response.get("response").filter(|r| r.is_object()).unwrap_or(response);
+        if r["kind"] != "action" {
+            return Ok(false);
         }
-        keep(app, &rows)?;
-    }
-    Ok(true)
+        let Some(mins) = r["action"].as_str().and_then(|l| snooze_mins(app, l)) else { return Ok(false) };
+        let Some(a) = alerts(app).into_iter().find(|a| a["id"] == alert_id) else { return Ok(false) };
+        let sent_at = response.get("sent_at").and_then(|x| x.as_str());
+        if sent_at.is_some() && a["answered"].as_str() == sent_at {
+            return Ok(false);
+        }
+        snooze_alert(app, alert_id, mins)?;
+        if let Some(at) = sent_at {
+            let mut rows = alerts(app);
+            for a in rows.iter_mut().filter(|a| a["id"] == alert_id) {
+                a["answered"] = json!(at);
+            }
+            keep(app, &rows)?;
+        }
+        Ok(true)
+    })
 }
 
 /// Handles the notification responses Midna has reported since the last tick.
@@ -624,12 +659,14 @@ fn clear_later(a: &mut Value) {
 
 /// Snoozes alert `alert_id`. Snoozed, it's out of Needs you and quiet.
 pub fn snooze_to(app: &App, alert_id: &str, later: &Later) -> Result<Option<Value>> {
-    let mut rows = alerts(app);
-    for a in rows.iter_mut().filter(|a| a["id"] == alert_id) {
-        later.mark(a);
-    }
-    keep(app, &rows)?;
-    Ok(rows.into_iter().find(|a| a["id"] == alert_id))
+    locked(app, || {
+        let mut rows = alerts(app);
+        for a in rows.iter_mut().filter(|a| a["id"] == alert_id) {
+            later.mark(a);
+        }
+        keep(app, &rows)?;
+        Ok(rows.into_iter().find(|a| a["id"] == alert_id))
+    })
 }
 
 /// Whether alert `a` is snoozed now: its goal is still going, its time hasn't come, or the owner
@@ -653,79 +690,86 @@ pub fn goal_over(app: &App, id: i64) -> Result<bool> {
 /// Brings back what was put off until a goal that's over now. An alert notifies again, or once the
 /// work hours open.
 pub fn bring_back_after_goals(app: &App) -> Result<()> {
-    let mut rows = alerts(app);
-    let mut back = false;
-    for a in rows.iter_mut() {
-        let Some(g) = a["snoozed_goal"].as_i64() else { continue };
-        if !goal_over(app, g)? {
-            continue;
+    locked(app, || {
+        let mut rows = alerts(app);
+        let mut back = false;
+        for a in rows.iter_mut() {
+            let Some(g) = a["snoozed_goal"].as_i64() else { continue };
+            if !goal_over(app, g)? {
+                continue;
+            }
+            clear_later(a);
+            back = true;
+            if !hours::is_open(app) && a["urgent"] != true {
+                a["held"] = json!(true);
+            } else if !digest::holds(app, a) {
+                a["notified_at"] = json!(now_iso());
+                notify_alert(app, a);
+            }
         }
-        clear_later(a);
-        back = true;
-        if !hours::is_open(app) && a["urgent"] != true {
-            a["held"] = json!(true);
-        } else if !digest::holds(app, a) {
-            a["notified_at"] = json!(now_iso());
-            notify_alert(app, a);
+        if back {
+            keep(app, &rows)?;
         }
-    }
-    if back {
-        keep(app, &rows)?;
-    }
+        Ok(())
+    })?;
     crate::home::bring_back_after_goals(app)
 }
 
 /// Notifies each alert held outside the work hours (`waits_for_hours`) once they open, once. One that
 /// cleared meanwhile was pruned before this; a snoozed one notifies when its snooze ends instead.
 fn deliver_held(app: &App) -> Result<()> {
-    let mut rows = alerts(app);
-    if !rows.iter().any(|a| a["held"] == true) || !hours::is_open(app) {
-        return Ok(());
-    }
-    for a in rows.iter_mut().filter(|a| a["held"] == true) {
-        a["held"] = Value::Null;
-        if digest::holds(app, a) || snoozed(a) {
-            continue;
+    locked(app, || {
+        let mut rows = alerts(app);
+        if !rows.iter().any(|a| a["held"] == true) || !hours::is_open(app) {
+            return Ok(());
         }
-        a["notified_at"] = json!(now_iso());
-        clear_later(a);
-        notify_alert(app, a);
-    }
-    keep(app, &rows)
+        for a in rows.iter_mut().filter(|a| a["held"] == true) {
+            a["held"] = Value::Null;
+            if digest::holds(app, a) || snoozed(a) {
+                continue;
+            }
+            a["notified_at"] = json!(now_iso());
+            clear_later(a);
+            notify_alert(app, a);
+        }
+        keep(app, &rows)
+    })
 }
 
 fn repeat_alerts(app: &App) -> Result<()> {
-    let every = hours::get(app).alert_every_mins as f64 * 60.0;
-    let open = hours::is_open(app);
-    if every <= 0.0 {
-        return Ok(());
-    }
-    let mut rows = alerts(app);
-    let now = now_ts();
-    let mut sent = false;
-    for a in rows.iter_mut() {
-        // Outside the work hours only urgent alerts keep repeating; the digest repeats the rest.
-        if (!open && a["urgent"] != true) || digest::holds(app, a) || crate::home::alert_rests(app, a) {
-            continue;
+    locked(app, || {
+        let every = hours::get(app).alert_every_mins as f64 * 60.0;
+        let open = hours::is_open(app);
+        if every <= 0.0 {
+            return Ok(());
         }
-        // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
-        let due = match a["snoozed_until"].as_str().and_then(parse_iso) {
-            Some(s) => now >= s,
-            None if a["snoozed_goal"].is_i64() => false,
-            None if a["snoozed_back"].is_string() => !snoozed(a),
-            None => age_secs(a["notified_at"].as_str().or(a["at"].as_str())).unwrap_or(0.0) >= every,
-        };
-        if due {
-            a["notified_at"] = json!(now_iso());
-            clear_later(a);
-            sent = true;
-            notify_alert(app, a);
+        let mut rows = alerts(app);
+        let now = now_ts();
+        let mut sent = false;
+        for a in rows.iter_mut() {
+            // Outside the work hours only urgent alerts keep repeating; the digest repeats the rest.
+            if (!open && a["urgent"] != true) || digest::holds(app, a) || crate::home::alert_rests(app, a) {
+                continue;
+            }
+            // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
+            let due = match a["snoozed_until"].as_str().and_then(parse_iso) {
+                Some(s) => now >= s,
+                None if a["snoozed_goal"].is_i64() => false,
+                None if a["snoozed_back"].is_string() => !snoozed(a),
+                None => age_secs(a["notified_at"].as_str().or(a["at"].as_str())).unwrap_or(0.0) >= every,
+            };
+            if due {
+                a["notified_at"] = json!(now_iso());
+                clear_later(a);
+                sent = true;
+                notify_alert(app, a);
+            }
         }
-    }
-    if sent {
-        keep(app, &rows)?;
-    }
-    Ok(())
+        if sent {
+            keep(app, &rows)?;
+        }
+        Ok(())
+    })
 }
 
 fn resolved(app: &App, a: &Value) -> Result<bool> {
@@ -797,7 +841,7 @@ pub fn prune_alerts(app: &App) -> Result<()> {
     if over.is_empty() {
         return Ok(());
     }
-    app.db.tx(|| {
+    locked(app, || {
         let rows: Vec<Value> = alerts(app).into_iter().filter(|a| !over.contains(&a["id"])).collect();
         keep(app, &rows)
     })
@@ -1270,6 +1314,26 @@ mod tests {
 
     fn alert_for(app: &App, task: &str) -> Value {
         alerts(app).into_iter().find(|a| a["task"] == task).unwrap()
+    }
+
+    #[test]
+    fn alerts_added_and_snoozed_at_once_on_many_threads_are_all_kept() {
+        let (_d, app) = quiet_app();
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let app = &app;
+                s.spawn(move || {
+                    for n in 0..10 {
+                        add_quiet_alert(app, &format!("review {t}.{n}"), &format!("k{t}.{n}"), Value::Null).unwrap();
+                        let id = alerts(app).into_iter().find(|a| a["key"] == format!("k{t}.{n}")).unwrap()["id"].as_str().unwrap().to_string();
+                        snooze_alert(app, &id, 30).unwrap();
+                    }
+                });
+            }
+        });
+        let rows = alerts(&app);
+        assert_eq!(rows.len(), 80, "no thread's alert was written over by another's");
+        assert!(rows.iter().all(|a| a["snoozed_until"].is_string()), "nor any snooze");
     }
 
     #[test]

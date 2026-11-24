@@ -184,7 +184,7 @@ fn queued_tabs_go_to_midna_as_status_labels() {
     assert_eq!(
         calls(&b, "session.set_status"),
         vec![
-            json!({"id": "s1", "label": "Question", "color": "amber", "base": "needs_you", "clear_on": "prompt",
+            json!({"id": "s1", "label": "Question", "color": "amber", "base": "idle", "clear_on": "prompt",
                    "detail": "T1 · Login: Which login page?"}),
             json!({"id": "s3", "label": "In review", "color": "purple", "base": "done", "clear_on": "prompt"}),
         ]
