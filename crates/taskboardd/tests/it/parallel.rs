@@ -787,6 +787,39 @@ fn worktrees_agents_made_are_matched_to_their_task_and_removed_by_the_same_rules
 }
 
 #[test]
+fn a_worktree_on_main_isn_t_handed_to_a_shared_checkout_task_nor_a_release_cut_s_removed() {
+    let b = new_board();
+    git_repo(&b);
+    let repo = b.repo();
+    let dir = b.dir.path().to_string_lossy().to_string();
+    // The shared checkout moves on to a feature branch; main is free for a worktree of its own.
+    git(Path::new(&repo), &["switch", "-q", "-c", "feat/other"]);
+    let [shared, cutter] = ["Worked in the shared checkout on main", "Cuts the release"].map(|t| b.task(t, json!({})));
+    let ctx = json!({"where": {"worktree": repo, "branch": "main"}}).to_string();
+    b.app.db.x("UPDATE tasks SET context = ? WHERE id = ?", p![ctx, shared]).unwrap();
+    let on_main = format!("{dir}/release-main");
+    let cut_in = format!("{dir}/release-t{cutter}");
+    git(Path::new(&repo), &["worktree", "add", "-q", &on_main, "main"]);
+    git(Path::new(&repo), &["worktree", "add", "-q", "--detach", &cut_in]);
+    for t in [shared, cutter] {
+        b.app.db.x("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?", p![t]).unwrap();
+    }
+    b.app.db.x("INSERT INTO pending_cuts(project, name, after, dir, running_at) VALUES ('webapp', 'v1', '[]', ?, '2026-11-24T18:48:25Z')", p![cut_in]).unwrap();
+
+    assert!(worktrees::clean_up(&b.app).unwrap().is_empty());
+    assert!(Path::new(&on_main).exists(), "a shared-checkout task's recorded main isn't the worktree's");
+    assert!(Path::new(&cut_in).exists(), "kept while the release script runs in it");
+    assert!(!b.card(shared)["log"].to_string().contains("release-main"), "{}", b.card(shared)["log"]);
+    let stray = &b.get("projects")["projects"][0]["stray_worktrees"];
+    assert_eq!(stray.as_array().unwrap().len(), 1, "{stray}");
+    assert!(stray[0].as_str().unwrap().ends_with("/release-main"), "{stray}");
+
+    b.app.db.x("DELETE FROM pending_cuts", p![]).unwrap();
+    assert_eq!(worktrees::clean_up(&b.app).unwrap(), vec![cutter], "once the cut is through, its task's rules apply");
+    assert!(!Path::new(&cut_in).exists());
+}
+
+#[test]
 fn a_stacked_task_starts_from_its_parent_s_branch_where_it_exists() {
     let b = new_board();
     git_repo(&b);

@@ -358,14 +358,17 @@ fn inside(path: &str, dir: &str) -> bool {
 }
 
 /// The task an agent's worktree belongs to: one whose recorded worktree is in it or whose branch it
-/// has, else the `t<n>` in its branch or folder name when T<n> is this project's.
-fn task_of(app: &App, project: &str, repo: &str, e: &Entry, tasks: &[Row]) -> Result<Option<Row>> {
+/// has, else the `t<n>` in its branch or folder name when T<n> is this project's. A branch recorded in
+/// the main checkout (`main`) was that checkout's, not the task's: hundreds of shared-checkout tasks
+/// recorded `main`, so matching on it would hand any worktree on main (a release cut's) to one of them.
+fn task_of(app: &App, project: &str, repo: &str, main: &str, e: &Entry, tasks: &[Row]) -> Result<Option<Row>> {
     let here = tasks.iter().find(|t| {
         let ctx = board::task_context(t);
         let w = ctx.get("where");
         let wt = w.and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).unwrap_or("");
         let branch = w.and_then(|w| w.get("branch")).and_then(|v| v.as_str()).unwrap_or("");
-        inside(wt, &e.path) || (!branch.is_empty() && e.branch.as_deref() == Some(branch))
+        let shared = !wt.is_empty() && (real(wt) == real(main) || real(wt) == real(repo));
+        inside(wt, &e.path) || (!shared && !branch.is_empty() && e.branch.as_deref() == Some(branch))
     });
     if let Some(t) = here {
         return Ok(Some(t.clone()));
@@ -406,6 +409,7 @@ fn others(app: &App) -> Result<Vec<i64>> {
     let mut removed = vec![];
     let before = jloads_obj(app.db.get_setting(SEEN)?.as_deref());
     let mut seen = serde_json::Map::new();
+    let cuts: Vec<String> = app.db.q("SELECT dir FROM pending_cuts WHERE dir IS NOT NULL AND dir != ''", p![])?.iter().map(|r| r.st("dir")).collect();
     for p in projects::list_projects(app)? {
         let (Some(name), Some(repo)) = (p["name"].as_str(), p["path"].as_str()) else { continue };
         if !Path::new(repo).is_dir() {
@@ -421,7 +425,12 @@ fn others(app: &App) -> Result<Vec<i64>> {
             if made.contains(&real(&e.path)) || crate::slots::is_slot(&e.path) {
                 continue;
             }
-            let Some(t) = task_of(app, name, repo, e, &tasks)? else {
+            // A release cut's checkout stays while the cut waits or its script runs in it.
+            if cuts.iter().any(|d| inside(d, &e.path)) {
+                seen.insert(e.path.clone(), json!({"project": name, "why": "a release cut runs in it"}));
+                continue;
+            }
+            let Some(t) = task_of(app, name, repo, &main, e, &tasks)? else {
                 if before.get(&e.path).is_none() {
                     app.info(format!("worktrees: {} in {name} matches no task; left for the owner", e.path));
                 }
