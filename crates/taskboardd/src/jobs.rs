@@ -37,6 +37,7 @@ pub fn take(app: &App) -> Result<Option<Row>> {
                 return Ok(Some(None));
             }
             app.db.x("UPDATE jobs SET state = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ?", p![now_iso(), j.id()])?;
+            dispatch::launching(app, &j);
             Ok(Some(Some(j)))
         })?;
         match picked {

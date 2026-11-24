@@ -58,6 +58,9 @@ pub struct Shared {
     pub pressure_fixed: Option<crate::pressure::Reading>,
     /// What last held task starts back on the Mac's load or memory, as logged: a change logs again.
     pub pressure_held: Option<String>,
+    /// Some while held starts open one per reading after a hold cleared; true once one opened on the
+    /// current reading (`pressure::pace_hold`).
+    pub pressure_pace: Option<bool>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,

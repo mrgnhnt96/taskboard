@@ -650,6 +650,9 @@ pub struct TerminalsConfig {
     /// A task's terminal waits to open while macOS's memory pressure is at least this: `warning`,
     /// `critical`, or `off`.
     pub hold_memory: String,
+    /// A task's terminal waits to open while less than this much memory is free, in GB (Midna's
+    /// `memory_available_bytes`; 0: free memory never holds starts). Unknown without Midna.
+    pub hold_free_memory_gb: f64,
     /// Tools the board's terminals start without (`--disallowedTools`), so each turn carries less:
     /// `mcp__<server>` drops a server's deferred tool names, `Agent(<type>)` one subagent's listing.
     pub deny: Vec<String>,
@@ -662,6 +665,7 @@ pub const DENY: [&str; 1] = ["mcp__midna"];
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
 pub const GLOBAL_MAX_TERMINALS: i64 = 8;
 pub const HOLD_LOAD_PER_CORE: f64 = 1.5;
+pub const HOLD_FREE_MEMORY_GB: f64 = 2.0;
 /// The most a terminal cap (board-wide or a project's) or a project's worktree slots may be set to.
 pub const MAX_PARALLEL: i64 = 100;
 /// What opens in the background unless config.toml says: the Jira desk, and the terminals that need
@@ -676,6 +680,7 @@ impl Default for TerminalsConfig {
             global_max: GLOBAL_MAX_TERMINALS,
             hold_load_per_core: HOLD_LOAD_PER_CORE,
             hold_memory: "warning".into(),
+            hold_free_memory_gb: HOLD_FREE_MEMORY_GB,
             deny: DENY.map(String::from).to_vec(),
         }
     }
@@ -1132,6 +1137,7 @@ impl Config {
         // The test machine's own load and memory never hold a test's starts back.
         c.terminals.hold_load_per_core = 0.0;
         c.terminals.hold_memory = "off".into();
+        c.terminals.hold_free_memory_gb = 0.0;
         // The test machine's cores don't show in started terminals' settings.
         c.builds.jobs = Some(0);
         c

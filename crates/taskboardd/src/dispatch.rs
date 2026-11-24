@@ -121,7 +121,8 @@ pub fn terminals_state(app: &App) -> Result<Value> {
 /// may (`tb terminals --max`, or `[terminals] global_max`), or, for a queued start (pickup "queue"), its
 /// project already has as many busy terminals as it may (`[terminals] project_max`, or the project's own
 /// `max_terminals`). A task's start also waits while the Mac's load or memory pressure is too high
-/// (`pressure::hold`). A goal's own limit holds its tasks back before they get a start job.
+/// (`pressure::hold`), and after that clears, for its turn: one opens per fresh reading
+/// (`pressure::pace_hold`). A goal's own limit holds its tasks back before they get a start job.
 pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
     if !new_terminal(app, j) {
         return Ok(None);
@@ -132,7 +133,7 @@ pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
         if running >= cap {
             return Ok(Some(format!("Waits for a free slot: {running} of {cap} task terminals running across the board")));
         }
-        if let Some(why) = crate::pressure::hold(app) {
+        if let Some(why) = crate::pressure::hold(app).or_else(|| crate::pressure::pace_hold(app, 0)) {
             return Ok(Some(why));
         }
     }
@@ -170,7 +171,7 @@ pub fn hold_before_start(app: &App, t: &Row, cwd: &str, queue: bool) -> Result<O
     if running + waiting.len() as i64 >= cap {
         return Ok(Some(format!("Waits for a free slot: {} ahead of it for the board's {}", plural(waiting.len() as i64, "start"), plural(cap, "task terminal"))));
     }
-    if let Some(why) = crate::pressure::hold(app) {
+    if let Some(why) = crate::pressure::hold(app).or_else(|| crate::pressure::pace_hold(app, waiting.len())) {
         return Ok(Some(why));
     }
     if !queue {
@@ -189,6 +190,14 @@ pub fn hold_before_start(app: &App, t: &Row, cwd: &str, queue: bool) -> Result<O
         return Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy in {name}")));
     }
     Ok(None)
+}
+
+/// `j` is opening its terminal: a task's start counts against the pace held starts open at after a
+/// hold on the Mac's load or memory clears (`pressure::opened`).
+pub fn launching(app: &App, j: &Row) {
+    if j.s("purpose") == Some("start") && j.i("task_id").is_some() && new_terminal(app, j) {
+        crate::pressure::opened(app);
+    }
 }
 
 pub fn launch_ready(app: &App, j: &Row) -> Result<bool> {
