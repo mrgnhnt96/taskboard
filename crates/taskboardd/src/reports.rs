@@ -703,6 +703,11 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     }
     let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
     let waited = if parked { None } else { waits_in_reply(r, &t, &reply_end)? };
+    // Its reply says it waits until a set time it never parked on: not a question for the owner either.
+    let waited = match waited {
+        None if !parked => parks_in_reply(r, &t, &reply_end)?,
+        w => w,
+    };
     let caught = waited.is_some() || parked;
     let asked = ends_on_question(&reply_end).filter(|_| !caught && !r.spooled && t.s("status") == Some("working"));
     if asked.is_some() || idle_on(r, &t)? != Some(false) {
@@ -740,7 +745,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     }
     app.wake_runner();
     if let Some(w) = waited {
-        return Ok(with(ok(Some(&t), None), w));
+        return Ok(with(ok(Some(&board::get_task(app, t.id())?), None), w));
     }
     match buried {
         Some(q) => Ok(with(ok(Some(&t), None), json!({"block": crate::buried::reason(app, &q, &board::tb_cmd(app))}))),
@@ -781,6 +786,36 @@ fn waits_in_reply(r: &mut Report, t: &Row, reply_end: &str) -> Result<Option<Val
         said["block"] = out["context"].clone();
     }
     Ok(Some(said))
+}
+
+/// A working task's turn that ends saying it waits until a set time (a trigger wakes it at 06:30 UTC)
+/// that it never ran `tb wait-until` on (`turn_wait::until`): the first time, the Stop is sent back with
+/// the exact line to run; when it ends again still saying so, the board parks it itself. Either way it
+/// isn't left on the owner. What the Stop answers with (`block`, `parked`), or None when it names no time.
+fn parks_in_reply(r: &mut Report, t: &Row, reply_end: &str) -> Result<Option<Value>> {
+    let app = r.app;
+    if r.spooled || t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != r.sid() || crate::code_review::in_review(t) {
+        return Ok(None);
+    }
+    let Some(u) = crate::turn_wait::until(reply_end, now_ts()) else { return Ok(None) };
+    r.stalled = false;
+    r.unshipped = None;
+    let when = crate::wait_until::say(&iso(u.at));
+    if !as_bool(r.body.get("stop_hook_active"), false) {
+        r.set_session_status("working")?;
+        r.log(t.id(), "note", &format!("Its reply says it waits until {when} without parking; sent back to park it"), None)?;
+        return Ok(Some(json!({"block": crate::turn_wait::until_reason(app, &u, &crate::human::task_ref(t))})));
+    }
+    park_from_reply(r, t, &u)?;
+    Ok(Some(json!({"parked": t.id()})))
+}
+
+/// Parks working task `t` until the time its reply named, as `tb wait-until` would.
+fn park_from_reply(r: &Report, t: &Row, u: &crate::turn_wait::Until) -> Result<()> {
+    let when = crate::wait_until::say(&iso(u.at));
+    r.log(t.id(), "note", &format!("Its reply says it waits until {when}, so the board parked it"), None)?;
+    crate::wait_until::park(r.app, t, u.at, &u.plan, board::BOARD)?;
+    Ok(())
 }
 
 /// The end of a turn on a terminal with no task (and not visiting a PR) that the board opened for
@@ -1658,6 +1693,12 @@ fn on_attention(r: &mut Report) -> Result<Value> {
                 deliver::add(app, "line_next", text, next.id(), None, None)?;
             }
             return Ok(with(ok(Some(&t), None), json!({"waited": t.id(), "parked": out["parked"]})));
+        }
+        // Its reply says it waits until a set time (its Stop never got to say so): park it, idle on purpose.
+        if let Some(u) = crate::turn_wait::until(reply, now_ts()) {
+            park_from_reply(r, &t, &u)?;
+            r.set_session_status("idle")?;
+            return Ok(with(ok(Some(&board::get_task(app, t.id())?), None), json!({"parked": t.id()})));
         }
     }
     let message = match said.as_deref().and_then(last_paragraph) {

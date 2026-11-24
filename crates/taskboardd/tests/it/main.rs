@@ -143,6 +143,7 @@ mod turn_waits;
 mod visit_prompt;
 mod wait_merged;
 mod wait_until;
+mod wait_until_replies;
 mod waves;
 mod worktree_projects;
 mod zz_probe;
