@@ -20,6 +20,7 @@ fn what(purpose: &str) -> &'static str {
         "answer" => "your answer",
         "offer" => "the offer",
         "checkpoint" => "the checkpoint request",
+        crate::idle_close::CHECKPOINT => "the checkpoint request before its idle terminal closes",
         "carry_on" => "the nudge to carry on",
         "ship" => "the nudge to ship it",
         "follow" => "the rebase note",
@@ -37,6 +38,7 @@ fn done_text(purpose: &str, to: &str) -> String {
         "answer" => format!("Delivered your answer to {to}"),
         "offer" => format!("Offered it to {to}; it starts when that terminal runs take"),
         "checkpoint" => format!("Asked {to} for a checkpoint"),
+        crate::idle_close::CHECKPOINT => format!("Asked {to} for a checkpoint before closing it while it sits idle"),
         "carry_on" => format!("{to} stopped with nothing to wait for, so the board told it to carry on"),
         "ship" => format!("{to} stopped with its work committed but no PR, so the board told it to ship it"),
         "follow" => format!("Told {to} to rebase onto the work it builds on"),
@@ -143,7 +145,7 @@ fn send(app: &App, j: &Row, t: &Row, s: &Row, target: &mut Row) -> Result<Option
     if !board::runs_claude(s)
         || !at_prompt(s)
         || board::offline(s)
-        || (purpose == "checkpoint" && t.s("status") == Some("needs"))
+        || (matches!(purpose.as_str(), "checkpoint" | crate::idle_close::CHECKPOINT) && t.s("status") == Some("needs"))
         || (BOARD_PURPOSES.contains(&purpose.as_str()) && !hours_open(app, t)?)
         || age_secs(s.s("status_at")).unwrap_or(0.0) < SEND_SETTLE_SECS
         || sending(app, target)?
@@ -302,6 +304,9 @@ pub fn answer_in_new_tab(app: &App, t: &Row, text: &str) -> Result<bool> {
     if board::live_start_job(app, t)?.is_some() {
         return Ok(true);
     }
+    if crate::idle_close::closed(t) {
+        return crate::idle_close::reopen(app, t, text, what("answer"));
+    }
     let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };
     board::update_task(
         app,
@@ -319,6 +324,28 @@ pub fn answer_in_new_tab(app: &App, t: &Row, text: &str) -> Result<bool> {
         board::BOARD,
         "midna",
         "Its terminal is closed, so the board started it in a new terminal with your answer in its handoff",
+    )?;
+    Ok(true)
+}
+
+/// A message for a task whose terminal the board closed while it sat idle: its conversation carries on
+/// in a new terminal with it. Held (true) while that terminal opens, or until the work hours open for a
+/// board message that waits for them; it reaches the new terminal once it takes the task.
+fn reopen_idle(app: &App, j: &Row, t: Option<&Row>) -> Result<bool> {
+    let Some(t) = t.filter(|t| crate::idle_close::closed(t)) else { return Ok(false) };
+    let purpose = j.st("purpose");
+    if matches!(purpose.as_str(), "offer" | "checkpoint" | "checkin" | crate::idle_close::CHECKPOINT) {
+        return Ok(false);
+    }
+    if runner::starting(app, t.id())? || (BOARD_PURPOSES.contains(&purpose.as_str()) && !hours_open(app, t)?) {
+        return Ok(true);
+    }
+    if !crate::idle_close::reopen(app, t, &board::job_args(j).st("text"), what(&purpose))? {
+        return Ok(false);
+    }
+    app.db.x(
+        "UPDATE jobs SET state = 'done', result = ?, updated_at = ? WHERE id = ?",
+        p![jdumps(&json!({"new_tab": true})), now_iso(), j.id()],
     )?;
     Ok(true)
 }
@@ -358,7 +385,7 @@ pub fn tick(app: &App) -> Result<()> {
             None => false,
         };
         if why.is_none() && gone && !live_pr {
-            if answered_elsewhere(app, &j, t.as_ref())? {
+            if reopen_idle(app, &j, t.as_ref())? || answered_elsewhere(app, &j, t.as_ref())? {
                 continue;
             }
             why = Some("its terminal closed");

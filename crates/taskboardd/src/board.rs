@@ -1562,6 +1562,9 @@ pub const USAGE_CLOSE: &str = "usage_close";
 pub const HOURS_CLOSE: &str = "hours_close";
 /// Closed after compacting `max_compactions` times, to carry on in a fresh terminal.
 pub const COMPACT_CLOSE: &str = "compact_close";
+/// Closed after sitting idle `idle_close_mins` to free its memory; the task keeps its status and slot
+/// and carries on in a new terminal when the board next has something for it (`idle_close.rs`).
+pub const IDLE_CLOSE: &str = "idle_close";
 
 fn requeue_reason(purpose: &str) -> (&'static str, &'static str) {
     match purpose {
@@ -1573,8 +1576,8 @@ fn requeue_reason(purpose: &str) -> (&'static str, &'static str) {
 
 pub fn requeue_close(app: &App, sid: &str) -> Result<Option<String>> {
     for j in app.db.q(
-        "SELECT args, purpose FROM jobs WHERE kind = 'close' AND purpose IN (?, ?, ?) ORDER BY id DESC LIMIT 50",
-        p![USAGE_CLOSE, HOURS_CLOSE, COMPACT_CLOSE],
+        "SELECT args, purpose FROM jobs WHERE kind = 'close' AND purpose IN (?, ?, ?, ?) ORDER BY id DESC LIMIT 50",
+        p![USAGE_CLOSE, HOURS_CLOSE, COMPACT_CLOSE, IDLE_CLOSE],
     )? {
         if job_args(&j).get("session").and_then(|v| v.as_str()) == Some(sid) {
             return Ok(j.s("purpose").map(|s| s.to_string()));
@@ -1703,6 +1706,7 @@ pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&s
         f.push(("claude_session_id", json!(c)));
     }
     update_task(app, t.id(), f)?;
+    crate::idle_close::picked_up(app, t.id())?;
     add_terminal(app, t.id(), sid, "Worked on the task")?;
     if !already {
         if let Some(s) = get_session(app, Some(sid))? {
@@ -1890,7 +1894,11 @@ pub fn detach_closed(app: &App, t: &Row) -> Result<()> {
         log_event(app, t.id(), MIDNA, "midna", &format!("Closed {name}"))?;
         return Ok(());
     }
-    if let Some(purpose) = requeue_close(app, &t.st("session_id"))? {
+    let purpose = requeue_close(app, &t.st("session_id"))?;
+    if purpose.as_deref() == Some(IDLE_CLOSE) {
+        return crate::idle_close::detached(app, t, &name);
+    }
+    if let Some(purpose) = purpose {
         let (why, until) = requeue_reason(&purpose);
         let asked = t.s("status") == Some("needs") && t.s("needs_reason") == Some("question");
         let pickup = if matches!(t.s("pickup"), Some("manual") | Some("attach")) { "new".to_string() } else { t.st("pickup") };

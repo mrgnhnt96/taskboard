@@ -1090,7 +1090,7 @@ Pipelines steps and tests with. `GET /ci-token` → `{set, source: "board"|"env"
 | `POST /alerts/:id/snooze` | `{mins}`, `{until: "tomorrow"\|"next_week"\|"back"}` or `{after_goal: "G3"}` | Put a Needs you item off: an alert, a task with no alert (`task:T12`) or a finished stage (`stage:G3:1`). `mins` is up to a week; `tomorrow` and `next_week` are when those work hours start (`next_week` is next Monday); `back` is after the owner's next stretch away; `after_goal` is when that goal finishes or is archived, and is 409 for a goal that's over or that the item holds open. A put-off agent question still counts in `waiting` on `GET /home`. **Response read:** `{alert}`. |
 
 ### Context limits (`tb limits`)
-`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, max_compactions, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, review_gaps: [{step, mins}], line: str}`.
+`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, max_compactions, idle_close_mins, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, review_gaps: [{step, mins}], line: str}`.
 `review_gaps` lists each step that keeps its rounds apart (its `min_gap_mins`, or the board's change), and `line` adds
 "Review rounds, <step>: one round per branch every N min" for each.
 `POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
@@ -1118,6 +1118,17 @@ by the board's, and once after an upgrade every repo the board has known is swep
   force-closes it as it starts one more compaction, and the task is queued to start again from its handoff in a fresh
   terminal ("Closed after compacting its conversation too many times"). PR visits aren't counted. Only terminals the
   board opened are closed: one the owner opened that took a task (`tb task new --here`, `tb take`) stays open.
+- `idle_close_mins` (default 30; 0 keeps them open): a task terminal the board opened that has sat idle at its prompt this
+  long (no background work, not offline or usage-limited, no message on its way to it, no line of tasks behind it, not
+  waiting on a set time) gives its memory back. A working task is first sent a deliver job (purpose `idle_checkpoint`)
+  asking it to save a checkpoint and end its turn; once that turn is over (or it sat idle as long again without taking
+  it in) the board closes the terminal (close purpose `idle_close`, never forced). A task waiting on the owner's answer
+  isn't asked, it's just closed. The task keeps its status, its question and its worktree slot, and its context keeps
+  `idle_closed: {session, at}` ("Closed its idle terminal to free memory"). The next deliver job for it (a code review's
+  word or findings, a rebase note, a freed slot, the owner's answer; not a checkpoint request or a check-in) starts it in
+  a new terminal with that message: its conversation carries on (`--resume`) under `warm_tokens`/`warm_idle_mins`,
+  else it starts fresh from the handoff with the message after it. Answering its question does the same. Jobs that come
+  while that terminal opens wait and reach it once it takes the task, which clears `idle_closed`.
 
 ### History
 | Path | Body | Notes |

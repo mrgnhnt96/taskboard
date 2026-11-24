@@ -64,6 +64,7 @@ pub mod keep_awake;
 pub mod ideas;
 pub mod idea_plan;
 pub mod idea_talk;
+pub mod idle_close;
 pub mod leftovers;
 pub mod lessons;
 pub mod machine;

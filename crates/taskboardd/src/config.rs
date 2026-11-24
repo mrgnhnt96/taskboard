@@ -589,6 +589,9 @@ pub struct LimitsConfig {
     pub warm_idle_mins: i64,
     /// A task terminal that has compacted this many times carries on in a fresh terminal from its handoff.
     pub max_compactions: i64,
+    /// A board-opened task terminal idle this many minutes is asked for a checkpoint and closed; the task
+    /// carries on in a new terminal when the board next has something for it. 0 keeps them open.
+    pub idle_close_mins: i64,
     /// Generated-file globs marked `-diff` in every active project's `.git/info/attributes`.
     pub generated: Vec<String>,
     /// More globs for one project, by its name.
@@ -603,6 +606,7 @@ impl Default for LimitsConfig {
             warm_tokens: 60_000,
             warm_idle_mins: 60,
             max_compactions: 3,
+            idle_close_mins: 30,
             generated: vec![],
             project_generated: BTreeMap::new(),
         }
@@ -1078,6 +1082,8 @@ impl Config {
         // A test's fake Midna is a shell script, slow to start on a loaded machine.
         c.midna_exit_timeout = 10.0;
         c.questions.screen = false;
+        // Idle task terminals stay open unless a test sets idle_close_mins.
+        c.limits.idle_close_mins = 0;
         c.backlog.ai = false;
         // Misses on a goal's done-when go to the owner unless a test hands them to agents.
         c.backlog.misses_to_agent = false;
