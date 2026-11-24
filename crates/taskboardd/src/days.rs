@@ -980,13 +980,15 @@ pub fn cleanup(app: &App) -> Result<Value> {
     Ok(json!({"removed": {"events": events, "status_changes": states, "terminal_lines": lines, "day_rows": days}, "history": history(app)?}))
 }
 
-/// Once a day, after 3 AM local time, clean up. First, on start, earlier moves carry their history.
+/// Once a day, after 3 AM local time, clean up and check a dev build against main (`dev_behind`). First,
+/// on start, earlier moves carry their history and a dev build is checked.
 pub fn cleanup_loop(app: std::sync::Arc<App>) {
     match crate::reproject::carry_earlier_moves(&app) {
         Ok(0) => {}
         Ok(n) => app.info(format!("history: {n} moved tasks' merges and days now count under their project")),
         Err(e) => app.info(format!("history: carrying moved tasks' history failed: {}", e.message)),
     }
+    crate::dev_behind::check(&app);
     while !app.stopping() {
         let now = local_now();
         let last = app.db.get_setting(LAST_CLEANUP_KEY).ok().flatten().and_then(|s| parse_iso(&s)).map(|t| local_dt(t).date_naive());
@@ -994,6 +996,7 @@ pub fn cleanup_loop(app: std::sync::Arc<App>) {
             if let Err(e) = cleanup(&app) {
                 app.info(format!("history cleanup failed: {}", e.message));
             }
+            crate::dev_behind::check(&app);
         }
         app.sleep(30.0 * 60.0);
     }
