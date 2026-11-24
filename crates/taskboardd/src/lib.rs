@@ -29,6 +29,7 @@ pub mod code_review;
 pub mod comments;
 pub mod config;
 pub mod days;
+pub mod dev_behind;
 pub mod design;
 pub mod db;
 pub mod declined;

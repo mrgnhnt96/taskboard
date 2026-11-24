@@ -68,10 +68,15 @@ fi
 
 if [ "$BUILD" = 1 ]; then
   echo "==> build Taskboard Dev"
+  # The commit it's built from and the repo's main checkout (not a worktree that may go): the daemon
+  # compares them with origin/main on start and daily, and says when main has daemon fixes it lacks.
+  COMMIT="$(git rev-parse HEAD)"
+  CHECKOUT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
   # Own target dir, so dev-app and release builds don't rebuild each other.
   packaging/build-app.sh --out "$OUT" --target-dir "$ROOT/target/dev-app" --adhoc \
     --bundle-id "$ID" --label "$LABEL" --name "Taskboard Dev" --icon packaging/assets/TaskboardDev.icns --scheme taskboard-dev \
-    --env "TASKBOARD_PAGE_URL=taskboard-dev://" --env "TASKBOARD_DATA=$DATA" --env "TASKBOARD_PORT=$PORT" --env "TASKBOARD_NO_TB_LINK=1" 2>&1 | grep -E "==> built|^error|warning: unused" || true
+    --env "TASKBOARD_PAGE_URL=taskboard-dev://" --env "TASKBOARD_DATA=$DATA" --env "TASKBOARD_PORT=$PORT" --env "TASKBOARD_NO_TB_LINK=1" \
+    --env "TASKBOARD_DEV_COMMIT=$COMMIT" --env "TASKBOARD_DEV_CHECKOUT=$CHECKOUT" 2>&1 | grep -E "==> built|^error|warning: unused" || true
 fi
 [ -d "$OUT/Taskboard Dev.app" ] || { echo "no app at $OUT/Taskboard Dev.app (run without --no-build)" >&2; exit 1; }
 
