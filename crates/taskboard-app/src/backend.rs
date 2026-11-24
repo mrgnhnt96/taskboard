@@ -274,6 +274,9 @@ impl Fake {
         if std::env::var("TASKBOARD_FAKE_SLOTS").is_ok() {
             seed_slots(&board);
         }
+        if std::env::var("TASKBOARD_FAKE_GRANTS").is_ok() {
+            seed_grants(&board);
+        }
         if jira {
             seed_jira(&board);
         }
@@ -411,6 +414,19 @@ fn seed_slots(board: &Board) {
         );
     }
     let _ = api::dispatch(board, "POST", "/projects/webapp", &Query::new(), &json!({"min_slots": 1, "max_slots": 4, "idle_trim_days": 3, "idle_remove_days": 7}));
+}
+
+/// Dev (`TASKBOARD_FAKE_GRANTS=1`): T5's Midna grants: a Slack post the owner confirmed, which its
+/// terminal's rule let through three times, and a push an agent asked for, waiting on the owner.
+fn seed_grants(board: &Board) {
+    use taskboardd::task_grants::add;
+    let _ = add(board, 5, &["tool:mcp__slack__chat_post*".into()], true, "");
+    let _ = add(board, 5, &["command:git push origin *".into()], false, "");
+    let now = taskboardd::util::now_iso();
+    let _ = board.db.insert(
+        "task_grant_rules",
+        taskboardd::fields!["rule_id" => "r_seed", "grant_id" => 1, "session_id" => "s1", "at" => now.clone(), "fired" => 3, "last_fired_at" => now],
+    );
 }
 
 /// Dev (`TASKBOARD_FAKE_PANEL=1`): the task panel's need boxes: a lost task that looks finished,

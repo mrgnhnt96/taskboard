@@ -118,7 +118,7 @@ pub struct Act {
 /// dialog that does).
 const POSTS: &[&str] = &[
     "start", "schedule", "queue-planned", "answer", "answer-opt", "pick", "requeue", "pr-reviewed", "pr-merge-now", "detach", "close-term", "focus", "step", "did",
-    "owner-reopen", "talk", "term-focus", "resume", "write-note",
+    "owner-reopen", "talk", "term-focus", "resume", "write-note", "grant-confirm",
 ];
 
 impl Act {
@@ -2815,6 +2815,42 @@ fn pool_rows(t: &Value) -> Vec<Node> {
     out
 }
 
+/// The task's Midna permission grants: kind and pattern, then a pending one's Confirm (the owner's
+/// one-click OK) or how often a confirmed one's rule let an action through. None when it has none.
+fn grants_section(c: &Ctx, t: &Value) -> Option<Node> {
+    let grants = arr(t, "grants");
+    if grants.is_empty() {
+        return None;
+    }
+    let r = rf(t, "T");
+    let rows = grants
+        .iter()
+        .map(|g| {
+            let gr = s(g, "ref");
+            let mut kids = vec![txt(s(g, "kind"), St::Kind), txt(s(g, "pattern"), St::Mono)];
+            let mut tip = opt_s(g, "asked_by").map(|w| format!("Asked in {w}")).unwrap_or_default();
+            if s(g, "state") == "granted" {
+                let n = g["fired"].as_i64().unwrap_or(0);
+                let fired = match n {
+                    0 => "Not fired yet".to_string(),
+                    1 => "Fired once".to_string(),
+                    n => format!("Fired {n} times"),
+                };
+                kids.push(txt(stamp(&fired, opt_s(g, "last_fired_at")), St::Muted));
+                if let Some(by) = opt_s(g, "granted_by") {
+                    tip = if tip.is_empty() { format!("Granted by {by}") } else { format!("{tip} · granted by {by}") };
+                }
+            } else {
+                let grp = format!("grant:{gr}");
+                kids.push(c.btn("Confirm", Act::new("grant-confirm", gr, &r, &grp), Look::SoftSmall, false, Some("Its terminals run this without a Midna prompt")));
+                kids.extend(c.note(&grp));
+            }
+            Node::El { k: K::Row, tip: Some(tip).filter(|x| !x.is_empty()), kids }
+        })
+        .collect();
+    Some(el(K::Stack, vec![txt("Grants", St::H3), el(K::Stack, rows)]))
+}
+
 /// `contextTab(t)`.
 fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
@@ -2846,6 +2882,7 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     kv.extend(origin_row(t));
     kv.extend(pool_rows(t));
     out.push(el(K::Kv, kv));
+    out.extend(grants_section(c, t));
     for (title, key, glyph, dot) in [("Done so far", "done", "✓", Dot::Up), ("Next", "next", "→", Dot::Accent), ("Decisions", "decisions", "•", Dot::Faint), ("Your answers", "answers", "•", Dot::Warn)] {
         let items = arr(cx, key);
         if items.is_empty() {

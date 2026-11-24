@@ -572,6 +572,44 @@ fn details_and_bits_are_shown_only() {
     assert!(!json!(view::values(&n)).to_string().contains("meta:"));
 }
 
+/// Context lists the task's grants: a confirmed one with how often it fired, a pending one with Confirm.
+#[::core::prelude::v1::test]
+fn grants_show_in_context_with_confirm_on_pending() {
+    let bare = json!({"ref": "T7", "id": 7, "title": "T", "status": "working"});
+    let text = view::text(&tree(&json!({"state": {}, "task": bare, "tab": "context"})));
+    assert!(!text.contains("Grants"), "no grants, no section: {text}");
+    let task = json!({"ref": "T7", "id": 7, "title": "T", "status": "working", "grants": [
+        {"id": 1, "ref": "A1", "kind": "tool", "pattern": "mcp__slack__chat_post*", "state": "granted", "fired": 3, "granted_by": "Alex in the app"},
+        {"id": 2, "ref": "A2", "kind": "command", "pattern": "git push origin *", "state": "pending", "fired": 0, "asked_by": "T7 Ship it"},
+        {"id": 3, "ref": "A3", "kind": "path", "pattern": "/tmp/*", "state": "granted", "fired": 0},
+    ]});
+    let n = tree(&json!({"state": {}, "task": task, "tab": "context"}));
+    let text = view::text(&n);
+    assert!(text.contains("Grants tool mcp__slack__chat_post* Fired 3 times command git push origin * Confirm path /tmp/* Not fired yet"), "{text}");
+    let acts = view::acts(&n);
+    assert_eq!(acts.iter().filter(|a| a.starts_with("grant-confirm")).count(), 1, "{acts:?}");
+    assert!(view::find_act(&n, "grant-confirm", Some("A2")).is_some_and(|a| a.posts()), "{acts:?}");
+}
+
+/// Confirm posts the owner's OK for that grant, and the row turns to its fired count.
+#[gpui_kit::test]
+fn confirming_a_grant_posts_it(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    let added = taskboardd::task_grants::add(rec.board().app(), 5, &["tool:mcp__slack__chat_post*".into()], false, "").unwrap();
+    let g = added["asked"][0].as_str().expect("a pending grant").to_string();
+    open(cx, &w, "T5");
+    press(cx, &w, "tab", Some("context"));
+    let _ = cx.update_window(w.into(), |_, window, cx| window.draw(cx).clear(cx));
+    press(cx, &w, "grant-confirm", Some(&g));
+    assert_eq!(rec.posts().iter().filter(|(p, _)| *p == format!("grants/{g}/confirm")).count(), 1, "{:?}", rec.posts());
+    w.update(cx, |m, _, _| {
+        let tree = build(m).unwrap();
+        assert!(view::find_act(&tree, "grant-confirm", None).is_none(), "{:?}", view::acts(&tree));
+        assert!(view::text(&tree).contains("mcp__slack__chat_post* Not fired yet"), "{}", view::text(&tree));
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn trail_and_back(cx: &mut gpui_kit::TestAppContext) {
     let (w, _rec) = parity::window(cx);

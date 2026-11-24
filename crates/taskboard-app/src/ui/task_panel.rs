@@ -604,6 +604,8 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         // Reopen on a done human task: back in Needs you, waiting on the owner.
         "owner-reopen" => run(m, a, tp("/owner-reopen"), json!({}), |_, _| String::new(), cx),
+        // The owner's OK on a pending grant (A3): the row turns to its fired count, so no note.
+        "grant-confirm" => run(m, a, format!("grants/{}/confirm", a.arg), json!({}), |_, _| String::new(), cx),
         "talk" => run(m, a, tp("/talk"), json!({}), |m, _| sent(m), cx),
         "open-url" => open_target(&a.arg, cx),
         // Another of the task's terminals (the PR's, or one still open from before): bring it up in Midna.
