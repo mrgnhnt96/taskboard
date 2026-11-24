@@ -124,7 +124,7 @@ static TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9._-]{0,63}$"
 
 /// A task holds its devices while it's active: working or needing the owner (not a failed start),
 /// or queued with a start job. The same rule as locks.
-const ACTIVE_SQL: &str = "((t.status IN ('working', 'needs') AND COALESCE(t.needs_reason, '') != 'start_failed') \
+pub(crate) const ACTIVE_SQL: &str = "((t.status IN ('working', 'needs') AND COALESCE(t.needs_reason, '') != 'start_failed') \
                           OR (t.status = 'queued' AND t.start_job IS NOT NULL))";
 
 #[derive(Debug, Clone, PartialEq)]
