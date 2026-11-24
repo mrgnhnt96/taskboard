@@ -13,6 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -100,6 +102,23 @@ pub fn env_for(cfg: &BuildsConfig, cwd: &str, jobs: Option<i64>) -> Map<String, 
     env
 }
 
+static CARGO_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bcargo\b").unwrap());
+
+/// The pool slot's `target/` for a Bash `command` run from `cwd` that builds in a slot. The terminal's
+/// env (`env_for`) names the target of the folder it opened in, so one that opened in the shared
+/// checkout and then ran `tb slot claim` would build the slot's code into the main checkout's target.
+/// Its folder is `cwd` after each `cd` before its first `cargo` (all of them when it names none).
+/// None outside a slot, in a slot that isn't a Cargo project, or with `shared_target` off.
+pub fn slot_target(cfg: &BuildsConfig, command: &str, cwd: &str) -> Option<String> {
+    if !cfg.shared_target || cwd.is_empty() {
+        return None;
+    }
+    let before = CARGO_RE.find(command).map_or(command, |m| &command[..m.start()]);
+    let place = crate::reports::cd_place(before, cwd);
+    let root = crate::worktrees::root_of(Some(&place)).filter(|r| crate::slots::is_slot(r))?;
+    Path::new(&root).join("Cargo.toml").is_file().then(|| format!("{root}/target"))
+}
+
 /// The `--settings` JSON for a board terminal in `cwd`: the context limit and the build env.
 pub fn settings_arg(app: &App, cwd: &str) -> Option<String> {
     let mut s = crate::limits::settings(app);
@@ -176,6 +195,19 @@ mod tests {
         std::fs::create_dir_all(slot.join("crates/app")).unwrap();
         let env = env_for(&on, slot.join("crates/app").to_str().unwrap(), None);
         assert_eq!(env["CARGO_TARGET_DIR"], json!(slot.join("target").to_string_lossy()), "a slot builds in its own target");
+
+        // A terminal that opened in the shared checkout, then claimed the slot: its commands there build in the slot's target.
+        let (main_dir, slot_dir, sub) = (repo.to_str().unwrap(), slot.to_str().unwrap(), slot.join("crates/app"));
+        let want = Some(format!("{slot_dir}/target"));
+        assert_eq!(slot_target(&on, "cargo test -p app", sub.to_str().unwrap()), want, "cd'd into the slot");
+        assert_eq!(slot_target(&on, &format!("cd {slot_dir} && cargo build"), main_dir), want, "cd's there in the command");
+        assert_eq!(slot_target(&on, "cd .claude/worktrees/slot-2/crates/app; cargo build", main_dir), want, "a relative cd");
+        assert_eq!(slot_target(&on, &format!("cd {slot_dir} && ./scripts/check.sh"), main_dir), want, "a script that may run cargo");
+        assert_eq!(slot_target(&on, "cargo build", main_dir), None, "the shared checkout keeps its env");
+        assert_eq!(slot_target(&on, &format!("cargo build && cd {slot_dir}"), main_dir), None, "it built before the cd");
+        assert_eq!(slot_target(&on, "cargo build", wt.to_str().unwrap()), None, "a worktree that isn't a slot");
+        assert_eq!(slot_target(&on, "cargo build", ""), None);
+        assert_eq!(slot_target(&off, "cargo build", slot_dir), None, "shared_target off");
 
         std::fs::remove_file(repo.join("Cargo.toml")).unwrap();
         assert!(env_for(&on, repo.to_str().unwrap(), None).is_empty(), "not a Cargo project");
