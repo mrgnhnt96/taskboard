@@ -88,6 +88,7 @@ pub mod planning;
 pub mod pr_closed;
 pub mod prcmds;
 pub mod presence;
+pub mod pressure;
 pub mod prbar;
 pub mod prbuilds;
 pub mod prflow;
