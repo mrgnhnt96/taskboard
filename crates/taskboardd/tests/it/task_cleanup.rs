@@ -1,7 +1,8 @@
 //! Stopping what a task's agent left running: Chrome on a debugging port, Gradle and Kotlin daemons, the
 //! pool's booted simulators and what a gone terminal left behind, once the task is done with them, and
 //! never what a working task, another task's build or the owner still uses. Simulators are leased: one no
-//! task leased goes after a grace, and at once while more are booted than the pool has.
+//! task leased goes after a grace, and at once while more are booted than the pool has. A pool emulator no
+//! task leased goes after a grace too; one outside the pool is never touched.
 
 use std::sync::Arc;
 
@@ -290,4 +291,68 @@ fn an_unleased_simulator_waits_as_long_as_the_owner_set() {
     b.pool_sim("kaepora-iphone-2", SIM_A);
     assert_eq!(b.pass(&[sim(90101, 3600.0, SIM_A)]), vec![]);
     assert_eq!(b.pass(&[sim(90102, 3.0 * 3600.0, SIM_A)]), vec![Act::Stop(format!("xcrun simctl shutdown {SIM_A}"))]);
+}
+
+const QEMU: &str = "/Users/m/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64";
+
+/// A booted emulator on `port`, as `qemu-system` shows it.
+fn emu(pid: i64, ago: f64, port: u16) -> Proc {
+    proc(pid, ago, None, &[QEMU, "-avd", "Pixel_8", "-port", &port.to_string()])
+}
+
+impl Board {
+    /// A pool emulator with no stop command of its own (`adb -s {target} emu kill`).
+    fn pool_emu(&self, name: &str, port: u16) {
+        self.post("devices", json!({"name": name, "kind": "android", "tags": "android", "target": format!("emulator-{port}")}));
+    }
+}
+
+#[test]
+fn a_pool_emulator_no_task_leased_is_shut_down_after_the_grace() {
+    let b = new_board();
+    b.pool_emu("kaepora-pixel-1", 5570);
+    b.pool_emu("kaepora-pixel-2", 5572);
+    assert_eq!(b.pass(&[emu(90111, 60.0, 5570)]), vec![], "booted a minute ago");
+
+    let grace = b.app.cfg.cleanup.unleased_emulator_mins * 60.0;
+    assert!(grace < b.app.cfg.cleanup.orphan_hours * 3600.0);
+    assert_eq!(b.pass(&[emu(90112, grace + 60.0, 5572)]), vec![Act::Stop("adb -s emulator-5572 emu kill".into())], "not left for orphan_hours");
+    let what: Vec<String> = b.app.db.q("SELECT what FROM leftovers WHERE pid = 90112", p![]).unwrap().iter().map(|r| r.st("what")).collect();
+    assert_eq!(what, vec!["kaepora-pixel-2"]);
+}
+
+#[test]
+fn a_lent_emulator_stays_and_goes_once_its_loan_ends() {
+    let b = new_board();
+    b.pool_emu("kaepora-pixel-1", 5570);
+    let t = b.task("Android check", "aa000011", 600.0);
+    b.lend("kaepora-pixel-1", t);
+    let e = emu(90121, 2.0 * 3600.0, 5570);
+
+    assert_eq!(b.pass(&[e.clone()]), vec![], "lent to a working task, however long it's been up");
+    b.app.db.x("UPDATE device_loans SET released_at = ?", p![iso(now_ts())]).unwrap();
+    b.set(t, "done");
+    assert_eq!(b.pass(&[e]), vec![Act::Stop("adb -s emulator-5570 emu kill".into())]);
+    assert_eq!(b.notes(t), vec!["Stopped what was left running: kaepora-pixel-1"]);
+}
+
+#[test]
+fn an_emulator_outside_the_pool_is_never_touched() {
+    let b = new_board();
+    b.pool_emu("kaepora-pixel-1", 5570);
+    let old = b.app.cfg.cleanup.orphan_hours * 3600.0 + 60.0;
+    assert_eq!(b.pass(&[emu(90131, old, 5580)]), vec![]);
+    assert_eq!(b.pass(&[emu(90131, old, 5580)]), vec![]);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM leftovers WHERE pid = 90131", p![]).unwrap(), 0, "not even recorded");
+}
+
+#[test]
+fn an_unleased_emulator_waits_as_long_as_the_owner_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.cleanup.unleased_emulator_mins = 120.0;
+    let b = Board { app: App::for_tests(cfg), dir };
+    b.pool_emu("kaepora-pixel-1", 5570);
+    assert_eq!(b.pass(&[emu(90141, 3600.0, 5570)]), vec![]);
+    assert_eq!(b.pass(&[emu(90142, 3.0 * 3600.0, 5570)]), vec![Act::Stop("adb -s emulator-5570 emu kill".into())]);
 }
