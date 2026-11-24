@@ -1,0 +1,65 @@
+--- rounds/1/screen.html	2026-11-23 18:18:05
++++ screen.html	2026-11-23 18:21:58
+@@ -443,7 +443,7 @@
+ /* base.css is the shared look from the task panel design; this adds the waiting pieces and the
+    two pages behind the panel. */
+ .app { --chip-w: 104px; font-family: var(--type-body-font-family); font-size: var(--type-body-font-size); line-height: var(--type-body-line-height); }
+-.side { grid-auto-rows: max-content; }
++.side { grid-auto-rows: max-content; min-height: 0; overflow-y: auto; }
+ button.side-i { width: 100%; text-align: left; }
+ button.side-i:hover { background: var(--color-surface-hover); color: var(--color-on-surface); }
+ .side-i .dotc { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-right: var(--space-inset-sm); }
+@@ -511,7 +511,7 @@
+ .ghead .gprog .loud { color: var(--color-on-warning-container); }
+ .trows { display: grid; padding: var(--space-inset-xs) 0; }
+ .trows[hidden] { display: none; }
+-.trow { display: grid; grid-template-columns: 2.5rem minmax(9rem, 1fr) minmax(0, 18rem) var(--chip-w); grid-template-areas: "ref title line chip"; align-items: center; gap: 2px var(--space-inset); width: 100%; min-height: var(--size-row); padding: var(--space-inset-xs) var(--space-inset) var(--space-inset-xs) calc(var(--space-inset) * 2 + 24px); text-align: left; cursor: pointer; }
++.trow { display: grid; grid-template-columns: 2.5rem minmax(9rem, 18rem) minmax(0, 1fr) var(--chip-w); grid-template-areas: "ref title line chip"; align-items: center; gap: 2px var(--space-inset); width: 100%; min-height: var(--size-row); padding: var(--space-inset-xs) var(--space-inset) var(--space-inset-xs) calc(var(--space-inset) * 2 + 24px); text-align: left; cursor: pointer; }
+ .trow:hover { background: var(--color-surface-hover); }
+ .trow[aria-current="true"] { background: var(--color-primary-container); box-shadow: inset 3px 0 0 var(--color-primary); }
+ .trow:focus-visible { outline-offset: calc(var(--focus-width) * -1); }
+@@ -533,7 +533,7 @@
+ 
+ /* panel: the waiting box and its timeline dot */
+ .box.wait { background: var(--color-surface-container); }
+-.wait .bh { color: var(--color-on-surface-variant); }
++.wait .bh { color: var(--color-on-surface); }
+ .bh { text-transform: uppercase; letter-spacing: .04em; }
+ .dot.waitd { border-style: dashed; border-color: var(--color-primary); }
+ .nowcard .cap { font-size: var(--type-caption-font-size); color: var(--color-on-surface-variant); }
+@@ -632,7 +632,7 @@
+ 
+   /* ---------- Project page ---------- */
+   function project(openRef) {
+-    const rows = g2rows().map((r) => `<button class="trow" data-open="${r.ref}"${openRef === r.ref ? ' aria-current="true"' : ''}><span class="tref">${r.ref}</span><span class="ttitle">${r.title}</span><span class="tline${r.loud ? ' loud' : ''}">${r.line}</span>${chip(r.chip)}</button>`).join('');
++    const rows = g2rows().map((r) => `<button class="trow" data-open="${r.ref}" title="${r.line.replace(/<[^>]+>/g, '')}"${openRef === r.ref ? ' aria-current="true"' : ''}><span class="tref">${r.ref}</span><span class="ttitle">${r.title}</span><span class="tline${r.loud ? ' loud' : ''}">${r.line}</span>${chip(r.chip)}</button>`).join('');
+     const g2chip = st() === 'overdue' ? ['needs', 'Needs you'] : ['working', 'Working'];
+     return `<main class="page" aria-labelledby="ph"><div class="page-in">
+       <h1 class="t-headline" id="ph">webapp</h1>
+@@ -686,7 +686,7 @@
+       now = stop('waitd', nowcard(chip(['waiting', 'Waiting']), 'after 52m of work · since 1:48 PM', s.last));
+     } else if (st() === 'overdue') {
+       box = `<section class="box needs" aria-labelledby="bh"><h3 class="bh" id="bh">${I.alert}Didn't resume at ${s.at}</h3><p class="bm">${s.plan}</p><div class="acts"><button class="btn primary" data-say="Focusing it in Midna">Focus in Midna</button></div></section>`;
+-      now = stop('you', nowcard(chip(['needs', 'Needs you']), 'after 52m of work · since 1:48 PM', s.last));
++      now = stop('you', nowcard(chip(['needs', 'Needs you']), 'after 52m of work · since 6:45 PM', s.last));
+     } else {
+       now = stop('now', nowcard(chip(['working', 'Working']), 'under a minute · updated just now', s.last, `<button class="btn secondary sm fit" data-say="Focusing it in Midna">Focus in Midna</button>`));
+       past = stop('waitd', `<div class="sh"><h3>Waited until 6:30 PM</h3><span class="r">6:31 PM</span></div><p>${PLAN}</p>`);
+@@ -718,9 +718,17 @@
+     app.innerHTML = side(id === 'needs' ? 'needs' : 'project') + page + panel(open[id]);
+     app.classList.toggle('open', !!open[id]);
+     app.classList.toggle('docked', !!open[id]);
++    setInert(app);
+     if (focusPanel) q('#ttl', app)?.focus();
+     canvas.refresh();
+   }
++  /* under 1280 the panel overlays the page: keep Tab inside it */
++  function setInert(app) {
++    const overlay = !!open[app.dataset.app] && app.offsetWidth < 1280;
++    qa('.side, .page', app).forEach((el) => { el.inert = overlay; });
++  }
++  const ro = new ResizeObserver((es) => es.forEach((e) => setInert(e.target)));
++  qa('.app').forEach((a) => ro.observe(a));
+   const renderAll = () => ['project', 'panel', 'needs'].forEach((id) => render(id));
+ 
+   R.addEventListener('click', (e) => {

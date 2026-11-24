@@ -1,0 +1,124 @@
+{
+  "brief": "/Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-7/design/waiting-until/canvas/rounds/1/brief-1.md",
+  "model": "opus",
+  "effort": null,
+  "ok": true,
+  "error": null,
+  "turns": 30,
+  "seconds": 195,
+  "costUsd": 1.1328338,
+  "tokens": {
+    "input": 44,
+    "output": 18086,
+    "cacheWrite": 98126,
+    "cacheRead": 1401539
+  },
+  "firstTurn": {
+    "cacheWrite": 30862,
+    "cacheRead": 0
+  },
+  "systemPrompt": "ultrahand-review-5df9f566aa97.md",
+  "compactions": 0,
+  "peakContext": 98128,
+  "report": {
+    "verdict": "This is a macOS desktop app (pointer and keyboard), reviewed from the local canvas build (index.html) and driven with real input through drive.mjs. I checked laptop-125 (1536×864) in light and dark, 2560×1440, Short window (1366×600), Mac half (720×900), and the 720×480 minimum at 100% and 200% text. I covered all three screens (Project page, Task panel, Needs you) and all four states (Waiting, Resumes tomorrow, Didn't resume, Resumed). Blurred, the screen reads as organised. The sidebar, the goal block and the docked panel are clearly separate, and the eye lands first on the panel's top box. In the waiting state that box is a quiet grey, so the page stays calm, which fits a task that needs nothing from you. In the overdue state the box turns the warning colour and carries the single primary button, which is right. The design does what was asked: 12-hour local times with AM/PM, the plan text, an overdue state that moves into Needs you, a waiting state that stays out of it, and no helper text. inspect found no contrast failures in either scheme. Findings: 0 Catastrophe, 1 Major, 7 Minor. The top problem is the overdue (\"Didn't resume\") state. It doesn't say why the task didn't resume, and its only action is Focus in Midna, so the owner can't tell what went wrong or restart the task from the board.",
+    "findings": [
+      {
+        "id": "R1",
+        "severity": 3,
+        "title": "Overdue state gives no cause and no way to restart",
+        "element": "Task panel › top box (Didn't resume) and Needs you › Re-measure and compare card; every size, both schemes, state Didn't resume",
+        "evidence": "Confirmed",
+        "problem": "The box says only \"Didn't resume at 6:30 PM\" plus the plan, and its one action is Focus in Midna. The Needs you card offers Open terminal, Later and More. Nothing says why the runner didn't resume the task (terminal lost, outside work hours, usage pause), and there is no action to resume it now or pick a new time. The owner has to work out the cause in another app.",
+        "principle": "Help users recognize, diagnose and recover from errors; user control and freedom [NNG-H9] [NNG-H3]; walkthrough question 4, progress toward the goal [NNG-CW]",
+        "fix": "Add the cause in the box heading, in the runner's own words, for example \"Didn't resume at 6:30 PM · terminal closed at 4:12 PM\". Make the primary button \"Resume now\" and keep Focus in Midna as a secondary button next to it. Give the Needs you card the same Resume now button in place of Open terminal."
+      },
+      {
+        "id": "R2",
+        "severity": 2,
+        "title": "Tab focus goes behind the dimmed page under the panel",
+        "element": "Task panel open over the Project page at widths under 1280 (Mac half 720×900, 720×480, Snap half), light",
+        "evidence": "Confirmed",
+        "problem": "Below 1280 the panel overlays the page with a scrim, and pointer clicks on the page are off. Shift+Tab from the panel's G2 link still moves focus to the G1 goal header behind the panel: elementFromPoint at its centre hits the panel. Enter then folds that hidden group. Keyboard users lose sight of focus and can change content they can't see.",
+        "principle": "Focus not obscured, focus order [WCAG 2.4.11] [WCAG 2.4.3]; a modal keeps focus inside it [desktop:APG-DIALOG]",
+        "fix": "When the panel is an overlay (container width < 1280), make .page inert, along with the sidebar if it is scrimmed too, so Tab cycles only through the panel, Esc and the close button. Remove inert when the panel docks at 1280 and wider."
+      },
+      {
+        "id": "R3",
+        "severity": 2,
+        "title": "The plan on the board row is cut to a few words",
+        "element": "Project page › G2 › T10 row line (Waiting, Resumes tomorrow, Didn't resume). Short window 1366×600: cut by 359 px. Mac half 720×900 (tomorrow): cut by 440 px. Docked with the panel at 1536: cut by 43 px",
+        "evidence": "Confirmed",
+        "problem": "The row puts \"Resumes 6:30 PM · <plan>\" on one line with an ellipsis. In the wide layout the line column is capped at 18rem, so only \"Read the 5:00 PM benc…\" shows, while the title column next to it has about 300 px of empty space. The row has no tooltip or other way to read the rest without opening the panel. The plan was one of the three things the request asked the row to show.",
+        "principle": "Recognition rather than recall [NNG-H6]; frequent information in view [SEC-8]",
+        "fix": "Let the line column take the free space (grid-template-columns: 2.5rem minmax(9rem, 22rem) minmax(0, 1fr) var(--chip-w)), or use the two-line row layout from the docked view at every width. Add a title attribute (the app's hover tooltip) carrying the full line."
+      },
+      {
+        "id": "R4",
+        "severity": 2,
+        "title": "\"Since 1:48 PM\" contradicts how long the task has been overdue",
+        "element": "Task panel › timeline now-card caption, state Didn't resume; Needs you › card age \"22m\"",
+        "evidence": "Confirmed",
+        "problem": "In the overdue state the timeline card shows a Needs you chip with \"after 52m of work · since 1:48 PM\", which reads as needing you since 1:48. The Needs you card says 22m, meaning since 6:30 PM. The panel itself never says how late the task is.",
+        "principle": "One fact, one place; visibility of system status [SEC-7] [NNG-H1]",
+        "fix": "In the overdue state, make the caption \"after 52m of work · overdue 22m\", or \"waiting since 1:48 PM · overdue since 6:30 PM\", so the panel and the Needs you age agree."
+      },
+      {
+        "id": "R5",
+        "severity": 2,
+        "title": "\"Waiting\" means two different things",
+        "element": "Needs you › page header \"1/2 agents waiting\" and group \"Agents waiting\"; Project page and Task panel › \"Waiting\" status chip",
+        "evidence": "Confirmed",
+        "problem": "The new status \"Waiting\" means parked until a time, needing nothing from you. Needs you uses \"agents waiting\" to mean waiting on you. In the Waiting state, T10 shows \"Waiting\" yet isn't among the \"1 agent waiting\". In the overdue state it is listed under \"Agents waiting\" exactly when it stopped waiting. The same word points two ways.",
+        "principle": "Consistency and standards [NNG-H4]; match the user's words [NNG-H2]",
+        "fix": "Rename the Needs you header and group to \"2 need you\" and \"Agents asking\" (or \"Needs your answer\"), and keep \"Waiting\" only for the timed park. Alternatively, rename the chip \"Scheduled\" and keep the Needs you wording."
+      },
+      {
+        "id": "R6",
+        "severity": 2,
+        "title": "Same action, two names",
+        "element": "Task panel › overdue box \"Focus in Midna\" (also on the Resumed card) vs Needs you › card \"Open terminal\"",
+        "evidence": "Confirmed",
+        "problem": "Both buttons bring the task's terminal forward in Midna, but they carry different labels on the two surfaces where the overdue task appears. Owners may think they do different things.",
+        "principle": "Consistency and standards [NNG-H4]",
+        "fix": "Use one label on both surfaces, \"Open terminal\". Together with R1, the overdue box becomes \"Resume now\" (primary) and \"Open terminal\" (secondary)."
+      },
+      {
+        "id": "R7",
+        "severity": 2,
+        "title": "Sidebar clips \"Didn't resume\" at 200% text and can't scroll",
+        "element": "Sidebar › Active goals (G1, G2 \"2 of 6 · Didn't resume\") at 720×480, 200% text, state Didn't resume, every screen",
+        "evidence": "Confirmed",
+        "problem": "At 200% text, the G2 name and its \"2 of 6 · Didn't resume\" line are cut by the sidebar (232 px lost). A wheel over the sidebar scrolls the stage behind it, not the sidebar, so the overdue signal there can't be reached.",
+        "principle": "Resize text [WCAG 1.4.4]; scrolling works everywhere [HIG-SCROLL]",
+        "fix": "Give nav.side overflow-y: auto with min-height: 0 in its grid cell, so it scrolls on its own when the text outgrows the window height."
+      },
+      {
+        "id": "R8",
+        "severity": 2,
+        "title": "The resume time is the quietest text in the waiting box",
+        "element": "Task panel › top box, states Waiting and Resumes tomorrow, all sizes",
+        "evidence": "Confirmed",
+        "problem": "\"WAITING · RESUMES 6:30 PM\" is 12 px, uppercase, grey #5f6b7a, while the plan under it is bold body text in the darkest colour. The one fact a person opens a waiting task for (when it comes back) is the hardest to spot in the box.",
+        "principle": "Visual hierarchy: primary content draws the eye first [SCR-2] [NNG-VH]",
+        "fix": "Set the heading in sentence case at the label size, weight 700, colour --color-on-surface (\"Resumes 6:30 PM\" with the clock icon), and drop the redundant \"Waiting ·\" since the chip already says it. Set the plan at regular weight in --color-on-surface-variant."
+      }
+    ],
+    "what_works": [
+      "The structure fits the request. The waiting task stays out of Needs you and sits right after Working on the board. When it misses its time it moves to the top of its goal, raises the Needs you count to 2 and marks the sidebar goal \"Didn't resume\".",
+      "Times are 12-hour local with AM/PM throughout, \"tomorrow 6:30 AM\" covers the next-day case, and the Resumed state keeps a \"Waited until 6:30 PM\" entry in the timeline with its actual time (6:31 PM).",
+      "inspect found no text contrast failures in light or dark mode at 1536×864, 720×900 or 720×480. The hollow blue Waiting chip is clearly different from Working and Planned.",
+      "Keyboard on the board: a task row opens the panel with focus on its title, and Esc or the close button returns focus to the row. Lesson L1 (group label above its members) is followed: task rows sit indented under their goal header."
+    ],
+    "not_checked": [
+      "Screen reader output: the names and roles were read from the DOM, but no announcement was heard, including whether the switch to the overdue state is announced (WCAG 4.1.3).",
+      "The More menus, Later menu, Brief, Context and Full log tabs, the goal link, and the sidebar items other than Needs you and Projects all show toasts as stand-ins for the rest of the app. So whether a waiting task can be resumed early or rescheduled from More is unknown.",
+      "A separate board or kanban card for the task: the canvas shows the Project page task row and the goal header, but no other board card, so if the app has another card view it wasn't reviewed.",
+      "Waits more than a day away (dates), time-zone changes while waiting, and how a live countdown would update over time.",
+      "Composition audit script (audit.mjs) not run; composition was judged from the screenshots and inspect.",
+      "Presets below the stated 720×480 minimum (Min window 640×480, 400% zoom 320×256) were skipped as outside the design's limits.",
+      "Real macOS rendering under GPUI, VoiceOver, and system text size. The canvas frame reports its platform as \"windows\" and draws Windows-style window controls, although the app is macOS. That is review chrome, outside the scope, but worth fixing in the canvas config.",
+      "One reviewer finds only some of the problems; a second reviewer or a usability test will find more [NNG-HE]."
+    ]
+  }
+}

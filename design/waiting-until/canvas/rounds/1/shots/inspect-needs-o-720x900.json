@@ -1,0 +1,796 @@
+{
+ "viewport": [
+  1600,
+  1000
+ ],
+ "scale": 0.83,
+ "counts": {
+  "text": 36,
+  "controls": 14,
+  "tabStops": 14,
+  "issues": 3,
+  "unresolved": 0
+ },
+ "issues": [
+  {
+   "kind": "target",
+   "el": "button.nyc-title \"Re-measure and compare\"",
+   "size": [
+    155,
+    18
+   ],
+   "min": 24,
+   "wcag": "pass by spacing"
+  },
+  {
+   "kind": "target",
+   "el": "button.nyc-title \"Settings page: manage passkeys\"",
+   "size": [
+    200,
+    18
+   ],
+   "min": 24,
+   "wcag": "pass by spacing"
+  },
+  {
+   "kind": "focus-up",
+   "from": "button.side-i \"Days\"",
+   "to": "button.nyc-title \"Re-measure and compare\""
+  }
+ ],
+ "focusOrder": [
+  "1 button.side-i.on \"Needs you 2\" @506,203",
+  "2 button.side-i \"Projects 2\" @506,230",
+  "3 button.side-i \"Goals 2\" @506,257",
+  "4 button.side-i \"Backlog 2\" @506,284",
+  "5 button.side-i \"Ideas\" @506,310",
+  "6 button.side-i \"Days\" @506,337",
+  "7 button.nyc-title \"Re-measure and compare\" @706,307",
+  "8 button.btn.secondary \"Open terminal\" @816,332",
+  "9 button.btn.secondary \"Later\" @901,332",
+  "10 button.btn.secondary \"More\" @962,332",
+  "11 button.nyc-title \"Settings page: manage passkeys\" @706,445",
+  "12 button.btn.secondary \"Open terminal\" @816,470",
+  "13 button.btn.secondary \"Later\" @901,470",
+  "14 button.btn.secondary \"More\" @962,470"
+ ],
+ "file": "/Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-7/design/waiting-until/canvas/rounds/1/shots/inspect-needs-o-720x900.json",
+ "elements": [
+  {
+   "el": "span.nm \"Needs you\"",
+   "text": "Needs you",
+   "font": "13/700",
+   "box": [
+    526,
+    209,
+    53,
+    14
+   ],
+   "fg": "#1c2129",
+   "bg": "#e9ecf0",
+   "ratio": 13.64,
+   "need": 4.5
+  },
+  {
+   "el": "span.n.loud \"2\"",
+   "text": "2",
+   "font": "12/700",
+   "box": [
+    646,
+    210,
+    6,
+    13
+   ],
+   "fg": "#9a3409",
+   "bg": "#e9ecf0",
+   "ratio": 6.18,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"Projects\"",
+   "text": "Projects",
+   "font": "13/500",
+   "box": [
+    526,
+    236,
+    39,
+    14
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "12/400",
+   "box": [
+    646,
+    236,
+    5,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"Goals\"",
+   "text": "Goals",
+   "font": "13/500",
+   "box": [
+    526,
+    263,
+    27,
+    14
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "12/400",
+   "box": [
+    646,
+    263,
+    5,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"Backlog\"",
+   "text": "Backlog",
+   "font": "13/500",
+   "box": [
+    526,
+    289,
+    38,
+    14
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "12/400",
+   "box": [
+    646,
+    290,
+    5,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"Ideas\"",
+   "text": "Ideas",
+   "font": "13/500",
+   "box": [
+    526,
+    316,
+    27,
+    14
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"Days\"",
+   "text": "Days",
+   "font": "13/500",
+   "box": [
+    526,
+    343,
+    23,
+    14
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "h2.over.side-h \"Active goals\"",
+   "text": "Active goals",
+   "font": "12/700",
+   "box": [
+    512,
+    390,
+    77,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"G1 Sign-in with passkeys\"",
+   "text": "G1 Sign-in with passkeys",
+   "font": "13/400",
+   "box": [
+    531,
+    418,
+    102,
+    14
+   ],
+   "fg": "#1c2129",
+   "bg": "#f6f7f9",
+   "ratio": 15.08,
+   "need": 4.5
+  },
+  {
+   "el": "span.ref \"G1\"",
+   "text": "G1",
+   "font": "12/400",
+   "box": [
+    512,
+    419,
+    12,
+    12
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#f6f7f9",
+   "ratio": 6.63,
+   "need": 4.5
+  },
+  {
+   "el": "span.loud \"1 of 4 · Needs your answer\"",
+   "text": "1 of 4 · Needs your answer",
+   "font": "12/400",
+   "box": [
+    512,
+    443,
+    116,
+    13
+   ],
+   "fg": "#9a3409",
+   "bg": "#f6f7f9",
+   "ratio": 6.83,
+   "need": 4.5
+  },
+  {
+   "el": "span.nm \"G2 Faster sign-in\"",
+   "text": "G2 Faster sign-in",
+   "font": "13/400",
+   "box": [
+    531,
+    470,
+    65,
+    14
+   ],
+   "fg": "#1c2129",
+   "bg": "#f6f7f9",
+   "ratio": 15.08,
+   "need": 4.5
+  },
+  {
+   "el": "span.ref \"G2\"",
+   "text": "G2",
+   "font": "12/400",
+   "box": [
+    512,
+    471,
+    12,
+    12
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#f6f7f9",
+   "ratio": 6.63,
+   "need": 4.5
+  },
+  {
+   "el": "span.loud \"2 of 6 · Didn't resume\"",
+   "text": "2 of 6 · Didn't resume",
+   "font": "12/400",
+   "box": [
+    512,
+    496,
+    95,
+    13
+   ],
+   "fg": "#9a3409",
+   "bg": "#f6f7f9",
+   "ratio": 6.83,
+   "need": 4.5
+  },
+  {
+   "el": "h1#ph.t-headline \"Needs you\"",
+   "text": "Needs you",
+   "font": "24/700",
+   "box": [
+    692,
+    209,
+    98,
+    27
+   ],
+   "fg": "#1c2129",
+   "bg": "#f6f7f9",
+   "ratio": 15.08,
+   "need": 3
+  },
+  {
+   "el": "span.muted \"2 agents waiting\"",
+   "text": "2 agents waiting",
+   "font": "13/400",
+   "box": [
+    800,
+    218,
+    78,
+    14
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "h2#gw.over \"Agents waiting 2\"",
+   "text": "Agents waiting 2",
+   "font": "12/700",
+   "box": [
+    692,
+    262,
+    92,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "12/700",
+   "box": [
+    791,
+    262,
+    6,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 4.5
+  },
+  {
+   "el": "span.nyc-g \"Faster sign-in\"",
+   "text": "Faster sign-in",
+   "font": "12/400",
+   "box": [
+    706,
+    293,
+    60,
+    13
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#fdece3",
+   "ratio": 6.19,
+   "need": 4.5
+  },
+  {
+   "el": "button.nyc-title \"Re-measure and compare\"",
+   "text": "Re-measure and compare",
+   "font": "13/700",
+   "box": [
+    706,
+    307,
+    129,
+    14
+   ],
+   "fg": "#1c2129",
+   "bg": "#fdece3",
+   "ratio": 14.08,
+   "need": 4.5
+  },
+  {
+   "el": "button.btn.secondary \"Open terminal\"",
+   "text": "Open terminal",
+   "font": "12/500",
+   "box": [
+    824,
+    335,
+    63,
+    13
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 4.5
+  },
+  {
+   "el": "button.btn.secondary \"Later\"",
+   "text": "Later",
+   "font": "12/500",
+   "box": [
+    909,
+    335,
+    23,
+    13
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 4.5
+  },
+  {
+   "el": "button.btn.secondary \"More\"",
+   "text": "More",
+   "font": "12/500",
+   "box": [
+    970,
+    335,
+    22,
+    13
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 4.5
+  },
+  {
+   "el": "span.age \"22m\"",
+   "text": "22m",
+   "font": "12/400",
+   "box": [
+    1040,
+    335,
+    19,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#fdece3",
+   "ratio": 4.72,
+   "need": 4.5
+  },
+  {
+   "el": "p.nyc-q \"Didn't resume at 6:30 PM\"",
+   "text": "Didn't resume at 6:30 PM",
+   "font": "13/400",
+   "box": [
+    706,
+    355,
+    122,
+    14
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 4.5
+  },
+  {
+   "el": "p.nyc-plan \"Read the 5:00 PM benchmark run, then compare it with the num\"",
+   "text": "Read the 5:00 PM benchmark run, then compare it wi",
+   "font": "13/400",
+   "box": [
+    706,
+    374,
+    354,
+    29
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#fdece3",
+   "ratio": 4.72,
+   "need": 4.5
+  },
+  {
+   "el": "span.nyc-g \"Sign-in with passkeys\"",
+   "text": "Sign-in with passkeys",
+   "font": "12/400",
+   "box": [
+    706,
+    431,
+    95,
+    13
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#fdece3",
+   "ratio": 6.19,
+   "need": 4.5
+  },
+  {
+   "el": "button.nyc-title \"Settings page: manage passkeys\"",
+   "text": "Settings page: manage passkeys",
+   "font": "13/700",
+   "box": [
+    706,
+    445,
+    167,
+    14
+   ],
+   "fg": "#1c2129",
+   "bg": "#fdece3",
+   "ratio": 14.08,
+   "need": 4.5
+  },
+  {
+   "el": "button.btn.secondary \"Open terminal\"",
+   "text": "Open terminal",
+   "font": "12/500",
+   "box": [
+    824,
+    473,
+    63,
+    13
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 4.5
+  },
+  {
+   "el": "button.btn.secondary \"Later\"",
+   "text": "Later",
+   "font": "12/500",
+   "box": [
+    909,
+    473,
+    23,
+    13
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 4.5
+  },
+  {
+   "el": "button.btn.secondary \"More\"",
+   "text": "More",
+   "font": "12/500",
+   "box": [
+    970,
+    473,
+    22,
+    13
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 4.5
+  },
+  {
+   "el": "span.age \"4m\"",
+   "text": "4m",
+   "font": "12/400",
+   "box": [
+    1045,
+    473,
+    15,
+    13
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#fdece3",
+   "ratio": 4.72,
+   "need": 4.5
+  },
+  {
+   "el": "p.nyc-q \"Should removing the last passkey require a password re-check\"",
+   "text": "Should removing the last passkey require a passwor",
+   "font": "13/400",
+   "box": [
+    706,
+    493,
+    303,
+    14
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 4.5
+  },
+  {
+   "el": "button.side-i.on \"Needs you 2\"",
+   "control": true,
+   "size": [
+    183,
+    32
+   ],
+   "box": [
+    506,
+    203,
+    153,
+    27
+   ]
+  },
+  {
+   "el": "button.side-i \"Projects 2\"",
+   "control": true,
+   "size": [
+    183,
+    32
+   ],
+   "box": [
+    506,
+    230,
+    153,
+    27
+   ]
+  },
+  {
+   "el": "button.side-i \"Goals 2\"",
+   "control": true,
+   "size": [
+    183,
+    32
+   ],
+   "box": [
+    506,
+    257,
+    153,
+    27
+   ]
+  },
+  {
+   "el": "button.side-i \"Backlog 2\"",
+   "control": true,
+   "size": [
+    183,
+    32
+   ],
+   "box": [
+    506,
+    284,
+    153,
+    27
+   ]
+  },
+  {
+   "el": "button.side-i \"Ideas\"",
+   "control": true,
+   "size": [
+    183,
+    32
+   ],
+   "box": [
+    506,
+    310,
+    153,
+    27
+   ]
+  },
+  {
+   "el": "button.side-i \"Days\"",
+   "control": true,
+   "size": [
+    183,
+    32
+   ],
+   "box": [
+    506,
+    337,
+    153,
+    27
+   ]
+  },
+  {
+   "el": "button.nyc-title \"Re-measure and compare\"",
+   "control": true,
+   "size": [
+    155,
+    18
+   ],
+   "box": [
+    706,
+    307,
+    129,
+    15
+   ]
+  },
+  {
+   "el": "button.btn.secondary \"Open terminal\"",
+   "control": true,
+   "size": [
+    94,
+    24
+   ],
+   "box": [
+    816,
+    332,
+    78,
+    20
+   ]
+  },
+  {
+   "el": "button.btn.secondary \"Later\"",
+   "control": true,
+   "size": [
+    65,
+    24
+   ],
+   "box": [
+    901,
+    332,
+    54,
+    20
+   ]
+  },
+  {
+   "el": "button.btn.secondary \"More\"",
+   "control": true,
+   "size": [
+    65,
+    24
+   ],
+   "box": [
+    962,
+    332,
+    54,
+    20
+   ]
+  },
+  {
+   "el": "button.nyc-title \"Settings page: manage passkeys\"",
+   "control": true,
+   "size": [
+    200,
+    18
+   ],
+   "box": [
+    706,
+    445,
+    167,
+    15
+   ]
+  },
+  {
+   "el": "button.btn.secondary \"Open terminal\"",
+   "control": true,
+   "size": [
+    94,
+    24
+   ],
+   "box": [
+    816,
+    470,
+    78,
+    20
+   ]
+  },
+  {
+   "el": "button.btn.secondary \"Later\"",
+   "control": true,
+   "size": [
+    65,
+    24
+   ],
+   "box": [
+    901,
+    470,
+    54,
+    20
+   ]
+  },
+  {
+   "el": "button.btn.secondary \"More\"",
+   "control": true,
+   "size": [
+    65,
+    24
+   ],
+   "box": [
+    962,
+    470,
+    54,
+    20
+   ]
+  }
+ ]
+}

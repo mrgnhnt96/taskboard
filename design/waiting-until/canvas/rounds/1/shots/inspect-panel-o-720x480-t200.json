@@ -1,0 +1,1706 @@
+{
+ "viewport": [
+  1600,
+  1000
+ ],
+ "counts": {
+  "text": 71,
+  "controls": 23,
+  "tabStops": 20,
+  "issues": 62,
+  "unresolved": 0
+ },
+ "issues": [
+  {
+   "kind": "cut",
+   "el": "span.loud \"1 of 4 · Needs your answer\"",
+   "by": "nav.side \"Pages\"",
+   "px": 64
+  },
+  {
+   "kind": "cut",
+   "el": "span.nm \"G2 Faster sign-in\"",
+   "by": "nav.side \"Pages\"",
+   "px": 153
+  },
+  {
+   "kind": "cut",
+   "el": "span.ref \"G2\"",
+   "by": "nav.side \"Pages\"",
+   "px": 112
+  },
+  {
+   "kind": "cut",
+   "el": "span.loud \"2 of 6 · Didn't resume\"",
+   "by": "nav.side \"Pages\"",
+   "px": 232
+  },
+  {
+   "kind": "cut",
+   "el": "span.ttitle \"Re-measure and compare\"",
+   "by": "itself",
+   "px": 108
+  },
+  {
+   "kind": "cut",
+   "el": "span.tline.loud \"Didn't resume at 6:30 PM · Read the 5:00 PM benchmark run, t\"",
+   "by": "itself",
+   "px": 1109
+  },
+  {
+   "kind": "cut",
+   "el": "span.at \"Didn't resume at 6:30 PM\"",
+   "by": "span.tline.loud \"Didn't resume at 6:30 PM · Read the 5:00 PM benchmark run, t\"",
+   "px": 103
+  },
+  {
+   "kind": "cut",
+   "el": "span.ttitle \"Batch the session writes\"",
+   "by": "itself",
+   "px": 92
+  },
+  {
+   "kind": "cut",
+   "el": "span.tline \"Moving the writes behind one flush · 1h 5m\"",
+   "by": "itself",
+   "px": 268
+  },
+  {
+   "kind": "cut",
+   "el": "span.ttitle \"Drop the extra redirect\"",
+   "by": "itself",
+   "px": 73
+  },
+  {
+   "kind": "cut",
+   "el": "span.tline \"Waits for a free terminal\"",
+   "by": "itself",
+   "px": 68
+  },
+  {
+   "kind": "cut",
+   "el": "span.ttitle \"Write up the numbers\"",
+   "by": "itself",
+   "px": 63
+  },
+  {
+   "kind": "cut",
+   "el": "span.ttitle \"Measure the sign-in path\"",
+   "by": "itself",
+   "px": 99
+  },
+  {
+   "kind": "cut",
+   "el": "span.tline \"412 ms median before the change\"",
+   "by": "itself",
+   "px": 174
+  },
+  {
+   "kind": "cut",
+   "el": "span.ttitle \"Cache the user lookup\"",
+   "by": "itself",
+   "px": 70
+  },
+  {
+   "kind": "cut",
+   "el": "span.gname \"Sign-in with passkeys\"",
+   "by": "itself",
+   "px": 79
+  },
+  {
+   "kind": "overlap",
+   "el": "h1#ph.t-headline \"webapp\"",
+   "with": "a.goal-link \"G2 Faster sign-in\""
+  },
+  {
+   "kind": "overlap",
+   "el": "h1#ph.t-headline \"webapp\"",
+   "with": "h2#ttl.t-title-lg.ttl \"Re-measure and compare\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.ref \"G2\"",
+   "with": "h2#ttl.t-title-lg.ttl \"Re-measure and compare\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.ref \"G2\"",
+   "with": "span.chip \"webapp\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.gname \"Faster sign-in\"",
+   "with": "h2#ttl.t-title-lg.ttl \"Re-measure and compare\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.gname \"Faster sign-in\"",
+   "with": "span.chip \"Wave 2 · 4 of 6\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span \"2 of 6 · wave 2\"",
+   "with": "button.tab[role=tab] \"Brief\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span \"2 of 6 · wave 2\"",
+   "with": "button.tab[role=tab] \"Context\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.tref \"T10\"",
+   "with": "h3#bh.bh \"Didn't resume at 6:30 PM\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.ttitle \"Re-measure and compare\"",
+   "with": "span.pill.st \"Needs you\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.ttitle \"Re-measure and compare\"",
+   "with": "h3#bh.bh \"Didn't resume at 6:30 PM\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.tline.loud \"Didn't resume at 6:30 PM · Read the 5:00 PM benchmark run, t\"",
+   "with": "span.pill.st \"Needs you\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.at \"Didn't resume at 6:30 PM\"",
+   "with": "span.pill.st \"Needs you\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.at \"Didn't resume at 6:30 PM\"",
+   "with": "h3#bh.bh \"Didn't resume at 6:30 PM\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.at \"Didn't resume at 6:30 PM\"",
+   "with": "p.bm \"Read the 5:00 PM benchmark run, then compare it with the num\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.pill.st \"Needs you\"",
+   "with": "h3#bh.bh \"Didn't resume at 6:30 PM\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.tref \"T8\"",
+   "with": "p.bm \"Read the 5:00 PM benchmark run, then compare it with the num\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.ttitle \"Batch the session writes\"",
+   "with": "span.pill.st \"Working\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.ttitle \"Batch the session writes\"",
+   "with": "p.bm \"Read the 5:00 PM benchmark run, then compare it with the num\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.tline \"Moving the writes behind one flush · 1h 5m\"",
+   "with": "span.pill.st \"Working\""
+  },
+  {
+   "kind": "target",
+   "el": "button.icon-btn \"More\"",
+   "size": [
+    16,
+    24
+   ],
+   "min": 24,
+   "wcag": "fail: button.trow \"T6 Measure the sign-in path 412 ms median before the change \" is within 12px"
+  },
+  {
+   "kind": "focus-up",
+   "from": "button.ghead \"G1 Sign-in with passkeys 1 of 4 Needs you\"",
+   "to": "a.goal-link \"G2 Faster sign-in\""
+  },
+  {
+   "kind": "overlap",
+   "more": 24
+  }
+ ],
+ "focusOrder": [
+  "1 button.side-i \"Needs you 2\" @448,346",
+  "2 button.side-i.on \"Projects 2\" @448,382",
+  "3 button.side-i \"Goals 2\" @448,418",
+  "4 button.side-i \"Backlog 2\" @448,455",
+  "5 button.side-i \"Ideas\" @448,491",
+  "6 button.side-i \"Days\" @448,527",
+  "7 button.ghead \"G2 Faster sign-in 2 of 6 · wave 2 Needs you\" @673,447",
+  "8 button.trow \"T10 Re-measure and compare Didn't resume at 6:30 PM · Read t\" @673,556",
+  "9 button.trow \"T8 Batch the session writes Moving the writes behind one flu\" @673,636",
+  "10 button.trow \"T9 Drop the extra redirect Waits for a free terminal Queued\" @673,716",
+  "11 button.trow \"T11 Write up the numbers Planned\" @673,796",
+  "12 button.trow \"T6 Measure the sign-in path 412 ms median before the change \" @673,843",
+  "13 button.trow \"T7 Cache the user lookup PR #951 merged Done\" @673,923",
+  "14 button.ghead \"G1 Sign-in with passkeys 1 of 4 Needs you\" @673,1017",
+  "15 a.goal-link \"G2 Faster sign-in\" @705,330",
+  "16 button.icon-btn \"Close task panel\" @1112,336",
+  "17 button.tab[role=tab] \"Timeline\" @693,527",
+  "18 div.pbody[role=tabpanel] \"Timeline\" @681,559",
+  "19 button.btn.primary \"Focus in Midna\" @721,781",
+  "20 button.icon-btn \"More\" @1108,902"
+ ],
+ "file": "/Users/mrgnhnt96/Development/rust/taskboard/.claude/worktrees/slot-7/design/waiting-until/canvas/rounds/1/shots/inspect-panel-o-720x480-t200.json",
+ "elements": [
+  {
+   "el": "span.nm \"Needs you\"",
+   "text": "Needs you",
+   "font": "26/500",
+   "box": [
+    472,
+    347,
+    120,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.n.loud \"2\"",
+   "text": "2",
+   "font": "24/700",
+   "box": [
+    609,
+    347,
+    14,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#f6f7f9",
+   "ratio": 6.83,
+   "need": 3
+  },
+  {
+   "el": "span.nm \"Projects\"",
+   "text": "Projects",
+   "font": "26/700",
+   "box": [
+    472,
+    383,
+    99,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#e9ecf0",
+   "ratio": 13.64,
+   "need": 3
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "24/400",
+   "box": [
+    610,
+    383,
+    13,
+    32
+   ],
+   "fg": "#1c2129",
+   "bg": "#e9ecf0",
+   "ratio": 13.64,
+   "need": 3
+  },
+  {
+   "el": "span.nm \"Goals\"",
+   "text": "Goals",
+   "font": "26/500",
+   "box": [
+    472,
+    419,
+    65,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "24/400",
+   "box": [
+    610,
+    420,
+    13,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.nm \"Backlog\"",
+   "text": "Backlog",
+   "font": "26/500",
+   "box": [
+    472,
+    456,
+    91,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.n \"2\"",
+   "text": "2",
+   "font": "24/400",
+   "box": [
+    610,
+    456,
+    13,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.nm \"Ideas\"",
+   "text": "Ideas",
+   "font": "26/500",
+   "box": [
+    472,
+    492,
+    64,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.nm \"Days\"",
+   "text": "Days",
+   "font": "26/500",
+   "box": [
+    472,
+    528,
+    55,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "h2.over.side-h \"Active goals\"",
+   "text": "Active goals",
+   "font": "24/700",
+   "box": [
+    456,
+    596,
+    92,
+    66
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#f6f7f9",
+   "ratio": 5.06,
+   "need": 3
+  },
+  {
+   "el": "span.nm \"G1 Sign-in with passkeys\"",
+   "text": "G1 Sign-in with passkeys",
+   "font": "26/400",
+   "box": [
+    493,
+    680,
+    103,
+    107
+   ],
+   "fg": "#1c2129",
+   "bg": "#f6f7f9",
+   "ratio": 15.08,
+   "need": 3
+  },
+  {
+   "el": "span.ref \"G1\"",
+   "text": "G1",
+   "font": "24/400",
+   "box": [
+    456,
+    681,
+    29,
+    28
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#f6f7f9",
+   "ratio": 6.63,
+   "need": 3
+  },
+  {
+   "el": "span.loud \"1 of 4 · Needs your answer\"",
+   "text": "1 of 4 · Needs your answer",
+   "font": "24/400",
+   "box": [
+    456,
+    800,
+    145,
+    66
+   ],
+   "fg": "#9a3409",
+   "bg": "#f6f7f9",
+   "ratio": 6.83,
+   "need": 3,
+   "cut": {
+    "by": "nav.side \"Pages\"",
+    "px": 64
+   }
+  },
+  {
+   "el": "span.nm \"G2 Faster sign-in\"",
+   "text": "G2 Faster sign-in",
+   "font": "26/400",
+   "box": [
+    493,
+    884,
+    78,
+    70
+   ],
+   "fg": "#1c2129",
+   "bg": "#f6f7f9",
+   "ratio": 15.08,
+   "need": 3,
+   "cut": {
+    "by": "nav.side \"Pages\"",
+    "px": 153
+   }
+  },
+  {
+   "el": "span.ref \"G2\"",
+   "text": "G2",
+   "font": "24/400",
+   "box": [
+    456,
+    885,
+    29,
+    28
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#f6f7f9",
+   "ratio": 6.63,
+   "need": 3,
+   "cut": {
+    "by": "nav.side \"Pages\"",
+    "px": 112
+   }
+  },
+  {
+   "el": "span.loud \"2 of 6 · Didn't resume\"",
+   "text": "2 of 6 · Didn't resume",
+   "font": "24/400",
+   "box": [
+    456,
+    968,
+    142,
+    66
+   ],
+   "fg": "#9a3409",
+   "bg": "#f6f7f9",
+   "ratio": 6.83,
+   "need": 3,
+   "cut": {
+    "by": "nav.side \"Pages\"",
+    "px": 232
+   }
+  },
+  {
+   "el": "h1#ph.t-headline \"webapp\"",
+   "text": "webapp",
+   "font": "48/700",
+   "box": [
+    672,
+    353,
+    174,
+    62
+   ],
+   "fg": "#1c2129",
+   "bg": "#f6f7f9",
+   "ratio": 15.08,
+   "need": 3
+  },
+  {
+   "el": "span.ref \"G2\"",
+   "text": "G2",
+   "font": "24/400",
+   "box": [
+    721,
+    458,
+    29,
+    28
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#e9ecf0",
+   "ratio": 6,
+   "need": 3
+  },
+  {
+   "el": "span.gname \"Faster sign-in\"",
+   "text": "Faster sign-in",
+   "font": "26/700",
+   "box": [
+    813,
+    456,
+    167,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#e9ecf0",
+   "ratio": 13.64,
+   "need": 3
+  },
+  {
+   "el": "span \"2 of 6 · wave 2\"",
+   "text": "2 of 6 · wave 2",
+   "font": "24/400",
+   "box": [
+    813,
+    511,
+    153,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#e9ecf0",
+   "ratio": 4.58,
+   "need": 3
+  },
+  {
+   "el": "span.pill.st \"Needs you\"",
+   "text": "Needs you",
+   "font": "24/700",
+   "box": [
+    1004,
+    457,
+    117,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 3
+  },
+  {
+   "el": "span.tref \"T10\"",
+   "text": "T10",
+   "font": "24/400",
+   "box": [
+    721,
+    564,
+    43,
+    28
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#e8eefd",
+   "ratio": 4.67,
+   "need": 3
+  },
+  {
+   "el": "span.ttitle \"Re-measure and compare\"",
+   "text": "Re-measure and compare",
+   "font": "26/400",
+   "box": [
+    813,
+    561,
+    294,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#e8eefd",
+   "ratio": 13.92,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 108
+   }
+  },
+  {
+   "el": "span.tline.loud \"Didn't resume at 6:30 PM · Read the 5:00 PM benchmark run, t\"",
+   "text": "Didn't resume at 6:30 PM · Read the 5:00 PM benchm",
+   "font": "24/400",
+   "box": [
+    1102,
+    599,
+    1006,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#e8eefd",
+   "ratio": 6.3,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 1109
+   }
+  },
+  {
+   "el": "span.at \"Didn't resume at 6:30 PM\"",
+   "text": "Didn't resume at 6:30 PM",
+   "font": "24/700",
+   "box": [
+    813,
+    599,
+    289,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#e8eefd",
+   "ratio": 6.3,
+   "need": 3,
+   "cut": {
+    "by": "span.tline.loud \"Didn't resume at 6:30 PM · Read the 5:00 PM benchmark run, t\"",
+    "px": 103
+   }
+  },
+  {
+   "el": "span.pill.st \"Needs you\"",
+   "text": "Needs you",
+   "font": "24/700",
+   "box": [
+    1004,
+    580,
+    117,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 3
+  },
+  {
+   "el": "span.tref \"T8\"",
+   "text": "T8",
+   "font": "24/400",
+   "box": [
+    721,
+    644,
+    29,
+    28
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.ttitle \"Batch the session writes\"",
+   "text": "Batch the session writes",
+   "font": "26/400",
+   "box": [
+    813,
+    641,
+    278,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 92
+   }
+  },
+  {
+   "el": "span.tline \"Moving the writes behind one flush · 1h 5m\"",
+   "text": "Moving the writes behind one flush · 1h 5m",
+   "font": "24/400",
+   "box": [
+    813,
+    679,
+    454,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 268
+   }
+  },
+  {
+   "el": "span.pill.st \"Working\"",
+   "text": "Working",
+   "font": "24/700",
+   "box": [
+    1017,
+    660,
+    92,
+    32
+   ],
+   "fg": "#2447b8",
+   "bg": "#e8eefd",
+   "ratio": 6.78,
+   "need": 3
+  },
+  {
+   "el": "span.tref \"T9\"",
+   "text": "T9",
+   "font": "24/400",
+   "box": [
+    721,
+    724,
+    29,
+    28
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.ttitle \"Drop the extra redirect\"",
+   "text": "Drop the extra redirect",
+   "font": "26/400",
+   "box": [
+    813,
+    721,
+    259,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 73
+   }
+  },
+  {
+   "el": "span.tline \"Waits for a free terminal\"",
+   "text": "Waits for a free terminal",
+   "font": "24/400",
+   "box": [
+    813,
+    759,
+    254,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 68
+   }
+  },
+  {
+   "el": "span.pill.st \"Queued\"",
+   "text": "Queued",
+   "font": "24/700",
+   "box": [
+    1020,
+    740,
+    87,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#e9ecf0",
+   "ratio": 4.58,
+   "need": 3
+  },
+  {
+   "el": "span.tref \"T11\"",
+   "text": "T11",
+   "font": "24/400",
+   "box": [
+    721,
+    804,
+    43,
+    28
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.ttitle \"Write up the numbers\"",
+   "text": "Write up the numbers",
+   "font": "26/400",
+   "box": [
+    813,
+    801,
+    249,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 63
+   }
+  },
+  {
+   "el": "span.pill.st \"Planned\"",
+   "text": "Planned",
+   "font": "24/700",
+   "box": [
+    1017,
+    804,
+    91,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.tref \"T6\"",
+   "text": "T6",
+   "font": "24/400",
+   "box": [
+    721,
+    850,
+    29,
+    28
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.ttitle \"Measure the sign-in path\"",
+   "text": "Measure the sign-in path",
+   "font": "26/400",
+   "box": [
+    813,
+    848,
+    285,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 99
+   }
+  },
+  {
+   "el": "span.tline \"412 ms median before the change\"",
+   "text": "412 ms median before the change",
+   "font": "24/400",
+   "box": [
+    813,
+    885,
+    360,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 174
+   }
+  },
+  {
+   "el": "span.pill.st \"Done\"",
+   "text": "Done",
+   "font": "24/700",
+   "box": [
+    1034,
+    867,
+    58,
+    32
+   ],
+   "fg": "#17693a",
+   "bg": "#e3f4ea",
+   "ratio": 5.9,
+   "need": 3
+  },
+  {
+   "el": "span.tref \"T7\"",
+   "text": "T7",
+   "font": "24/400",
+   "box": [
+    721,
+    930,
+    29,
+    28
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.ttitle \"Cache the user lookup\"",
+   "text": "Cache the user lookup",
+   "font": "26/400",
+   "box": [
+    813,
+    928,
+    256,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 70
+   }
+  },
+  {
+   "el": "span.tline \"PR #951 merged\"",
+   "text": "PR #951 merged",
+   "font": "24/400",
+   "box": [
+    813,
+    965,
+    177,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.pill.st \"Done\"",
+   "text": "Done",
+   "font": "24/700",
+   "box": [
+    1034,
+    947,
+    58,
+    32
+   ],
+   "fg": "#17693a",
+   "bg": "#e3f4ea",
+   "ratio": 5.9,
+   "need": 3
+  },
+  {
+   "el": "span.ref \"G1\"",
+   "text": "G1",
+   "font": "24/400",
+   "box": [
+    721,
+    1028,
+    29,
+    28
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#ffffff",
+   "ratio": 7.11,
+   "need": 3
+  },
+  {
+   "el": "span.gname \"Sign-in with passkeys\"",
+   "text": "Sign-in with passkeys",
+   "font": "26/700",
+   "box": [
+    813,
+    1026,
+    265,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3,
+   "cut": {
+    "by": "itself",
+    "px": 79
+   }
+  },
+  {
+   "el": "span \"1 of 4\"",
+   "text": "1 of 4",
+   "font": "24/400",
+   "box": [
+    813,
+    1081,
+    58,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.pill.st \"Needs you\"",
+   "text": "Needs you",
+   "font": "24/700",
+   "box": [
+    1004,
+    1027,
+    117,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 3
+  },
+  {
+   "el": "a.goal-link \"G2 Faster sign-in\"",
+   "text": "G2 Faster sign-in",
+   "font": "26/500",
+   "box": [
+    705,
+    331,
+    195,
+    34
+   ],
+   "fg": "#5b3fc4",
+   "bg": "#ffffff",
+   "ratio": 7.11,
+   "need": 3
+  },
+  {
+   "el": "span.sepc \"›\"",
+   "text": "›",
+   "font": "26/400",
+   "box": [
+    908,
+    331,
+    9,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.t-label.muted \"T10\"",
+   "text": "T10",
+   "font": "26/500",
+   "box": [
+    925,
+    330,
+    42,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "h2#ttl.t-title-lg.ttl \"Re-measure and compare\"",
+   "text": "Re-measure and compare",
+   "font": "40/700",
+   "box": [
+    705,
+    366,
+    304,
+    104
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3
+  },
+  {
+   "el": "span.chip \"webapp\"",
+   "text": "webapp",
+   "font": "24/500",
+   "box": [
+    714,
+    480,
+    83,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.chip \"Wave 2 · 4 of 6\"",
+   "text": "Wave 2 · 4 of 6",
+   "font": "24/500",
+   "box": [
+    823,
+    480,
+    159,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "button.tab[role=tab] \"Timeline\"",
+   "text": "Timeline",
+   "font": "26/700",
+   "box": [
+    701,
+    525,
+    106,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3
+  },
+  {
+   "el": "button.tab[role=tab] \"Brief\"",
+   "text": "Brief",
+   "font": "26/500",
+   "box": [
+    829,
+    525,
+    54,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "button.tab[role=tab] \"Context\"",
+   "text": "Context",
+   "font": "26/500",
+   "box": [
+    909,
+    525,
+    88,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span \"Full log 18\"",
+   "text": "Full log 18",
+   "font": "26/500",
+   "box": [
+    1027,
+    525,
+    85,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.n \"18\"",
+   "text": "18",
+   "font": "26/400",
+   "box": [
+    1116,
+    525,
+    27,
+    34
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "h3#bh.bh \"Didn't resume at 6:30 PM\"",
+   "text": "Didn't resume at 6:30 PM",
+   "font": "24/700",
+   "box": [
+    743,
+    585,
+    345,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 3
+  },
+  {
+   "el": "p.bm \"Read the 5:00 PM benchmark run, then compare it with the num\"",
+   "text": "Read the 5:00 PM benchmark run, then compare it wi",
+   "font": "26/700",
+   "box": [
+    721,
+    625,
+    364,
+    143
+   ],
+   "fg": "#1c2129",
+   "bg": "#fdece3",
+   "ratio": 14.08,
+   "need": 3
+  },
+  {
+   "el": "button.btn.primary \"Focus in Midna\"",
+   "text": "Focus in Midna",
+   "font": "26/500",
+   "box": [
+    734,
+    790,
+    174,
+    34
+   ],
+   "fg": "#ffffff",
+   "bg": "#3563e9",
+   "ratio": 5.11,
+   "need": 3
+  },
+  {
+   "el": "span.pill.st \"Needs you\"",
+   "text": "Needs you",
+   "font": "24/700",
+   "box": [
+    738,
+    898,
+    117,
+    32
+   ],
+   "fg": "#9a3409",
+   "bg": "#fdece3",
+   "ratio": 6.37,
+   "need": 3
+  },
+  {
+   "el": "span.cap \"after 52m of work · since 1:48 PM\"",
+   "text": "after 52m of work · since 1:48 PM",
+   "font": "24/400",
+   "box": [
+    857,
+    881,
+    199,
+    66
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#e9ecf0",
+   "ratio": 4.58,
+   "need": 3
+  },
+  {
+   "el": "p \"Nothing more can be checked before the 5:00 PM benchmark run\"",
+   "text": "Nothing more can be checked before the 5:00 PM ben",
+   "font": "26/400",
+   "box": [
+    745,
+    957,
+    358,
+    107
+   ],
+   "fg": "#1c2129",
+   "bg": "#e9ecf0",
+   "ratio": 13.64,
+   "need": 3
+  },
+  {
+   "el": "p.then \"Then: Pull request, Checks, Review, Merge\"",
+   "text": "Then: Pull request, Checks, Review, Merge",
+   "font": "24/400",
+   "box": [
+    745,
+    1073,
+    369,
+    66
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#e9ecf0",
+   "ratio": 4.58,
+   "need": 3
+  },
+  {
+   "el": "h3 \"Started\"",
+   "text": "Started",
+   "font": "26/700",
+   "box": [
+    733,
+    1169,
+    90,
+    34
+   ],
+   "fg": "#1c2129",
+   "bg": "#ffffff",
+   "ratio": 16.17,
+   "need": 3
+  },
+  {
+   "el": "span.muted \"Baseline from the sign-in path saved\"",
+   "text": "Baseline from the sign-in path saved",
+   "font": "24/400",
+   "box": [
+    733,
+    1207,
+    386,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "span.r \"12:56 PM\"",
+   "text": "12:56 PM",
+   "font": "24/400",
+   "box": [
+    1039,
+    1242,
+    97,
+    32
+   ],
+   "fg": "#5f6b7a",
+   "bg": "#ffffff",
+   "ratio": 5.43,
+   "need": 3
+  },
+  {
+   "el": "button.side-i \"Needs you 2\"",
+   "control": true,
+   "size": [
+    183,
+    36
+   ],
+   "box": [
+    448,
+    346,
+    183,
+    36
+   ]
+  },
+  {
+   "el": "button.side-i.on \"Projects 2\"",
+   "control": true,
+   "size": [
+    183,
+    36
+   ],
+   "box": [
+    448,
+    382,
+    183,
+    36
+   ]
+  },
+  {
+   "el": "button.side-i \"Goals 2\"",
+   "control": true,
+   "size": [
+    183,
+    36
+   ],
+   "box": [
+    448,
+    418,
+    183,
+    36
+   ]
+  },
+  {
+   "el": "button.side-i \"Backlog 2\"",
+   "control": true,
+   "size": [
+    183,
+    36
+   ],
+   "box": [
+    448,
+    455,
+    183,
+    36
+   ]
+  },
+  {
+   "el": "button.side-i \"Ideas\"",
+   "control": true,
+   "size": [
+    183,
+    36
+   ],
+   "box": [
+    448,
+    491,
+    183,
+    36
+   ]
+  },
+  {
+   "el": "button.side-i \"Days\"",
+   "control": true,
+   "size": [
+    183,
+    36
+   ],
+   "box": [
+    448,
+    527,
+    183,
+    36
+   ]
+  },
+  {
+   "el": "button.ghead \"G2 Faster sign-in 2 of 6 · wave 2 Needs you\"",
+   "control": true,
+   "size": [
+    454,
+    106
+   ],
+   "box": [
+    673,
+    447,
+    454,
+    106
+   ]
+  },
+  {
+   "el": "button.trow \"T10 Re-measure and compare Didn't resume at 6:30 PM · Read t\"",
+   "control": true,
+   "size": [
+    454,
+    80
+   ],
+   "box": [
+    673,
+    556,
+    454,
+    80
+   ]
+  },
+  {
+   "el": "button.trow \"T8 Batch the session writes Moving the writes behind one flu\"",
+   "control": true,
+   "size": [
+    454,
+    80
+   ],
+   "box": [
+    673,
+    636,
+    454,
+    80
+   ]
+  },
+  {
+   "el": "button.trow \"T9 Drop the extra redirect Waits for a free terminal Queued\"",
+   "control": true,
+   "size": [
+    454,
+    80
+   ],
+   "box": [
+    673,
+    716,
+    454,
+    80
+   ]
+  },
+  {
+   "el": "button.trow \"T11 Write up the numbers Planned\"",
+   "control": true,
+   "size": [
+    454,
+    46
+   ],
+   "box": [
+    673,
+    796,
+    454,
+    46
+   ]
+  },
+  {
+   "el": "button.trow \"T6 Measure the sign-in path 412 ms median before the change \"",
+   "control": true,
+   "size": [
+    454,
+    80
+   ],
+   "box": [
+    673,
+    843,
+    454,
+    80
+   ]
+  },
+  {
+   "el": "button.trow \"T7 Cache the user lookup PR #951 merged Done\"",
+   "control": true,
+   "size": [
+    454,
+    80
+   ],
+   "box": [
+    673,
+    923,
+    454,
+    80
+   ]
+  },
+  {
+   "el": "button.ghead \"G1 Sign-in with passkeys 1 of 4 Needs you\"",
+   "control": true,
+   "size": [
+    454,
+    106
+   ],
+   "box": [
+    673,
+    1017,
+    454,
+    106
+   ]
+  },
+  {
+   "el": "a.goal-link \"G2 Faster sign-in\"",
+   "control": true,
+   "size": [
+    195,
+    36
+   ],
+   "box": [
+    705,
+    330,
+    195,
+    36
+   ]
+  },
+  {
+   "el": "button.icon-btn \"Close task panel\"",
+   "control": true,
+   "size": [
+    24,
+    24
+   ],
+   "box": [
+    1112,
+    336,
+    24,
+    24
+   ]
+  },
+  {
+   "el": "button.tab[role=tab] \"Timeline\"",
+   "control": true,
+   "size": [
+    122,
+    32
+   ],
+   "box": [
+    693,
+    527,
+    122,
+    32
+   ]
+  },
+  {
+   "el": "button.tab[role=tab] \"Brief\"",
+   "control": true,
+   "size": [
+    75,
+    32
+   ],
+   "box": [
+    819,
+    527,
+    75,
+    32
+   ]
+  },
+  {
+   "el": "button.tab[role=tab] \"Context\"",
+   "control": true,
+   "size": [
+    111,
+    32
+   ],
+   "box": [
+    898,
+    527,
+    111,
+    32
+   ]
+  },
+  {
+   "el": "button.tab[role=tab] \"Full log 18\"",
+   "control": true,
+   "size": [
+    144,
+    32
+   ],
+   "box": [
+    1013,
+    527,
+    144,
+    32
+   ]
+  },
+  {
+   "el": "div.pbody[role=tabpanel] \"Timeline\"",
+   "control": true,
+   "size": [
+    479,
+    749
+   ],
+   "box": [
+    681,
+    559,
+    479,
+    749
+   ]
+  },
+  {
+   "el": "button.btn.primary \"Focus in Midna\"",
+   "control": true,
+   "size": [
+    200,
+    51
+   ],
+   "box": [
+    721,
+    781,
+    200,
+    51
+   ]
+  },
+  {
+   "el": "button.icon-btn \"More\"",
+   "control": true,
+   "size": [
+    16,
+    24
+   ],
+   "box": [
+    1108,
+    902,
+    16,
+    24
+   ]
+  }
+ ]
+}

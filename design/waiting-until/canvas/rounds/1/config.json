@@ -1,0 +1,11 @@
+{
+  "title": "Waiting until a set time",
+  "initialPreset": "laptop-125",
+  "states": [
+    { "id": "waiting", "label": "Waiting" },
+    { "id": "tomorrow", "label": "Resumes tomorrow" },
+    { "id": "overdue", "label": "Didn't resume" },
+    { "id": "resumed", "label": "Resumed" }
+  ],
+  "limits": { "minWidth": 720, "minHeight": 480, "maxWidth": 2560, "maxHeight": 1440 }
+}
