@@ -27,11 +27,13 @@ pub struct BuildsConfig {
     /// Jobs for each build in a board terminal (CARGO_BUILD_JOBS, Gradle's workers): unset for the
     /// cores divided by Midna's `guard.build_slots`, 0 for each tool's default (every core).
     pub jobs: Option<i64>,
+    /// Give a slot with no `target/` a clone of a warm one when a task takes it (`slot_seed.rs`).
+    pub seed_slots: bool,
 }
 
 impl Default for BuildsConfig {
     fn default() -> Self {
-        BuildsConfig { shared_target: true, jobs: None }
+        BuildsConfig { shared_target: true, jobs: None, seed_slots: true }
     }
 }
 
@@ -163,7 +165,7 @@ mod tests {
         assert!(env["GRADLE_OPTS"].as_str().unwrap().ends_with("-Dorg.gradle.workers.max=4"), "{env:?}");
         assert_eq!(env_for(&on, repo.to_str().unwrap(), None)["CARGO_TARGET_DIR"], env["CARGO_TARGET_DIR"]);
 
-        let off = BuildsConfig { shared_target: false, jobs: Some(0) };
+        let off = BuildsConfig { shared_target: false, jobs: Some(0), ..BuildsConfig::default() };
         assert!(env_for(&off, wt.to_str().unwrap(), None).is_empty());
         let env = env_for(&off, wt.to_str().unwrap(), Some(2));
         assert_eq!(env["CARGO_BUILD_JOBS"], json!("2"));
