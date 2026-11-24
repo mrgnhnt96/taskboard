@@ -53,6 +53,7 @@ mod idea_dig;
 mod idea_plan;
 mod idea_talk;
 mod ideas;
+mod idle_close;
 mod idle_polls;
 mod idle_review_terminals;
 mod import;
