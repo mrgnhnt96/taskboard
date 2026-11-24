@@ -451,6 +451,10 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("pr_base".into(), t.v("pr_base"));
         o.insert("start_retry_at".into(), start_retry_at(t, &status));
         o.insert("start_at".into(), t.v("start_at"));
+        // When a working task that parked itself resumes, and what it does then (`wait_until.rs`).
+        let (until, plan) = crate::wait_until::card(t);
+        o.insert("waiting_until".into(), until);
+        o.insert("resume_plan".into(), plan);
         // The terminal its start opened, while no agent has checked in from it (`startwatch.rs`).
         o.insert("start_terminal".into(), crate::startwatch::card(app, t)?);
         o.insert("looks_finished".into(), crate::lost_done::card(t));

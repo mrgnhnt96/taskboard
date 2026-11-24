@@ -521,6 +521,7 @@ impl Db {
         add_columns(&conn, crate::plan_review_again::ADDED)?;
         add_columns(&conn, crate::ideas::ADDED)?;
         add_columns(&conn, crate::scheduled::ADDED)?;
+        add_columns(&conn, crate::wait_until::ADDED)?;
         conn.execute_batch(crate::releases::SCHEMA)?;
         add_columns(&conn, crate::releases::ADDED)?;
         add_columns(&conn, crate::release_run::ADDED)?;

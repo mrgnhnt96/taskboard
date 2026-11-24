@@ -609,7 +609,7 @@ pub fn close_compacted(app: &App) -> Result<()> {
     }
     for (s, t) in task_terminals(app)? {
         let n = s.i0("compactions");
-        if n < max || t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != s.s("id") {
+        if n < max || t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != s.s("id") || crate::wait_until::waiting(&t) {
             continue;
         }
         if board::compacting_since(&s).is_string() || !settled(&s) || board::limited(&s) {
@@ -676,7 +676,8 @@ pub fn close_idle_after_hours(app: &App) -> Result<()> {
         if s.s("status") != Some("idle") || board::offline(&s) || board::limited(&s) || board::waiting_on_background(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
             continue;
         }
-        if hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
+        // Parked until a set time: closing its terminal would lose what wakes it.
+        if crate::wait_until::waiting(&t) || hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
             continue;
         }
         app.db.tx(|| close_for(app, &s, &t, board::HOURS_CLOSE, "It's idle after work hours"))?;
@@ -765,6 +766,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::task_grants::answers(app)?;
     crate::task_grants::tend(app, false)?;
     crate::scheduled::tick(app)?;
+    app.db.tx(|| crate::wait_until::sweep(app))?;
     app.db.tx(|| crate::misses::sweep(app).map(|_| ()))?;
     app.db.tx(|| crate::needs_retry::sweep(app))?;
     let made = start_queued(app)?;

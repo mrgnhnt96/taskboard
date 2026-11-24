@@ -522,7 +522,8 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
 
 /// Why a running task needs the owner only until its terminal carries on: a permission prompt or an
 /// idle prompt, or an API error. Any prompt, the turn's end, or Midna seeing it work again clears it.
-pub const UNTIL_IT_CARRIES_ON: [&str; 3] = ["attention", "offline", "api_error"];
+/// A task that missed the time it parked itself until (`wait_until.rs`) is one too.
+pub const UNTIL_IT_CARRIES_ON: [&str; 4] = ["attention", "offline", "api_error", crate::wait_until::OVERDUE];
 
 fn back_to_work(r: &Report, t: &Row, prompt: Option<&str>) -> Result<()> {
     if t.s("status") != Some("needs") || t.b("lost") {
@@ -543,6 +544,10 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
     r.note_background(transcript::Background::default())?;
     let prompt = r.body.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let m = MARKER_RE.captures(&prompt).and_then(|c| c[1].parse::<i64>().ok());
+    // A turn on a task that parked itself until a set time is the one it waited for.
+    if let Some(t) = board::task_for_session(app, r.sid())? {
+        crate::wait_until::resume(app, &t, &r.name(), "Back from waiting: a turn started")?;
+    }
     if let Some(sid) = r.sid() {
         app.db.x("UPDATE sessions SET board_prompt = ? WHERE id = ?", p![m.is_some() as i64, sid])?;
         if !r.spooled {
@@ -570,6 +575,7 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
                     if let Err(why) = board::claim(app, t, &sid, r.claude.as_deref(), None, "Picked up", false)? {
                         return Ok(ok(None, Some(format!("Task board: {why} Ask {} before working on it.", app.cfg.owner))));
                     }
+                    crate::wait_until::resume(app, &board::get_task(app, t.id())?, &r.name(), "Back from waiting: a turn started")?;
                     let t = board::get_task(app, t.id())?;
                     r.set_session_status("working")?;
                     if handoff::is_full_handoff(&prompt, t.id()) {
@@ -689,9 +695,15 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         prflow::link_pr(app, &t, &pr, &r.name())?;
     }
     r.stalled = stalled(r, &t)?;
+    // Parked until a set time (`tb wait-until`): its turn ends on purpose, with nothing for the owner.
+    let parked = crate::wait_until::waiting(&t);
+    if parked {
+        r.stalled = false;
+        r.unshipped = None;
+    }
     let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
-    let waited = waits_in_reply(r, &t, &reply_end)?;
-    let caught = waited.is_some();
+    let waited = if parked { None } else { waits_in_reply(r, &t, &reply_end)? };
+    let caught = waited.is_some() || parked;
     let asked = ends_on_question(&reply_end).filter(|_| !caught && !r.spooled && t.s("status") == Some("working"));
     if asked.is_some() || idle_on(r, &t)? != Some(false) {
         r.unshipped = None;
@@ -1608,6 +1620,12 @@ fn on_attention(r: &mut Report) -> Result<Value> {
             return Ok(ok(r.task()?.as_ref(), None));
         }
     }
+    if kind == "idle_prompt" {
+        // Parked until a set time (`tb wait-until`): idle at its prompt is what it's meant to be.
+        if let Some(t) = r.task()?.filter(|t| crate::wait_until::waiting(t) && t.s("session_id") == r.sid()) {
+            return Ok(ok(Some(&t), None));
+        }
+    }
     r.set_session_status("needs")?;
     let Some(t) = r.task()? else {
         let m = one_line(&{ let m = r.b("message"); if m.is_empty() { r.b("title") } else { m } }, 500);
@@ -2226,6 +2244,37 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     }
     app.wake_runner();
     Ok(with(ok(Some(&t), b), json!({"parked": true})))
+}
+
+/// `tb wait-until <time> --then "<plan>"`: the working task parks itself until a set time (`wait_until.rs`);
+/// `none` drops the wait.
+fn on_wait_until(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let me = rf("task", t.id());
+    let at = r.b("at");
+    if crate::scheduled::is_off(&at) {
+        let was = crate::wait_until::resume(app, &t, &r.name(), "No longer waits for a set time")?;
+        let text = if was { format!("{me} no longer waits for a set time.") } else { format!("{me} wasn't waiting for a set time.") };
+        let t = board::get_task(app, t.id())?;
+        return Ok(with(ok(Some(&t), Some(text)), crate::wait_until::answer(&t, None)));
+    }
+    if t.s("status") != Some("working") || t.b("lost") {
+        return err(409, format!("{me} isn't working, so it has nothing to wait on. Only a working task waits until a set time."));
+    }
+    if t.s("session_id") != r.sid() {
+        return err(409, format!("Only {me}'s own terminal can park it until a set time."));
+    }
+    let plan = one_line(&r.b("then"), 500);
+    if plan.is_empty() {
+        return err(400, "Say what it does when it resumes, for example: --then \"read the nightly build's result and fix what failed\".");
+    }
+    let when = crate::wait_until::parse(&at, now_ts())?;
+    let iso = crate::wait_until::park(app, &t, when, &plan, &r.name())?;
+    let t = board::get_task(app, t.id())?;
+    let text = crate::wait_until::parked_text(app, &t, &iso);
+    Ok(with(ok(Some(&t), Some(text)), crate::wait_until::answer(&t, Some(&iso))))
 }
 
 pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, at: Option<&str>) -> Result<Row> {
@@ -3724,6 +3773,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.question" => on_question,
         "tb.withdraw" => on_withdraw,
         "tb.wait_for" => on_wait_for,
+        "tb.wait_until" => on_wait_until,
         "tb.done" => on_done,
         "tb.fail" => on_fail,
         "tb.step" => on_step,
@@ -3956,6 +4006,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 out["deliver"] = h;
                 if r.event == "hook.stop" {
                     r.set_session_status("working")?;
+                    if let Some(t) = r.task()? {
+                        crate::wait_until::resume(app, &t, board::BOARD, "Back from waiting: the board sent it something")?;
+                    }
                 }
             }
         }
