@@ -1090,6 +1090,8 @@ impl Config {
         // The test machine's own load and memory never hold a test's starts back.
         c.terminals.hold_load_per_core = 0.0;
         c.terminals.hold_memory = "off".into();
+        // The test machine's cores don't show in started terminals' settings.
+        c.builds.jobs = Some(0);
         c
     }
 
