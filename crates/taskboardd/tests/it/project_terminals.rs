@@ -1,6 +1,7 @@
 //! A queued start waits only while its project has as many busy terminals as it may
 //! (`[terminals] project_max`, or `tb project set --max-terminals`), and any task start waits while the
-//! board runs as many task terminals as it may (`[terminals] global_max`, or `tb terminals --max`); its card says so.
+//! board runs as many task terminals as it may (`[terminals] global_max`, or `tb terminals --max`) or the Mac's load or memory
+//! pressure is too high (`[terminals] hold_load_per_core`, `hold_memory`); its card says so.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{board, fields, jobs, midna, runner};
+use taskboardd::{board, fields, jobs, midna, pressure, runner};
 
 struct Board {
     app: Arc<App>,
@@ -190,4 +191,60 @@ fn the_board_cap_is_a_count_from_one_to_a_hundred() {
     assert_eq!(b.post("terminals", json!({"max_terminals": 100}))["max_terminals"], 100);
     let e = api::dispatch(&b.app, "POST", "terminals", &Query::new(), &json!({"max_terminals": 101})).unwrap_err();
     assert_eq!((e.status, e.message.as_str()), (400, "max_terminals is a count from 1 to 100, or default."));
+}
+
+/// A board that holds task starts while the Mac reads `load1` on 12 cores with this memory pressure.
+fn board_on_a_mac(load1: f64, memory: &str) -> Board {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.terminals.hold_load_per_core = 1.5;
+    cfg.terminals.hold_memory = "warning".into();
+    let repo = dir.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    let repo = repo.to_string_lossy().to_string();
+    let app = App::for_tests(cfg);
+    app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo}]).to_string())).unwrap();
+    let b = Board { app, repo, _dir: dir };
+    b.mac(load1, memory);
+    b
+}
+
+impl Board {
+    fn mac(&self, load1: f64, memory: &str) {
+        pressure::fix_for_tests(&self.app, Some(pressure::Reading { load1, cpus: 12, memory: memory.into(), from: "mac" }));
+    }
+}
+
+#[test]
+fn a_start_waits_while_the_mac_is_loaded_and_says_why() {
+    let b = board_on_a_mac(30.0, "normal");
+    let t = b.queued_task();
+    assert_eq!(b.get(&format!("tasks/T{t}"))["waiting"], "Waits for the Mac to calm down: load 30.0 on 12 cores (starts wait from 18)");
+    assert!(!b.takes_start(), "terminals are free, the Mac isn't");
+    assert_eq!(b.get("terminals")["line"], "0 of 8 task terminals running (cap from config.toml)\nNew starts wait: load 30.0 on 12 cores (starts wait from 18)");
+
+    b.mac(12.0, "normal");
+    assert!(b.get(&format!("tasks/T{t}"))["waiting"].is_null());
+    assert!(b.takes_start(), "the load calmed down");
+}
+
+#[test]
+fn a_start_waits_while_memory_runs_low() {
+    let b = board_on_a_mac(2.0, "warning");
+    let t = b.queued_task();
+    assert_eq!(b.get(&format!("tasks/T{t}"))["waiting"], "Waits for free memory: macOS memory pressure is warning");
+    assert!(!b.takes_start());
+    let out = b.get("terminals");
+    assert_eq!((out["held"].clone(), out["pressure"]["memory"].clone()), (json!("Waits for free memory: macOS memory pressure is warning"), json!("warning")));
+
+    b.mac(2.0, "normal");
+    assert!(b.takes_start());
+}
+
+#[test]
+fn the_mac_s_load_holds_no_start_when_the_check_is_off() {
+    let b = new_board(5);
+    pressure::fix_for_tests(&b.app, Some(pressure::Reading { load1: 280.0, cpus: 12, memory: "critical".into(), from: "mac" }));
+    b.queued_task();
+    assert!(b.takes_start(), "tests' boards turn the check off");
 }

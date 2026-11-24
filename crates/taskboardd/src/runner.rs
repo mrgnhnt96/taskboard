@@ -400,6 +400,7 @@ fn free_waiting_slots(app: &App) -> Result<()> {
 
 pub fn start_queued(app: &App) -> Result<Vec<i64>> {
     let mut started = vec![];
+    crate::pressure::refresh(app);
     free_waiting_slots(app)?;
     let in_hours = hours::may_start(app);
     let queued = app.db.q(

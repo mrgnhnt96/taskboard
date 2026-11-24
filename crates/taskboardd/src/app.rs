@@ -50,6 +50,12 @@ pub struct Shared {
     pub midna_panels_sent: HashMap<String, Value>,
     /// Terminals Midna said it doesn't have (closed and gone from its Summary): no panel goes to them again.
     pub midna_panels_gone: HashSet<String>,
+    /// The Mac's last load and memory reading and when it was taken (`pressure.rs`).
+    pub pressure: Option<(Instant, crate::pressure::Reading)>,
+    /// A reading tests put in place of the Mac's.
+    pub pressure_fixed: Option<crate::pressure::Reading>,
+    /// What last held task starts back on the Mac's load or memory, as logged: a change logs again.
+    pub pressure_held: Option<String>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,

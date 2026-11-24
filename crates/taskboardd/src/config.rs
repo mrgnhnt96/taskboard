@@ -639,6 +639,12 @@ pub struct TerminalsConfig {
     /// A task opens its terminal only while fewer than this many task terminals run across every project
     /// (`tb terminals --max` changes it on the board).
     pub global_max: i64,
+    /// A task's terminal waits to open while the Mac's 1-minute load average is at or above this many
+    /// per core, even with terminals free under the caps (0: the load never holds starts).
+    pub hold_load_per_core: f64,
+    /// A task's terminal waits to open while macOS's memory pressure is at least this: `warning`,
+    /// `critical`, or `off`.
+    pub hold_memory: String,
     /// Tools the board's terminals start without (`--disallowedTools`), so each turn carries less:
     /// `mcp__<server>` drops a server's deferred tool names, `Agent(<type>)` one subagent's listing.
     pub deny: Vec<String>,
@@ -650,6 +656,7 @@ pub const DENY: [&str; 1] = ["mcp__midna"];
 
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
 pub const GLOBAL_MAX_TERMINALS: i64 = 8;
+pub const HOLD_LOAD_PER_CORE: f64 = 1.5;
 /// The most a terminal cap (board-wide or a project's) or a project's worktree slots may be set to.
 pub const MAX_PARALLEL: i64 = 100;
 /// What opens in the background unless config.toml says: the Jira desk, and the terminals that need
@@ -662,6 +669,8 @@ impl Default for TerminalsConfig {
             background: BACKGROUND.map(String::from).to_vec(),
             project_max: PROJECT_MAX_TERMINALS,
             global_max: GLOBAL_MAX_TERMINALS,
+            hold_load_per_core: HOLD_LOAD_PER_CORE,
+            hold_memory: "warning".into(),
             deny: DENY.map(String::from).to_vec(),
         }
     }
@@ -1078,6 +1087,9 @@ impl Config {
         c.pr.approvals = 0;
         c.accounts_sandbox = true;
         c.page_url = "taskboard://".into();
+        // The test machine's own load and memory never hold a test's starts back.
+        c.terminals.hold_load_per_core = 0.0;
+        c.terminals.hold_memory = "off".into();
         c
     }
 

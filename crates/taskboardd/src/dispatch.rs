@@ -107,14 +107,21 @@ pub fn set_board_max(app: &App, body: &Value) -> Result<()> {
 pub fn terminals_state(app: &App) -> Result<Value> {
     let (max, running) = (board_max(app), running_task_terminals(app)?);
     let from = if board_max_set(app).is_some() { "tb terminals --max" } else { "config.toml" };
+    let mut line = format!("{running} of {max} task terminals running (cap from {from})");
+    let held = crate::pressure::hold(app);
+    if let Some(why) = &held {
+        line.push_str(&format!("\nNew starts wait: {}", why.split_once(": ").map_or(why.as_str(), |(_, w)| w)));
+    }
+    let reading = crate::pressure::reading(app).map(|r| r.json());
     Ok(json!({"max_terminals": max, "max_terminals_set": board_max_set(app), "running": running,
-              "line": format!("{running} of {max} task terminals running (cap from {from})")}))
+              "pressure": reading, "held": held, "line": line}))
 }
 
 /// Why a task's start job can't open its terminal yet: the board already runs as many task terminals as it
 /// may (`tb terminals --max`, or `[terminals] global_max`), or, for a queued start (pickup "queue"), its
 /// project already has as many busy terminals as it may (`[terminals] project_max`, or the project's own
-/// `max_terminals`). A goal's own limit holds its tasks back before they get a start job.
+/// `max_terminals`). A task's start also waits while the Mac's load or memory pressure is too high
+/// (`pressure::hold`). A goal's own limit holds its tasks back before they get a start job.
 pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
     if !new_terminal(app, j) {
         return Ok(None);
@@ -124,6 +131,9 @@ pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
         let (cap, running) = (board_max(app), running_task_terminals(app)?);
         if running >= cap {
             return Ok(Some(format!("Waits for a free slot: {running} of {cap} task terminals running across the board")));
+        }
+        if let Some(why) = crate::pressure::hold(app) {
+            return Ok(Some(why));
         }
     }
     if !as_bool(a.get("queue"), false) {
@@ -159,6 +169,9 @@ pub fn hold_before_start(app: &App, t: &Row, cwd: &str, queue: bool) -> Result<O
     }
     if running + waiting.len() as i64 >= cap {
         return Ok(Some(format!("Waits for a free slot: {} ahead of it for the board's {}", plural(waiting.len() as i64, "start"), plural(cap, "task terminal"))));
+    }
+    if let Some(why) = crate::pressure::hold(app) {
+        return Ok(Some(why));
     }
     if !queue {
         return Ok(None);
