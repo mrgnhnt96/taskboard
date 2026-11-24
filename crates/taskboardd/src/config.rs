@@ -702,6 +702,11 @@ pub struct ModelsConfig {
     pub pr_visit: String,
     /// Those visits start a fresh conversation with a short prompt instead of resuming the task's.
     pub fresh_pr_visits: bool,
+    /// The model of PR visits that resume the task's conversation (fixing checks, rebasing, review
+    /// comments, tester notes): `small`, `large` or a model name. Empty keeps the task's own.
+    pub pr_work: String,
+    /// The most effort those visits run at; a task or tier that runs lower keeps its own. Empty: no cap.
+    pub pr_work_effort: String,
 }
 
 impl Default for ModelsConfig {
@@ -716,6 +721,8 @@ impl Default for ModelsConfig {
             default_effort: "".into(),
             pr_visit: "sonnet".into(),
             fresh_pr_visits: true,
+            pr_work: "".into(),
+            pr_work_effort: "medium".into(),
         }
     }
 }
@@ -764,6 +771,32 @@ impl ModelsConfig {
         match self.pr_visit.trim() {
             "" => self.resolve(task),
             m => self.resolve(Some(m)),
+        }
+    }
+
+    /// The model of a PR visit that resumes the task's conversation; the task's own when `pr_work` is empty.
+    pub fn resolve_pr_work(&self, task: Option<&str>) -> Option<String> {
+        match self.pr_work.trim() {
+            "" => self.resolve(task),
+            m => self.resolve(Some(m)),
+        }
+    }
+
+    /// The effort of a PR visit that resumes the task's conversation: what it would run at, held to
+    /// `pr_work_effort`. One Claude picks itself (none passed) or names no known level takes the cap.
+    pub fn resolve_pr_work_effort(&self, model: Option<&str>, effort: Option<&str>) -> Option<String> {
+        let own = match self.pr_work.trim() {
+            "" => self.resolve_effort(model, effort),
+            m => self.resolve_effort(Some(m), None),
+        };
+        let cap = self.pr_work_effort.trim();
+        if !self.enabled || cap.is_empty() {
+            return own;
+        }
+        let rank = |e: &str| crate::runner::EFFORTS.iter().position(|k| k.eq_ignore_ascii_case(e));
+        match (own.as_deref().and_then(rank), rank(cap)) {
+            (Some(o), Some(c)) if o <= c => own,
+            _ => Some(cap.to_string()),
         }
     }
 }
@@ -1224,6 +1257,25 @@ mod tests {
         assert_eq!(own.resolve_pr_visit_effort(Some("small"), None).as_deref(), Some("medium"));
         let off = ModelsConfig { enabled: false, ..ModelsConfig::default() };
         assert_eq!(off.resolve_effort(Some("small"), Some("max")), None);
+    }
+
+    #[test]
+    fn pr_work_visits_run_at_most_at_pr_work_effort() {
+        let m = ModelsConfig::default();
+        assert_eq!(m.resolve_pr_work(Some("large")).as_deref(), Some("opus"), "the task's own model by default");
+        assert_eq!(m.resolve_pr_work_effort(Some("large"), None).as_deref(), Some("medium"), "high held to medium");
+        assert_eq!(m.resolve_pr_work_effort(None, Some("max")).as_deref(), Some("medium"), "a task's own effort too");
+        assert_eq!(m.resolve_pr_work_effort(Some("small"), Some("low")).as_deref(), Some("low"), "lower keeps its own");
+        assert_eq!(m.resolve_pr_work_effort(Some("claude-haiku-5-5"), None).as_deref(), Some("medium"), "Claude's own: the cap");
+        let uncapped = ModelsConfig { pr_work_effort: "".into(), ..ModelsConfig::default() };
+        assert_eq!(uncapped.resolve_pr_work_effort(Some("large"), None).as_deref(), Some("high"));
+        let small = ModelsConfig { pr_work: "small".into(), pr_work_effort: "low".into(), ..ModelsConfig::default() };
+        assert_eq!(small.resolve_pr_work(Some("large")).as_deref(), Some("sonnet"));
+        assert_eq!(small.resolve_pr_work_effort(Some("large"), Some("max")).as_deref(), Some("low"));
+        let off = ModelsConfig { enabled: false, ..ModelsConfig::default() };
+        assert_eq!((off.resolve_pr_work(None), off.resolve_pr_work_effort(None, None)), (None, None));
+        let c = Config::from_file(toml::from_str("[models]\npr_work_effort = \"low\"").unwrap(), PathBuf::from("/tmp/x.toml"));
+        assert_eq!((c.models.pr_work.as_str(), c.models.pr_work_effort.as_str()), ("", "low"));
     }
 
     #[test]

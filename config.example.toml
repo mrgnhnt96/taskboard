@@ -332,6 +332,8 @@ large_effort = "high"                # the --effort large tasks run at
 default_effort = ""                  # tasks that name a model: "" for Claude's own (tb task set --effort sets one task's)
 pr_visit = "sonnet"                  # PR visits that don't change code (merge, ask for reviews); "" for the task's model
 fresh_pr_visits = true               # those visits start a fresh, short conversation instead of resuming the task's
+pr_work = ""                         # PR visits that resume the task's conversation (fix checks, rebase, review comments, tester notes): small, large, a model name, or "" for the task's model
+pr_work_effort = "medium"            # the most effort those visits run at (a lower task or tier keeps its own); "" for the task's effort
 
 # How goals get planned. After tb goal new (with tasks) and each tb propose, Claude reads the plan
 # against the goal's outcome and lists what it misses (tb goal review G<n>); it never holds the goal up.
