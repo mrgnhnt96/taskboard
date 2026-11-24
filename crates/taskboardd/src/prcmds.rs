@@ -12,6 +12,13 @@
 //! `addressed` makes for another review ([`ask_held_rereviews`]). Meanwhile the board's copy of the
 //! PR stands for it: `tb pr thread`, `tb pr status` and `addressed` work from it without saying it
 //! may be stale ([`fresh_or_held`]).
+//!
+//! While a healthy stream relay covers the PR's repo, the board's copy is the PR (#1162): every event
+//! for it lands on that copy, so an agent's `tb pr status` answers from it, and `tb pr merge` judges
+//! it first and refuses what it shows holding the merge, both without reading the host
+//! ([`streamed_copy`]). The host is read when an event couldn't be applied, a hint's settle read is
+//! due, the agent pushed a head the copy doesn't show, or the last full read is older than
+//! `[feed] reconcile_secs`. A merge that copy lets through still reads the host once before merging.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -23,7 +30,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::prhost::{self, MergeOpts, PrRef, Thread};
 use crate::util::*;
-use crate::{board, fields, p, prflow, progress};
+use crate::{board, feed, fields, p, prflow, progress};
 
 /// How many of the base branch's latest commits `tb pr status` compares a failure against.
 pub const BASE_COMMITS: usize = 5;
@@ -74,6 +81,45 @@ fn fresh_or_held(app: &App, id: i64) -> Result<(Row, Value, bool)> {
         Some(rec) => Ok((t, rec, true)),
         None => Err(e),
     }
+}
+
+/// The board's copy of the PR when the stream keeps it current (#1162): a healthy, active relay covers
+/// its repo and the last full read came since that relay connected or came back, less than
+/// `[feed] reconcile_secs` ago (`feed::covered_read_rests`); no event since failed to land on it
+/// (`event_unread_at`); no hint's settle read is due (`reread_at`); and the branch's last push is the
+/// head it shows (`prflow::newer_push`). None when the host should be read.
+pub fn streamed_copy(app: &App, t: &Row) -> Option<Value> {
+    let f = flow(t);
+    let rec = f.get("rec").filter(|r| r["threads"].is_array())?;
+    let (host, repo) = (t.s("pr_host")?, t.s("pr_repo")?);
+    if !prhost::watched(Some(host)) || f.contains_key("event_unread_at") {
+        return None;
+    }
+    if f.s("reread_at").and_then(parse_iso).is_some_and(|r| r <= now_ts()) {
+        return None;
+    }
+    if !feed::covered_read_rests(app, host, repo, f.s("read_at").and_then(parse_iso)) {
+        return None;
+    }
+    prflow::newer_push(app, t, rec).is_none().then(|| rec.clone())
+}
+
+/// The board's copy of the PR for judging an agent's merge before reading the host, and whether all
+/// that it shows holding the merge counts (else only its running checks): the stream's copy
+/// ([`streamed_copy`]), or one checked less than `[feed] reconcile_secs` ago that shows checks running
+/// on the branch's last push. The board watches those checks and brings the agent back once they finish.
+fn kept_for_merge(app: &App, t: &Row) -> Option<(Value, bool)> {
+    if let Some(rec) = streamed_copy(app, t) {
+        return Some((rec, true));
+    }
+    let f = flow(t);
+    let rec = f.get("rec").filter(|r| r.is_object())?;
+    let every = app.cfg.feed.reconcile_secs;
+    let recent = wall_age_secs(f.s("checked_at")).is_some_and(|a| every <= 0.0 || a < every);
+    if !recent || f.contains_key("event_unread_at") || running_checks(t, rec).is_empty() || prflow::newer_push(app, t, rec).is_some() {
+        return None;
+    }
+    Some((rec.clone(), false))
 }
 
 /// The last read of each task's PR made here, and how many have ended: a caller that asked while one
@@ -663,7 +709,7 @@ pub fn merge_gates(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> Res
         let checks = rec["checks"].as_array().cloned().unwrap_or_default();
         let running = running_checks(t, rec);
         if !running.is_empty() {
-            out.push(Gate::wait(format!("checks are still running: {}", running.join(", "))));
+            out.push(Gate::wait(format!("{RUNNING}: {}", running.join(", "))));
         }
         let stopped: Vec<String> = checks.iter().filter(|c| c["state"] == "stopped").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
         if !stopped.is_empty() {
@@ -874,27 +920,27 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         );
     }
     let pr = pr_of(&before)?;
+    let approved = !forced && (!override_why.is_empty() || word.as_ref().is_some_and(|w| w.approved));
+    // An agent's merge judges the board's copy first (#1162): what it shows holding the merge refuses
+    // without reading the host. Nothing held there still reads the host before merging.
+    if agent && !forced {
+        if let Some((kept, all)) = kept_for_merge(app, &before) {
+            let gates = merge_gates(app, &before, &kept, approved)?;
+            if !gates.is_empty() && (all || gates.iter().any(|g| g.why.starts_with(RUNNING))) {
+                return refuse_merge(app, &before, &kept, &pr, gates, false, true);
+            }
+        }
+    }
     let (t, rec) = fresh(app, id).map_err(|e| prflow::wait_out_limit(app, id, &pr, body, "merge", e))?;
     let site = prhost::limit::label(&pr.host);
     progress::stage(&format!("Read PR #{} from {site}", pr.num));
     // What the override stands in for, kept for the task's log once the merge goes through.
     let overridden = if override_why.is_empty() || forced { None } else { approvals_short(app, &t, &rec) };
-    let gates = merge_gates(app, &t, &rec, !forced && (!override_why.is_empty() || word.as_ref().is_some_and(|w| w.approved)))?;
+    let gates = merge_gates(app, &t, &rec, approved)?;
     let (passed, held): (Vec<Gate>, Vec<Gate>) = gates.into_iter().partition(|g| forced && g.overridable);
     let passed: Vec<String> = passed.into_iter().map(|g| g.why).collect();
-    let only_waits = held.iter().all(|g| g.waits);
-    let blockers: Vec<String> = held.into_iter().map(|g| g.why).collect();
-    if !blockers.is_empty() {
-        let running = running_checks(&t, &rec);
-        if !running.is_empty() {
-            app.db.tx(|| prflow::note_checks_running(app, &t, rec["head"].as_str().unwrap_or(""), &running, board::BOARD))?;
-        }
-        let why = blockers.join("; ");
-        prflow::note_merge_refused(app, id, &rec, &why)?;
-        let past = if forced { " (an override doesn't merge past these)" } else { "" };
-        // Running the merge again won't help while the host catches up; the board watches for it.
-        let next = if only_waits { WAITS_NEXT } else { "" };
-        return err(409, format!("PR #{} can't merge yet: {why}{past}.{next}", pr.num));
+    if !held.is_empty() {
+        return refuse_merge(app, &t, &rec, &pr, held, forced, false);
     }
     if let Some(carried) = carried_prs(app, &t, &pr)? {
         prflow::note_merge_refused(app, id, &rec, &carried)?;
@@ -948,6 +994,31 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
 }
+
+/// Refuses the merge for what holds it on `rec`, noting the checks still running (the board watches
+/// them) and the refusal. `kept`: judged on the board's copy of the PR ([`kept_for_merge`]), not a read.
+fn refuse_merge(app: &App, t: &Row, rec: &Value, pr: &PrRef, held: Vec<Gate>, forced: bool, kept: bool) -> Result<Value> {
+    let running = running_checks(t, rec);
+    let head = rec["head"].as_str().unwrap_or("");
+    let noted = flow(t).get("checks_running").is_some_and(|n| head.starts_with(n["head"].as_str().unwrap_or("-")) && names_of(&n["checks"]) == running);
+    if !running.is_empty() && !(kept && noted) {
+        app.db.tx(|| prflow::note_checks_running(app, t, head, &running, board::BOARD))?;
+    }
+    let only_waits = held.iter().all(|g| g.waits);
+    let still = held.iter().any(|g| g.why.starts_with(RUNNING));
+    let why = held.into_iter().map(|g| g.why).collect::<Vec<_>>().join("; ");
+    prflow::note_merge_refused(app, t.id(), rec, &why)?;
+    let past = if forced { " (an override doesn't merge past these)" } else { "" };
+    // Running the merge again won't help while the host catches up; the board watches for it.
+    let next = if only_waits { WAITS_NEXT } else { "" };
+    if kept && still {
+        return err(409, format!("PR #{} can't merge yet: checks still running: tb pr wait. What holds it: {why}.{next}", pr.num));
+    }
+    err(409, format!("PR #{} can't merge yet: {why}{past}.{next}", pr.num))
+}
+
+/// How the gate for checks still running on the push begins.
+const RUNNING: &str = "checks are still running";
 
 /// The refusal's last sentence when only what the host hasn't caught up on holds the merge.
 const WAITS_NEXT: &str = " The board watches it and brings you back to merge once that clears, so don't run tb pr merge again or poll for it: run tb pr wait and stop here.";
@@ -1331,7 +1402,11 @@ fn names_of(v: &Value) -> Vec<String> {
 pub fn status(app: &App, id: i64) -> Result<Value> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
-    let read = if prhost::watched(t.s("pr_host")) { on_host(&pr, "reading", || prflow::refresh_task(app, id))? } else { Err("the board doesn't watch this PR's host".into()) };
+    let read = match streamed_copy(app, &t) {
+        Some(rec) => Ok(rec),
+        None if prhost::watched(t.s("pr_host")) => on_host(&pr, "reading", || prflow::refresh_task(app, id))?,
+        None => Err("the board doesn't watch this PR's host".into()),
+    };
     let t = board::get_task(app, id)?;
     let f = flow(&t);
     let rec = match &read {

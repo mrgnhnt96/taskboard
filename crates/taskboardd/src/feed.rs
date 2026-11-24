@@ -863,7 +863,7 @@ pub fn intake_from(app: &App, body: &Value, sources: &[&str], pr: Option<&Value>
 
 /// Brings a task's open, watched PR up to date after an event about it: applies a complete stream pr
 /// event when there is one, else reads the PR from its host. Says how in `out` (`applied`, `refreshed`,
-/// `phase` or `read_error`).
+/// `phase` or `read_error`); a failed read marks the flow `event_unread_at` until a read lands.
 pub fn read_pr(app: &App, t: &Row, pr: Option<&Value>, out: &mut Value) -> Result<()> {
     if crate::prhost::watched(t.s("pr_host")) && t.i("pr_num").is_some() && !matches!(t.s("pr_phase"), Some("merged" | "declined")) {
         crate::prpace::stirred(app, t.id())?;
@@ -884,6 +884,9 @@ pub fn read_pr(app: &App, t: &Row, pr: Option<&Value>, out: &mut Value) -> Resul
             Err(e) => {
                 out["refreshed"] = json!(false);
                 out["read_error"] = json!(e);
+                // The board's copy misses this event until a read lands: agents' `tb pr` commands read the
+                // host meanwhile (`prcmds::streamed_copy`).
+                app.db.tx(|| prflow::merge_flow(app, t.id(), crate::fields!["event_unread_at" => now_iso()]).map(|_| ()))?;
             }
         }
     } else {

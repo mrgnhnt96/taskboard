@@ -126,8 +126,10 @@ fn a_push_the_host_doesnt_show_yet_holds_the_merge() {
     assert!(e.contains("checks are still running: build"), "{e}");
     assert!(!e.contains("was pushed at"), "{e}");
 
-    // Green on the new head: it merges.
+    // Green on the new head: once the board reads it (#1162: until then its copy shows the build
+    // running, and the merge refuses on that), it merges.
     *host.rec.lock() = record("OPEN", &new, "feat", &[("build", "passed")]);
+    prflow::refresh_task(&b.app, id).unwrap().unwrap();
     b.post(&format!("tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap();
     assert_eq!(b.phase(id), "merged");
 
