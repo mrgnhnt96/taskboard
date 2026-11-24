@@ -876,6 +876,26 @@ fn more_changes_after_done_reopen_the_task() {
 }
 
 #[test]
+fn edits_before_a_wait_for_stay_with_the_parked_task() {
+    let b = new_board();
+    b.add_session("s1");
+    let t = b.task("Fix the tab bar", json!({"pickup": "manual"}));
+    let other = b.task("Ship the icons", json!({}));
+    b.report("hook.prompt", "s1", json!({"prompt": format!("[task-board:T{t}] go")}));
+    write_turn(&b, "s1", "go", &["TabBar.swift"], "2000-01-01T00:00:00Z");
+    assert_eq!(b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{other}")], "why": "needs the icons"}))["parked"], true);
+    assert!(b.report("tb.status", "s1", json!({}))["task"].is_null(), "the terminal has no task now");
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Waiting on the icons."}));
+    assert!(out.get("block").is_none(), "the edits are the parked task's: {out}");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "now rename the app"}));
+    write_turn(&b, "s1", "now rename the app", &["Info.plist"], "2099-01-01T00:00:00Z");
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Renamed it."}));
+    let block = out["block"].as_str().expect("a later turn's edits are new work");
+    assert!(block.contains("this terminal has no task"), "{block}");
+}
+
+#[test]
 fn more_changes_leave_a_done_pr_task_to_the_pr_flow() {
     let b = new_board();
     b.add_session("s1");

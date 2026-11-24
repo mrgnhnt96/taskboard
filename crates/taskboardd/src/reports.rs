@@ -1124,6 +1124,10 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
         _ => shown_files(&files),
     };
     let last = board::find_task(r.app, s.i("last_task"))?;
+    // tb wait-for this turn took the task off this terminal: the turn's edits came before it and are its work.
+    if last.as_ref().is_some_and(|t| parked_this_turn(t, &sid, r.turn_at.as_deref())) {
+        return Ok(None);
+    }
     if let Some(last) = last {
         if last.s("status") == Some("done") && last.st("finished_at") >= r.turn_at.clone().unwrap_or_default() {
             return Ok(None);
@@ -1157,6 +1161,12 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
          To check the board for this work first: {tb} search \"<words>\".{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn. The task-board skill's no-task.md has the rest."
     )))
+}
+
+/// Task `t` was parked by `tb wait-for` from terminal `sid` since the turn started (`turn_at`; any time when
+/// the turn's start isn't known).
+fn parked_this_turn(t: &Row, sid: &str, turn_at: Option<&str>) -> bool {
+    waitsfor::parked(t).is_some_and(|p| p.s("session") == Some(sid) && turn_at.is_none_or(|at| p.st("at").as_str() >= at))
 }
 
 /// The terminal's project got a release since the turn started.
