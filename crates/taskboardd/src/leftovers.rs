@@ -8,17 +8,23 @@
 //!   the task the terminal was on when the process started (`task_terminals`);
 //! - Chrome and Node rewrite their own environment, so a Chrome the board first sees within a few
 //!   minutes of its start belongs to the task holding the worktree slot it was started in (its cwd);
-//! - a pool device belongs to the task it's lent to.
+//! - a pool device belongs to the task it's lent to;
+//! - a booted simulator outside the pool belongs to no task: no task can lease it.
 //!
 //! A recorded process is cleaned up when its task stops being active (done, failed, parked; a done
 //! task a PR visit is on still counts), or when the terminal it was started from is gone while the
 //! task carries on in another. A Chrome is sent SIGTERM (SIGKILL if it's still there `KILL_AFTER`
 //! later) and its profile removed when it's under the temp dir; a device is shut down with its own
-//! stop command. Gradle and Kotlin daemons wait while any Gradle build or Android Studio is running,
+//! stop command (`xcrun simctl shutdown` for a simulator outside the pool). Gradle and Kotlin daemons wait while any Gradle build or Android Studio is running,
 //! since another task's build may be using them. What a task's terminal left behind once it's gone
 //! (anything else carrying its `MIDNA_SESSION`, outside an app bundle and not in `KEEP`) goes too.
 //!
-//! The orphan sweep: a recorded Chrome or device with no task, or one from a terminal that's gone,
+//! Simulators are leased like devices: one no task has leased (in the pool or not) is shut down once
+//! it's been up `[cleanup] unleased_simulator_mins`, and at once while more simulators are booted than
+//! the pool has, so no more than the pool's simulators stay up. Nothing shows who booted a simulator
+//! (launchd starts it), so one the owner booted by hand goes too.
+//!
+//! The orphan sweep: a recorded Chrome or emulator with no task, or one from a terminal that's gone,
 //! is cleaned up once it's older than `[cleanup] orphan_hours`. A Gradle or Kotlin daemon or Android
 //! Studio with no task is never touched: it may be the owner's own. Nothing outside an agent's reach
 //! is touched either: other users' processes, the board itself and what started it, apps started
@@ -47,19 +53,24 @@ CREATE TABLE IF NOT EXISTS leftovers(
 CREATE INDEX IF NOT EXISTS leftovers_open ON leftovers(cleaned_at);
 "#;
 
+/// Columns added since the first schema: a booted device's UDID or serial, for one outside the pool.
+pub const ADDED: &[(&str, &str, &str)] = &[("leftovers", "target", "TEXT")];
+
 /// `[cleanup]` in config.toml.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CleanupConfig {
     /// Stops what a task's agent left running once the task is done with it.
     pub on: bool,
-    /// How old a Chrome or booted device with no live task gets before the sweep stops it.
+    /// How old a Chrome or booted emulator with no live task gets before the sweep stops it.
     pub orphan_hours: f64,
+    /// How long a simulator no task has leased stays up before it's shut down.
+    pub unleased_simulator_mins: f64,
 }
 
 impl Default for CleanupConfig {
     fn default() -> Self {
-        CleanupConfig { on: true, orphan_hours: 12.0 }
+        CleanupConfig { on: true, orphan_hours: 12.0, unleased_simulator_mins: 10.0 }
     }
 }
 
@@ -185,6 +196,12 @@ pub fn kind_of(p: &Proc) -> Option<Kind> {
 }
 
 static UDID: Lazy<Regex> = Lazy::new(|| Regex::new(r"/Devices/([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})/").unwrap());
+static SIM_ID: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$").unwrap());
+
+/// A pool device that's a simulator: its target is a simulator UDID (a phone's id isn't one).
+fn pool_simulator(d: &Row) -> bool {
+    SIM_ID.is_match(&d.st("target").trim().to_uppercase())
+}
 
 /// The id a booted simulator or emulator goes by in the pool: its UDID, or `emulator-<port>`.
 pub fn device_target(p: &Proc, kind: Kind) -> Option<String> {
@@ -195,7 +212,7 @@ pub fn device_target(p: &Proc, kind: Kind) -> Option<String> {
     }
 }
 
-fn describe(p: &Proc, kind: Kind, device: Option<&str>) -> String {
+fn describe(p: &Proc, kind: Kind, device: Option<&str>, target: Option<&str>) -> String {
     match kind {
         Kind::Chrome => match p.flag("--remote-debugging-port") {
             Some(port) => format!("Chrome on port {port}"),
@@ -204,7 +221,11 @@ fn describe(p: &Proc, kind: Kind, device: Option<&str>) -> String {
         Kind::Gradle => "a Gradle daemon".into(),
         Kind::Kotlin => "a Kotlin daemon".into(),
         Kind::Studio => "Android Studio".into(),
-        Kind::Simulator | Kind::Emulator => device.unwrap_or("a device").to_string(),
+        Kind::Simulator | Kind::Emulator => match (device, target) {
+            (Some(d), _) => d.to_string(),
+            (None, Some(t)) => format!("simulator {t}"),
+            (None, None) => "a device".into(),
+        },
         Kind::Left => format!("{} (pid {})", p.base(), p.pid),
     }
 }
@@ -223,6 +244,9 @@ pub enum Act {
 struct Board {
     now: f64,
     orphan_secs: f64,
+    unleased_secs: f64,
+    /// More simulators are booted than the pool has.
+    too_many_sims: bool,
     /// Terminal → (when a task took it, the task), oldest first.
     terms: HashMap<String, Vec<(f64, i64)>>,
     /// Terminal → when the board saw it go.
@@ -265,7 +289,7 @@ impl Board {
             .into_iter()
             .map(|r| (r.st("path"), r.i0("task_id")))
             .collect();
-        let devices = app
+        let devices: HashMap<String, Row> = app
             .db
             .q("SELECT * FROM devices WHERE COALESCE(target, '') != ''", p![])?
             .into_iter()
@@ -283,9 +307,13 @@ impl Board {
             .into_iter()
             .map(|r| (r.st("device"), r.i0("task_id")))
             .collect();
+        let pool_sims = devices.values().filter(|d| !d.b("off") && pool_simulator(d)).count();
+        let booted_sims = procs.iter().filter(|p| kind_of(p) == Some(Kind::Simulator) && device_target(p, Kind::Simulator).is_some()).count();
         Ok(Board {
             now: now_ts(),
             orphan_secs: app.cfg.cleanup.orphan_hours.max(0.0) * 3600.0,
+            unleased_secs: app.cfg.cleanup.unleased_simulator_mins.max(0.0) * 60.0,
+            too_many_sims: booted_sims > pool_sims,
             terms,
             gone,
             attached,
@@ -336,12 +364,19 @@ impl Board {
 
 /// Whether a recorded process should go now.
 fn due(app: &App, b: &mut Board, r: &Row, kind: Kind) -> bool {
-    let old = b.now - r.i0("started") as f64 >= b.orphan_secs;
+    let up = b.now - r.i0("started") as f64;
+    let old = up >= b.orphan_secs;
     if kind.device() {
         if b.lent.contains_key(&r.st("device")) {
             return false;
         }
-        return r.i("task_id").is_some() || old;
+        if r.i("task_id").is_some() {
+            return true;
+        }
+        return match kind {
+            Kind::Simulator => b.too_many_sims || up >= b.unleased_secs,
+            _ => old,
+        };
     }
     let session = r.s("session_id").map(str::to_string);
     let gone = session.as_deref().is_some_and(|s| b.gone(s));
@@ -403,6 +438,7 @@ pub fn pass(app: &App, procs: &[Proc], act: &mut dyn FnMut(&Act) -> bool) -> Res
         let device = match &target {
             Some(t) => match b.devices.get(t) {
                 Some(d) => Some(d.clone()),
+                None if kind == Kind::Simulator => None,
                 None => continue,
             },
             None if kind.device() => continue,
@@ -417,8 +453,8 @@ pub fn pass(app: &App, procs: &[Proc], act: &mut dyn FnMut(&Act) -> bool) -> Res
             "leftovers",
             crate::fields![
                 "kind" => kind.name(), "pid" => p.pid, "started" => p.started, "task_id" => task, "session_id" => session,
-                "device" => device.as_ref().map(|d| d.st("name")), "profile" => profile,
-                "what" => describe(p, kind, device.as_ref().map(|d| d.st("name")).as_deref()), "seen_at" => now
+                "device" => device.as_ref().map(|d| d.st("name")), "target" => target, "profile" => profile,
+                "what" => describe(p, kind, device.as_ref().map(|d| d.st("name")).as_deref(), target.as_deref()), "seen_at" => now
             ],
         )?;
     }
@@ -460,8 +496,13 @@ pub fn pass(app: &App, procs: &[Proc], act: &mut dyn FnMut(&Act) -> bool) -> Res
             continue;
         }
         let done = if kind.device() {
-            let Some(d) = b.devices.values().find(|d| d.st("name") == r.st("device")).cloned() else { continue };
-            act(&Act::Stop(stop_cmd(app, &d, r.i("task_id"))))
+            let pool = b.devices.values().find(|d| r.s("device").is_some_and(|n| d.st("name") == n)).cloned();
+            let cmd = match (pool, r.s("target")) {
+                (Some(d), _) => stop_cmd(app, &d, r.i("task_id")),
+                (None, Some(t)) if kind == Kind::Simulator && SIM_ID.is_match(t) => format!("xcrun simctl shutdown {t}"),
+                _ => continue,
+            };
+            act(&Act::Stop(cmd))
         } else {
             act(&Act::Term(r.i0("pid")))
         };
@@ -618,7 +659,7 @@ mod tests {
         let driven = proc(chrome, &[chrome, "--remote-debugging-port=9742", "--user-data-dir=/var/folders/x/T/ultrahand-drive-a"]);
         assert_eq!(kind_of(&driven), Some(Kind::Chrome));
         assert_eq!(driven.flag("--user-data-dir").as_deref(), Some("/var/folders/x/T/ultrahand-drive-a"));
-        assert_eq!(describe(&driven, Kind::Chrome, None), "Chrome on port 9742");
+        assert_eq!(describe(&driven, Kind::Chrome, None, None), "Chrome on port 9742");
         assert_eq!(kind_of(&proc(chrome, &[chrome])), None, "the owner's own Chrome");
         assert_eq!(kind_of(&proc(chrome, &[chrome, "--type=renderer", "--remote-debugging-port=1"])), None, "a helper goes with its main");
 
