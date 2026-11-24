@@ -1058,6 +1058,14 @@ enum StartGrantCmd {
 }
 
 #[derive(Subcommand)]
+enum GrantCmd {
+    /// A task's grants: each one's state and how often its rule let an action through
+    List { task: String },
+    /// Drop a grant (A3): terminals opened later don't get it, and live ones are asked again
+    Drop { id: String },
+}
+
+#[derive(Subcommand)]
 enum LessonCmd {
     /// Suggest a lesson for later work: planning (how to slice goals), code, process or tooling. It reaches
     /// handoffs (or planners, for planning) once the owner keeps it
@@ -1760,10 +1768,20 @@ enum TaskCmd {
         /// Only when the open backlog items whose titles look like it name different work: the board refuses it otherwise and says which item to take
         #[arg(long = "not-backlog", conflicts_with = "issue")]
         not_backlog: bool,
+        /// A Midna permission its terminals get once the owner confirms it: <kind>:<pattern>, kind one of
+        /// command, tool, path, cli, window, e.g. 'tool:mcp__slack__chat_post*'. Repeat for more. The board
+        /// asks the owner in a notification; until they tap Grant it does nothing
+        #[arg(long, value_name = "KIND:PATTERN")]
+        allow: Vec<String>,
     },
     /// Change a task
     Set {
         task: String,
+        /// A Midna permission its terminals get once the owner confirms it: <kind>:<pattern>, kind one of
+        /// command, tool, path, cli, window, e.g. 'tool:mcp__slack__chat_post*'. Repeat for more. The board
+        /// asks the owner in a notification; until they tap Grant it does nothing
+        #[arg(long, value_name = "KIND:PATTERN")]
+        allow: Vec<String>,
         /// Its estimate of the agent working time (45m, 3h, 1h30m): only while it hasn't started, or its
         /// first one; once work starts the first estimate is kept
         #[arg(long, value_name = "LEN")]
@@ -1867,6 +1885,11 @@ enum TaskCmd {
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
+    /// A task's Midna permission grants (add them with tb task set T5 --allow '<kind>:<pattern>')
+    Grant {
+        #[command(subcommand)]
+        action: GrantCmd,
+    },
     /// A task: its title, status, goal, PR, detail and latest log entries
     Show {
         task: String,
@@ -3252,6 +3275,24 @@ fn short_task_titles(tasks: &[String]) -> Result<(), String> {
 }
 
 /// `midna` arguments that pin `r` (T42 or G3), or None outside a Midna terminal or for another ref.
+/// Checks each `--allow` as the board will, before anything changes.
+fn allow_args(allow: &[String]) -> Result<(), String> {
+    for a in allow {
+        taskboardd::task_grants::parse(a)?;
+    }
+    Ok(())
+}
+
+/// Adds task `r`'s `--allow` grants: from a terminal, the board asks the owner to confirm them.
+fn grant_new(c: &Ctx, r: &str, allow: &[String]) -> Result<(), String> {
+    if allow.is_empty() {
+        return Ok(());
+    }
+    let v = c.call("POST", &format!("/tasks/{r}/grants"), Some(json!({"allow": allow, "via_session": c.session})))?;
+    out(v["line"].as_str().unwrap_or(""));
+    Ok(())
+}
+
 fn midna_pin_args(session: Option<&str>, r: &str, title: &str) -> Option<Vec<String>> {
     session.filter(|s| !s.is_empty())?;
     let kind = match r.chars().next()? {
@@ -7201,7 +7242,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, same_pr, pr, no_pr, area, model, effort, human, kind, not_backlog, est } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, base, bring, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, same_pr, pr, no_pr, area, model, effort, human, kind, not_backlog, est, allow } => {
+                allow_args(&allow)?;
+                if human && !allow.is_empty() {
+                    return Err("--allow is for a task a terminal works on; a human task has none".into());
+                }
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -7306,6 +7351,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 // which can run past TB_TIMEOUT, and says it's still screening every couple of seconds meanwhile.
                 match c.report_progress_or("tb.new_task", body, None, |e| new_task_unconfirmed(e, &title, human))? {
                     None if human => out(&human_task_saved(&title)),
+                    None if !allow.is_empty() => out(&format!("{SAVED} Its --allow grants weren't asked for: add them with tb task set <task> --allow once the board is back.")),
                     None => out(SAVED),
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
@@ -7313,6 +7359,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         print_estimates(&v);
                         unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
+                        grant_new(c, &r, &allow)?;
                         if lane.as_deref() == Some("slot") {
                             slot_claim(c, &r, bring, &[])?;
                         }
@@ -7330,12 +7377,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         print_wait_line(&v);
                         unlinked_note(c, &r, detail.as_deref(), &linked);
                         c.midna_pin(&r, v["title"].as_str().unwrap_or(&title));
+                        grant_new(c, &r, &allow)?;
                     }
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, issue, area, model, effort, project, est } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, base, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, same_pr, pr, kind, status, merged_note, landed, pr_link, issue, area, model, effort, project, est, allow } => {
                 let t = task_ref(&task)?;
+                allow_args(&allow)?;
                 let mut b = json!({});
                 if let Some(x) = est {
                     b["est"] = json!(x);
@@ -7438,6 +7487,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     b["project"] = json!(x);
                 }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    if !allow.is_empty() {
+                        let v = c.call("POST", &format!("/tasks/{t}/grants"), Some(json!({"allow": allow, "via_session": c.session})))?;
+                        out(v["line"].as_str().unwrap_or(""));
+                        return Ok(0);
+                    }
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
                 }
                 let moving = b.get("project").is_some();
@@ -7475,6 +7529,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("Changed {t} “{}”{bits}.", v["title"].as_str().unwrap_or("")));
                 print_warnings(&v);
                 unlinked_note(c, &t, detail.as_deref(), &linked);
+                grant_new(c, &t, &allow)?;
+                Ok(0)
+            }
+            TaskCmd::Grant { action } => {
+                let v = match action {
+                    GrantCmd::List { task } => c.call("GET", &format!("/tasks/{}/grants", task_ref(&task)?), None)?,
+                    GrantCmd::Drop { id } => c.call("POST", &format!("/grants/{id}/drop"), Some(json!({"via_session": c.session})))?,
+                };
+                out(v["line"].as_str().unwrap_or(""));
                 Ok(0)
             }
             TaskCmd::Delete { task } => {

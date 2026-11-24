@@ -762,6 +762,8 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::recheck::tick(app)?;
     dispatch::start_answers(app)?;
     crate::start_grants::answers(app)?;
+    crate::task_grants::answers(app)?;
+    crate::task_grants::tend(app, false)?;
     crate::scheduled::tick(app)?;
     app.db.tx(|| crate::misses::sweep(app).map(|_| ()))?;
     app.db.tx(|| crate::needs_retry::sweep(app))?;
