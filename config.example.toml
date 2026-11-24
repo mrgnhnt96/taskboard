@@ -317,6 +317,7 @@ project_max = 5                      # a queued task opens its terminal while fe
 global_max = 8                       # a task opens its terminal while fewer task terminals run across every project (tb terminals --max)
 hold_load_per_core = 1.5             # task starts wait while the 1-minute load average per core is at or above this; 0 never waits
 hold_memory = "warning"              # task starts wait while macOS's memory pressure is at least this: warning, critical or off
+hold_free_memory_gb = 2.0            # task starts wait while less memory than this is free (read from Midna); 0 never waits
 deny = ["mcp__midna"]                # tools every board terminal starts without (--disallowedTools): mcp__<server> drops an MCP server, Agent(<type>) a subagent; [] keeps all
 
 # The model each task's terminal starts with (`--model`, unless its flags name one). A task picks

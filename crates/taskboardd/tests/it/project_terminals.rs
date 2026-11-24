@@ -199,6 +199,7 @@ fn board_on_a_mac(load1: f64, memory: &str) -> Board {
     let mut cfg = Config::for_tests(dir.path());
     cfg.terminals.hold_load_per_core = 1.5;
     cfg.terminals.hold_memory = "warning".into();
+    cfg.terminals.hold_free_memory_gb = 2.0;
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
     let repo = repo.to_string_lossy().to_string();
@@ -211,7 +212,7 @@ fn board_on_a_mac(load1: f64, memory: &str) -> Board {
 
 impl Board {
     fn mac(&self, load1: f64, memory: &str) {
-        pressure::fix_for_tests(&self.app, Some(pressure::Reading { load1, cpus: 12, memory: memory.into(), from: "mac" }));
+        pressure::fix_for_tests(&self.app, Some(pressure::Reading { load1, cpus: 12, memory: memory.into(), from: "mac", ..Default::default() }));
     }
 }
 
@@ -242,9 +243,67 @@ fn a_start_waits_while_memory_runs_low() {
 }
 
 #[test]
+fn held_starts_open_one_per_fresh_reading_once_the_load_calms() {
+    let b = board_on_a_mac(30.0, "normal");
+    let held: Vec<i64> = (0..3).map(|_| b.queued_task()).collect();
+    assert!(!b.takes_start());
+
+    b.mac(12.0, "normal");
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.takes_start(), "the first held start opens");
+    assert!(!b.takes_start(), "the rest wait for a fresh reading");
+    let waiting: Vec<Value> = held.iter().map(|t| b.get(&format!("tasks/T{t}"))["waiting"].clone()).collect();
+    assert!(waiting.contains(&json!(pressure::PACED)), "{waiting:?}");
+
+    b.mac(12.0, "normal");
+    assert!(b.takes_start(), "one more opens on the next reading");
+    assert!(!b.takes_start());
+    b.mac(12.0, "normal");
+    assert!(b.takes_start());
+
+    // A reading on which no start opened ends the pacing.
+    b.mac(12.0, "normal");
+    b.mac(12.0, "normal");
+    b.queued_task();
+    b.queued_task();
+    assert!(b.takes_start() && b.takes_start(), "no hold cleared just now: starts open together");
+}
+
+#[test]
+fn a_hold_coming_back_while_pacing_holds_again() {
+    let b = board_on_a_mac(30.0, "normal");
+    b.queued_task();
+    b.queued_task();
+    b.mac(12.0, "normal");
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.takes_start());
+    b.mac(30.0, "normal");
+    runner::start_queued(&b.app).unwrap();
+    assert!(!b.takes_start(), "held on the load again");
+    b.mac(12.0, "normal");
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.takes_start(), "the hold cleared again: the next opens");
+}
+
+#[test]
+fn a_start_waits_while_free_memory_is_under_the_floor() {
+    let b = board_on_a_mac(2.0, "normal");
+    let low = pressure::Reading { load1: 2.0, cpus: 12, memory: "normal".into(), memory_free: 1 << 30, midnad_cpu: 150, midnad_memory: 2 << 30, from: "midna" };
+    pressure::fix_for_tests(&b.app, Some(low.clone()));
+    let t = b.queued_task();
+    assert_eq!(b.get(&format!("tasks/T{t}"))["waiting"], "Waits for free memory: 1 GB free (starts wait under 2 GB); midnad itself runs hot (150% CPU, 2 GB)");
+    assert!(!b.takes_start());
+    assert_eq!(b.get("terminals")["pressure"]["memory_free_bytes"], json!(1u64 << 30));
+
+    // An older Midna sends no free memory: unknown, never a hold.
+    pressure::fix_for_tests(&b.app, Some(pressure::Reading { memory_free: 0, ..low }));
+    assert!(b.takes_start());
+}
+
+#[test]
 fn the_mac_s_load_holds_no_start_when_the_check_is_off() {
     let b = new_board(5);
-    pressure::fix_for_tests(&b.app, Some(pressure::Reading { load1: 280.0, cpus: 12, memory: "critical".into(), from: "mac" }));
+    pressure::fix_for_tests(&b.app, Some(pressure::Reading { load1: 280.0, cpus: 12, memory: "critical".into(), from: "mac", ..Default::default() }));
     b.queued_task();
     assert!(b.takes_start(), "tests' boards turn the check off");
 }
