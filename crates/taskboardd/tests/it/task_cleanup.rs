@@ -1,6 +1,7 @@
 //! Stopping what a task's agent left running: Chrome on a debugging port, Gradle and Kotlin daemons, the
 //! pool's booted simulators and what a gone terminal left behind, once the task is done with them, and
-//! never what a working task, another task's build or the owner still uses.
+//! never what a working task, another task's build or the owner still uses. Simulators are leased: one no
+//! task leased goes after a grace, and at once while more are booted than the pool has.
 
 use std::sync::Arc;
 
@@ -205,26 +206,88 @@ fn a_fresh_chrome_belongs_to_the_task_holding_its_slot() {
     assert_eq!(b.notes(t), vec!["Stopped what was left running: Chrome on port 9200"]);
 }
 
+const LAUNCHD_SIM: &str = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/launchd_sim";
+
+/// A booted simulator, as `launchd_sim` shows it.
+fn sim(pid: i64, ago: f64, udid: &str) -> Proc {
+    proc(pid, ago, None, &[LAUNCHD_SIM, &format!("/Users/m/Library/Developer/CoreSimulator/Devices/{}/data/var/run/launchd_bootstrap.plist", udid.to_lowercase())])
+}
+
+const SIM_A: &str = "10C58C88-F29D-4B4B-9160-338B32728665";
+const SIM_B: &str = "82CEBEAA-1C06-47C1-9E2E-481C3C268E94";
+const OUTSIDE: &str = "0A1B2C3D-0000-4000-8000-000000000001";
+const OUTSIDE_2: &str = "0A1B2C3D-0000-4000-8000-000000000002";
+
+impl Board {
+    /// A pool simulator whose stop command is `xcrun simctl shutdown {target}`.
+    fn pool_sim(&self, name: &str, udid: &str) {
+        self.post("devices", json!({"name": name, "kind": "iphone", "tags": "ios", "target": udid, "stop_cmd": "xcrun simctl shutdown {target}"}));
+    }
+
+    fn lend(&self, device: &str, t: i64) {
+        self.app.db.x("INSERT INTO device_loans(device, task_id, at) VALUES (?, ?, ?)", p![device, t, iso(now_ts() - 500.0)]).unwrap();
+    }
+}
+
 #[test]
 fn a_pool_simulator_is_shut_down_once_its_loan_ends() {
     let b = new_board();
-    let udid = "10C58C88-F29D-4B4B-9160-338B32728665";
-    b.post("devices", json!({"name": "kaepora-iphone-2", "kind": "iphone", "target": udid, "stop_cmd": "xcrun simctl shutdown {target}"}));
+    b.pool_sim("kaepora-iphone-2", SIM_A);
     let t = b.task("Phone check", "aa000008", 600.0);
-    b.app.db.x("INSERT INTO device_loans(device, task_id, at) VALUES ('kaepora-iphone-2', ?, ?)", p![t, iso(now_ts() - 500.0)]).unwrap();
-    let sim = proc(
-        90071,
-        400.0,
-        None,
-        &["/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/launchd_sim",
-          &format!("/Users/m/Library/Developer/CoreSimulator/Devices/{}/data/var/run/launchd_bootstrap.plist", udid.to_lowercase())],
-    );
-    let other = proc(90072, 99999.0, None, &["launchd_sim", "/Users/m/Library/Developer/CoreSimulator/Devices/00000000-0000-0000-0000-000000000000/x"]);
+    b.lend("kaepora-iphone-2", t);
+    let s = sim(90071, 4000.0, SIM_A);
 
-    assert_eq!(b.pass(&[sim.clone(), other.clone()]), vec![], "lent to a working task; a simulator outside the pool is never touched");
+    assert_eq!(b.pass(&[s.clone()]), vec![], "lent to a working task");
     b.app.db.x("UPDATE device_loans SET released_at = ?", p![iso(now_ts())]).unwrap();
     b.set(t, "done");
-    assert_eq!(b.pass(&[sim.clone(), other]), vec![Act::Stop(format!("xcrun simctl shutdown {udid}"))]);
+    assert_eq!(b.pass(&[s.clone()]), vec![Act::Stop(format!("xcrun simctl shutdown {SIM_A}"))]);
     assert_eq!(b.notes(t), vec!["Stopped what was left running: kaepora-iphone-2"]);
-    assert_eq!(b.pass(&[sim]), vec![], "no SIGKILL for a simulator");
+    assert_eq!(b.pass(&[s]), vec![], "no SIGKILL for a simulator");
+}
+
+#[test]
+fn a_simulator_no_task_leased_is_shut_down_after_the_grace() {
+    let b = new_board();
+    b.pool_sim("kaepora-iphone-2", SIM_A);
+    b.pool_sim("kaepora-iphone-3", SIM_B);
+    let young = [sim(90081, 60.0, SIM_A), sim(90082, 60.0, OUTSIDE)];
+    assert_eq!(b.pass(&young), vec![], "booted a minute ago, and no more than the pool has");
+
+    let grace = b.app.cfg.cleanup.unleased_simulator_mins * 60.0;
+    let old = [sim(90083, grace + 60.0, SIM_B), sim(90084, grace + 60.0, OUTSIDE_2)];
+    let mut acts = b.pass(&old);
+    acts.sort_by_key(|a| format!("{a:?}"));
+    assert_eq!(
+        acts,
+        vec![Act::Stop(format!("xcrun simctl shutdown {}", OUTSIDE_2)), Act::Stop(format!("xcrun simctl shutdown {SIM_B}"))],
+        "in the pool or not, a simulator nobody leased goes"
+    );
+    let what: Vec<String> = b.app.db.q("SELECT what FROM leftovers WHERE pid = 90084", p![]).unwrap().iter().map(|r| r.st("what")).collect();
+    assert_eq!(what, vec![format!("simulator {}", OUTSIDE_2)]);
+}
+
+#[test]
+fn no_more_simulators_stay_up_than_the_pool_has() {
+    let b = new_board();
+    b.pool_sim("kaepora-iphone-2", SIM_A);
+    let t = b.task("Phone check", "aa000009", 600.0);
+    b.lend("kaepora-iphone-2", t);
+    let lent = sim(90091, 300.0, SIM_A);
+    let extra = sim(90092, 30.0, OUTSIDE);
+
+    assert_eq!(b.pass(&[lent.clone(), extra.clone()]), vec![Act::Stop(format!("xcrun simctl shutdown {OUTSIDE}"))], "over the pool's one: the unleased one goes at once");
+    assert_eq!(b.pass(&[lent.clone(), extra]), vec![], "asked once; the lent one stays");
+    assert_eq!(b.pass(&[lent]), vec![]);
+    assert_eq!(b.notes(t), Vec::<String>::new(), "nothing of the task's was stopped");
+}
+
+#[test]
+fn an_unleased_simulator_waits_as_long_as_the_owner_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.cleanup.unleased_simulator_mins = 120.0;
+    let b = Board { app: App::for_tests(cfg), dir };
+    b.pool_sim("kaepora-iphone-2", SIM_A);
+    assert_eq!(b.pass(&[sim(90101, 3600.0, SIM_A)]), vec![]);
+    assert_eq!(b.pass(&[sim(90102, 3.0 * 3600.0, SIM_A)]), vec![Act::Stop(format!("xcrun simctl shutdown {SIM_A}"))]);
 }

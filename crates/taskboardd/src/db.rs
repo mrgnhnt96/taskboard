@@ -516,6 +516,7 @@ impl Db {
         add_columns(&conn, crate::devices::ADDED)?;
         conn.execute_batch(crate::bits::SCHEMA)?;
         conn.execute_batch(crate::leftovers::SCHEMA)?;
+        add_columns(&conn, crate::leftovers::ADDED)?;
         conn.execute_batch(crate::lessons::SCHEMA)?;
         conn.execute_batch(crate::ideas::SCHEMA)?;
         conn.execute_batch(crate::plan_review::SCHEMA)?;
