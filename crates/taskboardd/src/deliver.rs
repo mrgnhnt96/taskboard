@@ -127,7 +127,7 @@ fn save_target(app: &App, j: &Row, target: &Row) -> Result<()> {
 }
 
 /// The terminal sits at its prompt: idle, or needs-you only by a tab status's label (the board's own
-/// Question tab on a task that asked the owner) with no prompt of Claude's waiting. Midna's queue still
+/// Alert tab) with no prompt of Claude's waiting. Midna's queue still
 /// holds the text until the terminal takes input (a dialog on screen, a draft in the input box).
 fn at_prompt(s: &Row) -> bool {
     match s.s("status") {

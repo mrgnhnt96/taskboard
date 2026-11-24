@@ -658,17 +658,18 @@ fn a_turn_that_loses_the_network_waits_for_midna_to_carry_it_on() {
     assert!(b.task(id).st("question").contains("type anything"), "a plain 429 isn't a limit Claude Code waits out");
 }
 
-/// Terminal `s1` as Midna lists it: needs_you, either held by the board's Question tab (`labelled`)
-/// or by a prompt of Claude's, and settled long enough for the board to type in it.
+/// Terminal `s1` as Midna lists it under the board's Question tab: idle on the tab's own base
+/// (`labelled`), or needs_you by a prompt of Claude's, and settled long enough for the board to type in it.
 fn needs_you(b: &Board, labelled: bool) {
     let repo = b._dir.path().join("webapp");
-    let (reason, custom) = if labelled {
-        ("Question", json!({"label": "Question", "color": "amber", "base": "needs_you"}))
+    let custom = json!({"label": "Question", "color": "amber", "base": "idle"});
+    let status = if labelled {
+        json!({"state": "idle", "reason": "Question"})
     } else {
-        ("Claude needs your permission to use Bash", json!({"label": "Question", "color": "amber", "base": "needs_you"}))
+        json!({"state": "needs_you", "reason": "Claude needs your permission to use Bash"})
     };
     let s = json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo.to_string_lossy(),
-                   "status": {"state": "needs_you", "reason": reason}, "custom_status": custom});
+                   "status": status, "custom_status": custom});
     midna::sync(&b.app, &[s], &[]).unwrap();
     b.app.db.x("UPDATE sessions SET status_at = '2026-01-01T00:00:00Z' WHERE id = 's1'", p![]).unwrap();
 }
