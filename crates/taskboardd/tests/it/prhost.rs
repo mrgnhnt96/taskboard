@@ -930,6 +930,29 @@ fn an_agent_overrides_only_on_the_owners_word_to_merge_it_anyway() {
 }
 
 #[test]
+fn an_agent_overrides_on_the_owners_blanket_word_for_the_prs_it_just_listed() {
+    let b = board_with(|c| {
+        expects_e2e(c);
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task(BB);
+    let h = fake(&b, held_every_way());
+    poll(&b);
+    let merge = || b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "via_session": "s1", "override": true}));
+    // Nothing the agent said names the PRs "those" means.
+    b.report("hook.stop", "s1", json!({"last_message": "The checks are still running."}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Merge all of those anyway"}));
+    let e = merge().unwrap_err();
+    assert!(e.contains("--override is"), "{e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    // The agent listed the held PRs, this one among them.
+    b.report("hook.stop", "s1", json!({"last_message": "Held on a failing check: PR #9, PR #12 and PR #14."}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Merge all of those anyway, the failures are false positives"}));
+    merge().unwrap();
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+}
+
+#[test]
 fn the_owners_override_keeps_conflicts_and_the_stacks_order() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);

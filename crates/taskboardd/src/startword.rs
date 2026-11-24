@@ -1837,11 +1837,19 @@ fn prompts_of(app: &App, sid: &str, item: Option<ItemTask>) -> Result<Vec<Prompt
 const MERGE_VERB: &str = r"(?:squash\s+and\s+merge|squash[- ]merge|merge|land)";
 /// The PR a merge ask doesn't name: "it", "this", "the PR".
 const UNNAMED_PR: &str = r"(?:(?:the|this|that|your|its)\s+(?:pr|pull\s+request)|it|this|that)";
+/// The PRs a merge ask covers without naming them: "them", "all of those", "them all", "both", "all the
+/// pending ones", "all of the tasks that are pending", "all pending". Each says "them" or "all", so it
+/// reads as [`Ask::Them`]: the PRs the agent's message just before it listed ([`pr_word_in`]).
+const MERGE_SET: &str = concat!(
+    r"(?:them\s+all|(?:all|each|both)\s+of\s+(?:them|those|these)|both|them|those|these|",
+    r"all(?:\s+of)?\s+(?:the|those|these|your|my)(?:\s+(?:pending|held|open|waiting|remaining|blocked|stuck|green))?\s+(?:ones|prs|pull\s+requests|tasks)|",
+    r"all(?:\s+(?:pending|held|open|waiting|remaining|blocked|stuck|green))?(?:\s+(?:ones|prs|pull\s+requests|tasks))?)"
+);
 /// Merges of a task's PR (`tb pr merge`), read with its PR named as the task ([`as_task_refs`]): "merge
-/// T8", "merge it", "land the PR", "get it merged".
+/// T8", "merge it", "land the PR", "get it merged", "merge all of those".
 pub static MERGES: Lazy<Kind> = Lazy::new(|| {
     let on = format!(
-        r"(?:\b{MERGE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_PR}))|\bget\s+(?:(?P<named6>{NAMED})|(?P<unnamed6>{UNNAMED_PR}))\s+(?:merged|landed|in\b))"
+        r"(?:\b{MERGE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed4>{MERGE_SET})|(?P<unnamed>{UNNAMED_PR}))|\bget\s+(?:(?P<named6>{NAMED})|(?P<unnamed6>{UNNAMED_PR}))\s+(?:merged|landed|in\b))"
     );
     Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
 });
@@ -1975,11 +1983,12 @@ fn approves(text: &str) -> bool {
 }
 
 /// The owner saying to merge past what holds the PR: "merge it anyway", "regardless of the checks",
-/// "override the review", "ignore the changes requested", "as is", "even though checks are running".
+/// "override the review", "ignore the changes requested", "as is", "even though checks are running",
+/// "the failing check is a false positive".
 static OVERRIDES_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
         r"(?i)\b(?:anyways?|regardless|override|overriding|overridden|as[\s-]is|even\s+(?:though|if|with|while)|despite|in\s+spite\s+of|",
-        r"ignor(?:e|ing)|bypass(?:ing)?|force(?:d)?|past\s+(?:the\s+|its\s+|any\s+|every\s+|all\s+(?:the\s+)?)?(?:checks?|reviews?|reviewers?|gates?|holds?|changes|builds?))\b"
+        r"ignor(?:e|ing)|bypass(?:ing)?|force(?:d)?|false[\s-]positives?|past\s+(?:the\s+|its\s+|any\s+|every\s+|all\s+(?:the\s+)?)?(?:checks?|reviews?|reviewers?|gates?|holds?|changes|builds?))\b"
     ))
     .unwrap()
 });
@@ -2014,6 +2023,7 @@ pub struct MergeWord {
 /// ("merge it once CI is green") or a take-back is no word. An unnamed "merge it" means this PR when the
 /// agent's message just before it names this PR and no other, or, in the latest prompt, when the
 /// terminal's task is `id` (`own`) and that message names no PR.
+/// "Merge all of those" ([`MERGE_SET`]) means this PR when that message names it, among others or not.
 pub fn merge_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
     pr_word_in(&MERGES, prompts, id, num, own, None)
 }
@@ -2048,6 +2058,9 @@ fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool, sets: 
             Ask::Unnamed if answers => true,
             Ask::Unnamed => if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) },
             Ask::Them if sets.is_some() => if named.is_empty() { i == 0 && own } else { named.contains(&num) },
+            // "Merge all of those": the PRs the agent's message just before it listed, and with no list
+            // nothing says which PRs are meant.
+            Ask::Them => named.contains(&num),
             _ => false,
         };
         match r.word_for(id, unnamed) {
@@ -4554,6 +4567,45 @@ mod tests {
     }
 
     #[test]
+    fn a_blanket_merge_covers_the_prs_the_agent_just_listed() {
+        let after = |reply: Option<&str>, text: &str| vec![Prompt { reply: reply.map(str::to_string), ..Prompt::new(text) }];
+        // #3239: the agent listed the held PRs, and the owner said to merge them all past the hold.
+        let listed = Some("Three PRs are held on a failing GitGuardian check: zonai #155, homelab #89 and homelab #82.");
+        for ask in [
+            "Merge all of those anyway",
+            "merge them all anyway",
+            "merge all pending, the failures are false positives",
+            "Go merge all of the tasks that are pending… the only failing check is GitGuardian and it's false positives",
+            "merge all of them regardless of the checks",
+            "merge all the held PRs anyway",
+        ] {
+            for num in [155, 89, 82] {
+                assert_eq!(merge_word_in(&after(listed, ask), 95, num, false), Some(0), "{ask} #{num}");
+            }
+            assert!(overrides(ask), "{ask}");
+            assert_eq!(merge_word_in(&after(listed, ask), 95, 194, false), None, "{ask}: #194 wasn't listed");
+        }
+        assert_eq!(merge_word_in(&after(listed, "merge them"), 95, 155, false), Some(0), "a word to merge, not past the hold");
+        assert!(!overrides("merge them"));
+        for no in ["don't merge those", "should I merge all of those anyway?", "merge all of those once CI is green", "merge all of those tomorrow"] {
+            assert_eq!(merge_word_in(&after(listed, no), 95, 155, false), None, "{no}");
+        }
+        // Nothing the agent said pins down which PRs are meant, even in the PR's own terminal.
+        for reply in [None, Some("The checks are still running.")] {
+            for own in [false, true] {
+                assert_eq!(merge_word_in(&after(reply, "Merge all of those anyway"), 95, 155, own), None, "{reply:?} own={own}");
+                assert_eq!(merge_word_in(&after(reply, "merge them all"), 95, 155, own), None, "{reply:?} own={own}");
+            }
+        }
+        // Naming each PR still works, with a listing or without one.
+        for reply in [None, listed] {
+            assert_eq!(merge_word_in(&after(reply, "merge #155 anyway"), 95, 155, false), Some(0), "{reply:?}");
+            assert_eq!(merge_word_in(&after(reply, "merge #155 anyway"), 95, 89, false), None, "{reply:?}");
+        }
+        assert!(!overrides("merge it, it isn't a false positive"));
+    }
+
+    #[test]
     fn the_owners_word_closes_one_pr() {
         let after = |reply: &str, text: &str| vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }];
         for yes in ["close PR #194", "decline #194", "abandon T95", "go ahead and close pr 194, we went another way"] {
@@ -4726,6 +4778,7 @@ mod tests {
         }
         assert_eq!(word(&after(listed, "I've reviewed it"), None), None, "one unnamed PR among two");
         assert_eq!(word(&after("PR #194 is green.", "I've reviewed it"), None), Some(0));
-        assert_eq!(merge_word_in(&after(listed, "merge them all"), 95, 194, false), None, "only a review covers a set");
+        assert_eq!(merge_word_in(&after(listed, "merge them all"), 95, 194, false), Some(0), "a merge covers the listed set too");
+        assert_eq!(close_word_in(&after(listed, "close them all"), 95, 194, false), None, "a close doesn't cover a set");
     }
 }
