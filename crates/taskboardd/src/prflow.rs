@@ -1400,14 +1400,14 @@ fn all_staged(path: &str) -> bool {
 
 /// One read of a task's PR from its host, as the flow keeps it (`prhost::Record::to_value`). The read
 /// time is kept as `read_at`: a PR a stream relay covers is polled again only once it's old
-/// (`feed::pr_poll_skips`).
+/// (`feed::pr_poll_skips`). It catches up on any event that didn't land (`event_unread_at`).
 pub fn read(app: &App, t: &Row) -> std::result::Result<Value, String> {
     let pr = crate::prhost::PrRef::of(t).ok_or_else(|| "the task has no PR".to_string())?;
     let host = crate::prhost::host_for(app, &pr.host)?;
     // An open PR's stage can change: its reads still go while the account restarts slowly after a limit.
     let mut rec = crate::prhost::limit::priority(|| host.read(&pr))?;
     roster_ids(app, &t.st("project"), &mut rec).map_err(|e| e.message)?;
-    merge_flow(app, t.id(), fields!["read_at" => now_iso()]).map_err(|e| e.message)?;
+    merge_flow(app, t.id(), fields!["read_at" => now_iso(), "event_unread_at" => Value::Null]).map_err(|e| e.message)?;
     Ok(rec.to_value())
 }
 
