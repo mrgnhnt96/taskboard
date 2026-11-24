@@ -892,8 +892,8 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     let last = board::get_session(app, flow(t).s("session"))?;
     let cid = task_conversation(t, last.as_ref())
         .filter(|c| transcript::conversation_saved(&app.cfg.claude_projects, args["cwd"].as_str().unwrap_or(""), c));
-    let model = app.cfg.models.resolve(t.s("model"));
-    let effort = app.cfg.models.resolve_effort(t.s("model"), t.s("effort"));
+    let model = app.cfg.models.resolve_pr_work(t.s("model"));
+    let effort = app.cfg.models.resolve_pr_work_effort(t.s("model"), t.s("effort"));
     if let Some(f) = runner::with_effort(runner::with_model(None, model.as_deref()), effort.as_deref()) {
         args["flags"] = json!(f);
     }
