@@ -450,6 +450,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "goal_attachments": match &g { Some(g) => Value::Array(board::goal_attachments(app, &atts, g.id())?), None => json!([]) },
             "attachments": atts,
             "estimate": crate::estimate::task_view(app, &t)?,
+            "grants": crate::task_grants::view(app, id)?,
         }),
     ))
     .and_then(|d| with_step_results(app, &t, d))

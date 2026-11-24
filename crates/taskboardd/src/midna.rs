@@ -429,6 +429,9 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
         return Err(MidnaError::Refused("Midna opened no terminal".into()));
     };
     set_target(app, j.id(), "session", json!(sid))?;
+    if let Some(tid) = j.i("task_id") {
+        crate::task_grants::on_open(app, tid, &sid);
+    }
     // The prompt goes in even when its compact couldn't: a full-size conversation beats one with no prompt.
     if cold {
         let compacted = send(app, &sid, "/compact");

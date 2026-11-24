@@ -349,6 +349,18 @@ fn route(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Re
             })
         }
         ("POST", ["tasks", id, "delete"]) => delete_task(app, tid(id)?),
+        ("GET", ["tasks", id, "grants"]) => crate::task_grants::list(app, tid(id)?),
+        ("POST", ["tasks", id, "grants"]) => task_grant_add(app, tid(id)?, query, body),
+        ("POST", ["grants", g, "confirm"]) => {
+            if !from_app(query) {
+                return err(403, format!("Only {} confirms a grant: in the app, or with Grant on its notification.", app.cfg.owner));
+            }
+            crate::task_grants::confirm(app, crate::task_grants::parse_gref(g)?, &format!("{} in the app", app.cfg.owner))
+        }
+        ("POST", ["grants", g, "drop"]) => {
+            let by = if from_app(query) { format!("{} in the app", app.cfg.owner) } else { board::session_name(app, Some(&body_str(body, "via_session")).filter(|s| !s.is_empty()).map(|s| s.as_str()), None) };
+            crate::task_grants::drop_grant(app, crate::task_grants::parse_gref(g)?, &by)
+        }
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
         ("POST", ["tasks", id, "slot", "claim"]) => slot_claim(app, tid(id)?, body),
         ("GET", ["tasks", id, "slot"]) => slot_held(app, tid(id)?),
@@ -1832,6 +1844,17 @@ fn start_grant_add(app: &App, query: &Query, body: &Value) -> Result<Value> {
         return crate::start_grants::add(app, "the app", body);
     }
     crate::start_grants::ask(app, &body_str(body, "via_session"), body)
+}
+
+/// Grants on a task (`tb task set T5 --allow 'tool:mcp__slack__chat_post*'`): the owner's from the app are
+/// granted; a terminal's wait for the owner's Grant on a notification. What a prompt says never grants one.
+fn task_grant_add(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
+    let allow: Vec<String> = match &body["allow"] {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        _ => vec![],
+    };
+    crate::task_grants::add(app, id, &allow, from_app(query), &body_str(body, "via_session"))
 }
 
 /// A start at a set time (`at`: `5pm`, `tomorrow 9am`, or `off` to drop it) for `what`: the owner's from
