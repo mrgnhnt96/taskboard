@@ -53,12 +53,12 @@ fn size(p: &Path) -> u64 {
     m.blocks() * 512 / m.nlink().max(1)
 }
 
-fn remove(p: &Path) {
+pub(crate) fn remove(p: &Path) {
     let _ = if p.is_dir() && !p.is_symlink() { fs::remove_dir_all(p) } else { fs::remove_file(p) };
 }
 
 /// The profile dirs under a target dir: those holding a `.fingerprint/`.
-fn profiles(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+pub(crate) fn profiles(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if dir.join(".fingerprint").is_dir() {
         out.push(dir.to_path_buf());
         return;
@@ -74,10 +74,10 @@ fn profiles(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 }
 
 /// Holds a profile's `.cargo-lock` while it lives; None when a build holds it.
-struct Lock(Option<fs::File>);
+pub(crate) struct Lock(Option<fs::File>);
 
 impl Lock {
-    fn take(profile: &Path) -> Option<Lock> {
+    pub(crate) fn take(profile: &Path) -> Option<Lock> {
         let path = profile.join(".cargo-lock");
         if !path.exists() {
             return Some(Lock(None));

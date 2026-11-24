@@ -135,6 +135,7 @@ pub mod review_triage;
 pub mod slot_ageing;
 pub mod build_sweep;
 pub mod slot_keep;
+pub mod slot_seed;
 pub mod slot_tidy;
 pub mod slots;
 pub mod slot_usage;
