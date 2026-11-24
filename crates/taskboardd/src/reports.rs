@@ -3221,6 +3221,7 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     let waves_before = crate::pace::waves_left(r.app, g)?;
     let items = items.as_array().cloned().unwrap_or_default();
     estimate::need_items(r.app, &unestimated(&items)?)?;
+    crate::trials::refuse_plan(r.app, &trial_items(&items)?)?;
     for item in items {
         let (item, files, model, effort, project, lane, pr, est) = match &item {
             Value::String(s) => {
@@ -3289,6 +3290,27 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
         }
     }
     Ok(created)
+}
+
+/// Each `--task` item's title, detail and whether it's a human task, for the plan check's trial-run refusal.
+fn trial_items(items: &[Value]) -> Result<Vec<(String, String, bool)>> {
+    let mut out = vec![];
+    for item in items {
+        let (title, detail, kind) = match item {
+            Value::String(s) => {
+                let (rest, ..) = planned_parts(s);
+                let (title, detail, ..) = split_planned(&planned_files(&rest).0);
+                (title, detail, Value::Null)
+            }
+            Value::Object(o) => (o.s("title").unwrap_or("").to_string(), o.s("detail").unwrap_or("").to_string(), item.get("kind").cloned().unwrap_or(Value::Null)),
+            _ => continue,
+        };
+        let title = one_line(&title, 300);
+        if !title.is_empty() {
+            out.push((title, detail, crate::design::clean_kind(Some(&kind))? == Some(crate::human::KIND)));
+        }
+    }
+    Ok(out)
 }
 
 /// The titles of `--task` items for agent work that give no estimate, or one that isn't a length.
@@ -3373,6 +3395,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     }
     if crate::design::clean_kind(r.body.get("kind"))? != Some(crate::human::KIND) {
         estimate::need_task(r.app, &r.body)?;
+        crate::trials::refuse(r.app, false, &title, &r.b("detail"))?;
     }
     if as_bool(r.body.get("here"), false) {
         if crate::design::clean_kind(r.body.get("kind"))? == Some(crate::human::KIND) {

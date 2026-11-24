@@ -433,3 +433,42 @@ fn reopen_takes_back_done_and_it_waits_on_the_owner_again() {
     board::update_task(&b.app, t, vec![("status", json!("done"))]).unwrap();
     assert_eq!(b.from_app(&format!("tasks/T{t}/owner-reopen"), json!({})).unwrap_err().0, 409, "only a human task");
 }
+
+#[test]
+fn a_trial_run_is_never_a_human_task() {
+    let b = new_board();
+    b.session("s1");
+    for (title, detail, quoted) in [
+        ("Use the iPhone app from TestFlight for a week", "1. Install it from TestFlight.\n2. After the week, press Done.", "Use the iPhone app from TestFlight for a week"),
+        ("Switch mail apps", "1. Use Kaepora instead of Thunderbird for a few days.\n2. Tell an agent what bugs you.", "Use Kaepora instead of Thunderbird for a few days"),
+        ("Dogfood the new inbox", STEPS, "Dogfood the new inbox"),
+        ("Try the new sign-in", "1. Open https://example.com/login.\n2. Try it out and report back.", "Try it out and report back"),
+    ] {
+        let (status, msg) = b.report("tb.new_task", "s1", json!({"title": title, "detail": detail, "project": "webapp", "kind": "human"})).unwrap_err();
+        assert_eq!(status, 400, "{title}");
+        assert!(msg.contains(&format!("\u{201c}{quoted}\u{201d}")), "{title}: {msg}");
+        assert!(msg.contains("a sign-in, an account, a purchase, a signature") && msg.contains("agent verification task"), "{title}: {msg}");
+    }
+    for (title, detail) in [
+        ("Sign up for the 14-day trial", "1. Sign up at https://example.com/trial.\n2. Use the code within 7 days to finish sign-up.\n3. Paste the key in the note."),
+        ("Buy the domain", "1. Buy kaepora.app at https://domains.example.com for a year.\n2. Keep the receipt for 30 days."),
+    ] {
+        let id = id_of(&b.human("s1", json!({"title": title, "detail": detail})));
+        assert!(human::is(&b.row(id)), "{title}: owner-only work with a length in it still goes through");
+    }
+}
+
+#[test]
+fn an_agent_task_that_waits_days_to_check_its_work_is_refused() {
+    let b = new_board();
+    b.session("s1");
+    for detail in ["Ship the fix, then wait a week and compare the crash counts.", "Turn on the cache.\nCheck back in 3 days for misses.", "Re-run the numbers a week later."] {
+        let (status, msg) = b.report("tb.new_task", "s1", json!({"title": "Cache the feed", "detail": detail, "project": "webapp", "est": "1h"})).unwrap_err();
+        assert_eq!(status, 400, "{detail}");
+        assert!(msg.contains("never waits days to check on its own work"), "{detail}: {msg}");
+    }
+    for detail in ["Wait for the build to finish, then verify the token expires after 7 days.", "Show the last two weeks of usage on the weekly page."] {
+        b.report("tb.new_task", "s1", json!({"title": "Cache the feed", "detail": detail, "project": "webapp", "est": "1h"}))
+            .unwrap_or_else(|(_, m)| panic!("{detail}: {m}"));
+    }
+}
