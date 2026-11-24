@@ -184,7 +184,7 @@ pub fn list_with(state: &Value, goals: &[Value], details: &HashMap<String, Value
                     for c in tasks {
                         match status::row(c).st {
                             St::Needs => needs = true,
-                            St::Working => running += 1,
+                            St::Working | St::Waiting => running += 1,
                             St::Queued => queued = true,
                             _ => {}
                         }
@@ -300,7 +300,7 @@ fn pill(g: &Value, t: &Tally) -> (St, &'static str) {
         GoalGroup::Paused => (St::Queued, "Paused"),
         GoalGroup::Deprioritized => (St::Queued, "Set aside"),
         _ if n(St::Needs) > 0 || opt_s(g, "stopped").is_some() => (St::Needs, St::Needs.label()),
-        _ if n(St::Working) > 0 => (St::Working, St::Working.label()),
+        _ if n(St::Working) + n(St::Waiting) > 0 => (St::Working, St::Working.label()),
         _ if t.stuck() > 0 => (St::Failed, St::Failed.label()),
         _ if n(St::Review) > 0 => (St::Review, St::Review.label()),
         _ if n(St::Pending) > 0 => (St::Pending, St::Pending.label()),
@@ -585,7 +585,7 @@ fn task_row(t: &Theme, c: &Value, narrow: bool, shown: Option<&str>, cx: &mut Co
         .hover(move |s| s.text_color(link).underline())
         .child(s(c, "title").to_string())
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx)));
-    let meta = div().text_size(px(12.)).text_color(if row.loud { loud_fg } else { t.muted }).child(task_meta(c, &row));
+    let meta = div().text_size(px(12.)).text_color(if row.loud { loud_fg } else { t.muted }).child(status::line_text(t, SharedString::from(format!("projects-task-line-{r}")), &row, &task_meta(c, &row)));
     let chip = div().flex_none().w(px(status::CHIP_W + 12.)).flex().justify_end().child(status::chip(t, row.st));
     // The open task's row: a soft accent fill and a 2px accent edge on its left.
     let on = shown == Some(r.as_str());

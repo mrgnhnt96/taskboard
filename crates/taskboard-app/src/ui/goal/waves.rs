@@ -288,7 +288,7 @@ fn row_el(m: &MainWindow, t: &Theme, x: WRow, cx: &mut Context<MainWindow>) -> S
             .when(x.research, |d| d.child(kit::research_pill(t))),
         1.,
     );
-    let line = |grow| cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(kit::clipped(SharedString::from(format!("goal-task-line-{}", x.r)), x.row.line.clone())), grow);
+    let line = |grow| cell(div().truncate().text_size(px(12.)).text_color(if x.row.loud { loud } else { t.muted }).child(status::line_text(t, SharedString::from(format!("goal-task-line-{}", x.r)), &x.row, &x.row.line)), grow);
     let age = div().flex_none().w(px(44.)).whitespace_nowrap().text_size(px(12.)).text_color(t.muted).text_right().child(x.row.age.clone());
     let retry = x.retry.then(|| retry_btn(m, t, &x.r, cx));
     // The task open in the panel: a soft accent fill and a 2px accent edge on its left.

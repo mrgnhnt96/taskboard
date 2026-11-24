@@ -281,6 +281,40 @@ fn a_question_shows_once_in_the_banner() {
     assert!(text.contains("Waiting on you") && !text.contains("Asked"), "{text}");
 }
 
+#[::core::prelude::v1::test]
+fn a_parked_task_says_when_it_resumes_and_asks_nothing() {
+    parity::freeze("2026-11-23T15:00:00Z");
+    let plan = "Read the 5:00 PM benchmark run, then compare it";
+    let task = json!({"ref": "T10", "id": 10, "status": "working", "waiting_until": "2026-11-23T18:30:00Z", "resume_plan": plan,
+                      "started_at": "2026-11-23T13:00:00Z", "updated_at": "2026-11-23T14:00:00Z", "session": {"id": "s1", "status": "idle"}});
+    let panel = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    let text = json!(view::text(&panel)).to_string();
+    assert!(text.contains(&format!("Waiting · resumes 6:30 PM {plan}")), "the quiet box: {text}");
+    assert!(text.contains("Waiting") && !text.contains("Asks you") && !text.contains("Needs you"), "{text}");
+    let a = json!(view::acts(&panel)).to_string();
+    assert!(!a.contains("\"focus\"") && !a.contains("answer"), "no Focus or answer while it waits: {a}");
+    // Tomorrow's time says so.
+    let task = json!({"ref": "T10", "id": 10, "status": "working", "waiting_until": "2026-11-24T06:30:00Z", "resume_plan": plan});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    assert!(text.contains("Waiting · resumes tomorrow 6:30 AM"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_parked_task_that_missed_its_time_offers_only_its_terminal() {
+    parity::freeze("2026-11-23T19:00:00Z");
+    let plan = "Read the 5:00 PM benchmark run, then compare it";
+    let task = json!({"ref": "T10", "id": 10, "status": "needs", "needs_reason": "wait_overdue",
+                      "question": format!("T10 was due back at 6:30 PM and hasn't resumed (it was going to: {plan})"),
+                      "wait_missed": {"at": "2026-11-23T18:30:00Z", "plan": plan},
+                      "started_at": "2026-11-23T13:00:00Z", "updated_at": "2026-11-23T18:45:00Z", "session": {"id": "s1", "status": "idle"}});
+    let panel = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    let text = json!(view::text(&panel)).to_string();
+    assert!(text.contains(&format!("Didn’t resume at 6:30 PM {plan} Focus in Midna")), "{text}");
+    assert!(!text.contains("Asks you") && !text.contains("hasn't resumed"), "its own box, not the question's: {text}");
+    let a = json!(view::acts(&panel)).to_string();
+    assert!(a.contains("\"focus\"") && !a.contains("answer") && !a.contains("\"resume"), "only Focus in Midna: {a}");
+}
+
 // ------------------------------------------------------------------ actions
 
 /// Open task `r` in the panel and let its detail load.

@@ -455,6 +455,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         let (until, plan) = crate::wait_until::card(t);
         o.insert("waiting_until".into(), until);
         o.insert("resume_plan".into(), plan);
+        o.insert("wait_missed".into(), crate::wait_until::missed(t));
         // The terminal its start opened, while no agent has checked in from it (`startwatch.rs`).
         o.insert("start_terminal".into(), crate::startwatch::card(app, t)?);
         o.insert("looks_finished".into(), crate::lost_done::card(t));

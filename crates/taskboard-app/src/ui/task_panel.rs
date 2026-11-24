@@ -1175,6 +1175,17 @@ impl Draw<'_> {
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             // No color of its own: a step still to come is muted.
             St::TlHWarn => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn_fg),
+            St::WaitLabel { late } => {
+                let fg = if late { t.warn_fg } else { t.muted };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .min_w_0()
+                    .child(div().flex_none().child(paint(if late { Ic::Alert } else { Ic::Clock }, 13., 2., fg)))
+                    .child(div().min_w_0().child(s.to_uppercase()).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(fg))
+            }
+            St::BannerPlan => d.text_size(px(14.)).line_height(relative(1.5)).font_weight(FontWeight::SEMIBOLD).text_color(if boxed == Some(BoxTone::Ask) { t.warn_text } else { t.text }),
             St::BannerText => d.text_size(px(14.)).line_height(relative(1.5)).text_color(if matches!(boxed, Some(BoxTone::Lost | BoxTone::Quiet)) { t.text } else { t.warn_text }),
             St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD),
             St::TlS => d.text_size(px(12.)).text_color(t.muted),
@@ -1540,6 +1551,7 @@ impl Draw<'_> {
         let dot = match st {
             TlSt::Done => dot.bg(t.up),
             TlSt::Now => dot.bg(t.accent),
+            TlSt::Wait => div().size(px(10.)).child(paint(Ic::Dashed, 10., 2.5, t.accent)),
             TlSt::Warn => dot.bg(t.warn),
             TlSt::Fail => dot.bg(t.down),
             TlSt::Todo => dot.border_2().border_color(t.border_2),
@@ -2118,6 +2130,7 @@ fn pill(t: &Theme, s: &str, tone: Tone, small: bool) -> Div {
         Tone::Failed => (t.down, t.down_soft, None),
         Tone::Planned => (t.muted, t.card, Some(t.border)),
         Tone::Working | Tone::Jira => (t.accent_fg, t.accent_soft, None),
+        Tone::Waiting => (t.accent_fg, transparent_black(), Some(t.accent)),
         Tone::Idle => (t.text_2, t.panel_2, None),
         Tone::Gone => (t.muted, t.panel_2, None),
         Tone::Closed => (t.faint, transparent_black(), Some(t.border)),
@@ -2358,6 +2371,10 @@ enum Ic {
     Focus,
     Check,
     Clock,
+    /// A circle with an exclamation mark.
+    Alert,
+    /// A dashed ring: eight dashes round the circle.
+    Dashed,
     Comment,
     /// `.s-now`: a ring with its right quarter open, turned this many degrees.
     Spinner(f32),
@@ -2433,6 +2450,17 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
                 Ic::Clock => {
                     arc((12., 12.), 8.5, 0., 360., window);
                     line(&[(12., 7.5), (12., 12.), (15., 14.)], window);
+                }
+                Ic::Alert => {
+                    arc((12., 12.), 8.5, 0., 360., window);
+                    line(&[(12., 7.5), (12., 12.5)], window);
+                    fill_dot((12., 16.), 1.3, window);
+                }
+                Ic::Dashed => {
+                    for i in 0..8 {
+                        let a = i as f32 * 45.;
+                        arc((12., 12.), 9.5, a, a + 25., window);
+                    }
                 }
                 Ic::Comment => {
                     arc((12., 12.), 8., 0., 117., window);

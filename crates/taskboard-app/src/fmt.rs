@@ -226,6 +226,22 @@ pub fn day_clock(iso: &str) -> String {
     if d > today && (d - today).num_days() < 7 { format!("{} {clock}", l.format("%a")) } else { format!("{} {clock}", day_word(t)) }
 }
 
+/// When a waiting task resumes: "6:30 PM" today, "tomorrow 6:30 AM", "Thursday 6:30 AM" within the
+/// week, else "Dec 2 6:30 AM".
+pub fn resume_time(iso: &str) -> String {
+    let Some(t) = parse(iso) else { return String::new() };
+    let l = local(t);
+    let clock = clock12(&l.format("%H:%M").to_string());
+    let (today, d) = (local(now()).date_naive(), l.date_naive());
+    match (d - today).num_days() {
+        0 => clock,
+        1 => format!("tomorrow {clock}"),
+        2..=6 => format!("{} {clock}", l.format("%A")),
+        _ if d.year() == today.year() => format!("{} {clock}", l.format("%b %-d")),
+        _ => format!("{} {clock}", l.format("%b %-d, %Y")),
+    }
+}
+
 /// A time as "8:26 AM" today, else "Yesterday 8:26 AM" or "Oct 27 8:26 AM".
 pub fn day_time(iso: &str) -> String {
     let Some(t) = parse(iso) else { return String::new() };
@@ -404,6 +420,16 @@ pub fn device_now() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_resume_time_names_its_day_once_it_isnt_today() {
+        crate::parity::freeze("2026-11-23T15:00:00Z");
+        assert_eq!(resume_time("2026-11-23T18:30:00Z"), "6:30 PM");
+        assert_eq!(resume_time("2026-11-24T06:30:00Z"), "tomorrow 6:30 AM");
+        assert_eq!(resume_time("2026-11-26T06:30:00Z"), "Thursday 6:30 AM");
+        assert_eq!(resume_time("2026-12-02T06:30:00Z"), "Dec 2 6:30 AM");
+        assert_eq!(resume_time("2027-01-02T06:30:00Z"), "Jan 2, 2027 6:30 AM");
+    }
 
     #[test]
     fn a_human_tasks_h_ref_is_its_t_ref() {

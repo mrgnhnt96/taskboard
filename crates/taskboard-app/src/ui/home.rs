@@ -241,6 +241,10 @@ pub fn short_ago(iso: &str) -> String {
 
 /// The alert's text less the "T12: " its task's ref already says.
 fn ask_text(a: &Value, card: &Value) -> String {
+    // A task that parked itself and missed its time: the time here, its plan on the line under it.
+    if let Some((_, lead, _)) = crate::ui::status::wait_line(card).filter(|w| w.0 == crate::ui::status::St::Needs) {
+        return lead;
+    }
     if let Some(q) = opt_s(card, "question").filter(|_| s(card, "status") == "needs") {
         return q.to_string();
     }
@@ -373,6 +377,8 @@ pub fn ask_vm(a: &Value) -> Ask {
             tile_vm(card).line
         } else if let Some(d) = detail {
             d.to_string()
+        } else if let Some((_, _, plan)) = crate::ui::status::wait_line(card).filter(|w| w.0 == crate::ui::status::St::Needs) {
+            plan
         } else if title == text || missed.is_some() {
             String::new()
         } else {
@@ -1057,6 +1063,17 @@ mod tests {
         assert_eq!(gone.act, Some(Act::AskAgain("T5".into())));
         assert_eq!(gone.act.as_ref().map(Act::label), Some("Open new terminal"));
         assert_eq!(ask_vm(&q(true)).act, Some(Act::Focus("T5".into())));
+    }
+
+    #[test]
+    fn a_task_that_missed_its_resume_time_says_so_with_its_plan_under_it() {
+        let _clock = crate::parity::freeze("2026-11-23T19:00:00Z");
+        let a = json!({"id": "a1", "at": "2026-11-23T18:45:00Z", "text": "T5: T5 was due back at 6:30 PM and hasn't resumed.", "task": "T5",
+            "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "wait_overdue", "question": "T5 was due back at 6:30 PM and hasn't resumed.",
+                                "terminal_open": true, "wait_missed": {"at": "2026-11-23T18:30:00Z", "plan": "Read the nightly build"}}))});
+        let ask = ask_vm(&a);
+        assert_eq!((ask.text.as_str(), ask.line.as_str()), ("Didn’t resume at 6:30 PM", "Read the nightly build"));
+        assert_eq!(ask.act, Some(Act::Focus("T5".into())));
     }
 
     #[test]
