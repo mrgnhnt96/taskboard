@@ -219,8 +219,38 @@ fn files_in_the_boards_folder_need_no_config() {
 #[test]
 fn the_built_in_rules_trace_the_outcome_and_plan_prerequisites_first() {
     for bit in ["Trace the outcome", "maps to a task that proves it", "verification task with those devices", "List prerequisites first",
-                "A human task for anything only the owner can do", "Known failing tests go in the goal notes", "what other systems must provide",
+                "A human task only for what only the owner can do (a sign-in, an account, a purchase, a signature)",
+                "never by the owner trying it", "No trial-use, try-it, dogfood or soak task", "nothing that runs for N days or a week",
+                "nothing that ends in reporting back, for the owner or an agent", "no agent task waits days to check on its own work",
+                "Known failing tests go in the goal notes", "what other systems must provide",
                 "the first task writes them down", "plan up to it plus a re-plan task, not the whole goal"] {
         assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
     }
+}
+
+#[test]
+fn the_plan_check_refuses_a_trial_run_before_any_of_the_plan_is_made() {
+    let (d, app) = board_with(|_, _| {});
+    let g = api::dispatch(&app, "POST", "/goals", &Query::new(), &json!({"name": "The phone app", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    midna::sync(&app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": d.path().join("webapp").to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
+    let refused = |tasks: Value| {
+        let b = crate::est::fill(json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"), "tasks": tasks}));
+        let e = reports::handle(&app, b, false).map(|_| ()).expect_err("refused");
+        (e.status, e.message)
+    };
+    let week = json!({"title": "Use the iPhone app from TestFlight for a week", "kind": "human",
+                      "detail": "1. Install it from TestFlight.\n2. Anything that bugs you, tell an agent.\n3. After the week, press Done."});
+    let (status, msg) = refused(json!([task("Build the inbox", LONG, &["src/inbox.rs"]), week]));
+    assert_eq!(status, 400);
+    assert!(msg.starts_with("\u{201c}Use the iPhone app from TestFlight for a week\u{201d} can't be planned."), "{msg}");
+    assert!(msg.contains("only for what only") && msg.contains("agent verification task"), "{msg}");
+    assert!(board::goal_tasks(&app, g).unwrap().is_empty(), "nothing of the plan is made: the inbox task isn't either");
+
+    let (_, msg) = refused(json!([task("Check the crash rate", "Ship the fix.\nCheck the crash rate again after a week.", &["src/a.rs"])]));
+    assert!(msg.contains("never waits days to check on its own work") && msg.contains("Check the crash rate again after a week"), "{msg}");
+    let (_, msg) = refused(json!(["Watch the sync::Wait a few days, then compare the counts.::1::::src/sync.rs"]));
+    assert!(msg.contains("Wait a few days"), "a string item too: {msg}");
+
+    let (made, _) = propose(&app, d.path(), g, json!([task("Expire old tokens", "Tokens expire after 7 days.\nShow the last 7 days of sign-ins.", &["src/t.rs"])]));
+    assert_eq!(made.len(), 1, "a length the code keeps isn't a wait");
 }

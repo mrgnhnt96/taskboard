@@ -106,6 +106,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let human = kind == Some(crate::human::KIND);
     if human {
         crate::human::refuse_bare(body)?;
+        crate::trials::refuse(app, true, &title, &body_str(body, "detail"))?;
     }
     let priority = if body["priority"] == "high" { "high" } else { "normal" };
     let (mode, sid) = pickup(app, body)?;

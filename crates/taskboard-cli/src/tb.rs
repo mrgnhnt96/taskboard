@@ -1772,7 +1772,8 @@ enum TaskCmd {
         /// starts on it, --detail holds the steps and links, and the owner presses Done in the app (or tells
         /// an agent to: tb needs done H<n>).
         /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that, with the
-        /// owner's note in their prompt
+        /// owner's note in their prompt. Never a trial run (use or try something for a week and report
+        /// back): the board refuses one
         #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "same_pr", "model", "effort", "lock", "alone", "kind"], requires = "detail")]
         human: bool,
         /// design: its work is a design (concepts, a canvas, mockups). It ends without a PR once its design

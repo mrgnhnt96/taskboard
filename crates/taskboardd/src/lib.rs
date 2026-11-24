@@ -161,6 +161,7 @@ pub mod stream;
 pub mod steps;
 pub mod transcript;
 pub mod triage;
+pub mod trials;
 pub mod undo;
 pub mod upstream;
 pub mod usage;
